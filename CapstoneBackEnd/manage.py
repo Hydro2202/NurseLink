@@ -2,6 +2,18 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+import threading
+import time
+import webbrowser
+
+
+def _open_scalar_docs():
+    """Open the Scalar docs page automatically after the dev server starts."""
+    try:
+        time.sleep(2)
+        webbrowser.open('http://127.0.0.1:8000/api/docs/', new=0, autoraise=True)
+    except Exception:
+        pass
 
 
 def main():
@@ -15,6 +27,10 @@ def main():
             "available on your PYTHONPATH environment variable? Did you "
             "forget to activate a virtual environment?"
         ) from exc
+
+    if len(sys.argv) > 1 and sys.argv[1] == 'runserver':
+        threading.Thread(target=_open_scalar_docs, daemon=True).start()
+
     execute_from_command_line(sys.argv)
 
 
