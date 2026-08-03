@@ -1,0 +1,15 @@
+{
+  "name": "nurselink-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Runs NurseLink (Expo) and NurseLink-web (Vite) together",
+  "scripts": {
+    "start": "node scripts/start-frontends.js",
+    "dev": "npm start",
+    "expo": "npm run start --prefix NurseLink",
+    "web": "npm run dev --prefix NurseLink-web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
