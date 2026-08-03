@@ -13,6 +13,14 @@ export interface User {
   licenseNumber?: string;
   avatar?: string;
   createdAt: string;
+  registrationDetails?: {
+    licenseNumber: string;
+    selectedRole: string;
+    ocrPosition: string;
+    hospitalName: string;
+    department: string;
+    employeeId: string;
+  };
 }
 
 // Patient Information
