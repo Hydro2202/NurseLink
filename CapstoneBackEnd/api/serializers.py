@@ -17,6 +17,7 @@ class UserSerializer(serializers.ModelSerializer):
     department = serializers.SerializerMethodField()
     licenseNumber = serializers.SerializerMethodField()
     avatar = serializers.SerializerMethodField()
+    accountStatus = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -31,6 +32,7 @@ class UserSerializer(serializers.ModelSerializer):
             'department',
             'licenseNumber',
             'avatar',
+            'accountStatus',
         ]
 
     def get_id(self, obj):
@@ -60,10 +62,14 @@ class UserSerializer(serializers.ModelSerializer):
         profile = getattr(obj, 'nurse_profile', None)
         return profile.avatar if profile else ''
 
+    def get_accountStatus(self, obj):
+        profile = getattr(obj, 'nurse_profile', None)
+        return profile.account_status if profile else 'approved'
+
 
 class SignupSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    password = serializers.CharField(write_only=True, min_length=6)
+    password = serializers.CharField(write_only=True, min_length=8)
     firstName = serializers.CharField(required=False, allow_blank=True, default='')
     middleName = serializers.CharField(required=False, allow_blank=True, default='')
     lastName = serializers.CharField(required=False, allow_blank=True, default='')
@@ -74,6 +80,9 @@ class SignupSerializer(serializers.Serializer):
     )
     department = serializers.CharField(required=False, allow_blank=True, default='')
     licenseNumber = serializers.CharField(required=False, allow_blank=True, default='')
+    employeeId = serializers.CharField(required=False, allow_blank=True, default='')
+    hospitalName = serializers.CharField(required=False, allow_blank=True, default='')
+    ocrPosition = serializers.CharField(required=False, allow_blank=True, default='')
 
     def validate_email(self, value):
         if User.objects.filter(username=value).exists() or User.objects.filter(email=value).exists():
@@ -88,13 +97,16 @@ class SignupSerializer(serializers.Serializer):
         email = validated_data['email']
         first_name = validated_data.get('firstName') or ''
         last_name = validated_data.get('lastName') or ''
+        middle_name = validated_data.get('middleName') or ''
         name = validated_data.get('name') or ''
 
         if not first_name and name:
-            parts = name.split(' ', 1)
-            first_name = parts[0]
+            parts = name.split()
+            first_name = parts[0] if parts else ''
+            if len(parts) > 2 and not middle_name:
+                middle_name = ' '.join(parts[1:-1])
             if len(parts) > 1 and not last_name:
-                last_name = parts[1]
+                last_name = parts[-1]
 
         role = validated_data.get('role', 'staff_nurse')
         department = validated_data.get('department') or (
@@ -107,13 +119,18 @@ class SignupSerializer(serializers.Serializer):
             password=validated_data['password'],
             first_name=first_name,
             last_name=last_name,
+            is_active=False,
         )
         NurseProfile.objects.create(
             user=user,
             role=role,
             department=department,
             license_number=validated_data.get('licenseNumber') or '',
-            middle_name=validated_data.get('middleName') or '',
+            middle_name=middle_name,
+            account_status='pending',
+            employee_id=validated_data.get('employeeId') or '',
+            hospital_name=validated_data.get('hospitalName') or '',
+            ocr_position=validated_data.get('ocrPosition') or '',
         )
         return user
 

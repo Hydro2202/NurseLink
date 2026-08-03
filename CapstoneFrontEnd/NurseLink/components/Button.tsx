@@ -7,6 +7,7 @@ import {
   TextStyle,
   ActivityIndicator,
   View,
+  StyleProp,
 } from 'react-native';
 import { Colors, Radius } from '../constants/colors';
 
@@ -20,8 +21,8 @@ interface ButtonProps {
   size?: Size;
   disabled?: boolean;
   loading?: boolean;
-  style?: ViewStyle;
-  textStyle?: TextStyle;
+  style?: StyleProp<ViewStyle>;
+  textStyle?: StyleProp<TextStyle>;
   accessibilityLabel?: string;
 }
 

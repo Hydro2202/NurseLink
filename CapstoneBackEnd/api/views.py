@@ -1,4 +1,3 @@
-from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from rest_framework import generics, permissions, status
 from rest_framework.authtoken.models import Token
@@ -16,15 +15,18 @@ from .serializers import (
 
 class SignupView(APIView):
     permission_classes = [permissions.AllowAny]
+    serializer_class = SignupSerializer
 
     def post(self, request):
-        serializer = SignupSerializer(data=request.data)
+        serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        token, _ = Token.objects.get_or_create(user=user)
         return Response(
             {
-                'token': token.key,
+                'detail': (
+                    'Registration submitted. Your account is awaiting administrator approval.'
+                ),
+                'status': 'pending',
                 'user': UserSerializer(user).data,
             },
             status=status.HTTP_201_CREATED,
@@ -33,31 +35,58 @@ class SignupView(APIView):
 
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    serializer_class = LoginSerializer
 
     def post(self, request):
-        serializer = LoginSerializer(data=request.data)
+        serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         email = serializer.validated_data['email'].lower()
         password = serializer.validated_data['password']
         requested_role = serializer.validated_data.get('role')
 
-        user = authenticate(username=email, password=password)
-        if user is None:
-            # Also try looking up by email field in case username differs
+        matched = None
+        try:
+            matched = User.objects.get(username__iexact=email)
+        except User.DoesNotExist:
             try:
                 matched = User.objects.get(email__iexact=email)
-                user = authenticate(username=matched.username, password=password)
             except User.DoesNotExist:
-                user = None
+                matched = None
 
-        if user is None:
+        if matched is None or not matched.check_password(password):
             return Response(
                 {'detail': 'Invalid email or password.'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        profile = getattr(user, 'nurse_profile', None)
+        profile = getattr(matched, 'nurse_profile', None)
+        account_status = profile.account_status if profile else 'approved'
+
+        if account_status == 'pending' or not matched.is_active:
+            return Response(
+                {
+                    'detail': (
+                        'Your registration is pending administrator approval. '
+                        'Please try again after you are notified.'
+                    ),
+                    'status': 'pending',
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if account_status == 'rejected':
+            reason = (profile.rejection_reason if profile else '') or (
+                'Your registration was rejected by an administrator.'
+            )
+            return Response(
+                {
+                    'detail': reason,
+                    'status': 'rejected',
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         if requested_role and profile and profile.role != requested_role:
             return Response(
                 {
@@ -69,11 +98,12 @@ class LoginView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        token, _ = Token.objects.get_or_create(user=user)
+        # authenticate() requires is_active=True; we already validated password above
+        token, _ = Token.objects.get_or_create(user=matched)
         return Response(
             {
                 'token': token.key,
-                'user': UserSerializer(user).data,
+                'user': UserSerializer(matched).data,
             }
         )
 

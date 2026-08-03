@@ -9,6 +9,11 @@ class NurseProfile(models.Model):
         ('staff_nurse', 'Staff Nurse'),
         ('supervisor', 'Supervisor'),
     ]
+    ACCOUNT_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -20,6 +25,15 @@ class NurseProfile(models.Model):
     license_number = models.CharField(max_length=50, blank=True, default='')
     middle_name = models.CharField(max_length=100, blank=True, default='')
     avatar = models.URLField(blank=True, default='')
+    account_status = models.CharField(
+        max_length=20,
+        choices=ACCOUNT_STATUS_CHOICES,
+        default='approved',
+    )
+    rejection_reason = models.TextField(blank=True, default='')
+    employee_id = models.CharField(max_length=50, blank=True, default='')
+    hospital_name = models.CharField(max_length=200, blank=True, default='')
+    ocr_position = models.CharField(max_length=120, blank=True, default='')
 
     def __str__(self):
         return f'{self.user.get_full_name() or self.user.username} ({self.role})'

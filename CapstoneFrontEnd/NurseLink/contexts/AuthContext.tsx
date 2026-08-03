@@ -2,23 +2,25 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, AppStateStatus, Alert } from 'react-native';
 import {
+  ApiError,
   fetchMe,
   loginRequest,
   logoutRequest,
   signupRequest,
-  updateMe,
   getToken,
   setToken,
+  updateMe,
 } from '../services/api';
 import { USER_KEY } from '../services/config';
-import type { User, UserRole } from '../types/user';
+import type { SignupPayload, User, UserRole } from '../types/user';
 
 export type { User, UserRole };
+export type LoginResult = 'success' | 'invalid' | 'pending' | 'rejected' | 'error';
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string, password: string, role: UserRole) => Promise<boolean>;
-  signup: (userData: Omit<User, 'id'> & { password: string }) => Promise<boolean>;
+  login: (email: string, password: string, role: UserRole) => Promise<LoginResult>;
+  signup: (userData: SignupPayload) => Promise<{ ok: boolean; message?: string }>;
   logout: () => void;
   isAuthenticated: boolean;
   isLoading: boolean;
@@ -106,33 +108,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [user, logout, updateActivity]);
 
-  const login = async (email: string, password: string, role: UserRole): Promise<boolean> => {
+  const login = async (email: string, password: string, role: UserRole): Promise<LoginResult> => {
     setIsLoading(true);
     try {
-      const { user: loggedIn } = await loginRequest(email, password, role);
-      setUser(loggedIn);
-      await AsyncStorage.setItem(USER_KEY, JSON.stringify(loggedIn));
+      const result = await loginRequest(email, password, role);
+      if (!result.ok) {
+        return result.status;
+      }
+      setUser(result.user);
+      await AsyncStorage.setItem(USER_KEY, JSON.stringify(result.user));
       lastActivity.current = Date.now();
-      return true;
+      return 'success';
     } catch (error) {
       console.error('Login failed:', error);
-      return false;
+      return 'error';
     } finally {
       setIsLoading(false);
     }
   };
 
-  const signup = async (userData: Omit<User, 'id'> & { password: string }): Promise<boolean> => {
+  const signup = async (
+    userData: SignupPayload
+  ): Promise<{ ok: boolean; message?: string }> => {
     setIsLoading(true);
     try {
-      const { user: created } = await signupRequest(userData);
-      setUser(created);
-      await AsyncStorage.setItem(USER_KEY, JSON.stringify(created));
-      lastActivity.current = Date.now();
-      return true;
+      const response = await signupRequest(userData);
+      return { ok: true, message: response.detail };
     } catch (error) {
       console.error('Signup failed:', error);
-      return false;
+      if (error instanceof ApiError) {
+        return { ok: false, message: error.message };
+      }
+      return {
+        ok: false,
+        message: 'An unexpected error occurred. Please try again.',
+      };
     } finally {
       setIsLoading(false);
     }

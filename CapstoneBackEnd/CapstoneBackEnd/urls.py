@@ -5,7 +5,11 @@ URL configuration for CapstoneBackEnd project.
 from django.contrib import admin
 from django.http import HttpResponse
 from django.urls import include, path, reverse
-from drf_spectacular.views import SpectacularAPIView
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularSwaggerView,
+    SpectacularRedocView,
+)
 from rest_framework.permissions import AllowAny
 
 
@@ -38,5 +42,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/schema/', SpectacularAPIView.as_view(permission_classes=[AllowAny]), name='schema'),
     path('api/docs/', scalar_docs, name='scalar-docs'),
+    path('api/swagger/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
     path('api/', include('api.urls')),
 ]

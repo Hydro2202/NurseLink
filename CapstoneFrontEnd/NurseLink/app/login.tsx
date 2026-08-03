@@ -36,12 +36,18 @@ export default function LoginPage() {
       return;
     }
 
-    const success = await login(email, password, selectedRole);
+    const result = await login(email, password, selectedRole);
 
-    if (success) {
+    if (result === 'success') {
       router.replace('/(app)/dashboard' as any);
+    } else if (result === 'pending') {
+      setError(
+        'Your registration is pending administrator approval. Please try again after you are notified.'
+      );
+    } else if (result === 'rejected') {
+      setError('Your registration was rejected by an administrator. Please contact support.');
     } else {
-      setError('Login failed. Please try again.');
+      setError('Login failed. Please check your credentials and try again.');
     }
   };
 

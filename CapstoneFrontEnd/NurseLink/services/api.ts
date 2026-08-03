@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL, TOKEN_KEY } from './config';
-import type { User, UserRole } from '../types/user';
+import type { SignupPayload, User, UserRole } from '../types/user';
 import type { Patient } from '../data/mockData';
 
 export class ApiError extends Error {
@@ -48,11 +48,19 @@ export async function apiRequest<T>(
     }
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new ApiError(
+      'Network error. Please check your connection and try again.',
+      0
+    );
+  }
 
   let data: unknown = null;
   const text = await response.text();
@@ -65,10 +73,19 @@ export async function apiRequest<T>(
   }
 
   if (!response.ok) {
-    const detail =
-      typeof data === 'object' && data && 'detail' in data
-        ? String((data as { detail: unknown }).detail)
-        : `Request failed (${response.status})`;
+    let detail = `Request failed (${response.status})`;
+    if (typeof data === 'object' && data) {
+      if ('detail' in data) {
+        detail = String((data as { detail: unknown }).detail);
+      } else {
+        const firstFieldError = Object.values(data as Record<string, unknown>).find(
+          (v) => Array.isArray(v) && v.length > 0
+        );
+        if (Array.isArray(firstFieldError) && firstFieldError[0]) {
+          detail = String(firstFieldError[0]);
+        }
+      }
+    }
     throw new ApiError(detail, response.status, data);
   }
 
@@ -80,30 +97,78 @@ type AuthResponse = {
   user: User;
 };
 
+export type LoginApiResult =
+  | { ok: true; user: User }
+  | { ok: false; status: 'invalid' | 'pending' | 'rejected' | 'error'; message: string };
+
 export async function loginRequest(
   email: string,
   password: string,
   role: UserRole
-): Promise<AuthResponse> {
-  const data = await apiRequest<AuthResponse>('/auth/login/', {
-    method: 'POST',
-    body: { email, password, role },
-    auth: false,
-  });
-  await setToken(data.token);
-  return data;
+): Promise<LoginApiResult> {
+  try {
+    const data = await apiRequest<AuthResponse>('/auth/login/', {
+      method: 'POST',
+      body: { email, password, role },
+      auth: false,
+    });
+    await setToken(data.token);
+    return { ok: true, user: data.user };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      const status =
+        typeof error.data === 'object' &&
+        error.data &&
+        'status' in error.data
+          ? String((error.data as { status: unknown }).status)
+          : '';
+      if (status === 'pending') {
+        return { ok: false, status: 'pending', message: error.message };
+      }
+      if (status === 'rejected') {
+        return { ok: false, status: 'rejected', message: error.message };
+      }
+      return { ok: false, status: 'invalid', message: error.message };
+    }
+    return {
+      ok: false,
+      status: 'error',
+      message: 'An unexpected error occurred. Please try again.',
+    };
+  }
 }
 
+type SignupResponse = {
+  detail: string;
+  status: 'pending';
+  user: User;
+};
+
 export async function signupRequest(
-  userData: Omit<User, 'id'> & { password: string }
-): Promise<AuthResponse> {
-  const data = await apiRequest<AuthResponse>('/auth/signup/', {
+  userData: SignupPayload
+): Promise<SignupResponse> {
+  const {
+    registrationDetails,
+    employeeId,
+    hospitalName,
+    ocrPosition,
+    ...rest
+  } = userData;
+
+  const body = {
+    ...rest,
+    employeeId: employeeId ?? registrationDetails?.employeeId ?? '',
+    hospitalName: hospitalName ?? registrationDetails?.hospitalName ?? '',
+    ocrPosition: ocrPosition ?? registrationDetails?.ocrPosition ?? '',
+    licenseNumber: rest.licenseNumber ?? registrationDetails?.licenseNumber ?? '',
+    department: rest.department || registrationDetails?.department || '',
+  };
+
+  return apiRequest<SignupResponse>('/auth/signup/', {
     method: 'POST',
-    body: userData,
+    body,
     auth: false,
   });
-  await setToken(data.token);
-  return data;
 }
 
 export async function logoutRequest(): Promise<void> {
