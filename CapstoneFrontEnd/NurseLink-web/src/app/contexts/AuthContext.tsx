@@ -21,6 +21,14 @@ export interface User {
   department: string;
   licenseNumber?: string;
   avatar?: string;
+  registrationDetails?: {
+    licenseNumber: string;
+    selectedRole: string;
+    ocrPosition: string;
+    hospitalName: string;
+    department: string;
+    employeeId: string;
+  };
 }
 
 interface AuthContextType {

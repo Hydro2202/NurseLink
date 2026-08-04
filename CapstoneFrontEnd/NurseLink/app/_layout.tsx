@@ -1,4 +1,4 @@
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { ToastProvider } from '../contexts/ToastContext';
@@ -12,6 +12,7 @@ function RootNavigator() {
   const [showSplash, setShowSplash] = useState(true);
   const { isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
+  const segments = useSegments();
 
   useEffect(() => {
     initializeDefaultAssignments();
@@ -19,12 +20,23 @@ function RootNavigator() {
 
   useEffect(() => {
     if (showSplash || isLoading) return;
+
+    const first = segments[0];
+    const onPublicAuthFlow =
+      first === 'login' || first === 'signup' || first === 'pending-approval';
+
     if (isAuthenticated) {
-      router.replace('/(app)/dashboard' as any);
-    } else {
+      if (first === 'pending-approval') return;
+      if (first !== '(app)') {
+        router.replace('/(app)/dashboard' as any);
+      }
+      return;
+    }
+
+    if (!onPublicAuthFlow) {
       router.replace('/login');
     }
-  }, [showSplash, isLoading, isAuthenticated]);
+  }, [showSplash, isLoading, isAuthenticated, segments]);
 
   if (showSplash) {
     return <SplashScreen onComplete={() => setShowSplash(false)} />;
@@ -37,6 +49,7 @@ function RootNavigator() {
         <Stack.Screen name="index" />
         <Stack.Screen name="login" />
         <Stack.Screen name="signup" />
+        <Stack.Screen name="pending-approval" />
         <Stack.Screen name="(app)" />
       </Stack>
     </>
