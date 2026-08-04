@@ -1,0 +1,411 @@
+openapi: 3.0.3
+info:
+  title: NurseLink API
+  version: 1.0.0
+  description: Backend API for NurseLink nursing operations.
+paths:
+  /api/auth/login/:
+    post:
+      operationId: auth_login_create
+      description: Sign in with email and password. Optional role must match the account.
+      summary: Log in
+      tags:
+      - Auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              NurseLogin:
+                value:
+                  email: nurse@hospital.com
+                  password: password123
+                  role: staff_nurse
+                summary: Nurse login
+              SupervisorLogin:
+                value:
+                  email: head@hospital.com
+                  password: password123
+                  role: supervisor
+                summary: Supervisor login
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - tokenAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginError'
+          description: ''
+  /api/auth/logout/:
+    post:
+      operationId: auth_logout_create
+      summary: Log out
+      tags:
+      - Auth
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - tokenAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+          description: ''
+  /api/auth/me/:
+    get:
+      operationId: auth_me_retrieve
+      summary: Current user
+      tags:
+      - Auth
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - tokenAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+    patch:
+      operationId: auth_me_partial_update
+      summary: Update current user
+      tags:
+      - Auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateMeRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateMeRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateMeRequestRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - tokenAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+  /api/auth/signup/:
+    post:
+      operationId: auth_signup_create
+      description: Create a new nurse account and receive an auth token.
+      summary: Sign up
+      tags:
+      - Auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - tokenAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+          description: ''
+  /api/patients/:
+    get:
+      operationId: patients_list
+      summary: List patients
+      tags:
+      - Patients
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - tokenAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Patient'
+          description: ''
+  /api/patients/{patient_code}/:
+    get:
+      operationId: patients_retrieve
+      summary: Get patient
+      parameters:
+      - in: path
+        name: patient_code
+        schema:
+          type: string
+        required: true
+      tags:
+      - Patients
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      - tokenAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Patient'
+          description: ''
+components:
+  schemas:
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+      required:
+      - token
+      - user
+    GenderEnum:
+      enum:
+      - Male
+      - Female
+      type: string
+      description: |-
+        * `Male` - Male
+        * `Female` - Female
+    LoginError:
+      type: object
+      properties:
+        detail:
+          type: string
+      required:
+      - detail
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          description: Account email, e.g. nurse@hospital.com
+        password:
+          type: string
+          writeOnly: true
+          minLength: 1
+          description: Account password
+        role:
+          allOf:
+          - $ref: '#/components/schemas/RoleEnum'
+          description: |-
+            Optional. Must match the account role if provided.
+
+            * `staff_nurse` - staff_nurse
+            * `supervisor` - supervisor
+      required:
+      - email
+      - password
+    LogoutResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+      required:
+      - detail
+    PatchedUpdateMeRequestRequest:
+      type: object
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+        middleName:
+          type: string
+          minLength: 1
+        lastName:
+          type: string
+          minLength: 1
+        department:
+          type: string
+          minLength: 1
+        licenseNumber:
+          type: string
+          minLength: 1
+        avatar:
+          type: string
+          minLength: 1
+    Patient:
+      type: object
+      description: Matches CapstoneFrontEnd mock Patient interface.
+      properties:
+        id:
+          type: string
+          readOnly: true
+        name:
+          type: string
+          maxLength: 200
+        age:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+        gender:
+          $ref: '#/components/schemas/GenderEnum'
+        room:
+          type: string
+          maxLength: 50
+        diagnosis:
+          type: string
+          maxLength: 255
+        admissionDate:
+          type: string
+          format: date
+        riskLevel:
+          type: string
+        vitalSigns:
+          type: string
+          readOnly: true
+        allergies: {}
+        medications: {}
+        alerts: {}
+      required:
+      - admissionDate
+      - age
+      - diagnosis
+      - gender
+      - id
+      - name
+      - riskLevel
+      - room
+      - vitalSigns
+    RoleEnum:
+      enum:
+      - staff_nurse
+      - supervisor
+      type: string
+      description: |-
+        * `staff_nurse` - staff_nurse
+        * `supervisor` - supervisor
+    SignupRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        password:
+          type: string
+          writeOnly: true
+          minLength: 6
+        firstName:
+          type: string
+          default: ''
+        middleName:
+          type: string
+          default: ''
+        lastName:
+          type: string
+          default: ''
+        name:
+          type: string
+          default: ''
+        role:
+          allOf:
+          - $ref: '#/components/schemas/RoleEnum'
+          default: staff_nurse
+        department:
+          type: string
+          default: ''
+        licenseNumber:
+          type: string
+          default: ''
+      required:
+      - email
+      - password
+    User:
+      type: object
+      description: Shapes a User + NurseProfile into the frontend User object.
+      properties:
+        id:
+          type: string
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+        firstName:
+          type: string
+        middleName:
+          type: string
+          readOnly: true
+        lastName:
+          type: string
+        email:
+          title: Email address
+          oneOf:
+          - type: string
+            format: email
+            maxLength: 254
+          - type: string
+            maxLength: 0
+        role:
+          type: string
+          readOnly: true
+        department:
+          type: string
+          readOnly: true
+        licenseNumber:
+          type: string
+          readOnly: true
+        avatar:
+          type: string
+          readOnly: true
+      required:
+      - avatar
+      - department
+      - id
+      - licenseNumber
+      - middleName
+      - name
+      - role
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid
+    tokenAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'Token-based auth. Format: `Token <your-token>`'

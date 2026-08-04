@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
+    'drf_spectacular',
     # Local
     'api',
 ]
@@ -46,7 +47,7 @@ ROOT_URLCONF = 'CapstoneBackEnd.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -107,4 +108,28 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'NurseLink API',
+    'DESCRIPTION': 'Backend API for NurseLink nursing operations.',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SECURITY': [{'tokenAuth': []}],
+    'APPEND_COMPONENTS': {
+        'securitySchemes': {
+            'tokenAuth': {
+                'type': 'apiKey',
+                'in': 'header',
+                'name': 'Authorization',
+                'description': 'Token-based auth. Format: `Token <your-token>`',
+            }
+        }
+    },
+}
+
+# Open Scalar docs in the browser when running `python manage.py runserver`
+OPEN_API_DOCS_ON_START = DEBUG
+API_DOCS_URL = '/api/docs/'

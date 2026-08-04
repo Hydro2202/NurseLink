@@ -104,7 +104,8 @@ export default function DashboardPage() {
         const data = await fetchPatients(isStaffNurse ? { mine: true } : undefined);
         if (!cancelled) setPatients(data);
       } catch (error) {
-        console.error('Failed to load patients:', error);
+        // Log quietly — LogBox turns console.error into a full-screen overlay.
+        console.warn('Failed to load patients:', error);
       }
     })();
     return () => {

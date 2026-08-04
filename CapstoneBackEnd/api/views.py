@@ -1,6 +1,7 @@
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
-from rest_framework import generics, permissions, status
+from drf_spectacular.utils import OpenApiExample, extend_schema, inline_serializer
+from rest_framework import generics, permissions, serializers, status
 from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,9 +15,26 @@ from .serializers import (
 )
 
 
+AuthResponseSerializer = inline_serializer(
+    name='AuthResponse',
+    fields={
+        'token': serializers.CharField(),
+        'user': UserSerializer(),
+    },
+)
+
+
 class SignupView(APIView):
     permission_classes = [permissions.AllowAny]
 
+    @extend_schema(
+        request=SignupSerializer,
+        responses={201: AuthResponseSerializer},
+        tags=['Auth'],
+        summary='Sign up',
+        description='Create a new nurse account and receive an auth token.',
+        auth=None,
+    )
     def post(self, request):
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -34,6 +52,40 @@ class SignupView(APIView):
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
 
+    @extend_schema(
+        request=LoginSerializer,
+        responses={
+            200: AuthResponseSerializer,
+            401: inline_serializer(
+                name='LoginError',
+                fields={'detail': serializers.CharField()},
+            ),
+        },
+        tags=['Auth'],
+        summary='Log in',
+        description='Sign in with email and password. Optional role must match the account.',
+        auth=None,
+        examples=[
+            OpenApiExample(
+                'Nurse login',
+                value={
+                    'email': 'nurse@hospital.com',
+                    'password': 'password123',
+                    'role': 'staff_nurse',
+                },
+                request_only=True,
+            ),
+            OpenApiExample(
+                'Supervisor login',
+                value={
+                    'email': 'head@hospital.com',
+                    'password': 'password123',
+                    'role': 'supervisor',
+                },
+                request_only=True,
+            ),
+        ],
+    )
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -81,9 +133,30 @@ class LoginView(APIView):
 class MeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @extend_schema(
+        responses={200: UserSerializer},
+        tags=['Auth'],
+        summary='Current user',
+    )
     def get(self, request):
         return Response(UserSerializer(request.user).data)
 
+    @extend_schema(
+        request=inline_serializer(
+            name='UpdateMeRequest',
+            fields={
+                'firstName': serializers.CharField(required=False),
+                'middleName': serializers.CharField(required=False),
+                'lastName': serializers.CharField(required=False),
+                'department': serializers.CharField(required=False),
+                'licenseNumber': serializers.CharField(required=False),
+                'avatar': serializers.CharField(required=False),
+            },
+        ),
+        responses={200: UserSerializer},
+        tags=['Auth'],
+        summary='Update current user',
+    )
     def patch(self, request):
         user = request.user
         profile = getattr(user, 'nurse_profile', None)
@@ -113,6 +186,17 @@ class MeView(APIView):
 class LogoutView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @extend_schema(
+        request=None,
+        responses={
+            200: inline_serializer(
+                name='LogoutResponse',
+                fields={'detail': serializers.CharField()},
+            )
+        },
+        tags=['Auth'],
+        summary='Log out',
+    )
     def post(self, request):
         Token.objects.filter(user=request.user).delete()
         return Response({'detail': 'Logged out.'})
@@ -121,6 +205,10 @@ class LogoutView(APIView):
 class PatientListView(generics.ListAPIView):
     serializer_class = PatientSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(tags=['Patients'], summary='List patients')
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
         qs = Patient.objects.all()
@@ -135,6 +223,10 @@ class PatientDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
     lookup_field = 'patient_code'
     lookup_url_kwarg = 'patient_code'
+
+    @extend_schema(tags=['Patients'], summary='Get patient')
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
         return Patient.objects.all()

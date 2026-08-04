@@ -119,11 +119,16 @@ class SignupSerializer(serializers.Serializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
+    email = serializers.EmailField(help_text='Account email, e.g. nurse@hospital.com')
+    password = serializers.CharField(
+        write_only=True,
+        style={'input_type': 'password'},
+        help_text='Account password',
+    )
     role = serializers.ChoiceField(
         choices=['staff_nurse', 'supervisor'],
         required=False,
+        help_text='Optional. Must match the account role if provided.',
     )
 
 

@@ -38,7 +38,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     (async () => {
       try {
         const token = await getToken();
-        const storedUser = await AsyncStorage.getItem(USER_KEY);
         await AsyncStorage.removeItem('nurselink_darkmode');
 
         if (!token) {
@@ -51,11 +50,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setUser(me);
           await AsyncStorage.setItem(USER_KEY, JSON.stringify(me));
         } catch {
-          if (storedUser) {
-            setUser(JSON.parse(storedUser));
-          } else {
-            await setToken(null);
-          }
+          // Token is invalid/expired — clear the session instead of
+          // keeping a stale user that causes protected API calls to fail.
+          await setToken(null);
+          await AsyncStorage.removeItem(USER_KEY);
+          setUser(null);
         }
       } catch (e) {
         console.error('Error loading session:', e);
