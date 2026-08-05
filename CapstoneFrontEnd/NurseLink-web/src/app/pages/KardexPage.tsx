@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
@@ -34,40 +34,11 @@ import {
   DialogTitle,
 } from '../components/ui/dialog';
 import { toast } from 'sonner';
-
-interface KardexHistory {
-  id: string;
-  // Patient Demographics
-  patientName: string;
-  lastName: string;
-  firstName: string;
-  middleName: string;
-  age: string;
-  gender: string;
-  religion: string;
-  room: string;
-  bedNumber: string;
-  admissionDate: string;
-  // Medical Information
-  attendingPhysician: string;
-  chiefComplaint: string;
-  admittingDiagnosis: string;
-  finalDiagnosis: string;
-  diet: string;
-  // Vital Signs
-  temperature: string;
-  pulseRate: string;
-  respiratoryRate: string;
-  bloodPressure: string;
-  oxygenSaturation: string;
-  // Special Endorsements
-  specialEndorsements: string;
-  // Metadata
-  savedAt: string;
-  savedBy: string;
-}
+import { createKardexRecord, fetchKardexRecords, ApiError } from '../api/nurselink';
+import type { KardexHistory } from '../types/domain';
 
 export default function KardexPage() {
+
   // Patient Demographics
   const [lastName, setLastName] = useState('');
   const [firstName, setFirstName] = useState('');
@@ -98,13 +69,25 @@ export default function KardexPage() {
 
   // History
   const [kardexHistory, setKardexHistory] = useState<KardexHistory[]>([]);
-  
-  // Confirmation Dialog
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
-
-  // History Dialog
   const [showHistoryDialog, setShowHistoryDialog] = useState(false);
   const [selectedHistoryEntry, setSelectedHistoryEntry] = useState<KardexHistory | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchKardexRecords();
+        if (!cancelled) setKardexHistory(data);
+      } catch {
+        // empty history is fine
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
 
   const handleViewHistory = (entry: KardexHistory) => {
     setSelectedHistoryEntry(entry);
@@ -148,44 +131,42 @@ export default function KardexPage() {
     setShowConfirmDialog(true);
   };
 
-  const handleConfirmSave = () => {
-    // Create kardex entry
-    const newEntry: KardexHistory = {
-      id: `kardex-${Date.now()}`,
-      patientName: `${firstName} ${lastName}`,
-      lastName: lastName,
-      firstName: firstName,
-      middleName: middleName,
-      age: age,
-      gender: gender,
-      religion: religion,
-      room: room,
-      bedNumber: bedNumber,
-      admissionDate: admissionDate,
-      attendingPhysician: attendingPhysician,
-      chiefComplaint: chiefComplaint,
-      admittingDiagnosis: admittingDiagnosis,
-      finalDiagnosis: finalDiagnosis,
-      diet: diet,
-      temperature: temperature,
-      pulseRate: pulseRate,
-      respiratoryRate: respiratoryRate,
-      bloodPressure: bloodPressure,
-      oxygenSaturation: oxygenSaturation,
-      specialEndorsements: specialEndorsements,
-      savedAt: new Date().toISOString(),
-      savedBy: 'Current User',
-    };
+  const handleConfirmSave = async () => {
+    try {
+      const newEntry = await createKardexRecord({
+        lastName,
+        firstName,
+        middleName,
+        age,
+        gender,
+        religion,
+        room,
+        bedNumber,
+        admissionDate,
+        attendingPhysician,
+        chiefComplaint,
+        admittingDiagnosis,
+        finalDiagnosis,
+        diet,
+        temperature,
+        pulseRate,
+        respiratoryRate,
+        bloodPressure,
+        oxygenSaturation,
+        specialEndorsements,
+      });
 
-    setKardexHistory([newEntry, ...kardexHistory]);
-    setShowConfirmDialog(false);
+      setKardexHistory((prev) => [newEntry, ...prev]);
+      setShowConfirmDialog(false);
 
-    toast.success('Kardex Saved Successfully! 📋', {
-      description: `Patient kardex for ${firstName} ${lastName} has been saved.`,
-    });
+      toast.success('Kardex Saved Successfully!', {
+        description: `${firstName} ${lastName} was added to the patient list.`,
+      });
 
-    // Clear form
-    clearForm();
+      clearForm();
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Failed to save kardex');
+    }
   };
 
   const handlePrint = () => {

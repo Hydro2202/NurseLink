@@ -32,6 +32,7 @@ import { ProfileEditModal } from '../../components/ProfileEditModal';
 import { PasswordChangeModal } from '../../components/PasswordChangeModal';
 import { Colors, Radius } from '../../constants/colors';
 import type { User as ProfileUser } from '../../types';
+import { changePasswordRequest, ApiError } from '../../services/api';
 
 const FONT_KEY = 'nurselink_fontsize';
 const COMPACT_KEY = 'nurselink_compactview';
@@ -117,11 +118,18 @@ export default function SettingsScreen() {
     });
   };
 
-  const handlePasswordSave = async (_currentPassword: string, _newPassword: string) => {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    toast.success('Password changed successfully!', {
-      description: 'Your password has been updated.',
-    });
+  const handlePasswordSave = async (currentPassword: string, newPassword: string) => {
+    try {
+      await changePasswordRequest(currentPassword, newPassword);
+      toast.success('Password changed successfully!', {
+        description: 'Your password has been updated.',
+      });
+    } catch (error) {
+      toast.error('Failed to change password', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+      throw error;
+    }
   };
 
   const handleLogout = () => {

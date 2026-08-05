@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -24,7 +24,14 @@ import {
   Edit2,
   X,
 } from 'lucide-react-native';
-import { mockChartingNotes, mockPatients, ChartingNote } from '../../data/mockData';
+import {
+  fetchPatients,
+  fetchChartingNotes,
+  createChartingNote,
+  updateChartingNote,
+  ApiError,
+} from '../../services/api';
+import type { ChartingNote, Patient } from '../../types/domain';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
@@ -67,7 +74,9 @@ interface StructuredData {
 export default function ChartingScreen() {
   const { user } = useAuth();
   const toast = useToast();
-  const [notes, setNotes] = useState<ChartingNote[]>(mockChartingNotes);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [notes, setNotes] = useState<ChartingNote[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selectedPatient, setSelectedPatient] = useState<string>('');
   const [inputText, setInputText] = useState('');
   const [aiGeneratedNote, setAiGeneratedNote] = useState('');
@@ -79,27 +88,40 @@ export default function ChartingScreen() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [structuredData, setStructuredData] = useState<StructuredData | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [patientData, noteData] = await Promise.all([
+          fetchPatients({ mine: true }),
+          fetchChartingNotes(),
+        ]);
+        if (!cancelled) {
+          setPatients(patientData);
+          setNotes(noteData);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          toast.error('Failed to load charting data', {
+            description: error instanceof ApiError ? error.message : 'Please try again.',
+          });
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const getNurseName = () => {
     if (!user) return 'Unknown Nurse, RN';
     return `${user.name}, RN`;
   };
 
-  const getAttendingPhysician = (diagnosis: string) => {
-    if (diagnosis.toLowerCase().includes('cardiac') || diagnosis.toLowerCase().includes('heart')) {
-      return 'Dr. Sarah Mitchell, Cardiologist';
-    } else if (
-      diagnosis.toLowerCase().includes('septic') ||
-      diagnosis.toLowerCase().includes('infection')
-    ) {
-      return 'Dr. James Rodriguez, Infectious Disease Specialist';
-    } else if (
-      diagnosis.toLowerCase().includes('pneumonia') ||
-      diagnosis.toLowerCase().includes('respiratory')
-    ) {
-      return 'Dr. Emily Chen, Pulmonologist';
-    } else {
-      return 'Dr. Michael Anderson, Internal Medicine';
-    }
+  const getAttendingPhysician = (patient?: Patient | null) => {
+    return patient?.attendingPhysician || 'Attending Physician';
   };
 
   const handleGenerateNote = () => {
@@ -111,7 +133,7 @@ export default function ChartingScreen() {
     setIsGenerating(true);
 
     setTimeout(() => {
-      const patient = mockPatients.find((p) => p.id === selectedPatient);
+      const patient = patients.find((p) => p.id === selectedPatient);
       if (!patient) {
         setIsGenerating(false);
         return;
@@ -129,7 +151,7 @@ export default function ChartingScreen() {
         minute: '2-digit',
         hour12: true,
       });
-      const attendingPhysician = getAttendingPhysician(patient.diagnosis);
+      const attendingPhysician = getAttendingPhysician(patient);
       const nurseName = getNurseName();
 
       const generatedNote = `NURSING PROGRESS NOTE
@@ -237,37 +259,42 @@ Timestamp: ${now.toISOString()}
     }, 2000);
   };
 
-  const handleApproveNote = () => {
-    const patient = mockPatients.find((p) => p.id === selectedPatient);
-    const attendingPhysician = patient ? getAttendingPhysician(patient.diagnosis) : undefined;
+  const handleApproveNote = async () => {
+    const patient = patients.find((p) => p.id === selectedPatient);
+    const attendingPhysician = getAttendingPhysician(patient);
 
-    const newNote: ChartingNote = {
-      id: `note-${Date.now()}`,
-      patientId: selectedPatient,
-      patientName: patient?.name || 'Unknown Patient',
-      nurseId: user?.id || 'unknown',
-      nurseName: user?.name || 'Unknown Nurse',
-      content: aiGeneratedNote,
-      timestamp: new Date().toISOString(),
-      type: 'progress',
-      aiGenerated: true,
-      edited: false,
-      attendingPhysician,
-      editHistory: [],
-    };
+    try {
+      const newNote = await createChartingNote({
+        patientId: selectedPatient,
+        patientName: patient?.name || 'Unknown Patient',
+        nurseId: user?.id || 'unknown',
+        nurseName: user?.name || 'Unknown Nurse',
+        content: aiGeneratedNote,
+        timestamp: new Date().toISOString(),
+        type: 'progress',
+        aiGenerated: true,
+        edited: false,
+        attendingPhysician,
+        editHistory: [],
+      });
 
-    setNotes([newNote, ...notes]);
+      setNotes((prev) => [newNote, ...prev]);
 
-    toast.success('Note approved and added to patient record', {
-      description: `Charting note for ${patient?.name} has been saved.`,
-    });
+      toast.success('Note approved and added to patient record', {
+        description: `Charting note for ${patient?.name} has been saved.`,
+      });
 
-    setInputText('');
-    setAiGeneratedNote('');
-    setShowPreview(false);
-    setSelectedPatient('');
-    setIsEditMode(false);
-    setStructuredData(null);
+      setInputText('');
+      setAiGeneratedNote('');
+      setShowPreview(false);
+      setSelectedPatient('');
+      setIsEditMode(false);
+      setStructuredData(null);
+    } catch (error) {
+      toast.error('Failed to save note', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    }
   };
 
   const parseNoteContent = (content: string, note: ChartingNote): StructuredData => {
@@ -365,13 +392,13 @@ Timestamp: ${now.toISOString()}
       note.nurseName.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const patientOptions = mockPatients.map((patient) => ({
+  const patientOptions = patients.map((patient) => ({
     label: `${patient.name} • ${patient.room}`,
     value: patient.id,
   }));
 
-  const selectedPatientDiagnosis =
-    mockPatients.find((p) => p.id === selectedPatient)?.diagnosis || '';
+  const selectedPatientRecord = patients.find((p) => p.id === selectedPatient);
+  const selectedPatientDiagnosis = selectedPatientRecord?.diagnosis || '';
 
   return (
     <ScrollView
@@ -430,7 +457,7 @@ Timestamp: ${now.toISOString()}
                 <Text style={styles.physicianLabel}>Attending Physician</Text>
               </View>
               <Text style={styles.physicianName}>
-                {getAttendingPhysician(selectedPatientDiagnosis)}
+                {getAttendingPhysician(selectedPatientRecord)}
               </Text>
             </View>
           ) : null}

@@ -27,8 +27,8 @@ import {
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { mockTasks, mockWorkloadData, Patient } from '../../data/mockData';
-import { fetchPatients } from '../../services/api';
+import type { Patient, Task, WorkloadData } from '../../types/domain';
+import { fetchPatients, fetchTasks, fetchWorkload } from '../../services/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
@@ -89,6 +89,8 @@ export default function DashboardPage() {
   const isStaffNurse = user?.role === 'staff_nurse';
   const [currentTime, setCurrentTime] = useState(new Date());
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
 
   const chartWidth = Math.max(width - 64, 280);
 
@@ -101,11 +103,18 @@ export default function DashboardPage() {
     let cancelled = false;
     (async () => {
       try {
-        const data = await fetchPatients(isStaffNurse ? { mine: true } : undefined);
-        if (!cancelled) setPatients(data);
+        const [patientData, taskData, workload] = await Promise.all([
+          fetchPatients(isStaffNurse ? { mine: true } : undefined),
+          fetchTasks(isStaffNurse ? { mine: true } : undefined),
+          isStaffNurse ? Promise.resolve([]) : fetchWorkload(),
+        ]);
+        if (!cancelled) {
+          setPatients(patientData);
+          setTasks(taskData);
+          setWorkloadData(workload);
+        }
       } catch (error) {
-        // Log quietly — LogBox turns console.error into a full-screen overlay.
-        console.warn('Failed to load patients:', error);
+        console.warn('Failed to load dashboard data:', error);
       }
     })();
     return () => {
@@ -113,58 +122,106 @@ export default function DashboardPage() {
     };
   }, [isStaffNurse]);
 
-  const urgentTasks = mockTasks.filter((t) => t.priority === 'urgent' && t.status !== 'completed').length;
-  const overdueTasks = mockTasks.filter((t) => t.status === 'overdue').length;
-  const completedTasks = mockTasks.filter((t) => t.status === 'completed').length;
-  const totalTasks = mockTasks.length;
+  const urgentTasks = tasks.filter((t) => t.priority === 'urgent' && t.status !== 'completed').length;
+  const overdueTasks = tasks.filter((t) => t.status === 'overdue').length;
+  const completedTasks = tasks.filter((t) => t.status === 'completed').length;
+  const totalTasks = tasks.length || 1;
   const highRiskPatients = patients.filter((p) => p.riskLevel === 'high').length;
   const completionRate = Math.round((completedTasks / totalTasks) * 100);
-  const inProgressCount = mockTasks.filter((t) => t.status === 'in_progress').length;
-  const pendingCount = mockTasks.filter((t) => t.status === 'pending').length;
+  const inProgressCount = tasks.filter((t) => t.status === 'in_progress').length;
+  const pendingCount = tasks.filter((t) => t.status === 'pending').length;
 
-  const staffTaskTrendData = useMemo(
-    () => [
-      { value: 3, label: '07:00' },
-      { value: 5, label: '09:00' },
-      { value: 8, label: '11:00' },
-      { value: 6, label: '13:00' },
-      { value: 4, label: '15:00' },
-    ],
-    []
-  );
+  const staffTaskTrendData = useMemo(() => {
+    const buckets = [
+      { value: pendingCount, label: 'Pending' },
+      { value: inProgressCount, label: 'Active' },
+      { value: overdueTasks, label: 'Overdue' },
+      { value: completedTasks, label: 'Done' },
+      { value: urgentTasks, label: 'Urgent' },
+    ];
+    return buckets;
+  }, [pendingCount, inProgressCount, overdueTasks, completedTasks, urgentTasks]);
 
-  const adminTaskTrendData = useMemo(
-    () => [
-      { value: 3, label: '07:00' },
-      { value: 5, label: '09:00' },
-      { value: 8, label: '11:00' },
-      { value: 6, label: '13:00' },
-      { value: 4, label: '15:00' },
-    ],
-    []
-  );
+  const adminTaskTrendData = useMemo(() => staffTaskTrendData, [staffTaskTrendData]);
 
-  const vitalHrData = useMemo(
-    () => [
-      { value: 72, label: '06:00' },
-      { value: 78, label: '08:00' },
-      { value: 82, label: '10:00' },
-      { value: 76, label: '12:00' },
-      { value: 74, label: '14:00' },
-    ],
-    []
-  );
+  const vitalHrData = useMemo(() => {
+    if (!patients.length) return [];
+    return patients.slice(0, 5).map((p, i) => ({
+      value: p.vitalSigns?.heartRate || 0,
+      label: p.id || `P${i + 1}`,
+    }));
+  }, [patients]);
 
-  const vitalSpo2Data = useMemo(
-    () => [
-      { value: 98 },
-      { value: 97 },
-      { value: 96 },
-      { value: 98 },
-      { value: 99 },
-    ],
-    []
-  );
+  const vitalSpo2Data = useMemo(() => {
+    if (!patients.length) return [];
+    return patients.slice(0, 5).map((p) => ({
+      value: p.vitalSigns?.oxygenSaturation || 0,
+    }));
+  }, [patients]);
+
+  const shiftLabel = useMemo(() => {
+    const shift = user?.shift || 'morning';
+    if (shift === 'afternoon') return 'Afternoon Shift (15:00-23:00)';
+    if (shift === 'night') return 'Night Shift (23:00-07:00)';
+    return 'Morning Shift (07:00-15:00)';
+  }, [user?.shift]);
+
+  const safetyAlerts = useMemo(() => {
+    const alerts: {
+      key: string;
+      variant: 'destructive' | 'warning';
+      title: string;
+      description: string;
+      nurseName?: string;
+    }[] = [];
+
+    patients
+      .filter((p) => p.riskLevel === 'high')
+      .slice(0, 5)
+      .forEach((p) => {
+        const vs = p.vitalSigns;
+        alerts.push({
+          key: `patient-${p.id}`,
+          variant: 'destructive',
+          title: `Critical - ${p.name} (${p.room})`,
+          description: vs
+            ? `Vital signs require attention. BP ${vs.bloodPressure}, HR ${vs.heartRate}, Temp ${vs.temperature}°C.`
+            : `${p.diagnosis || 'High-risk patient'} — immediate assessment required.`,
+          nurseName: p.assignedNurseName || undefined,
+        });
+      });
+
+    tasks
+      .filter((t) => t.status === 'overdue')
+      .slice(0, 5)
+      .forEach((t) => {
+        alerts.push({
+          key: `task-${t.id}`,
+          variant: 'warning',
+          title: `Delayed Task - ${t.patientName || 'Patient'}`,
+          description: `${t.title}${t.assignedTo ? `. Assigned nurse: ${t.assignedTo}` : ''}`,
+          nurseName: t.assignedTo || undefined,
+        });
+      });
+
+    return alerts;
+  }, [patients, tasks]);
+
+  const departmentStats = useMemo(() => {
+    const buckets: Record<string, { label: string; total: number; critical: number; stable: number }> = {
+      ICU: { label: 'ICU Department', total: 0, critical: 0, stable: 0 },
+      Ward: { label: 'General Ward', total: 0, critical: 0, stable: 0 },
+      ER: { label: 'Emergency', total: 0, critical: 0, stable: 0 },
+    };
+    patients.forEach((p) => {
+      const room = (p.room || '').toUpperCase();
+      const key = room.includes('ICU') ? 'ICU' : room.includes('ER') || room.includes('EMERGENCY') ? 'ER' : 'Ward';
+      buckets[key].total += 1;
+      if (p.riskLevel === 'high') buckets[key].critical += 1;
+      else buckets[key].stable += 1;
+    });
+    return Object.values(buckets);
+  }, [patients]);
 
   const timeString = currentTime.toLocaleTimeString([], {
     hour: '2-digit',
@@ -184,11 +241,10 @@ export default function DashboardPage() {
             <Text style={styles.greeting} numberOfLines={1}>
               Good Morning, {user?.name}
             </Text>
-            <Text style={styles.shiftText}>Morning Shift (07:00-15:00)</Text>
+            <Text style={styles.shiftText}>{shiftLabel}</Text>
           </View>
           <View style={styles.headerRight}>
             <Text style={styles.timeText}>{timeString}</Text>
-            <Text style={styles.shiftText}>4h 32m</Text>
           </View>
         </View>
 
@@ -369,7 +425,11 @@ export default function DashboardPage() {
                 </View>
                 <Text style={styles.statusCount}>{inProgressCount}</Text>
               </View>
-              <Progress value={30} height={8} fillColor={Colors.warning} />
+              <Progress
+                value={(inProgressCount / totalTasks) * 100}
+                height={8}
+                fillColor={Colors.warning}
+              />
 
               <View style={styles.statusRow}>
                 <View style={styles.statusLabel}>
@@ -378,7 +438,11 @@ export default function DashboardPage() {
                 </View>
                 <Text style={styles.statusCount}>{pendingCount}</Text>
               </View>
-              <Progress value={20} height={8} fillColor={Colors.mutedForeground} />
+              <Progress
+                value={(pendingCount / totalTasks) * 100}
+                height={8}
+                fillColor={Colors.mutedForeground}
+              />
 
               <View style={styles.statusRow}>
                 <View style={styles.statusLabel}>
@@ -461,7 +525,7 @@ export default function DashboardPage() {
               <CardDescription>Next scheduled tasks in your shift</CardDescription>
             </CardHeader>
             <CardContent style={styles.gap12}>
-              {mockTasks.slice(0, 4).map((task) => (
+              {tasks.slice(0, 4).map((task) => (
                 <View
                   key={task.id}
                   style={[
@@ -526,7 +590,14 @@ export default function DashboardPage() {
         </View>
         <View style={styles.headerRight}>
           <Text style={styles.timeTextAdmin}>{fullTimeString}</Text>
-          <Text style={styles.shiftText}>Thursday, March 26, 2026</Text>
+          <Text style={styles.shiftText}>
+            {currentTime.toLocaleDateString(undefined, {
+              weekday: 'long',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+            })}
+          </Text>
         </View>
       </View>
 
@@ -535,11 +606,9 @@ export default function DashboardPage() {
           <View style={styles.statsCol}>
             <StatCard
               title="Active Nurses"
-              value="12"
-              subtitle="On current shift"
+              value={String(workloadData.length)}
+              subtitle="Staff nurses in database"
               icon={Users}
-              trend
-              trendLabel="+2 from previous"
               iconBg={Colors.blue100}
               iconColor={Colors.blue600}
             />
@@ -547,7 +616,7 @@ export default function DashboardPage() {
           <View style={styles.statsCol}>
             <StatCard
               title="Total Patients"
-              value="38"
+              value={String(patients.length)}
               subtitle="Across all units"
               icon={Heart}
               iconBg={Colors.purple100}
@@ -557,11 +626,9 @@ export default function DashboardPage() {
           <View style={styles.statsCol}>
             <StatCard
               title="Task Completion"
-              value={`${completionRate}%`}
-              subtitle={`${completedTasks} of ${totalTasks} tasks`}
+              value={`${tasks.length ? completionRate : 0}%`}
+              subtitle={`${completedTasks} of ${tasks.length} tasks`}
               icon={CheckCircle}
-              trend
-              trendLabel="+12% vs yesterday"
               iconBg={Colors.green100}
               iconColor={Colors.green600}
             />
@@ -569,8 +636,8 @@ export default function DashboardPage() {
           <View style={styles.statsCol}>
             <StatCard
               title="Critical Alerts"
-              value="5"
-              subtitle="Require attention"
+              value={String(highRiskPatients)}
+              subtitle="High-risk patients"
               icon={AlertTriangle}
               iconBg={Colors.red100}
               iconColor={Colors.red600}
@@ -662,7 +729,7 @@ export default function DashboardPage() {
             </CardDescription>
           </CardHeader>
           <CardContent style={styles.gap12}>
-            {mockWorkloadData.map((nurse) => (
+            {workloadData.map((nurse) => (
               <View
                 key={nurse.nurseId}
                 style={[
@@ -709,7 +776,10 @@ export default function DashboardPage() {
                   <View style={styles.metric}>
                     <Text style={styles.metricLabel}>Completion</Text>
                     <Text style={[styles.metricValue, { color: Colors.success }]}>
-                      {Math.round((nurse.completedTasks / nurse.taskCount) * 100)}%
+                      {nurse.taskCount
+                        ? Math.round((nurse.completedTasks / nurse.taskCount) * 100)
+                        : 0}
+                      %
                     </Text>
                   </View>
                   <View style={styles.metric}>
@@ -726,7 +796,7 @@ export default function DashboardPage() {
                   </View>
                 </View>
                 <Progress
-                  value={(nurse.completedTasks / nurse.taskCount) * 100}
+                  value={nurse.taskCount ? (nurse.completedTasks / nurse.taskCount) * 100 : 0}
                   height={8}
                 />
               </View>
@@ -743,131 +813,70 @@ export default function DashboardPage() {
             <CardDescription>High-priority alerts requiring immediate attention</CardDescription>
           </CardHeader>
           <CardContent style={styles.gap12}>
-            <Alert variant="destructive">
-              <AlertTitle>Critical - Maria Garcia (ICU-202)</AlertTitle>
-              <AlertDescription>
-                Vital signs unstable. BP 98/62, HR 118, Temp 38.9°C. Immediate assessment required.
-              </AlertDescription>
-              <View style={styles.alertActions}>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  onPress={() => router.push('/(app)/workload' as any)}
-                >
-                  Respond Now
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onPress={() =>
-                    toast.success('Notification sent to assigned nurse', {
-                      description:
-                        "The nurse has been notified about the patient's unstable vital signs.",
-                    })
-                  }
-                >
-                  Notify Nurse
-                </Button>
-              </View>
-            </Alert>
-
-            <Alert variant="warning">
-              <AlertTitle>Delayed Task - John Smith (ICU-201)</AlertTitle>
-              <AlertDescription>
-                Cardiac medication overdue by 30 minutes. Assigned nurse: Sarah Johnson.
-              </AlertDescription>
-              <View style={styles.alertActions}>
-                <Button
-                  size="sm"
-                  onPress={() =>
-                    router.push({
-                      pathname: '/(app)/nurse-tasks/[name]',
-                      params: { name: 'Sarah Johnson' },
-                    } as any)
-                  }
-                >
-                  View Task
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onPress={() =>
-                    toast.success('Notification sent to Sarah Johnson', {
-                      description:
-                        'The nurse has been notified about the delayed cardiac medication task.',
-                    })
-                  }
-                >
-                  Notify Nurse
-                </Button>
-              </View>
-            </Alert>
+            {safetyAlerts.length === 0 ? (
+              <Text style={{ color: Colors.gray600, textAlign: 'center', paddingVertical: 16 }}>
+                No notifications.
+              </Text>
+            ) : (
+              safetyAlerts.map((alert) => (
+                <Alert key={alert.key} variant={alert.variant}>
+                  <AlertTitle>{alert.title}</AlertTitle>
+                  <AlertDescription>{alert.description}</AlertDescription>
+                  <View style={styles.alertActions}>
+                    <Button
+                      size="sm"
+                      variant={alert.variant === 'destructive' ? 'destructive' : 'default'}
+                      onPress={() => router.push('/(app)/workload' as any)}
+                    >
+                      {alert.variant === 'destructive' ? 'Respond Now' : 'View Task'}
+                    </Button>
+                    {alert.nurseName ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onPress={() =>
+                          toast.success(`Notification sent to ${alert.nurseName}`, {
+                            description: 'The nurse has been notified.',
+                          })
+                        }
+                      >
+                        Notify Nurse
+                      </Button>
+                    ) : null}
+                  </View>
+                </Alert>
+              ))
+            )}
           </CardContent>
         </Card>
 
         <View style={styles.deptGrid}>
-          <Card style={styles.deptCard}>
-            <CardHeader>
-              <CardTitle>ICU Department</CardTitle>
-            </CardHeader>
-            <CardContent style={styles.gap12}>
-              <View style={styles.deptRow}>
-                <Text style={styles.deptLabel}>Occupancy</Text>
-                <Text style={styles.deptValue}>15/20</Text>
-              </View>
-              <Progress value={75} height={8} />
-              <View style={styles.deptFooter}>
-                <Text style={styles.deptMeta}>
-                  Critical: <Text style={styles.criticalText}>3</Text>
-                </Text>
-                <Text style={styles.deptMeta}>
-                  Stable: <Text style={styles.stableText}>12</Text>
-                </Text>
-              </View>
-            </CardContent>
-          </Card>
-
-          <Card style={styles.deptCard}>
-            <CardHeader>
-              <CardTitle>General Ward</CardTitle>
-            </CardHeader>
-            <CardContent style={styles.gap12}>
-              <View style={styles.deptRow}>
-                <Text style={styles.deptLabel}>Occupancy</Text>
-                <Text style={styles.deptValue}>18/25</Text>
-              </View>
-              <Progress value={72} height={8} />
-              <View style={styles.deptFooter}>
-                <Text style={styles.deptMeta}>
-                  Critical: <Text style={styles.criticalText}>1</Text>
-                </Text>
-                <Text style={styles.deptMeta}>
-                  Stable: <Text style={styles.stableText}>17</Text>
-                </Text>
-              </View>
-            </CardContent>
-          </Card>
-
-          <Card style={styles.deptCard}>
-            <CardHeader>
-              <CardTitle>Emergency</CardTitle>
-            </CardHeader>
-            <CardContent style={styles.gap12}>
-              <View style={styles.deptRow}>
-                <Text style={styles.deptLabel}>Occupancy</Text>
-                <Text style={styles.deptValue}>5/10</Text>
-              </View>
-              <Progress value={50} height={8} />
-              <View style={styles.deptFooter}>
-                <Text style={styles.deptMeta}>
-                  Critical: <Text style={styles.criticalText}>2</Text>
-                </Text>
-                <Text style={styles.deptMeta}>
-                  Stable: <Text style={styles.stableText}>3</Text>
-                </Text>
-              </View>
-            </CardContent>
-          </Card>
+          {departmentStats.map((dept) => {
+            const capacity = Math.max(dept.total, 1);
+            const occupancyPct = patients.length ? Math.min(100, (dept.total / capacity) * 100) : 0;
+            return (
+              <Card key={dept.label} style={styles.deptCard}>
+                <CardHeader>
+                  <CardTitle>{dept.label}</CardTitle>
+                </CardHeader>
+                <CardContent style={styles.gap12}>
+                  <View style={styles.deptRow}>
+                    <Text style={styles.deptLabel}>Patients</Text>
+                    <Text style={styles.deptValue}>{dept.total}</Text>
+                  </View>
+                  <Progress value={occupancyPct} height={8} />
+                  <View style={styles.deptFooter}>
+                    <Text style={styles.deptMeta}>
+                      Critical: <Text style={styles.criticalText}>{dept.critical}</Text>
+                    </Text>
+                    <Text style={styles.deptMeta}>
+                      Stable: <Text style={styles.stableText}>{dept.stable}</Text>
+                    </Text>
+                  </View>
+                </CardContent>
+              </Card>
+            );
+          })}
         </View>
       </View>
     </ScrollView>

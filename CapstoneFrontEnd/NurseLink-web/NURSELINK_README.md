@@ -27,7 +27,7 @@ NurseLink is a comprehensive web and mobile-based healthcare application designe
 
 **Demo Credentials:**
 - Nurse: `nurse@hospital.com` / `password123`
-- Head Nurse: `head@hospital.com` / `password123`
+- Head Nurse: `headnurse@hospital.com` / `password123`
 
 ### 2. Smart Shift Handover (SBAR-Based)
 - **Structured SBAR Format:**

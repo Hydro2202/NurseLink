@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Modal,
   View,
@@ -13,7 +13,8 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
-import { mockNurses, Patient } from '../data/mockData';
+import { createTask, fetchNurses, ApiError } from '../services/api';
+import type { Nurse, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 
 interface TaskAssignmentModalProps {
@@ -30,6 +31,7 @@ export function TaskAssignmentModal({
   onTaskAssigned,
 }: TaskAssignmentModalProps) {
   const toast = useToast();
+  const [nurses, setNurses] = useState<Nurse[]>([]);
   const [taskTitle, setTaskTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<'urgent' | 'routine'>('routine');
@@ -39,35 +41,76 @@ export function TaskAssignmentModal({
   const [doctorOrder, setDoctorOrder] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchNurses();
+        if (!cancelled) setNurses(data);
+      } catch {
+        if (!cancelled) setNurses([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (patient?.attendingPhysician) {
+      setAttendingPhysician(patient.attendingPhysician);
+    }
+  }, [patient]);
+
   const resetForm = () => {
     setTaskTitle('');
     setDescription('');
     setPriority('routine');
     setDueTime('');
     setSelectedNurse('');
-    setAttendingPhysician('');
+    setAttendingPhysician(patient?.attendingPhysician || '');
     setDoctorOrder('');
   };
 
   const handleSubmit = async () => {
-    if (!taskTitle || !selectedNurse || !dueTime) {
+    if (!taskTitle || !selectedNurse || !dueTime || !patient) {
       toast.error('Please fill in all required fields');
       return;
     }
 
     setIsSubmitting(true);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      const nurse = nurses.find((n) => n.id === selectedNurse);
+      await createTask({
+        title: taskTitle,
+        description,
+        priority,
+        dueTime,
+        patientId: patient.id,
+        patientName: patient.name,
+        patientRoom: patient.room,
+        assignedTo: nurse?.name || '',
+        attendingPhysician: attendingPhysician || patient.attendingPhysician,
+        doctorOrder,
+        status: 'pending',
+        category: 'care',
+      });
 
-    const nurse = mockNurses.find((n) => n.id === selectedNurse);
+      toast.success('Task assigned successfully!', {
+        description: `${taskTitle} has been assigned to ${nurse?.name || 'the selected nurse'}`,
+      });
 
-    toast.success('Task assigned successfully!', {
-      description: `${taskTitle} has been assigned to ${nurse?.name || 'the selected nurse'}`,
-    });
-
-    resetForm();
-    setIsSubmitting(false);
-    onTaskAssigned?.();
-    onOpenChange(false);
+      resetForm();
+      onTaskAssigned?.();
+      onOpenChange(false);
+    } catch (error) {
+      toast.error('Failed to assign task', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const riskColor =
@@ -164,7 +207,7 @@ export function TaskAssignmentModal({
                 label="Assign to Nurse *"
                 value={selectedNurse}
                 onValueChange={setSelectedNurse}
-                options={mockNurses.map((nurse) => ({
+                options={nurses.map((nurse) => ({
                   label: `${nurse.name} — ${nurse.role} • ${nurse.shift} shift${nurse.specialization ? ` • ${nurse.specialization}` : ''}`,
                   value: nurse.id,
                 }))}

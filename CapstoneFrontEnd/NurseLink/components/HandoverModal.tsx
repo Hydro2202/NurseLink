@@ -13,8 +13,9 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Select } from './Select';
 import { Alert, AlertDescription } from './Alert';
-import { HandoverNote } from '../types';
-import { mockPatients, mockNurses } from '../data/mockData';
+import type { HandoverNote } from '../types/domain';
+import { fetchPatients, fetchNurses } from '../services/api';
+import type { Nurse, Patient } from '../types/domain';
 
 interface HandoverModalProps {
   open: boolean;
@@ -24,6 +25,8 @@ interface HandoverModalProps {
 
 export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps) {
   const [loading, setLoading] = useState(false);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [nurses, setNurses] = useState<Nurse[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState('');
   const [selectedNurseId, setSelectedNurseId] = useState('');
   const [formData, setFormData] = useState({
@@ -53,42 +56,41 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         attendingPhysician: '',
       });
       setErrors({});
+      return;
     }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [patientData, nurseData] = await Promise.all([fetchPatients(), fetchNurses()]);
+        if (!cancelled) {
+          setPatients(patientData);
+          setNurses(nurseData);
+        }
+      } catch {
+        if (!cancelled) {
+          setPatients([]);
+          setNurses([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   useEffect(() => {
     if (selectedNurseId) {
-      const nurse = mockNurses.find((n) => n.id === selectedNurseId);
+      const nurse = nurses.find((n) => n.id === selectedNurseId);
       if (nurse) {
         setFormData((prev) => ({ ...prev, nurseTo: nurse.name }));
       }
     }
-  }, [selectedNurseId]);
+  }, [selectedNurseId, nurses]);
 
   useEffect(() => {
     if (selectedPatientId) {
-      const patient = mockPatients.find((p) => p.id === selectedPatientId);
+      const patient = patients.find((p) => p.id === selectedPatientId);
       if (patient) {
-        const getAttendingPhysician = (diagnosis: string) => {
-          if (
-            diagnosis.toLowerCase().includes('cardiac') ||
-            diagnosis.toLowerCase().includes('heart')
-          ) {
-            return 'Dr. Sarah Mitchell, Cardiologist';
-          } else if (
-            diagnosis.toLowerCase().includes('septic') ||
-            diagnosis.toLowerCase().includes('infection')
-          ) {
-            return 'Dr. James Rodriguez, Infectious Disease Specialist';
-          } else if (
-            diagnosis.toLowerCase().includes('pneumonia') ||
-            diagnosis.toLowerCase().includes('respiratory')
-          ) {
-            return 'Dr. Emily Chen, Pulmonologist';
-          }
-          return 'Dr. Michael Anderson, Internal Medicine';
-        };
-
         const situation = `${patient.name} is a ${patient.age}-year-old ${patient.gender.toLowerCase()} admitted on ${patient.admissionDate} with ${patient.diagnosis}. Currently in ${patient.room}. Risk level: ${patient.riskLevel}.`;
         const background = `Diagnosis: ${patient.diagnosis}\nAllergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}\nCurrent Medications: ${patient.medications.join(', ')}\nAdmission Date: ${patient.admissionDate}`;
         const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min\n\nAlerts: ${patient.alerts.join('; ')}`;
@@ -99,11 +101,11 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           situation,
           background,
           assessment,
-          attendingPhysician: getAttendingPhysician(patient.diagnosis),
+          attendingPhysician: patient.attendingPhysician || '',
         }));
       }
     }
-  }, [selectedPatientId]);
+  }, [selectedPatientId, patients]);
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
@@ -119,6 +121,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     setLoading(true);
     try {
       await onSave({
+        patientId: selectedPatientId,
         patientName: formData.patientName,
         shift: formData.shift,
         nurseTo: formData.nurseTo,
@@ -128,7 +131,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           assessment: formData.assessment,
           recommendation: formData.recommendation,
         },
-        status: 'submitted',
+        unfinishedTasks: [],
+        status: 'pending',
       });
       onOpenChange(false);
     } catch (error) {
@@ -162,7 +166,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 label="Select Patient *"
                 value={selectedPatientId}
                 onValueChange={setSelectedPatientId}
-                options={mockPatients.map((p) => ({
+                options={patients.map((p) => ({
                   label: `${p.name} • ${p.room}`,
                   value: p.id,
                 }))}
@@ -203,7 +207,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                   label="Receiving Nurse *"
                   value={selectedNurseId}
                   onValueChange={setSelectedNurseId}
-                  options={mockNurses.map((n) => ({
+                  options={nurses.map((n) => ({
                     label: `${n.name} • ${n.role}${n.specialization ? ` (${n.specialization})` : ''}`,
                     value: n.id,
                   }))}

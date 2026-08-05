@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { mockChartingNotes, mockPatients } from '../data/mockData';
+import React, { useState, useEffect } from 'react';
+import type { ChartingNote, Patient } from '../types/domain';
+import { fetchPatients, fetchChartingNotes, createChartingNote } from '../api/nurselink';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -33,21 +34,25 @@ import { toast } from 'sonner';
 import { StructuredNursingNote } from '../components/StructuredNursingNote';
 import { useAuth } from '../contexts/AuthContext';
 
-interface ChartingNote {
-  id: string;
-  patientId: string;
-  patientName: string;
-  content: string;
-  nurseName: string;
-  timestamp: string;
-  aiGenerated: boolean;
-  edited: boolean;
-  attendingPhysician?: string;
-}
-
 export default function ChartingPage() {
+  useEffect(() => {
+    (async () => {
+      try {
+        const [plist, nlist] = await Promise.all([
+          fetchPatients({ mine: true }),
+          fetchChartingNotes(),
+        ]);
+        setPatients(plist);
+        setNotes(nlist);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, []);
+
   const { user } = useAuth();
-  const [notes, setNotes] = useState<ChartingNote[]>(mockChartingNotes);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [notes, setNotes] = useState<ChartingNote[]>([]);
   const [selectedPatient, setSelectedPatient] = useState<string>('');
   const [inputText, setInputText] = useState('');
   const [aiGeneratedNote, setAiGeneratedNote] = useState('');
@@ -65,17 +70,9 @@ export default function ChartingPage() {
     return `${user.name}, RN`;
   };
 
-  // Get attending physician based on patient diagnosis
-  const getAttendingPhysician = (diagnosis: string) => {
-    if (diagnosis.toLowerCase().includes('cardiac') || diagnosis.toLowerCase().includes('heart')) {
-      return 'Dr. Sarah Mitchell, Cardiologist';
-    } else if (diagnosis.toLowerCase().includes('septic') || diagnosis.toLowerCase().includes('infection')) {
-      return 'Dr. James Rodriguez, Infectious Disease Specialist';
-    } else if (diagnosis.toLowerCase().includes('pneumonia') || diagnosis.toLowerCase().includes('respiratory')) {
-      return 'Dr. Emily Chen, Pulmonologist';
-    } else {
-      return 'Dr. Michael Anderson, Internal Medicine';
-    }
+  // Get attending physician from patient record
+  const getAttendingPhysician = (patient?: { attendingPhysician?: string } | null) => {
+    return patient?.attendingPhysician?.trim() || 'Not Assigned';
   };
 
   const handleGenerateNote = () => {
@@ -88,7 +85,7 @@ export default function ChartingPage() {
 
     // Simulate AI generation
     setTimeout(() => {
-      const patient = mockPatients.find(p => p.id === selectedPatient);
+      const patient = patients.find(p => p.id === selectedPatient);
       if (!patient) return;
 
       const now = new Date();
@@ -103,7 +100,7 @@ export default function ChartingPage() {
         minute: '2-digit',
         hour12: true
       });
-      const attendingPhysician = getAttendingPhysician(patient.diagnosis);
+      const attendingPhysician = patient.attendingPhysician || 'Attending Physician';
       const nurseName = getNurseName();
 
       // Generate structured professional note
@@ -212,34 +209,38 @@ Timestamp: ${now.toISOString()}
     }, 2000);
   };
 
-  const handleApproveNote = () => {
-    const patient = mockPatients.find(p => p.id === selectedPatient);
-    const attendingPhysician = patient ? getAttendingPhysician(patient.diagnosis) : undefined;
+  const handleApproveNote = async () => {
+    const patient = patients.find((p) => p.id === selectedPatient);
+    try {
+      const newNote = await createChartingNote({
+        patientId: selectedPatient,
+        patientName: patient?.name || 'Unknown Patient',
+        nurseId: user?.id || '',
+        nurseName: user?.name || 'Unknown Nurse',
+        content: aiGeneratedNote,
+        timestamp: new Date().toISOString(),
+        type: 'progress',
+        aiGenerated: true,
+        edited: false,
+        attendingPhysician: patient?.attendingPhysician || '',
+        editHistory: [],
+      });
 
-    const newNote: ChartingNote = {
-      id: `note-${Date.now()}`,
-      patientId: selectedPatient,
-      patientName: patient?.name || 'Unknown Patient',
-      content: aiGeneratedNote,
-      nurseName: user?.name || 'Unknown Nurse',
-      timestamp: new Date().toISOString(),
-      aiGenerated: true,
-      edited: false,
-      attendingPhysician,
-    };
+      setNotes((prev) => [newNote, ...prev]);
 
-    setNotes([newNote, ...notes]);
+      toast.success('Note approved and added to patient record', {
+        description: `Charting note for ${patient?.name} has been saved.`,
+      });
 
-    toast.success('Note approved and added to patient record', {
-      description: `Charting note for ${patient?.name} has been saved.`,
-    });
-
-    setInputText('');
-    setAiGeneratedNote('');
-    setShowPreview(false);
-    setSelectedPatient('');
-    setIsEditMode(false);
-    setStructuredData(null);
+      setInputText('');
+      setAiGeneratedNote('');
+      setShowPreview(false);
+      setSelectedPatient('');
+      setIsEditMode(false);
+      setStructuredData(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to save note');
+    }
   };
 
   // Parse note content to extract structured data
@@ -360,7 +361,7 @@ Timestamp: ${now.toISOString()}
                 <SelectValue placeholder="Choose a patient" />
               </SelectTrigger>
               <SelectContent className="max-h-[300px]">
-                {mockPatients.map(patient => (
+                {patients.map(patient => (
                   <SelectItem key={patient.id} value={patient.id}>
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{patient.name}</span>
@@ -392,7 +393,7 @@ Timestamp: ${now.toISOString()}
                 <span className="text-sm font-semibold text-blue-900">Attending Physician</span>
               </div>
               <p className="text-sm text-blue-800 font-medium ml-6">
-                {getAttendingPhysician(mockPatients.find(p => p.id === selectedPatient)?.diagnosis || '')}
+                {patients.find(p => p.id === selectedPatient)?.attendingPhysician || 'Attending Physician'}
               </p>
             </div>
           )}

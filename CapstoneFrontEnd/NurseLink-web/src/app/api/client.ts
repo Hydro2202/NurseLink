@@ -44,7 +44,7 @@ export async function apiRequest<T>(
   if (auth) {
     const token = getToken();
     if (token) {
-      headers.Authorization = `Token ${token}`;
+      headers.Authorization = `Bearer ${token}`;
     }
   }
 

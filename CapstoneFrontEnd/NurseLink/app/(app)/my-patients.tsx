@@ -18,29 +18,30 @@ import {
   Thermometer,
   AlertCircle,
   User,
+  Edit2,
+  Trash2,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
-import { fetchPatients } from '../../services/api';
-import { mockPatients, Patient } from '../../data/mockData';
+import { fetchPatients, deletePatient, ApiError } from '../../services/api';
+import type { Patient } from '../../types/domain';
 import { Card, CardContent } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
+import { PatientKardexModal } from '../../components/PatientKardexModal';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Colors, Radius } from '../../constants/colors';
+import { useToast } from '../../contexts/ToastContext';
 
-function getAttendingPhysician(patientId: string): string {
-  const map: Record<string, string> = {
-    P001: 'Dr. Juan Dela Cruz',
-    P002: 'Dr. Maria Santos',
-    P003: 'Dr. Antonio Reyes',
-  };
-  return map[patientId] || 'Not Assigned';
+function getAttendingPhysician(patient: Patient): string {
+  return patient.attendingPhysician || patient.assignedNurseName || 'Not Assigned';
 }
 
 export default function MyPatientsPage() {
   const { user } = useAuth();
   const router = useRouter();
+  const toast = useToast();
   const params = useLocalSearchParams<{ viewPatient?: string }>();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,22 +49,27 @@ export default function MyPatientsPage() {
   const [roomFilter, setRoomFilter] = useState('all');
   const [riskFilter, setRiskFilter] = useState('all');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [toDelete, setToDelete] = useState<Patient | null>(null);
+
+  const loadPatients = async () => {
+    try {
+      const data = await fetchPatients({ mine: true });
+      setPatients(data);
+    } catch (error) {
+      setPatients([]);
+      toast.error('Failed to load patients', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchPatients({ mine: true });
-        if (!cancelled) setPatients(data.length ? data : mockPatients);
-      } catch {
-        if (!cancelled) setPatients(mockPatients);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    loadPatients();
   }, []);
 
   useEffect(() => {
@@ -216,7 +222,7 @@ export default function MyPatientsPage() {
                   {patient.diagnosis}
                 </Text>
                 <Text style={styles.physician}>
-                  Attending: {getAttendingPhysician(patient.id)}
+                  Attending: {getAttendingPhysician(patient)}
                 </Text>
               </View>
 
@@ -254,21 +260,80 @@ export default function MyPatientsPage() {
                 </View>
               ) : null}
 
-              <Pressable
-                style={styles.viewTasksBtn}
-                onPress={() =>
-                  router.push({
-                    pathname: '/(app)/tasks',
-                    params: { patientId: patient.id, scrollToPatient: 'true' },
-                  } as any)
-                }
-              >
-                <Text style={styles.viewTasksText}>View related tasks</Text>
-              </Pressable>
+              <View style={styles.actionsRow}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  style={styles.actionBtn}
+                  onPress={() => {
+                    setEditingPatient(patient);
+                    setEditOpen(true);
+                  }}
+                >
+                  <Edit2 size={14} color={Colors.blue700} />
+                  <Text style={styles.actionText}>Edit</Text>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  style={styles.actionBtn}
+                  onPress={() => {
+                    setToDelete(patient);
+                    setDeleteOpen(true);
+                  }}
+                >
+                  <Trash2 size={14} color={Colors.red600} />
+                  <Text style={[styles.actionText, { color: Colors.red600 }]}>Delete</Text>
+                </Button>
+                <Pressable
+                  style={styles.viewTasksBtn}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/(app)/tasks',
+                      params: { patientId: patient.id, scrollToPatient: 'true' },
+                    } as any)
+                  }
+                >
+                  <Text style={styles.viewTasksText}>View tasks</Text>
+                </Pressable>
+              </View>
             </CardContent>
           </Card>
         ))
       )}
+
+      <PatientKardexModal
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        mode="edit"
+        patient={editingPatient}
+        onSaved={loadPatients}
+      />
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title="Delete Patient"
+        description={
+          toDelete
+            ? `Delete ${toDelete.name}? This removes the patient and related kardex/tasks/assignments.`
+            : 'Delete this patient?'
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={async () => {
+          if (!toDelete) return;
+          try {
+            await deletePatient(toDelete.id);
+            toast.success('Patient deleted');
+            setToDelete(null);
+            await loadPatients();
+          } catch (error) {
+            toast.error('Failed to delete patient', {
+              description: error instanceof ApiError ? error.message : 'Please try again.',
+            });
+          }
+        }}
+      />
     </ScrollView>
   );
 }
@@ -335,4 +400,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   viewTasksText: { fontSize: 13, fontWeight: '600', color: Colors.blue600 },
+  actionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
+  actionBtn: { minHeight: 36 },
+  actionText: { fontSize: 12, fontWeight: '600', color: Colors.blue700 },
 });

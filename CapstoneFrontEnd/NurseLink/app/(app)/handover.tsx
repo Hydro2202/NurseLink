@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -18,7 +18,14 @@ import {
   Trash2,
   Image as ImageIcon,
 } from 'lucide-react-native';
-import { mockHandovers, HandoverNote } from '../../data/mockData';
+import {
+  fetchHandovers,
+  createHandover,
+  acknowledgeHandover,
+  deleteHandover,
+  ApiError,
+} from '../../services/api';
+import type { HandoverNote } from '../../types/domain';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
@@ -36,13 +43,6 @@ type SortBy = 'newest' | 'oldest' | 'patient' | 'status';
 
 type HandoverWithMeta = HandoverNote & {
   createdAt?: string;
-  photos?: {
-    id: string;
-    url: string;
-    description: string;
-    uploadedAt: string;
-    expiresAt: string;
-  }[];
 };
 
 const SORT_OPTIONS = [
@@ -51,31 +51,6 @@ const SORT_OPTIONS = [
   { label: 'Patient Name', value: 'patient' },
   { label: 'Status', value: 'status' },
 ];
-
-const DEMO_PHOTOS: NonNullable<HandoverWithMeta['photos']> = [
-  {
-    id: 'photo-1',
-    url: 'https://images.unsplash.com/photo-1579684385127-1ef15d508118?w=400&h=300&fit=crop',
-    description: 'Surgical site dressing — clean, dry, intact',
-    uploadedAt: '2026-03-26T05:30:00',
-    expiresAt: '2026-03-27T05:30:00',
-  },
-  {
-    id: 'photo-2',
-    url: 'https://images.unsplash.com/photo-1631217868264-e5b90bb7e133?w=400&h=300&fit=crop',
-    description: 'IV site left forearm — no infiltration noted',
-    uploadedAt: '2026-03-26T05:45:00',
-    expiresAt: '2026-03-27T05:45:00',
-  },
-];
-
-function enrichHandovers(list: HandoverNote[]): HandoverWithMeta[] {
-  return list.map((h, index) => ({
-    ...h,
-    createdAt: `${h.date}T0${6 + index}:00:00`,
-    photos: index === 0 ? DEMO_PHOTOS : h.photos,
-  }));
-}
 
 function isAcknowledged(status: string) {
   return status === 'acknowledged' || status === 'received' || status === 'completed';
@@ -92,9 +67,8 @@ function statusBadgeVariant(
 export default function HandoverPage() {
   const { user } = useAuth();
   const toast = useToast();
-  const [handovers, setHandovers] = useState<HandoverWithMeta[]>(() =>
-    enrichHandovers(mockHandovers)
-  );
+  const [handovers, setHandovers] = useState<HandoverWithMeta[]>([]);
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('incoming');
   const [handoverModalOpen, setHandoverModalOpen] = useState(false);
   const [acknowledgeLoading, setAcknowledgeLoading] = useState<string | null>(null);
@@ -106,56 +80,81 @@ export default function HandoverPage() {
 
   const currentUserName = user?.name || 'You';
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchHandovers();
+        if (!cancelled) {
+          setHandovers(data.map((h) => ({ ...h, createdAt: h.date })));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          toast.error('Failed to load handovers', {
+            description: error instanceof ApiError ? error.message : 'Please try again.',
+          });
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleCreateHandover = () => {
     setHandoverModalOpen(true);
   };
 
   const handleSaveHandover = async (handoverData: Partial<HandoverNote>) => {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    const newHandover: HandoverWithMeta = {
-      id: `handover-${Date.now()}`,
-      patientId: handoverData.patientId || 'patient-1',
-      patientName: handoverData.patientName || '',
-      shift: handoverData.shift || 'morning',
-      date: new Date().toLocaleDateString(),
-      nurseFrom: 'You',
-      nurseTo: handoverData.nurseTo || '',
-      sbar: handoverData.sbar || {
-        situation: '',
-        background: '',
-        assessment: '',
-        recommendation: '',
-      },
-      unfinishedTasks: handoverData.unfinishedTasks || [],
-      photos: handoverData.photos,
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-    };
-
-    setHandovers([newHandover, ...handovers]);
-
-    toast.success('Handover submitted successfully!', {
-      description: `Handover note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
-    });
+    try {
+      const newHandover = await createHandover({
+        patientId: handoverData.patientId || '',
+        patientName: handoverData.patientName || '',
+        shift: handoverData.shift || 'morning',
+        date: new Date().toISOString().slice(0, 10),
+        nurseFrom: currentUserName,
+        nurseTo: handoverData.nurseTo || '',
+        sbar: handoverData.sbar || {
+          situation: '',
+          background: '',
+          assessment: '',
+          recommendation: '',
+        },
+        unfinishedTasks: handoverData.unfinishedTasks || [],
+        photos: handoverData.photos || [],
+        status: 'pending',
+      });
+      setHandovers((prev) => [{ ...newHandover, createdAt: newHandover.date }, ...prev]);
+      toast.success('Handover submitted successfully!', {
+        description: `Handover note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
+      });
+    } catch (error) {
+      toast.error('Failed to submit handover', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+      throw error;
+    }
   };
 
   const handleAcknowledgeHandover = async (handoverId: string) => {
     setAcknowledgeLoading(handoverId);
-    await new Promise((resolve) => setTimeout(resolve, 800));
-
-    setHandovers(
-      handovers.map((h) =>
-        h.id === handoverId ? { ...h, status: 'acknowledged' as const } : h
-      )
-    );
-
-    setAcknowledgeLoading(null);
-
-    const handover = handovers.find((h) => h.id === handoverId);
-    toast.success('Handover acknowledged!', {
-      description: `You've acknowledged the handover for ${handover?.patientName}.`,
-    });
+    try {
+      const updated = await acknowledgeHandover(handoverId);
+      setHandovers((prev) =>
+        prev.map((h) => (h.id === handoverId ? { ...updated, createdAt: updated.date } : h))
+      );
+      toast.success('Handover acknowledged!', {
+        description: `You've acknowledged the handover for ${updated.patientName}.`,
+      });
+    } catch (error) {
+      toast.error('Failed to acknowledge handover', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setAcknowledgeLoading(null);
+    }
   };
 
   const handleDeleteHandover = (handoverId: string) => {
@@ -167,17 +166,22 @@ export default function HandoverPage() {
     if (!handoverToDelete) return;
 
     setDeleteLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 600));
-
-    const deletedHandover = handovers.find((h) => h.id === handoverToDelete);
-    setHandovers(handovers.filter((h) => h.id !== handoverToDelete));
-    setDeleteLoading(false);
-    setDeleteDialogOpen(false);
-    setHandoverToDelete(null);
-
-    toast.success('Handover deleted', {
-      description: `Handover for ${deletedHandover?.patientName} has been removed.`,
-    });
+    try {
+      const deletedHandover = handovers.find((h) => h.id === handoverToDelete);
+      await deleteHandover(handoverToDelete);
+      setHandovers((prev) => prev.filter((h) => h.id !== handoverToDelete));
+      setDeleteDialogOpen(false);
+      setHandoverToDelete(null);
+      toast.success('Handover deleted', {
+        description: `Handover for ${deletedHandover?.patientName} has been removed.`,
+      });
+    } catch (error) {
+      toast.error('Failed to delete handover', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setDeleteLoading(false);
+    }
   };
 
   const sortHandovers = (handoverList: HandoverWithMeta[]) => {

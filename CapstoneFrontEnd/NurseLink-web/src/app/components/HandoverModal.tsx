@@ -21,7 +21,8 @@ import { Textarea } from './ui/textarea';
 import { Loader2, Shield, User } from 'lucide-react';
 import { HandoverNote } from '../types';
 import { Alert, AlertDescription } from './ui/alert';
-import { mockPatients, mockNurses } from '../data/mockData';
+import type { Nurse, Patient } from '../types/domain';
+import { fetchPatients, fetchNurses } from '../api/nurselink';
 
 interface HandoverModalProps {
   open: boolean;
@@ -30,6 +31,8 @@ interface HandoverModalProps {
 }
 
 export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps) {
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [nurses, setNurses] = useState<Nurse[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedPatientId, setSelectedPatientId] = useState<string>('');
   const [selectedNurseId, setSelectedNurseId] = useState<string>('');
@@ -61,58 +64,49 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         attendingPhysician: '',
       });
       setErrors({});
+      return;
     }
+    Promise.all([fetchPatients(), fetchNurses()])
+      .then(([plist, nlist]) => {
+        setPatients(plist);
+        setNurses(nlist);
+      })
+      .catch(() => {});
   }, [open]);
 
   // Update nurseTo when a nurse is selected
   useEffect(() => {
     if (selectedNurseId) {
-      const nurse = mockNurses.find(n => n.id === selectedNurseId);
+      const nurse = nurses.find((n) => n.id === selectedNurseId);
       if (nurse) {
-        setFormData(prev => ({
+        setFormData((prev) => ({
           ...prev,
           nurseTo: nurse.name,
         }));
       }
     }
-  }, [selectedNurseId]);
+  }, [selectedNurseId, nurses]);
 
   // Auto-fill SBAR fields when a patient is selected
   useEffect(() => {
     if (selectedPatientId) {
-      const patient = mockPatients.find(p => p.id === selectedPatientId);
+      const patient = patients.find((p) => p.id === selectedPatientId);
       if (patient) {
-        // Map specific doctors to patients based on their diagnosis
-        const getAttendingPhysician = (diagnosis: string) => {
-          if (diagnosis.toLowerCase().includes('cardiac') || diagnosis.toLowerCase().includes('heart')) {
-            return 'Dr. Sarah Mitchell, Cardiologist';
-          } else if (diagnosis.toLowerCase().includes('septic') || diagnosis.toLowerCase().includes('infection')) {
-            return 'Dr. James Rodriguez, Infectious Disease Specialist';
-          } else if (diagnosis.toLowerCase().includes('pneumonia') || diagnosis.toLowerCase().includes('respiratory')) {
-            return 'Dr. Emily Chen, Pulmonologist';
-          } else {
-            return 'Dr. Michael Anderson, Internal Medicine';
-          }
-        };
-
-        // Generate auto-filled content based on patient data
         const situation = `${patient.name} is a ${patient.age}-year-old ${patient.gender.toLowerCase()} admitted on ${patient.admissionDate} with ${patient.diagnosis}. Currently in ${patient.room}. Risk level: ${patient.riskLevel}.`;
-
         const background = `Diagnosis: ${patient.diagnosis}\nAllergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}\nCurrent Medications: ${patient.medications.join(', ')}\nAdmission Date: ${patient.admissionDate}`;
-
         const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min\n\nAlerts: ${patient.alerts.join('; ')}`;
 
-        setFormData(prev => ({
+        setFormData((prev) => ({
           ...prev,
           patientName: patient.name,
           situation,
           background,
           assessment,
-          attendingPhysician: getAttendingPhysician(patient.diagnosis),
+          attendingPhysician: patient.attendingPhysician || '',
         }));
       }
     }
-  }, [selectedPatientId]);
+  }, [selectedPatientId, patients]);
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
@@ -144,6 +138,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     
     try {
       await onSave({
+        patientId: selectedPatientId,
         patientName: formData.patientName,
         shift: formData.shift,
         nurseTo: formData.nurseTo,
@@ -153,7 +148,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           assessment: formData.assessment,
           recommendation: formData.recommendation,
         },
-        status: 'submitted',
+        unfinishedTasks: [],
+        status: 'pending',
       });
       onOpenChange(false);
     } catch (error) {
@@ -195,7 +191,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                   <SelectValue placeholder="Choose a patient" />
                 </SelectTrigger>
                 <SelectContent className="max-h-[300px]">
-                  {mockPatients.map((patient) => (
+                  {patients.map((patient) => (
                     <SelectItem key={patient.id} value={patient.id}>
                       <div className="flex items-center gap-2">
                         <span className="font-medium">{patient.name}</span>
@@ -250,7 +246,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                     <SelectValue placeholder="Choose a nurse" />
                   </SelectTrigger>
                   <SelectContent className="max-h-[300px]">
-                    {mockNurses.map((nurse) => (
+                    {nurses.map((nurse) => (
                       <SelectItem key={nurse.id} value={nurse.id}>
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{nurse.name}</span>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -30,33 +30,12 @@ import { Badge } from '../../components/Badge';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Colors, Radius, Shadows } from '../../constants/colors';
-
-interface KardexHistory {
-  id: string;
-  patientName: string;
-  lastName: string;
-  firstName: string;
-  middleName: string;
-  age: string;
-  gender: string;
-  religion: string;
-  room: string;
-  bedNumber: string;
-  admissionDate: string;
-  attendingPhysician: string;
-  chiefComplaint: string;
-  admittingDiagnosis: string;
-  finalDiagnosis: string;
-  diet: string;
-  temperature: string;
-  pulseRate: string;
-  respiratoryRate: string;
-  bloodPressure: string;
-  oxygenSaturation: string;
-  specialEndorsements: string;
-  savedAt: string;
-  savedBy: string;
-}
+import {
+  createKardexRecord,
+  fetchKardexRecords,
+  ApiError,
+} from '../../services/api';
+import type { KardexHistory } from '../../types/domain';
 
 export default function KardexScreen() {
   const { user } = useAuth();
@@ -91,6 +70,21 @@ export default function KardexScreen() {
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [showHistoryDialog, setShowHistoryDialog] = useState(false);
   const [selectedHistoryEntry, setSelectedHistoryEntry] = useState<KardexHistory | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchKardexRecords();
+        if (!cancelled) setKardexHistory(data);
+      } catch {
+        // empty history is fine
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleViewHistory = (entry: KardexHistory) => {
     setSelectedHistoryEntry(entry);
@@ -153,42 +147,44 @@ export default function KardexScreen() {
     setShowConfirmDialog(true);
   };
 
-  const handleConfirmSave = () => {
-    const newEntry: KardexHistory = {
-      id: `kardex-${Date.now()}`,
-      patientName: `${firstName} ${lastName}`,
-      lastName,
-      firstName,
-      middleName,
-      age,
-      gender,
-      religion,
-      room,
-      bedNumber,
-      admissionDate,
-      attendingPhysician,
-      chiefComplaint,
-      admittingDiagnosis,
-      finalDiagnosis,
-      diet,
-      temperature,
-      pulseRate,
-      respiratoryRate,
-      bloodPressure,
-      oxygenSaturation,
-      specialEndorsements,
-      savedAt: new Date().toISOString(),
-      savedBy: user?.name || 'Current User',
-    };
+  const handleConfirmSave = async () => {
+    try {
+      const newEntry = await createKardexRecord({
+        lastName,
+        firstName,
+        middleName,
+        age,
+        gender,
+        religion,
+        room,
+        bedNumber,
+        admissionDate,
+        attendingPhysician,
+        chiefComplaint,
+        admittingDiagnosis,
+        finalDiagnosis,
+        diet,
+        temperature,
+        pulseRate,
+        respiratoryRate,
+        bloodPressure,
+        oxygenSaturation,
+        specialEndorsements,
+      });
 
-    setKardexHistory([newEntry, ...kardexHistory]);
-    setShowConfirmDialog(false);
+      setKardexHistory((prev) => [newEntry, ...prev]);
+      setShowConfirmDialog(false);
 
-    toast.success('Kardex Saved Successfully!', {
-      description: `Patient kardex for ${firstName} ${lastName} has been saved.`,
-    });
+      toast.success('Kardex Saved Successfully!', {
+        description: `${firstName} ${lastName} was added to your patient list.`,
+      });
 
-    clearForm();
+      clearForm();
+    } catch (error) {
+      toast.error('Failed to save kardex', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    }
   };
 
   const buildPrintContent = () => {
@@ -415,7 +411,7 @@ ${specialEndorsements || 'None'}
             <Input
               value={attendingPhysician}
               onChangeText={setAttendingPhysician}
-              placeholder="Dr. name"
+              placeholder="Physician name"
             />
           </View>
 

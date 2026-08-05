@@ -357,7 +357,6 @@ export default function SignUpPage() {
     }
     try {
       await signup({
-        id: '',
         name: ocrData.fullName,
         firstName: ocrData.fullName.split(' ')[0] ?? '',
         middleName: ocrData.fullName.split(' ').slice(1, -1).join(' ') ?? '',

@@ -1,6 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router';
-import { mockTasks } from '../data/mockData';
+import { useAuth } from '../contexts/AuthContext';
+import {
+  fetchTasks,
+  createTask,
+  updateTask,
+  deleteTask,
+  completeTask,
+  ApiError,
+} from '../api/nurselink';
+import type { Task } from '../types/domain';
 import { Card, CardContent } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -28,12 +37,13 @@ import {
 } from '../components/ui/select';
 import { TaskModal } from '../components/TaskModal';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
-import { Task } from '../types';
 import { toast } from 'sonner';
 
 export default function TasksPage() {
   const location = useLocation();
-  const [tasks, setTasks] = useState<Task[]>(mockTasks);
+  const { user } = useAuth();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selectedTab, setSelectedTab] = useState('all');
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
@@ -45,6 +55,23 @@ export default function TasksPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'priority' | 'status'>('newest');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchTasks({ mine: true });
+        if (!cancelled) setTasks(data);
+      } catch (error) {
+        toast.error(error instanceof ApiError ? error.message : 'Failed to load tasks');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Handle navigation from dashboard - scroll to and highlight specific task
   useEffect(() => {
@@ -111,39 +138,36 @@ export default function TasksPage() {
   };
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 800));
-
-    if (taskModalMode === 'add') {
-      const newTask: Task = {
-        id: `task-${Date.now()}`,
-        patientId: taskData.patientId || '',
-        patientName: taskData.patientName || '',
-        title: taskData.title || '',
-        description: taskData.description || '',
-        priority: taskData.priority || 'routine',
-        dueTime: taskData.dueTime || '',
-        assignedTo: 'Current User',
-        status: 'pending',
-        category: 'medication',
-        createdAt: new Date().toISOString(),
-        attendingPhysician: taskData.attendingPhysician,
-        patientRoom: taskData.patientRoom,
-        doctorOrder: taskData.doctorOrder,
-      };
-      setTasks([newTask, ...tasks]);
-      toast.success('Task added successfully!', {
-        description: `"${newTask.title}" has been added to your task list.`,
-      });
-    } else {
-      setTasks(tasks.map(task =>
-        task.id === selectedTask?.id
-          ? { ...task, ...taskData }
-          : task
-      ));
-      toast.success('Task updated successfully!', {
-        description: 'Your changes have been saved.',
-      });
+    try {
+      if (taskModalMode === 'add') {
+        const newTask = await createTask({
+          patientId: taskData.patientId || '',
+          patientName: taskData.patientName || '',
+          title: taskData.title || '',
+          description: taskData.description || '',
+          priority: taskData.priority || 'routine',
+          dueTime: taskData.dueTime || '',
+          status: 'pending',
+          category: taskData.category || 'medication',
+          attendingPhysician: taskData.attendingPhysician,
+          patientRoom: taskData.patientRoom,
+          doctorOrder: taskData.doctorOrder,
+          assignedTo: taskData.assignedTo || user?.name || '',
+        });
+        setTasks((prev) => [newTask, ...prev]);
+        toast.success('Task added successfully!', {
+          description: `"${newTask.title}" has been added to your task list.`,
+        });
+      } else if (selectedTask) {
+        const updated = await updateTask(selectedTask.id, taskData);
+        setTasks((prev) => prev.map((task) => (task.id === selectedTask.id ? updated : task)));
+        toast.success('Task updated successfully!', {
+          description: 'Your changes have been saved.',
+        });
+      }
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Failed to save task');
+      throw error;
     }
   };
 
@@ -156,40 +180,35 @@ export default function TasksPage() {
     if (!taskToDelete) return;
 
     setDeleteLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 600));
-
-    const deletedTask = tasks.find(t => t.id === taskToDelete);
-    setTasks(tasks.filter(task => task.id !== taskToDelete));
-    setDeleteLoading(false);
-    setDeleteDialogOpen(false);
-    setTaskToDelete(null);
-
-    toast.success('Task deleted', {
-      description: `"${deletedTask?.title}" has been removed from your task list.`,
-    });
+    try {
+      const deletedTask = tasks.find((t) => t.id === taskToDelete);
+      await deleteTask(taskToDelete);
+      setTasks((prev) => prev.filter((task) => task.id !== taskToDelete));
+      setDeleteDialogOpen(false);
+      setTaskToDelete(null);
+      toast.success('Task deleted', {
+        description: `"${deletedTask?.title}" has been removed from your task list.`,
+      });
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Failed to delete task');
+    } finally {
+      setDeleteLoading(false);
+    }
   };
 
   const handleCompleteTask = async (task: Task) => {
     setCompleteLoading(task.id);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 800));
-
-    setTasks(tasks.map(t =>
-      t.id === task.id
-        ? {
-            ...t,
-            status: 'completed' as const,
-            priority: 'completed' as const,
-            completedAt: new Date().toISOString(),
-          }
-        : t
-    ));
-    setCompleteLoading(null);
-
-    toast.success('Task completed! 🎉', {
-      description: `"${task.title}" has been marked as complete.`,
-    });
+    try {
+      const updated = await completeTask(task.id);
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
+      toast.success('Task completed!', {
+        description: `"${task.title}" has been marked as complete.`,
+      });
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Failed to complete task');
+    } finally {
+      setCompleteLoading(null);
+    }
   };
 
   // Filter and sort tasks

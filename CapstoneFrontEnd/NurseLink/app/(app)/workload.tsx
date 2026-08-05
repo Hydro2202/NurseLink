@@ -1,10 +1,11 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   ScrollView,
   StyleSheet,
   useWindowDimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { BarChart, LineChart } from 'react-native-gifted-charts';
 import {
@@ -16,7 +17,16 @@ import {
   Trash2,
   Edit2,
 } from 'lucide-react-native';
-import { mockWorkloadData, mockTasks } from '../../data/mockData';
+import {
+  fetchWorkload,
+  fetchAssignments,
+  fetchTasks,
+  createAssignment,
+  updateAssignment,
+  deleteAssignment,
+  ApiError,
+} from '../../services/api';
+import type { PatientAssignmentRecord, Task, WorkloadData } from '../../types/domain';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
@@ -25,123 +35,145 @@ import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
 import { Tabs } from '../../components/Tabs';
 import { AssignPatientModal } from '../../components/AssignPatientModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
-import { addPatientAssignment, removePatientAssignment } from '../../utils/patientAssignments';
 import type { PatientAssignment } from '../../types';
 import { Colors, Radius } from '../../constants/colors';
+import { useToast } from '../../contexts/ToastContext';
+import { useRouter } from 'expo-router';
 
-const INITIAL_ASSIGNMENTS: PatientAssignment[] = [
-  {
-    id: '1',
-    patientName: 'Maria Garcia',
-    patientId: 'P-2024-001',
-    room: 'ICU-202',
-    ward: 'ICU',
-    diagnosis: 'Myocardial Infarction',
-    assignedNurse: 'Sarah Johnson',
-    assignedNurseId: 'N001',
-    priority: 'urgent',
-    notes: 'Monitor vital signs every 15 minutes. Cardiac monitoring required.',
-    status: 'active',
-    assignedAt: new Date('2024-03-26T08:00:00'),
-    updatedAt: new Date('2024-03-26T08:00:00'),
-  },
-  {
-    id: '2',
-    patientName: 'John Smith',
-    patientId: 'P-2024-002',
-    room: 'ICU-201',
-    ward: 'ICU',
-    diagnosis: 'Post-operative care',
-    assignedNurse: 'David Kim',
-    assignedNurseId: 'N002',
-    priority: 'routine',
-    notes: 'Regular pain medication schedule. Monitor surgical site.',
-    status: 'active',
-    assignedAt: new Date('2024-03-26T07:30:00'),
-    updatedAt: new Date('2024-03-26T07:30:00'),
-  },
-];
+function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
+  return {
+    id: record.id,
+    patientName: record.patientName,
+    patientId: record.patientId,
+    room: record.room,
+    ward: record.ward,
+    diagnosis: record.diagnosis,
+    assignedNurse: record.assignedNurse,
+    assignedNurseId: record.assignedNurseId,
+    priority: record.priority,
+    notes: record.notes,
+    status: record.status,
+    assignedAt: new Date(record.assignedAt),
+    updatedAt: new Date(record.updatedAt),
+  };
+}
 
 export default function WorkloadPage() {
   const { width } = useWindowDimensions();
   const chartWidth = Math.max(width - 64, 280);
+  const toast = useToast();
+  const router = useRouter();
   const [tab, setTab] = useState('overview');
-  const [assignments, setAssignments] = useState<PatientAssignment[]>(INITIAL_ASSIGNMENTS);
+  const [loading, setLoading] = useState(true);
+  const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
+  const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<PatientAssignment | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [toDelete, setToDelete] = useState<string | null>(null);
 
-  const highRisk = mockWorkloadData.filter((n) => n.burnoutRisk === 'high');
-  const availableNurses = mockWorkloadData.map((nurse) => ({
+  const loadData = async () => {
+    try {
+      const [workload, assignmentData, tasks] = await Promise.all([
+        fetchWorkload(),
+        fetchAssignments({ status: 'active' }),
+        fetchTasks(),
+      ]);
+      setWorkloadData(workload);
+      setAssignments(assignmentData.map(toLocalAssignment));
+      setAllTasks(tasks);
+    } catch (error) {
+      toast.error('Failed to load workload', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const highRisk = workloadData.filter((n) => n.burnoutRisk === 'high');
+  const availableNurses = workloadData.map((nurse) => ({
     id: nurse.nurseId,
     name: nurse.nurseName,
     patientCount: nurse.patientCount,
   }));
 
-  const overtimeData = useMemo(
-    () => [
-      { value: 2.1, label: 'Morning' },
-      { value: 2.8, label: 'Afternoon' },
-      { value: 3.5, label: 'Night' },
-    ],
-    []
-  );
+  const overtimeData = useMemo(() => {
+    const byShift: Record<string, number[]> = { morning: [], afternoon: [], night: [] };
+    workloadData.forEach((n) => {
+      const key = (n.shift || 'morning') as keyof typeof byShift;
+      if (byShift[key]) byShift[key].push(n.overtimeHours);
+    });
+    return (['morning', 'afternoon', 'night'] as const).map((shift) => {
+      const vals = byShift[shift];
+      const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+      return {
+        value: Math.round(avg * 10) / 10,
+        label: shift.charAt(0).toUpperCase() + shift.slice(1),
+      };
+    });
+  }, [workloadData]);
 
   const ratioData = useMemo(
-    () => [
-      { value: 3.2, label: 'Mon' },
-      { value: 3.5, label: 'Tue' },
-      { value: 3.8, label: 'Wed' },
-      { value: 3.4, label: 'Thu' },
-      { value: 3.6, label: 'Fri' },
-      { value: 3.9, label: 'Sat' },
-      { value: 4.1, label: 'Sun' },
-    ],
-    []
+    () =>
+      workloadData.slice(0, 7).map((n) => ({
+        value: n.patientCount,
+        label: n.nurseName.split(' ')[0],
+      })),
+    [workloadData]
   );
 
-  const handleSubmit = (
+  const handleSubmit = async (
     data: Omit<PatientAssignment, 'id' | 'assignedAt' | 'updatedAt' | 'status'>
   ) => {
-    if (editing) {
-      setAssignments((prev) =>
-        prev.map((a) =>
-          a.id === editing.id ? { ...a, ...data, updatedAt: new Date() } : a
-        )
-      );
-    } else {
-      setAssignments((prev) => [
-        {
-          ...data,
-          id: `assignment-${Date.now()}`,
-          status: 'active',
-          assignedAt: new Date(),
-          updatedAt: new Date(),
-        },
-        ...prev,
-      ]);
+    try {
+      const payload = {
+        patientId: data.patientId,
+        nurseId: data.assignedNurseId,
+        nurseName: data.assignedNurse,
+        priority: data.priority,
+        notes: data.notes,
+        ward: data.ward,
+      };
+      const saved = editing
+        ? await updateAssignment(editing.id, payload)
+        : await createAssignment(payload);
+      const local = toLocalAssignment(saved);
+      if (editing) {
+        setAssignments((prev) => prev.map((a) => (a.id === editing.id ? local : a)));
+      } else {
+        setAssignments((prev) => [local, ...prev.filter((a) => a.patientId !== local.patientId)]);
+      }
+      await loadData();
+      setEditing(null);
+      setModalOpen(false);
+      toast.success(editing ? 'Assignment updated' : 'Patient assigned');
+    } catch (error) {
+      toast.error('Failed to save assignment', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
     }
-
-    addPatientAssignment({
-      patientId: data.patientId,
-      nurseId: data.assignedNurseId,
-      nurseName: data.assignedNurse,
-      attendingPhysician: 'Not Assigned',
-    });
-
-    setEditing(null);
-    setModalOpen(false);
   };
 
-  const confirmDelete = () => {
-    if (toDelete) {
-      const assignment = assignments.find((a) => a.id === toDelete);
+  const confirmDelete = async () => {
+    if (!toDelete) return;
+    try {
+      await deleteAssignment(toDelete);
       setAssignments((prev) => prev.filter((a) => a.id !== toDelete));
-      if (assignment) removePatientAssignment(assignment.patientId);
+      toast.success('Assignment removed');
+    } catch (error) {
+      toast.error('Failed to delete assignment', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setToDelete(null);
+      setDeleteOpen(false);
     }
-    setToDelete(null);
-    setDeleteOpen(false);
   };
 
   const riskStyles = (risk: string) => {
@@ -190,7 +222,7 @@ export default function WorkloadPage() {
           <Card style={styles.statCard}>
             <CardContent style={styles.statContent}>
               <Users size={16} color={Colors.blue600} />
-              <Text style={styles.statValue}>{mockWorkloadData.length}</Text>
+              <Text style={styles.statValue}>{workloadData.length}</Text>
               <Text style={styles.statLabel}>Active Nurses</Text>
             </CardContent>
           </Card>
@@ -205,10 +237,12 @@ export default function WorkloadPage() {
             <CardContent style={styles.statContent}>
               <Activity size={16} color={Colors.purple600} />
               <Text style={styles.statValue}>
-                {(
-                  mockWorkloadData.reduce((s, n) => s + n.patientCount, 0) /
-                  mockWorkloadData.length
-                ).toFixed(1)}
+                {workloadData.length
+                  ? (
+                      workloadData.reduce((s, n) => s + n.patientCount, 0) /
+                      workloadData.length
+                    ).toFixed(1)
+                  : '0'}
               </Text>
               <Text style={styles.statLabel}>Avg Patients</Text>
             </CardContent>
@@ -217,10 +251,12 @@ export default function WorkloadPage() {
             <CardContent style={styles.statContent}>
               <Clock size={16} color={Colors.orange600} />
               <Text style={styles.statValue}>
-                {(
-                  mockWorkloadData.reduce((s, n) => s + n.overtimeHours, 0) /
-                  mockWorkloadData.length
-                ).toFixed(1)}
+                {workloadData.length
+                  ? (
+                      workloadData.reduce((s, n) => s + n.overtimeHours, 0) /
+                      workloadData.length
+                    ).toFixed(1)
+                  : '0'}
                 h
               </Text>
               <Text style={styles.statLabel}>Avg Overtime</Text>
@@ -240,7 +276,7 @@ export default function WorkloadPage() {
 
         {tab === 'overview' ? (
           <View style={styles.gap12}>
-            {mockWorkloadData.map((nurse) => (
+            {workloadData.map((nurse) => (
               <Card key={nurse.nurseId} style={riskStyles(nurse.burnoutRisk)}>
                 <CardContent style={styles.nurseCard}>
                   <View style={styles.nurseHeader}>
@@ -416,7 +452,7 @@ export default function WorkloadPage() {
         onSubmit={handleSubmit}
         editingAssignment={editing}
         availableNurses={availableNurses}
-        allTasks={mockTasks}
+        allTasks={allTasks}
         allAssignments={assignments}
       />
 

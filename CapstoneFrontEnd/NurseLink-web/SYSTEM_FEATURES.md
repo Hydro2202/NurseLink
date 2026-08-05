@@ -18,7 +18,7 @@
 **Demo Credentials:**
 ```
 Staff Nurse:  nurse@hospital.com  / password123
-Head Nurse:   head@hospital.com   / password123
+Head Nurse:   headnurse@hospital.com   / password123
 Admin:        admin@hospital.com  / password123
 ```
 

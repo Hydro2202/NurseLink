@@ -102,7 +102,7 @@ CORS_ALLOW_CREDENTIALS = True
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
+        'api.authentication.BearerTokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
@@ -113,19 +113,51 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'NurseLink API',
-    'DESCRIPTION': 'Backend API for NurseLink nursing operations.',
+    'DESCRIPTION': (
+        'Backend API for NurseLink nursing operations.\n\n'
+        '## Authentication (Scalar)\n\n'
+        '1. Open **Authentication** in Scalar and select **passwordAuth**.\n'
+        '2. Enter your email in the **Username** field and your password.\n'
+        '3. Click **Authorize** — Scalar will call `/api/auth/token/` and store the Bearer token.\n'
+        '4. Protected endpoints now send `Authorization: Bearer <token>` automatically.\n\n'
+        'Alternatively, call **POST /api/auth/login/** with editable `email` / `password` fields, '
+        'copy the returned `token`, then paste it into **bearerAuth**.\n\n'
+        '### Test accounts\n'
+        '- Nurse: `nurse@hospital.com` / `password123`\n'
+        '- Supervisor: `headnurse@hospital.com` / `password123`\n'
+    ),
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
-    'SECURITY': [{'tokenAuth': []}],
+    # Prefer password login; bearerAuth is fallback for pasting a token
+    'SECURITY': [{'passwordAuth': []}, {'bearerAuth': []}],
     'APPEND_COMPONENTS': {
         'securitySchemes': {
-            'tokenAuth': {
-                'type': 'apiKey',
-                'in': 'header',
-                'name': 'Authorization',
-                'description': 'Token-based auth. Format: `Token <your-token>`',
-            }
+            'passwordAuth': {
+                'type': 'oauth2',
+                'description': (
+                    'Recommended. Enter your email as Username and your password, '
+                    'then Authorize. Scalar will call /api/auth/token/ and attach '
+                    'Authorization: Bearer <token> automatically.'
+                ),
+                'flows': {
+                    'password': {
+                        'tokenUrl': '/api/auth/token/',
+                        'scopes': {
+                            'api': 'Full API access',
+                        },
+                    }
+                },
+            },
+            'bearerAuth': {
+                'type': 'http',
+                'scheme': 'bearer',
+                'bearerFormat': 'Token',
+                'description': (
+                    'Paste the token value only (no Bearer prefix). '
+                    'Get it from Auth → Log in or Auth → Get access token.'
+                ),
+            },
         }
     },
 }

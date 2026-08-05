@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router';
-import { mockTasks } from '../data/mockData';
+import type { Task } from '../types/domain';
+import { fetchTasks, createTask, updateTask, deleteTask, completeTask, ApiError } from '../api/nurselink';
 import { Card, CardContent } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -29,13 +30,14 @@ import {
 } from '../components/ui/select';
 import { TaskModal } from '../components/TaskModal';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
-import { Task } from '../types';
 import { toast } from 'sonner';
 
 export default function NurseTasksPage() {
+  // data loaded after nurseName is known
+
   const { nurseName } = useParams<{ nurseName: string }>();
   const navigate = useNavigate();
-  const [tasks, setTasks] = useState<Task[]>(mockTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedTab, setSelectedTab] = useState('all');
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
@@ -46,6 +48,22 @@ export default function NurseTasksPage() {
   const [completeLoading, setCompleteLoading] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'priority' | 'status'>('newest');
+
+  useEffect(() => {
+    if (!nurseName) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchTasks({ assignedTo: decodeURIComponent(nurseName) });
+        if (!cancelled) setTasks(data);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [nurseName]);
 
   // Filter tasks by nurse
   const nurseTasks = tasks.filter(task => task.assignedTo === nurseName);
@@ -63,53 +81,29 @@ export default function NurseTasksPage() {
   };
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 800));
-
-    if (taskModalMode === 'add') {
-      const newTask: Task = {
-        id: `task-${Date.now()}`,
-        patientId: taskData.patientId || '',
-        patientName: taskData.patientName || '',
-        title: taskData.title || '',
-        description: taskData.description || '',
-        priority: taskData.priority || 'routine',
-        dueTime: taskData.dueTime || '',
-        assignedTo: nurseName || 'Current User',
-        status: 'pending',
-        category: 'medication',
-        createdAt: new Date().toISOString(),
-        attendingPhysician: taskData.attendingPhysician,
-        patientRoom: taskData.patientRoom,
-        doctorOrder: taskData.doctorOrder,
-      };
-      setTasks([newTask, ...tasks]);
-
-      // Notify nurse that supervisor added a task
-      toast.success('Task added successfully!', {
-        description: `"${newTask.title}" has been assigned to ${nurseName}.`,
-      });
-
-      // Simulate notification to nurse
-      toast.info(`📬 Notification sent to ${nurseName}`, {
-        description: 'Nurse will be notified about the new task assignment.',
-      });
-    } else {
-      setTasks(tasks.map(task =>
-        task.id === selectedTask?.id
-          ? { ...task, ...taskData }
-          : task
-      ));
-
-      // Notify nurse that supervisor edited their task
-      toast.success('Task updated successfully!', {
-        description: 'Your changes have been saved.',
-      });
-
-      // Simulate notification to nurse
-      toast.info(`📬 Notification sent to ${nurseName}`, {
-        description: `Nurse will be notified about the task modification.`,
-      });
+    try {
+      const decodedName = nurseName ? decodeURIComponent(nurseName) : 'Current User';
+      if (taskModalMode === 'add') {
+        const newTask = await createTask({
+          ...taskData,
+          assignedTo: decodedName,
+          status: 'pending',
+          category: taskData.category || 'medication',
+        });
+        setTasks((prev) => [newTask, ...prev]);
+        toast.success('Task added successfully!', {
+          description: `"${newTask.title}" has been assigned to ${decodedName}.`,
+        });
+      } else if (selectedTask) {
+        const updated = await updateTask(selectedTask.id, taskData);
+        setTasks((prev) => prev.map((task) => (task.id === selectedTask.id ? updated : task)));
+        toast.success('Task updated successfully!', {
+          description: 'Your changes have been saved.',
+        });
+      }
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Failed to save task');
+      throw error;
     }
   };
 
@@ -122,50 +116,35 @@ export default function NurseTasksPage() {
     if (!taskToDelete) return;
 
     setDeleteLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 600));
-
-    const deletedTask = tasks.find(t => t.id === taskToDelete);
-    setTasks(tasks.filter(task => task.id !== taskToDelete));
-    setDeleteLoading(false);
-    setDeleteDialogOpen(false);
-    setTaskToDelete(null);
-
-    toast.success('Task deleted', {
-      description: `"${deletedTask?.title}" has been removed.`,
-    });
-
-    // Simulate notification to nurse
-    toast.info(`📬 Notification sent to ${nurseName}`, {
-      description: 'Nurse will be notified about the task deletion.',
-    });
+    try {
+      const deletedTask = tasks.find((t) => t.id === taskToDelete);
+      await deleteTask(taskToDelete);
+      setTasks((prev) => prev.filter((task) => task.id !== taskToDelete));
+      setDeleteDialogOpen(false);
+      setTaskToDelete(null);
+      toast.success('Task deleted', {
+        description: `"${deletedTask?.title}" has been removed.`,
+      });
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Failed to delete task');
+    } finally {
+      setDeleteLoading(false);
+    }
   };
 
   const handleCompleteTask = async (task: Task) => {
     setCompleteLoading(task.id);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 800));
-
-    setTasks(tasks.map(t =>
-      t.id === task.id
-        ? {
-            ...t,
-            status: 'completed' as const,
-            priority: 'completed' as const,
-            completedAt: new Date().toISOString(),
-          }
-        : t
-    ));
-    setCompleteLoading(null);
-
-    toast.success('Task completed! 🎉', {
-      description: `"${task.title}" has been marked as complete.`,
-    });
-
-    // Simulate notification to nurse
-    toast.info(`📬 Notification sent to ${nurseName}`, {
-      description: 'Nurse will be notified about the task completion.',
-    });
+    try {
+      const updated = await completeTask(task.id);
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
+      toast.success('Task completed!', {
+        description: `"${task.title}" has been marked as complete.`,
+      });
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Failed to complete task');
+    } finally {
+      setCompleteLoading(null);
+    }
   };
 
   // Filter and sort tasks

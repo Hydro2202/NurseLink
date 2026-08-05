@@ -33,6 +33,7 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { NotificationPanel } from '../../components/NotificationPanel';
 import { BottomNavigation } from '../../components/BottomNavigation';
 import { Colors, Shadows, Radius } from '../../constants/colors';
+import { fetchNotifications } from '../../services/api';
 
 interface NavItem {
   name: string;
@@ -107,7 +108,13 @@ function ProfileMenu({
   );
 }
 
-function NotificationBell({ onPress }: { onPress: () => void }) {
+function NotificationBell({
+  onPress,
+  unreadCount,
+}: {
+  onPress: () => void;
+  unreadCount: number;
+}) {
   return (
     <Pressable
       onPress={onPress}
@@ -115,9 +122,11 @@ function NotificationBell({ onPress }: { onPress: () => void }) {
       accessibilityLabel="Open notifications"
     >
       <Bell size={18} color={Colors.blue600} />
-      <View style={styles.bellBadge}>
-        <Text style={styles.bellBadgeText}>5</Text>
-      </View>
+      {unreadCount > 0 ? (
+        <View style={styles.bellBadge}>
+          <Text style={styles.bellBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
+        </View>
+      ) : null}
     </Pressable>
   );
 }
@@ -167,12 +176,29 @@ export default function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
     if (!isLoading && !user) {
       router.replace('/login' as any);
     }
   }, [user, isLoading, router]);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchNotifications();
+        if (!cancelled) setUnreadCount(data.unreadCount);
+      } catch {
+        // ignore badge errors
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   if (isLoading) {
     return (
@@ -233,6 +259,7 @@ export default function AppLayout() {
     <NotificationPanel
       isOpen={notificationPanelOpen}
       onClose={() => setNotificationPanelOpen(false)}
+      onUnreadChange={setUnreadCount}
     />
   );
 
@@ -267,7 +294,7 @@ export default function AppLayout() {
             </View>
           </View>
           <View style={styles.headerActions}>
-            <NotificationBell onPress={() => setNotificationPanelOpen(true)} />
+            <NotificationBell unreadCount={unreadCount} onPress={() => setNotificationPanelOpen(true)} />
             <ProfileAvatar avatar={user.avatar} onPress={() => setProfileMenuOpen(true)} />
           </View>
         </View>
@@ -303,7 +330,7 @@ export default function AppLayout() {
             </View>
           </View>
           <View style={styles.headerActions}>
-            <NotificationBell onPress={() => setNotificationPanelOpen(true)} />
+            <NotificationBell unreadCount={unreadCount} onPress={() => setNotificationPanelOpen(true)} />
             <ProfileAvatar
               avatar={user.avatar}
               size={36}
@@ -432,7 +459,7 @@ export default function AppLayout() {
               </View>
             </View>
             <View style={styles.headerActions}>
-              <NotificationBell onPress={() => setNotificationPanelOpen(true)} />
+              <NotificationBell unreadCount={unreadCount} onPress={() => setNotificationPanelOpen(true)} />
               <ProfileAvatar
                 avatar={user.avatar}
                 size={36}

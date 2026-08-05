@@ -17,30 +17,29 @@ import {
   Activity,
   Eye,
   UserPlus,
+  Edit2,
+  Trash2,
 } from 'lucide-react-native';
-import { fetchPatients } from '../../services/api';
-import { mockPatients, Patient } from '../../data/mockData';
+import { fetchPatients, deletePatient, ApiError } from '../../services/api';
+import type { Patient } from '../../types/domain';
 import { Card, CardContent } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
 import { TaskAssignmentModal } from '../../components/TaskAssignmentModal';
+import { PatientKardexModal } from '../../components/PatientKardexModal';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Colors, Radius } from '../../constants/colors';
+import { useToast } from '../../contexts/ToastContext';
 
-function getAttendingPhysician(diagnosis: string) {
-  const d = diagnosis.toLowerCase();
-  if (d.includes('cardiac') || d.includes('heart')) return 'Dr. Sarah Mitchell';
-  if (d.includes('septic') || d.includes('infection')) return 'Dr. James Rodriguez';
-  if (d.includes('pneumonia') || d.includes('respiratory')) return 'Dr. Emily Chen';
-  if (d.includes('stroke') || d.includes('cva')) return 'Dr. Robert Williams';
-  if (d.includes('kidney') || d.includes('renal')) return 'Dr. Patricia Brown';
-  if (d.includes('diabetes')) return 'Dr. David Lee';
-  return 'Dr. Michael Anderson';
+function getAttendingPhysician(patient: Patient) {
+  return patient.attendingPhysician || 'Not Assigned';
 }
 
 export default function AllPatientsPage() {
   const router = useRouter();
+  const toast = useToast();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -48,22 +47,28 @@ export default function AllPatientsPage() {
   const [riskFilter, setRiskFilter] = useState('all');
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [formMode, setFormMode] = useState<'add' | 'edit'>('add');
+  const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [toDelete, setToDelete] = useState<Patient | null>(null);
+
+  const loadPatients = async () => {
+    try {
+      const data = await fetchPatients();
+      setPatients(data);
+    } catch (error) {
+      setPatients([]);
+      toast.error('Failed to load patients', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchPatients();
-        if (!cancelled) setPatients(data.length ? data : mockPatients);
-      } catch {
-        if (!cancelled) setPatients(mockPatients);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    loadPatients();
   }, []);
 
   const uniqueRooms = useMemo(
@@ -98,11 +103,24 @@ export default function AllPatientsPage() {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.header}>
-          <Text style={styles.title}>All Patients</Text>
-          <Text style={styles.subtitle}>
-            Supervisor view — {filteredPatients.length} of {patients.length} patients
-            {loading ? ' (loading...)' : ''}
-          </Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>All Patients</Text>
+            <Text style={styles.subtitle}>
+              Supervisor view — {filteredPatients.length} of {patients.length} patients
+              {loading ? ' (loading...)' : ''}
+            </Text>
+          </View>
+          <Button
+            size="sm"
+            onPress={() => {
+              setFormMode('add');
+              setEditingPatient(null);
+              setFormOpen(true);
+            }}
+          >
+            <UserPlus size={16} color={Colors.white} />
+            <Text style={{ color: Colors.white, fontWeight: '600' }}>Add Patient</Text>
+          </Button>
         </View>
 
         <Input
@@ -223,7 +241,7 @@ export default function AllPatientsPage() {
                   <View style={styles.physicianRow}>
                     <Stethoscope size={14} color={Colors.blue700} />
                     <Text style={styles.physician}>
-                      {getAttendingPhysician(patient.diagnosis)}
+                      {getAttendingPhysician(patient)}
                     </Text>
                   </View>
                 </View>
@@ -263,15 +281,26 @@ export default function AllPatientsPage() {
                     variant="outline"
                     size="sm"
                     style={styles.actionBtn}
-                    onPress={() =>
-                      router.push({
-                        pathname: '/(app)/my-patients',
-                        params: { viewPatient: patient.id },
-                      } as any)
-                    }
+                    onPress={() => {
+                      setFormMode('edit');
+                      setEditingPatient(patient);
+                      setFormOpen(true);
+                    }}
                   >
-                    <Eye size={14} color={Colors.foreground} />
-                    <Text style={styles.outlineBtnText}>View Details</Text>
+                    <Edit2 size={14} color={Colors.blue700} />
+                    <Text style={styles.outlineBtnText}>Edit</Text>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    style={styles.actionBtn}
+                    onPress={() => {
+                      setToDelete(patient);
+                      setDeleteOpen(true);
+                    }}
+                  >
+                    <Trash2 size={14} color={Colors.red600} />
+                    <Text style={[styles.outlineBtnText, { color: Colors.red600 }]}>Delete</Text>
                   </Button>
                   <Button
                     size="sm"
@@ -296,6 +325,38 @@ export default function AllPatientsPage() {
         onOpenChange={setTaskModalOpen}
         patient={selectedPatient}
       />
+      <PatientKardexModal
+        open={formOpen}
+        onOpenChange={setFormOpen}
+        mode={formMode}
+        patient={editingPatient}
+        onSaved={loadPatients}
+      />
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title="Delete Patient"
+        description={
+          toDelete
+            ? `Delete ${toDelete.name}? Related kardex, tasks, and assignments will be removed.`
+            : 'Delete this patient?'
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={async () => {
+          if (!toDelete) return;
+          try {
+            await deletePatient(toDelete.id);
+            toast.success('Patient deleted');
+            setToDelete(null);
+            await loadPatients();
+          } catch (error) {
+            toast.error('Failed to delete patient', {
+              description: error instanceof ApiError ? error.message : 'Please try again.',
+            });
+          }
+        }}
+      />
     </>
   );
 }
@@ -303,7 +364,12 @@ export default function AllPatientsPage() {
 const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: Colors.background },
   content: { padding: 16, paddingBottom: 32, gap: 12 },
-  header: { gap: 4 },
+  header: {
+    gap: 8,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
   title: { fontSize: 22, fontWeight: '700', color: Colors.foreground },
   subtitle: { fontSize: 13, color: Colors.mutedForeground },
   filterRow: { flexDirection: 'row', gap: 10 },

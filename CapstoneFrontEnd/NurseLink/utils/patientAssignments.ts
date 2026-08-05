@@ -1,105 +1,55 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  fetchAssignments,
+  createAssignment,
+  deleteAssignment,
+} from '../services/api';
+import type { PatientAssignmentRecord } from '../types/domain';
 
-export interface PatientAssignment {
+export type PatientAssignment = {
   patientId: string;
   nurseId: string;
   nurseName: string;
   assignedAt: string;
   attendingPhysician?: string;
+};
+
+export async function getPatientAssignments(): Promise<PatientAssignment[]> {
+  const records = await fetchAssignments({ status: 'active' });
+  return records.map((r) => ({
+    patientId: r.patientId,
+    nurseId: r.assignedNurseId,
+    nurseName: r.assignedNurse,
+    assignedAt: r.assignedAt,
+    attendingPhysician: r.attendingPhysician,
+  }));
 }
 
-const STORAGE_KEY = 'nurselink_patient_assignments';
-
-export const getPatientAssignments = async (): Promise<PatientAssignment[]> => {
-  try {
-    const stored = await AsyncStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      return JSON.parse(stored);
-    }
-  } catch (e) {
-    console.error('Error parsing patient assignments:', e);
-  }
-  return [];
-};
-
-export const savePatientAssignments = async (assignments: PatientAssignment[]): Promise<void> => {
-  try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(assignments));
-  } catch (e) {
-    console.error('Error saving patient assignments:', e);
-  }
-};
-
-export const addPatientAssignment = async (
+export async function addPatientAssignment(
   assignment: Omit<PatientAssignment, 'assignedAt'>
-): Promise<void> => {
-  const assignments = await getPatientAssignments();
-  const existingIndex = assignments.findIndex((a) => a.patientId === assignment.patientId);
+): Promise<PatientAssignmentRecord> {
+  return createAssignment({
+    patientId: assignment.patientId,
+    nurseId: assignment.nurseId,
+    nurseName: assignment.nurseName,
+  });
+}
 
-  const newAssignment: PatientAssignment = {
-    ...assignment,
-    assignedAt: new Date().toISOString(),
-  };
-
-  if (existingIndex >= 0) {
-    assignments[existingIndex] = newAssignment;
-  } else {
-    assignments.push(newAssignment);
+export async function removePatientAssignment(patientId: string): Promise<void> {
+  const records = await fetchAssignments({ status: 'active' });
+  const match = records.find((r) => r.patientId === patientId);
+  if (match) {
+    await deleteAssignment(match.id);
   }
+}
 
-  await savePatientAssignments(assignments);
-};
+export async function getAssignmentsForNurse(nurseName: string): Promise<PatientAssignment[]> {
+  const all = await getPatientAssignments();
+  return all.filter((a) => a.nurseName === nurseName);
+}
 
-export const removePatientAssignment = async (patientId: string): Promise<void> => {
-  const assignments = await getPatientAssignments();
-  const filtered = assignments.filter((a) => a.patientId !== patientId);
-  await savePatientAssignments(filtered);
-};
-
-export const getAssignmentsForNurse = async (nurseName: string): Promise<PatientAssignment[]> => {
-  const assignments = await getPatientAssignments();
-  return assignments.filter((a) => a.nurseName === nurseName);
-};
-
-export const getAssignmentForPatient = async (
+export async function getAssignmentForPatient(
   patientId: string
-): Promise<PatientAssignment | undefined> => {
-  const assignments = await getPatientAssignments();
-  return assignments.find((a) => a.patientId === patientId);
-};
-
-export const initializeDefaultAssignments = async (): Promise<void> => {
-  const existing = await getPatientAssignments();
-
-  if (existing.length === 0) {
-    const defaultAssignments: PatientAssignment[] = [
-      {
-        patientId: 'P001',
-        nurseId: 'N001',
-        nurseName: 'Sarah Johnson',
-        assignedAt: new Date().toISOString(),
-        attendingPhysician: 'Dr. Juan Dela Cruz',
-      },
-      {
-        patientId: 'P002',
-        nurseId: 'N001',
-        nurseName: 'Sarah Johnson',
-        assignedAt: new Date().toISOString(),
-        attendingPhysician: 'Dr. Maria Santos',
-      },
-      {
-        patientId: 'P003',
-        nurseId: 'N001',
-        nurseName: 'Sarah Johnson',
-        assignedAt: new Date().toISOString(),
-        attendingPhysician: 'Dr. Antonio Reyes',
-      },
-    ];
-
-    await savePatientAssignments(defaultAssignments);
-  }
-};
-
-export const clearAllAssignments = async (): Promise<void> => {
-  await AsyncStorage.removeItem(STORAGE_KEY);
-};
+): Promise<PatientAssignment | undefined> {
+  const all = await getPatientAssignments();
+  return all.find((a) => a.patientId === patientId);
+}

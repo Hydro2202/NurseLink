@@ -26,6 +26,22 @@
           targetKey: 'js',
           clientKey: 'fetch',
         },
+        authentication: {
+          // Do not pre-select an empty Bearer token — that caused
+          // "Authorization: Bearer" with no credentials (401).
+          preferredSecurityScheme: 'passwordAuth',
+          securitySchemes: {
+            passwordAuth: {
+              flows: {
+                password: {
+                  username: 'nurse@hospital.com',
+                  // Leave password blank so the user types it (or fill for local testing)
+                  password: 'password123',
+                },
+              },
+            },
+          },
+        },
       });
     </script>
   </body>

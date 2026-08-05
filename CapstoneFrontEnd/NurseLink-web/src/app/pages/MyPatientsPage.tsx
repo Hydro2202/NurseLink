@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate, useLocation } from 'react-router';
-import { Patient } from '../data/mockData';
-import { fetchPatients } from '../api/nurselink';
+import { Patient } from '../types/domain';
+import { fetchPatients, deletePatient, ApiError } from '../api/nurselink';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
@@ -14,6 +14,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../components/ui/select';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../components/ui/alert-dialog';
 import {
   User,
   MapPin,
@@ -27,8 +37,11 @@ import {
   Stethoscope,
   Pill,
   AlertCircle,
-  Filter,
+  Edit2,
+  Trash2,
 } from 'lucide-react';
+import { PatientKardexModal } from '../components/PatientKardexModal';
+import { toast } from 'sonner';
 
 export default function MyPatientsPage() {
   const { user } = useAuth();
@@ -40,21 +53,24 @@ export default function MyPatientsPage() {
   const [riskFilter, setRiskFilter] = useState<string>('all');
   const [highlightedPatientId, setHighlightedPatientId] = useState<string | null>(null);
   const patientRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [toDelete, setToDelete] = useState<Patient | null>(null);
+
+  const loadPatients = async () => {
+    if (!user) return;
+    try {
+      const data = await fetchPatients({ mine: true });
+      setAssignedPatients(data);
+    } catch (error) {
+      console.error('Failed to load assigned patients:', error);
+      setAssignedPatients([]);
+    }
+  };
 
   useEffect(() => {
-    if (!user) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchPatients({ mine: true });
-        if (!cancelled) setAssignedPatients(data);
-      } catch (error) {
-        console.error('Failed to load assigned patients:', error);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    loadPatients();
   }, [user]);
 
   // Auto-scroll and highlight patient when navigating from All Patients page
@@ -124,14 +140,8 @@ export default function MyPatientsPage() {
   }, [assignedPatients]);
 
   // Get attending physician for patient
-  const getAttendingPhysician = (patientId: string): string => {
-    const physicianMap: { [key: string]: string } = {
-      'P001': 'Dr. Juan Dela Cruz',
-      'P002': 'Dr. Maria Santos',
-      'P003': 'Dr. Antonio Reyes',
-    };
-
-    return physicianMap[patientId] || 'Not Assigned';
+  const getAttendingPhysician = (patient: { attendingPhysician?: string }): string => {
+    return patient.attendingPhysician?.trim() || 'Not Assigned';
   };
 
   const getRiskBadgeVariant = (risk: string) => {
@@ -329,7 +339,7 @@ export default function MyPatientsPage() {
                         <div className="flex-1 min-w-0">
                           <p className="text-xs text-gray-500 mb-1">Attending Physician</p>
                           <p className="text-sm font-medium text-gray-900">
-                            {getAttendingPhysician(patient.id)}
+                            {getAttendingPhysician(patient)}
                           </p>
                         </div>
                       </div>
@@ -429,6 +439,30 @@ export default function MyPatientsPage() {
                       <Button
                         variant="outline"
                         size="sm"
+                        onClick={() => {
+                          setEditingPatient(patient);
+                          setEditOpen(true);
+                        }}
+                        className="w-full"
+                      >
+                        <Edit2 className="w-4 h-4 mr-2" />
+                        Edit
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setToDelete(patient);
+                          setDeleteOpen(true);
+                        }}
+                        className="w-full text-red-600 hover:text-red-700"
+                      >
+                        <Trash2 className="w-4 h-4 mr-2" />
+                        Delete
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => navigate('/charting', { state: { patientId: patient.id } })}
                         className="w-full"
                       >
@@ -450,6 +484,48 @@ export default function MyPatientsPage() {
           </div>
         )}
       </div>
+
+      <PatientKardexModal
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        mode="edit"
+        patient={editingPatient}
+        onSaved={loadPatients}
+      />
+
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Patient</AlertDialogTitle>
+            <AlertDialogDescription>
+              {toDelete
+                ? `Delete ${toDelete.name}? Related kardex, tasks, and assignments will be removed.`
+                : 'Delete this patient?'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={async () => {
+                if (!toDelete) return;
+                try {
+                  await deletePatient(toDelete.id);
+                  toast.success('Patient deleted');
+                  setToDelete(null);
+                  await loadPatients();
+                } catch (error) {
+                  toast.error('Failed to delete patient', {
+                    description: error instanceof ApiError ? error.message : 'Please try again.',
+                  });
+                }
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

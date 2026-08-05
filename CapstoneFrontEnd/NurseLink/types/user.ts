@@ -11,4 +11,7 @@ export interface User {
   department: string;
   licenseNumber?: string;
   avatar?: string;
+  shift?: string;
+  clinicalRole?: string;
+  specialization?: string;
 }

@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router';
-import { mockTasks, mockWorkloadData, Patient } from '../data/mockData';
-import { fetchPatients } from '../api/nurselink';
+import type { Patient, Task, WorkloadData } from '../types/domain';
+import { fetchPatients, fetchTasks, fetchWorkload } from '../api/nurselink';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
@@ -32,6 +32,8 @@ export default function DashboardPage() {
   const isStaffNurse = user?.role === 'staff_nurse';
   const [currentTime, setCurrentTime] = useState(new Date());
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -42,10 +44,18 @@ export default function DashboardPage() {
     let cancelled = false;
     (async () => {
       try {
-        const data = await fetchPatients(isStaffNurse ? { mine: true } : undefined);
-        if (!cancelled) setPatients(data);
+        const [patientData, taskData, workload] = await Promise.all([
+          fetchPatients(isStaffNurse ? { mine: true } : undefined),
+          fetchTasks(isStaffNurse ? { mine: true } : undefined),
+          isStaffNurse ? Promise.resolve([]) : fetchWorkload(),
+        ]);
+        if (!cancelled) {
+          setPatients(patientData);
+          setTasks(taskData);
+          setWorkloadData(workload);
+        }
       } catch (error) {
-        console.error('Failed to load patients:', error);
+        console.error('Failed to load dashboard:', error);
       }
     })();
     return () => {
@@ -54,37 +64,94 @@ export default function DashboardPage() {
   }, [isStaffNurse]);
 
   // Calculate stats
-  const urgentTasks = mockTasks.filter(t => t.priority === 'urgent' && t.status !== 'completed').length;
-  const overdueTasks = mockTasks.filter(t => t.status === 'overdue').length;
-  const completedTasks = mockTasks.filter(t => t.status === 'completed').length;
-  const totalTasks = mockTasks.length;
+  const urgentTasks = tasks.filter(t => t.priority === 'urgent' && t.status !== 'completed').length;
+  const overdueTasks = tasks.filter(t => t.status === 'overdue').length;
+  const completedTasks = tasks.filter(t => t.status === 'completed').length;
+  const totalTasks = tasks.length || 1;
   const highRiskPatients = patients.filter(p => p.riskLevel === 'high').length;
   const completionRate = Math.round((completedTasks / totalTasks) * 100);
 
-  // Chart data - memoized with unique references
+  const pendingCount = tasks.filter(t => t.status === 'pending').length;
+  const inProgressCount = tasks.filter(t => t.status === 'in_progress').length;
+
+  // Chart data from live task/patient records
   const staffTaskTrendData = React.useMemo(() => [
-    { time: '07:00', tasks: 3, id: 'staff-t1' },
-    { time: '09:00', tasks: 5, id: 'staff-t2' },
-    { time: '11:00', tasks: 8, id: 'staff-t3' },
-    { time: '13:00', tasks: 6, id: 'staff-t4' },
-    { time: '15:00', tasks: 4, id: 'staff-t5' },
-  ], []);
+    { time: 'Pending', tasks: pendingCount, id: 'staff-t1' },
+    { time: 'Active', tasks: inProgressCount, id: 'staff-t2' },
+    { time: 'Overdue', tasks: overdueTasks, id: 'staff-t3' },
+    { time: 'Done', tasks: completedTasks, id: 'staff-t4' },
+    { time: 'Urgent', tasks: urgentTasks, id: 'staff-t5' },
+  ], [pendingCount, inProgressCount, overdueTasks, completedTasks, urgentTasks]);
 
-  const adminTaskTrendData = React.useMemo(() => [
-    { time: '07:00', tasks: 3, id: 'admin-t1' },
-    { time: '09:00', tasks: 5, id: 'admin-t2' },
-    { time: '11:00', tasks: 8, id: 'admin-t3' },
-    { time: '13:00', tasks: 6, id: 'admin-t4' },
-    { time: '15:00', tasks: 4, id: 'admin-t5' },
-  ], []);
+  const adminTaskTrendData = staffTaskTrendData;
 
-  const vitalTrendsData = React.useMemo(() => [
-    { time: '06:00', hr: 72, spo2: 98, id: 'v1' },
-    { time: '08:00', hr: 78, spo2: 97, id: 'v2' },
-    { time: '10:00', hr: 82, spo2: 96, id: 'v3' },
-    { time: '12:00', hr: 76, spo2: 98, id: 'v4' },
-    { time: '14:00', hr: 74, spo2: 99, id: 'v5' },
-  ], []);
+  const vitalTrendsData = React.useMemo(() => {
+    if (!patients.length) return [];
+    return patients.slice(0, 5).map((p, i) => ({
+      time: p.id || `P${i + 1}`,
+      hr: p.vitalSigns?.heartRate || 0,
+      spo2: p.vitalSigns?.oxygenSaturation || 0,
+      id: `v-${p.id || i}`,
+    }));
+  }, [patients]);
+
+  const shiftLabel = React.useMemo(() => {
+    const shift = user?.shift || 'morning';
+    if (shift === 'afternoon') return 'Afternoon Shift (15:00-23:00)';
+    if (shift === 'night') return 'Night Shift (23:00-07:00)';
+    return 'Morning Shift (07:00-15:00)';
+  }, [user?.shift]);
+
+  const safetyAlerts = React.useMemo(() => {
+    const alerts: {
+      key: string;
+      variant: 'destructive' | 'default';
+      title: string;
+      description: string;
+      nurseName?: string;
+      path?: string;
+    }[] = [];
+    patients.filter(p => p.riskLevel === 'high').slice(0, 5).forEach(p => {
+      const vs = p.vitalSigns;
+      alerts.push({
+        key: `patient-${p.id}`,
+        variant: 'destructive',
+        title: `Critical - ${p.name} (${p.room})`,
+        description: vs
+          ? `Vital signs require attention. BP ${vs.bloodPressure}, HR ${vs.heartRate}, Temp ${vs.temperature}°C.`
+          : `${p.diagnosis || 'High-risk patient'} — immediate assessment required.`,
+        nurseName: p.assignedNurseName || undefined,
+        path: '/workload',
+      });
+    });
+    tasks.filter(t => t.status === 'overdue').slice(0, 5).forEach(t => {
+      alerts.push({
+        key: `task-${t.id}`,
+        variant: 'default',
+        title: `Delayed Task - ${t.patientName || 'Patient'}`,
+        description: `${t.title}${t.assignedTo ? `. Assigned nurse: ${t.assignedTo}` : ''}`,
+        nurseName: t.assignedTo,
+        path: t.assignedTo ? `/nurse-tasks/${encodeURIComponent(t.assignedTo)}` : '/tasks',
+      });
+    });
+    return alerts;
+  }, [patients, tasks]);
+
+  const departmentStats = React.useMemo(() => {
+    const buckets: Record<string, { label: string; total: number; critical: number; stable: number }> = {
+      ICU: { label: 'ICU Department', total: 0, critical: 0, stable: 0 },
+      Ward: { label: 'General Ward', total: 0, critical: 0, stable: 0 },
+      ER: { label: 'Emergency', total: 0, critical: 0, stable: 0 },
+    };
+    patients.forEach(p => {
+      const room = (p.room || '').toUpperCase();
+      const key = room.includes('ICU') ? 'ICU' : room.includes('ER') || room.includes('EMERGENCY') ? 'ER' : 'Ward';
+      buckets[key].total += 1;
+      if (p.riskLevel === 'high') buckets[key].critical += 1;
+      else buckets[key].stable += 1;
+    });
+    return Object.values(buckets);
+  }, [patients]);
 
   const StatCard = ({ title, value, subtitle, icon: Icon, trend, trendLabel, bgColor, iconBg, iconColor, borderColor }: any) => (
     <Card className="overflow-hidden">
@@ -122,11 +189,10 @@ export default function DashboardPage() {
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
                 <h1 className="text-base sm:text-lg font-bold truncate">Good Morning, {user?.name}</h1>
-                <p className="text-xs text-muted-foreground mt-0.5">Morning Shift (07:00-15:00)</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{shiftLabel}</p>
               </div>
               <div className="text-right flex-shrink-0">
                 <p className="text-base sm:text-lg font-bold">{currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">4h 32m</p>
               </div>
             </div>
           </div>
@@ -318,18 +384,18 @@ export default function DashboardPage() {
                       <div className="w-3 h-3 rounded-full bg-warning"></div>
                       <span className="text-sm font-medium text-foreground">In Progress</span>
                     </div>
-                    <span className="text-sm font-bold text-foreground">{mockTasks.filter(t => t.status === 'in_progress').length}</span>
+                    <span className="text-sm font-bold text-foreground">{inProgressCount}</span>
                   </div>
-                  <Progress value={30} className="h-2" />
+                  <Progress value={(inProgressCount / totalTasks) * 100} className="h-2" />
                   
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <div className="w-3 h-3 rounded-full bg-muted"></div>
                       <span className="text-sm font-medium text-foreground">Pending</span>
                     </div>
-                    <span className="text-sm font-bold text-foreground">{mockTasks.filter(t => t.status === 'pending').length}</span>
+                    <span className="text-sm font-bold text-foreground">{pendingCount}</span>
                   </div>
-                  <Progress value={20} className="h-2" />
+                  <Progress value={(pendingCount / totalTasks) * 100} className="h-2" />
                   
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -406,7 +472,7 @@ export default function DashboardPage() {
               <CardDescription>Next scheduled tasks in your shift</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {mockTasks.slice(0, 4).map(task => (
+              {tasks.slice(0, 4).map(task => (
                 <div
                   key={task.id}
                   className={`p-4 border rounded-lg ${
@@ -460,7 +526,14 @@ export default function DashboardPage() {
             </div>
             <div className="text-right">
               <p className="text-2xl font-bold text-foreground">{currentTime.toLocaleTimeString()}</p>
-              <p className="text-sm text-muted-foreground">Thursday, March 26, 2026</p>
+              <p className="text-sm text-muted-foreground">
+                {currentTime.toLocaleDateString(undefined, {
+                  weekday: 'long',
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                })}
+              </p>
             </div>
           </div>
         </div>
@@ -471,30 +544,26 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard
             title="Active Nurses"
-            value="12"
-            subtitle="On current shift"
+            value={String(workloadData.length)}
+            subtitle="Staff nurses in database"
             icon={Users}
-            trend="up"
-            trendLabel="+2 from previous"
           />
           <StatCard
             title="Total Patients"
-            value="38"
+            value={String(patients.length)}
             subtitle="Across all units"
             icon={Heart}
           />
           <StatCard
             title="Task Completion"
-            value={`${completionRate}%`}
-            subtitle={`${completedTasks} of ${totalTasks} tasks`}
+            value={`${tasks.length ? completionRate : 0}%`}
+            subtitle={`${completedTasks} of ${tasks.length} tasks`}
             icon={CheckCircle}
-            trend="up"
-            trendLabel="+12% vs yesterday"
           />
           <StatCard
             title="Critical Alerts"
-            value="5"
-            subtitle="Require attention"
+            value={String(highRiskPatients)}
+            subtitle="High-risk patients"
             icon={AlertTriangle}
           />
         </div>
@@ -574,7 +643,9 @@ export default function DashboardPage() {
             <CardDescription>Current shift nurse-to-patient ratios and burnout risk</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {mockWorkloadData.map(nurse => (
+            {workloadData.length === 0 ? (
+              <p className="text-center text-muted-foreground py-6">No records found.</p>
+            ) : workloadData.map(nurse => (
               <div
                 key={nurse.nurseId}
                 className={`p-4 border rounded-lg ${
@@ -610,7 +681,9 @@ export default function DashboardPage() {
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Completion</p>
-                    <p className="text-lg font-bold text-success">{Math.round((nurse.completedTasks / nurse.taskCount) * 100)}%</p>
+                    <p className="text-lg font-bold text-success">
+                      {nurse.taskCount ? Math.round((nurse.completedTasks / nurse.taskCount) * 100) : 0}%
+                    </p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Overtime</p>
@@ -621,7 +694,7 @@ export default function DashboardPage() {
                     <p className="text-lg font-bold text-primary">1:{Math.floor(nurse.patientCount)}</p>
                   </div>
                 </div>
-                <Progress value={(nurse.completedTasks / nurse.taskCount) * 100} className="h-2" />
+                <Progress value={nurse.taskCount ? (nurse.completedTasks / nurse.taskCount) * 100 : 0} className="h-2" />
               </div>
             ))}
           </CardContent>
@@ -637,90 +710,70 @@ export default function DashboardPage() {
             <CardDescription>High-priority alerts requiring immediate attention</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <Alert variant="destructive" className="border-l-4">
-              <AlertCircle className="h-5 w-5" />
-              <AlertTitle className="font-semibold">Critical - Maria Garcia (ICU-202)</AlertTitle>
-              <AlertDescription className="mt-2">
-                Vital signs unstable. BP 98/62, HR 118, Temp 38.9°C. Immediate assessment required.
-              </AlertDescription>
-              <div className="flex gap-2 mt-3">
-                <Button size="sm" variant="destructive" onClick={() => navigate('/workload')}>Respond Now</Button>
-                <Button size="sm" variant="outline" onClick={() => toast.success('✅ Notification sent to assigned nurse', { description: 'The nurse has been notified about the patient\'s unstable vital signs.' })}>Notify Nurse</Button>
-              </div>
-            </Alert>
-
-            <Alert className="border-l-4 border-warning bg-warning/5">
-              <Clock className="h-5 w-5 text-warning" />
-              <AlertTitle className="font-semibold">Delayed Task - John Smith (ICU-201)</AlertTitle>
-              <AlertDescription className="mt-2">
-                Cardiac medication overdue by 30 minutes. Assigned nurse: Sarah Johnson.
-              </AlertDescription>
-              <div className="flex gap-2 mt-3">
-                <Button size="sm" onClick={() => navigate('/nurse-tasks/Sarah Johnson')}>View Task</Button>
-                <Button size="sm" variant="outline" onClick={() => toast.success('✅ Notification sent to Sarah Johnson', { description: 'The nurse has been notified about the delayed cardiac medication task.' })}>Notify Nurse</Button>
-              </div>
-            </Alert>
+            {safetyAlerts.length === 0 ? (
+              <p className="text-center text-muted-foreground py-6">No notifications.</p>
+            ) : safetyAlerts.map((alert) => (
+              <Alert
+                key={alert.key}
+                variant={alert.variant === 'destructive' ? 'destructive' : 'default'}
+                className={alert.variant === 'destructive' ? 'border-l-4' : 'border-l-4 border-warning bg-warning/5'}
+              >
+                {alert.variant === 'destructive' ? (
+                  <AlertCircle className="h-5 w-5" />
+                ) : (
+                  <Clock className="h-5 w-5 text-warning" />
+                )}
+                <AlertTitle className="font-semibold">{alert.title}</AlertTitle>
+                <AlertDescription className="mt-2">{alert.description}</AlertDescription>
+                <div className="flex gap-2 mt-3">
+                  <Button
+                    size="sm"
+                    variant={alert.variant === 'destructive' ? 'destructive' : 'default'}
+                    onClick={() => navigate(alert.path || '/workload')}
+                  >
+                    {alert.variant === 'destructive' ? 'Respond Now' : 'View Task'}
+                  </Button>
+                  {alert.nurseName ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        toast.success(`Notification sent to ${alert.nurseName}`, {
+                          description: 'The nurse has been notified.',
+                        })
+                      }
+                    >
+                      Notify Nurse
+                    </Button>
+                  ) : null}
+                </div>
+              </Alert>
+            ))}
           </CardContent>
         </Card>
 
         {/* Department Overview */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Card className="border border-border shadow-sm">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-lg font-semibold">ICU Department</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-muted-foreground">Occupancy</span>
-                  <span className="text-2xl font-bold text-foreground">15/20</span>
+          {departmentStats.map((dept) => (
+            <Card key={dept.label} className="border border-border shadow-sm">
+              <CardHeader className="pb-4">
+                <CardTitle className="text-lg font-semibold">{dept.label}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm font-medium text-muted-foreground">Patients</span>
+                    <span className="text-2xl font-bold text-foreground">{dept.total}</span>
+                  </div>
+                  <Progress value={patients.length ? Math.min(100, (dept.total / Math.max(patients.length, 1)) * 100) : 0} className="h-2" />
+                  <div className="flex justify-between text-sm pt-2">
+                    <span className="text-muted-foreground">Critical: <strong className="text-destructive">{dept.critical}</strong></span>
+                    <span className="text-muted-foreground">Stable: <strong className="text-success">{dept.stable}</strong></span>
+                  </div>
                 </div>
-                <Progress value={75} className="h-2" />
-                <div className="flex justify-between text-sm pt-2">
-                  <span className="text-muted-foreground">Critical: <strong className="text-destructive">3</strong></span>
-                  <span className="text-muted-foreground">Stable: <strong className="text-success">12</strong></span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border border-border shadow-sm">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-lg font-semibold">General Ward</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-muted-foreground">Occupancy</span>
-                  <span className="text-2xl font-bold text-foreground">18/25</span>
-                </div>
-                <Progress value={72} className="h-2" />
-                <div className="flex justify-between text-sm pt-2">
-                  <span className="text-muted-foreground">Critical: <strong className="text-destructive">1</strong></span>
-                  <span className="text-muted-foreground">Stable: <strong className="text-success">17</strong></span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border border-border shadow-sm">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-lg font-semibold">Emergency</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-muted-foreground">Occupancy</span>
-                  <span className="text-2xl font-bold text-foreground">5/10</span>
-                </div>
-                <Progress value={50} className="h-2" />
-                <div className="flex justify-between text-sm pt-2">
-                  <span className="text-muted-foreground">Critical: <strong className="text-destructive">2</strong></span>
-                  <span className="text-muted-foreground">Stable: <strong className="text-success">3</strong></span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          ))}
         </div>
       </div>
     </div>

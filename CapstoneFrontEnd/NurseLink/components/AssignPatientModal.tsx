@@ -13,29 +13,9 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
-import { Task } from '../data/mockData';
+import type { Patient, Task } from '../types/domain';
 import { PatientAssignment } from '../types';
-
-const rooms = [
-  'ICU-201',
-  'ICU-202',
-  'ICU-203',
-  'ICU-204',
-  'ICU-205',
-  'Ward 4A-101',
-  'Ward 4A-102',
-  'Ward 4A-103',
-  'Ward 4A-104',
-  'Ward 4B-201',
-  'Ward 4B-202',
-  'Ward 4B-203',
-  'Ward 5A-101',
-  'Ward 5A-102',
-  'Ward 5A-103',
-  'ER-1',
-  'ER-2',
-  'ER-3',
-];
+import { fetchPatients } from '../services/api';
 
 export type { PatientAssignment };
 
@@ -44,7 +24,7 @@ interface AssignPatientModalProps {
   onClose: () => void;
   onSubmit: (
     assignment: Omit<PatientAssignment, 'id' | 'assignedAt' | 'updatedAt' | 'status'>
-  ) => void;
+  ) => void | Promise<void>;
   editingAssignment?: PatientAssignment | null;
   availableNurses: Array<{ id: string; name: string; patientCount: number }>;
   allTasks?: Task[];
@@ -57,14 +37,13 @@ export function AssignPatientModal({
   onSubmit,
   editingAssignment,
   availableNurses,
-  allTasks = [],
-  allAssignments = [],
 }: AssignPatientModalProps) {
+  const [patients, setPatients] = useState<Patient[]>([]);
   const [formData, setFormData] = useState({
     patientName: '',
     patientId: '',
     room: '',
-    ward: 'ICU',
+    ward: '',
     diagnosis: '',
     assignedNurse: '',
     assignedNurseId: '',
@@ -72,23 +51,15 @@ export function AssignPatientModal({
     notes: '',
   });
 
-  const getOccupiedRooms = () => {
-    const occupiedRooms = new Map<string, { patientName: string; taskId: string }>();
-    allTasks.forEach((task) => {
-      if (task.patientRoom && task.status !== 'completed') {
-        if (editingAssignment && editingAssignment.room === task.patientRoom) return;
-        occupiedRooms.set(task.patientRoom, {
-          patientName: task.patientName,
-          taskId: task.id,
-        });
-      }
-    });
-    return occupiedRooms;
-  };
-
-  const occupiedRooms = getOccupiedRooms();
+  useEffect(() => {
+    if (!isOpen) return;
+    fetchPatients()
+      .then(setPatients)
+      .catch(() => setPatients([]));
+  }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen) return;
     if (editingAssignment) {
       setFormData({
         patientName: editingAssignment.patientName,
@@ -102,20 +73,11 @@ export function AssignPatientModal({
         notes: editingAssignment.notes,
       });
     } else {
-      let nextPatientNumber = 4;
-      allAssignments.forEach((assignment) => {
-        const match = assignment.patientId.match(/^P(\d+)$/);
-        if (match) {
-          const num = parseInt(match[1], 10);
-          if (num >= nextPatientNumber) nextPatientNumber = num + 1;
-        }
-      });
-      const generatedPatientId = `P${String(nextPatientNumber).padStart(3, '0')}`;
       setFormData({
         patientName: '',
-        patientId: generatedPatientId,
+        patientId: '',
         room: '',
-        ward: 'ICU',
+        ward: '',
         diagnosis: '',
         assignedNurse: '',
         assignedNurseId: '',
@@ -123,12 +85,19 @@ export function AssignPatientModal({
         notes: '',
       });
     }
-  }, [editingAssignment, isOpen, allAssignments]);
+  }, [editingAssignment, isOpen]);
 
-  const handleSubmit = () => {
-    if (!formData.patientName || !formData.room || !formData.assignedNurseId) return;
-    onSubmit(formData);
-    onClose();
+  const handlePatientSelect = (patientId: string) => {
+    const patient = patients.find((p) => p.id === patientId);
+    if (!patient) return;
+    setFormData((prev) => ({
+      ...prev,
+      patientId: patient.id,
+      patientName: patient.name,
+      room: patient.room || '',
+      diagnosis: patient.diagnosis || '',
+      ward: prev.ward,
+    }));
   };
 
   const handleNurseSelect = (nurseId: string) => {
@@ -142,254 +111,139 @@ export function AssignPatientModal({
     }
   };
 
-  const canSubmit = !!(formData.patientName && formData.room && formData.assignedNurseId);
+  const canSubmit =
+    !!formData.patientId && !!formData.room && !!formData.assignedNurseId;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    await onSubmit(formData);
+    onClose();
+  };
 
   return (
-    <Modal visible={isOpen} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={[styles.dialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.headerRow}>
-            <User size={20} color={Colors.blue600} />
+    <Modal visible={isOpen} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.overlay}>
+        <View style={styles.sheet}>
+          <View style={styles.header}>
             <Text style={styles.title}>
-              {editingAssignment ? 'Edit Patient Assignment' : 'Assign Patient to Nurse'}
+              {editingAssignment ? 'Edit Assignment' : 'Assign Patient'}
             </Text>
+            <Pressable onPress={onClose}>
+              <Text style={styles.close}>Close</Text>
+            </Pressable>
           </View>
-          <Text style={styles.description}>
-            {editingAssignment
-              ? 'Update patient assignment details'
-              : 'Assign a patient to a nurse for care'}
-          </Text>
-
-          <ScrollView style={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <View style={styles.form}>
-              {/* Patient Information */}
-              <View style={styles.sectionHeader}>
-                <FileText size={16} color={Colors.blue600} />
-                <Text style={styles.sectionTitle}>Patient Information</Text>
-              </View>
-
-              <View style={styles.row}>
-                <Input
-                  containerStyle={{ flex: 1 }}
-                  label="Patient Name *"
-                  value={formData.patientName}
-                  onChangeText={(patientName) => setFormData((prev) => ({ ...prev, patientName }))}
-                  placeholder="Enter patient full name"
-                />
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Input
-                    label="Patient ID (Auto-generated)"
-                    value={formData.patientId}
-                    editable={false}
-                    placeholder="Auto-generated"
-                    inputWrapperStyle={styles.readOnly}
-                  />
-                  <Text style={styles.hint}>Patient ID is automatically assigned</Text>
-                </View>
-              </View>
-
-              <View style={styles.row}>
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Select
-                    label="Room Number *"
-                    value={formData.room}
-                    onValueChange={(room) => setFormData((prev) => ({ ...prev, room }))}
-                    options={rooms.map((room) => {
-                      const occupation = occupiedRooms.get(room);
-                      const isOccupied = !!occupation;
-                      return {
-                        label: isOccupied
-                          ? `${room} (Occupied - Patient: ${occupation.patientName})`
-                          : room,
-                        value: room,
-                        disabled: isOccupied,
-                      };
-                    })}
-                    placeholder="Select room"
-                  />
-                  <Text style={styles.hint}>Select an available room for the patient</Text>
-                </View>
-                <Select
-                  style={{ flex: 1 }}
-                  label="Ward / Department *"
-                  value={formData.ward}
-                  onValueChange={(ward) => setFormData((prev) => ({ ...prev, ward }))}
-                  options={[
-                    { label: 'ICU (Intensive Care Unit)', value: 'ICU' },
-                    { label: 'General Ward', value: 'General Ward' },
-                    { label: 'Emergency Department', value: 'Emergency' },
-                    { label: 'Surgery Department', value: 'Surgery' },
-                    { label: 'Pediatrics', value: 'Pediatrics' },
-                    { label: 'Maternity Ward', value: 'Maternity' },
-                  ]}
-                  placeholder="Select ward"
-                />
-              </View>
-
-              <Input
-                label="Diagnosis (Optional)"
-                value={formData.diagnosis}
-                onChangeText={(diagnosis) => setFormData((prev) => ({ ...prev, diagnosis }))}
-                placeholder="e.g., Myocardial Infarction, Post-operative care"
-              />
-
-              {/* Assignment Details */}
-              <View style={styles.sectionHeader}>
-                <User size={16} color={Colors.blue600} />
-                <Text style={styles.sectionTitle}>Assignment Details</Text>
-              </View>
-
-              <View style={{ gap: 6 }}>
-                <Select
-                  label="Assign to Nurse *"
-                  value={formData.assignedNurseId}
-                  onValueChange={handleNurseSelect}
-                  options={availableNurses.map((nurse) => ({
-                    label: `${nurse.name} (${nurse.patientCount} patients)`,
-                    value: nurse.id,
-                  }))}
-                  placeholder="Select a nurse"
-                />
-                <Text style={styles.hint}>Select a nurse from the available staff</Text>
-              </View>
-
-              <Select
-                label="Priority Level *"
-                value={formData.priority}
-                onValueChange={(value) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    priority: value as 'urgent' | 'routine',
-                  }))
-                }
-                options={[
-                  {
-                    label: 'Urgent - Requires immediate attention',
-                    value: 'urgent',
-                  },
-                  {
-                    label: 'Routine - Standard care',
-                    value: 'routine',
-                  },
-                ]}
-              />
-
-              <View style={styles.field}>
-                <Text style={styles.label}>Notes / Special Instructions (Optional)</Text>
-                <TextInput
-                  style={styles.textarea}
-                  value={formData.notes}
-                  onChangeText={(notes) => setFormData((prev) => ({ ...prev, notes }))}
-                  placeholder="Enter any special care instructions, allergies, or important notes..."
-                  placeholderTextColor={Colors.mutedForeground}
-                  multiline
-                  numberOfLines={4}
-                  textAlignVertical="top"
-                />
-                <Text style={styles.hint}>Include any relevant information for the assigned nurse</Text>
-              </View>
+          <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+            <View style={styles.sectionHeader}>
+              <FileText size={16} color={Colors.blue600} />
+              <Text style={styles.sectionTitle}>Patient</Text>
             </View>
-          </ScrollView>
+            {patients.length === 0 ? (
+              <Text style={styles.hint}>No patients found. Create a patient via Kardex first.</Text>
+            ) : (
+              <Select
+                label="Select Patient *"
+                value={formData.patientId}
+                onValueChange={handlePatientSelect}
+                options={patients.map((p) => ({
+                  label: `${p.name} • ${p.room} (${p.id})`,
+                  value: p.id,
+                }))}
+                placeholder="Choose a patient"
+              />
+            )}
+            <Input label="Room *" value={formData.room} onChangeText={(room) => setFormData((p) => ({ ...p, room }))} />
+            <Input label="Ward / Department" value={formData.ward} onChangeText={(ward) => setFormData((p) => ({ ...p, ward }))} />
+            <Input
+              label="Diagnosis"
+              value={formData.diagnosis}
+              onChangeText={(diagnosis) => setFormData((p) => ({ ...p, diagnosis }))}
+            />
 
+            <View style={styles.sectionHeader}>
+              <User size={16} color={Colors.blue600} />
+              <Text style={styles.sectionTitle}>Assignment Details</Text>
+            </View>
+            {availableNurses.length === 0 ? (
+              <Text style={styles.hint}>No nurses available.</Text>
+            ) : (
+              <Select
+                label="Assign to Nurse *"
+                value={formData.assignedNurseId}
+                onValueChange={handleNurseSelect}
+                options={availableNurses.map((nurse) => ({
+                  label: `${nurse.name} (${nurse.patientCount} patients)`,
+                  value: nurse.id,
+                }))}
+                placeholder="Select a nurse"
+              />
+            )}
+            <Select
+              label="Priority *"
+              value={formData.priority}
+              onValueChange={(value) =>
+                setFormData((p) => ({ ...p, priority: value as 'urgent' | 'routine' }))
+              }
+              options={[
+                { label: 'Routine', value: 'routine' },
+                { label: 'Urgent', value: 'urgent' },
+              ]}
+            />
+            <Text style={styles.label}>Notes</Text>
+            <TextInput
+              style={styles.textarea}
+              value={formData.notes}
+              onChangeText={(notes) => setFormData((p) => ({ ...p, notes }))}
+              multiline
+            />
+          </ScrollView>
           <View style={styles.footer}>
             <Button variant="outline" onPress={onClose} style={{ flex: 1 }}>
-              Cancel
+              <Text>Cancel</Text>
             </Button>
-            <Button
-              onPress={handleSubmit}
-              disabled={!canSubmit}
-              style={{ flex: 1, backgroundColor: Colors.blue600 }}
-            >
-              {editingAssignment ? 'Update Assignment' : 'Assign Patient'}
+            <Button onPress={handleSubmit} disabled={!canSubmit} style={{ flex: 1 }}>
+              <Text style={{ color: Colors.white, fontWeight: '600' }}>
+                {editingAssignment ? 'Update' : 'Assign'}
+              </Text>
             </Button>
           </View>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'center',
+  overlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
+  sheet: {
+    maxHeight: '90%',
+    backgroundColor: Colors.card,
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
+    ...Shadows.lg,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
     padding: 16,
-  },
-  dialog: {
-    backgroundColor: Colors.white,
-    borderRadius: Radius.xl,
-    padding: 20,
-    width: '100%',
-    maxWidth: 640,
-    maxHeight: '90%',
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: Colors.foreground,
-    flex: 1,
-  },
-  description: {
-    fontSize: 13,
-    color: Colors.mutedForeground,
-    marginBottom: 16,
-    lineHeight: 18,
-  },
-  scroll: { flexGrow: 0 },
-  form: { gap: 14, paddingBottom: 8 },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingBottom: 8,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    marginTop: 4,
   },
-  sectionTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: Colors.gray900,
-  },
-  row: { flexDirection: 'row', gap: 12 },
-  field: { gap: 6 },
-  label: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: Colors.foreground,
-  },
+  title: { fontSize: 17, fontWeight: '700', color: Colors.foreground },
+  close: { color: Colors.blue600, fontWeight: '600' },
+  content: { padding: 16, gap: 10, paddingBottom: 24 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  sectionTitle: { fontSize: 14, fontWeight: '700', color: Colors.blue700 },
+  hint: { fontSize: 12, color: Colors.mutedForeground },
+  label: { fontSize: 13, fontWeight: '600', color: Colors.gray700 },
   textarea: {
-    minHeight: 100,
     borderWidth: 1,
     borderColor: Colors.border,
     borderRadius: Radius.md,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
+    minHeight: 72,
+    padding: 10,
+    textAlignVertical: 'top',
     color: Colors.foreground,
-    backgroundColor: Colors.inputBackground,
   },
-  readOnly: {
-    backgroundColor: Colors.gray100,
-  },
-  hint: {
-    fontSize: 11,
-    color: Colors.gray500,
-  },
-  footer: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
+  footer: { flexDirection: 'row', gap: 10, padding: 16, borderTopWidth: 1, borderTopColor: Colors.border },
 });

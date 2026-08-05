@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { ToastProvider } from '../contexts/ToastContext';
 import SplashScreen from '../components/SplashScreen';
-import { initializeDefaultAssignments } from '../utils/patientAssignments';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet } from 'react-native';
@@ -13,10 +12,6 @@ function RootNavigator() {
   const { isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
   const segments = useSegments();
-
-  useEffect(() => {
-    initializeDefaultAssignments();
-  }, []);
 
   useEffect(() => {
     if (showSplash || isLoading) return;

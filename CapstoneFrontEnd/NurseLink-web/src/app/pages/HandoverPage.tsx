@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { mockHandovers } from '../data/mockData';
+import React, { useState, useEffect } from 'react';
+import type { HandoverNote } from '../types/domain';
+import { fetchHandovers, createHandover, acknowledgeHandover, deleteHandover } from '../api/nurselink';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -27,11 +28,20 @@ import {
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { HandoverModal } from '../components/HandoverModal';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
-import { HandoverNote } from '../types';
 import { toast } from 'sonner';
 
 export default function HandoverPage() {
-  const [handovers, setHandovers] = useState<HandoverNote[]>(mockHandovers);
+  useEffect(() => {
+    (async () => {
+      try {
+        setHandovers(await fetchHandovers());
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, []);
+
+  const [handovers, setHandovers] = useState<HandoverNote[]>([]);
   const [handoverModalOpen, setHandoverModalOpen] = useState(false);
   const [acknowledgeLoading, setAcknowledgeLoading] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -45,51 +55,47 @@ export default function HandoverPage() {
   };
 
   const handleSaveHandover = async (handoverData: Partial<HandoverNote>) => {
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    const newHandover: HandoverNote = {
-      id: `handover-${Date.now()}`,
-      patientId: 'patient-1',
-      patientName: handoverData.patientName || '',
-      shift: handoverData.shift || 'morning',
-      date: new Date().toLocaleDateString(),
-      nurseFrom: 'You',
-      nurseTo: handoverData.nurseTo || '',
-      sbar: handoverData.sbar || {
-        situation: '',
-        background: '',
-        assessment: '',
-        recommendation: '',
-      },
-      status: 'submitted',
-      createdAt: new Date().toISOString(),
-    };
-
-    setHandovers([newHandover, ...handovers]);
-
-    toast.success('Handover submitted successfully! 📋', {
-      description: `Handover note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
-    });
+    try {
+      const newHandover = await createHandover({
+        patientId: handoverData.patientId || '',
+        patientName: handoverData.patientName || '',
+        shift: handoverData.shift || 'morning',
+        date: new Date().toISOString().slice(0, 10),
+        nurseFrom: 'You',
+        nurseTo: handoverData.nurseTo || '',
+        sbar: handoverData.sbar || {
+          situation: '',
+          background: '',
+          assessment: '',
+          recommendation: '',
+        },
+        unfinishedTasks: handoverData.unfinishedTasks || [],
+        photos: handoverData.photos || [],
+        status: 'pending',
+      });
+      setHandovers((prev) => [newHandover, ...prev]);
+      toast.success('Handover submitted successfully!', {
+        description: `Handover note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to submit handover');
+      throw error;
+    }
   };
 
   const handleAcknowledgeHandover = async (handoverId: string) => {
     setAcknowledgeLoading(handoverId);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 800));
-
-    setHandovers(handovers.map(h =>
-      h.id === handoverId
-        ? { ...h, status: 'received' as const }
-        : h
-    ));
-
-    setAcknowledgeLoading(null);
-
-    const handover = handovers.find(h => h.id === handoverId);
-    toast.success('Handover acknowledged! ✅', {
-      description: `You've acknowledged the handover for ${handover?.patientName}.`,
-    });
+    try {
+      const updated = await acknowledgeHandover(handoverId);
+      setHandovers((prev) => prev.map((h) => (h.id === handoverId ? updated : h)));
+      toast.success('Handover acknowledged!', {
+        description: `You've acknowledged the handover for ${updated.patientName}.`,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to acknowledge handover');
+    } finally {
+      setAcknowledgeLoading(null);
+    }
   };
 
   const handleDeleteHandover = (handoverId: string) => {
@@ -101,35 +107,37 @@ export default function HandoverPage() {
     if (!handoverToDelete) return;
 
     setDeleteLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 600));
-
-    const deletedHandover = handovers.find(h => h.id === handoverToDelete);
-    setHandovers(handovers.filter(h => h.id !== handoverToDelete));
-    setDeleteLoading(false);
-    setDeleteDialogOpen(false);
-    setHandoverToDelete(null);
-
-    toast.success('Handover deleted', {
-      description: `Handover for ${deletedHandover?.patientName} has been removed.`,
-    });
+    try {
+      const deletedHandover = handovers.find((h) => h.id === handoverToDelete);
+      await deleteHandover(handoverToDelete);
+      setHandovers((prev) => prev.filter((h) => h.id !== handoverToDelete));
+      setDeleteDialogOpen(false);
+      setHandoverToDelete(null);
+      toast.success('Handover deleted', {
+        description: `Handover for ${deletedHandover?.patientName} has been removed.`,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete handover');
+    } finally {
+      setDeleteLoading(false);
+    }
   };
 
   // Sort handovers
   const sortHandovers = (handoverList: HandoverNote[]) => {
     return [...handoverList].sort((a, b) => {
-      if (sortBy === 'newest') {
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      }
-      if (sortBy === 'oldest') {
-        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-      }
-      if (sortBy === 'patient') {
-        return a.patientName.localeCompare(b.patientName);
-      }
+      const aTime = new Date(a.date).getTime();
+      const bTime = new Date(b.date).getTime();
+      if (sortBy === 'newest') return bTime - aTime;
+      if (sortBy === 'oldest') return aTime - bTime;
+      if (sortBy === 'patient') return a.patientName.localeCompare(b.patientName);
       if (sortBy === 'status') {
-        const statusOrder = { pending: 0, submitted: 1, received: 2 };
-        return statusOrder[a.status] - statusOrder[b.status];
+        const statusOrder: Record<string, number> = {
+          pending: 0,
+          acknowledged: 1,
+          completed: 2,
+        };
+        return (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
       }
       return 0;
     });
@@ -167,8 +175,8 @@ export default function HandoverPage() {
           <div className="flex items-center gap-2">
             <Badge
               variant={
-                handover.status === 'received' ? 'default' :
-                handover.status === 'submitted' ? 'secondary' :
+                handover.status === 'acknowledged' || handover.status === 'completed' ? 'default' :
+                handover.status === 'pending' ? 'secondary' :
                 'outline'
               }
             >
@@ -216,7 +224,7 @@ export default function HandoverPage() {
             </div>
           </div>
         </div>
-        {type === 'incoming' && handover.status !== 'received' && (
+        {type === 'incoming' && handover.status === 'pending' && (
           <Button
             className="w-full bg-blue-600 hover:bg-blue-700"
             onClick={() => handleAcknowledgeHandover(handover.id)}

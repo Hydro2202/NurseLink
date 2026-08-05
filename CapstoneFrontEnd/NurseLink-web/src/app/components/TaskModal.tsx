@@ -19,8 +19,8 @@ import {
 } from './ui/select';
 import { Textarea } from './ui/textarea';
 import { Loader2, Stethoscope, Bed, ClipboardList } from 'lucide-react';
-import { Task } from '../types';
-import { mockPatients } from '../data/mockData';
+import type { Patient, Task } from '../types/domain';
+import { fetchPatients } from '../api/nurselink';
 
 interface TaskModalProps {
   open: boolean;
@@ -31,43 +31,15 @@ interface TaskModalProps {
   allTasks?: Task[];
 }
 
-// List of attending physicians
-const doctors = [
-  'Dr. Juan Dela Cruz',
-  'Dr. Maria Santos',
-  'Dr. Antonio Reyes',
-  'Dr. Carmen Lopez',
-  'Dr. Ricardo Fernandez',
-  'Dr. Teresa Ramos',
-  'Dr. Miguel Torres',
-  'Dr. Ana Mendoza',
-  'Dr. Jose Garcia',
-  'Dr. Sofia Valdez',
-];
-
-// List of available rooms
-const rooms = [
-  'ICU-201',
-  'ICU-202',
-  'ICU-203',
-  'ICU-204',
-  'ICU-205',
-  'Ward 4A-101',
-  'Ward 4A-102',
-  'Ward 4A-103',
-  'Ward 4A-104',
-  'Ward 4B-201',
-  'Ward 4B-202',
-  'Ward 4B-203',
-  'Ward 5A-101',
-  'Ward 5A-102',
-  'Ward 5A-103',
-  'ER-1',
-  'ER-2',
-  'ER-3',
-];
-
-export function TaskModal({ open, onOpenChange, task, onSave, mode, allTasks = [] }: TaskModalProps) {
+export function TaskModal({
+  open,
+  onOpenChange,
+  task,
+  onSave,
+  mode,
+  allTasks = [],
+}: TaskModalProps) {
+  const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     title: '',
@@ -83,28 +55,10 @@ export function TaskModal({ open, onOpenChange, task, onSave, mode, allTasks = [
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Check which rooms are occupied by active tasks
-  const getOccupiedRooms = () => {
-    const occupiedRooms = new Map<string, { patientName: string; taskId: string }>();
-
-    allTasks.forEach(t => {
-      // Only consider active tasks (not completed)
-      if (t.patientRoom && t.status !== 'completed') {
-        // If editing, don't mark current task's room as occupied
-        if (mode === 'edit' && task?.id === t.id) {
-          return;
-        }
-        occupiedRooms.set(t.patientRoom, {
-          patientName: t.patientName,
-          taskId: t.id,
-        });
-      }
-    });
-
-    return occupiedRooms;
-  };
-
-  const occupiedRooms = getOccupiedRooms();
+  useEffect(() => {
+    if (!open) return;
+    fetchPatients().then(setPatients).catch(() => setPatients([]));
+  }, [open]);
 
   useEffect(() => {
     if (task && mode === 'edit') {
@@ -264,28 +218,37 @@ export function TaskModal({ open, onOpenChange, task, onSave, mode, allTasks = [
 
           <div className="space-y-2">
             <Label htmlFor="patientName">Patient Name *</Label>
-            <Select
-              value={formData.patientName}
-              onValueChange={(value) => {
-                const selectedPatient = mockPatients.find(p => p.name === value);
-                setFormData({
-                  ...formData,
-                  patientName: value,
-                  patientId: selectedPatient?.id || `P${Date.now().toString().slice(-6)}`,
-                });
-              }}
-            >
-              <SelectTrigger id="patientName" className={errors.patientName ? 'border-red-500' : ''}>
-                <SelectValue placeholder="Select patient" />
-              </SelectTrigger>
-              <SelectContent>
-                {mockPatients.map((patient) => (
-                  <SelectItem key={patient.id} value={patient.name}>
-                    {patient.name} ({patient.id})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              <Select
+                value={formData.patientId}
+                onValueChange={(patientId) => {
+                  const selectedPatient = patients.find((p) => p.id === patientId);
+                  setFormData({
+                    ...formData,
+                    patientId,
+                    patientName: selectedPatient?.name || '',
+                    attendingPhysician:
+                      selectedPatient?.attendingPhysician || formData.attendingPhysician,
+                    patientRoom: selectedPatient?.room || formData.patientRoom,
+                  });
+                }}
+              >
+                <SelectTrigger id="patientName" className={errors.patientName ? 'border-red-500' : ''}>
+                  <SelectValue placeholder={patients.length ? 'Select patient' : 'No patients found'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {patients.length === 0 ? (
+                    <SelectItem value="__none" disabled>
+                      No patients found
+                    </SelectItem>
+                  ) : (
+                    patients.map((patient) => (
+                      <SelectItem key={patient.id} value={patient.id}>
+                        {patient.name} ({patient.id})
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
             {errors.patientName && (
               <p className="text-sm text-red-500">{errors.patientName}</p>
             )}
@@ -310,21 +273,15 @@ export function TaskModal({ open, onOpenChange, task, onSave, mode, allTasks = [
                 <Stethoscope className="w-4 h-4 text-blue-600" />
                 <Label htmlFor="attendingPhysician">Doctor *</Label>
               </div>
-              <Select
+              <Input
+                id="attendingPhysician"
+                placeholder="Physician name"
                 value={formData.attendingPhysician}
-                onValueChange={(value) => setFormData({ ...formData, attendingPhysician: value })}
-              >
-                <SelectTrigger id="attendingPhysician" className={errors.attendingPhysician ? 'border-red-500' : ''}>
-                  <SelectValue placeholder="Select doctor" />
-                </SelectTrigger>
-                <SelectContent>
-                  {doctors.map((doctor) => (
-                    <SelectItem key={doctor} value={doctor}>
-                      {doctor}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onChange={(e) =>
+                  setFormData({ ...formData, attendingPhysician: e.target.value })
+                }
+                className={errors.attendingPhysician ? 'border-red-500' : ''}
+              />
               {errors.attendingPhysician && (
                 <p className="text-sm text-red-500">{errors.attendingPhysician}</p>
               )}
@@ -335,34 +292,13 @@ export function TaskModal({ open, onOpenChange, task, onSave, mode, allTasks = [
                 <Bed className="w-4 h-4 text-gray-600" />
                 <Label htmlFor="patientRoom">Room *</Label>
               </div>
-              <Select
+              <Input
+                id="patientRoom"
+                placeholder="Room number"
                 value={formData.patientRoom}
-                onValueChange={(value) => setFormData({ ...formData, patientRoom: value })}
-              >
-                <SelectTrigger id="patientRoom" className={errors.patientRoom ? 'border-red-500' : ''}>
-                  <SelectValue placeholder="Select room" />
-                </SelectTrigger>
-                <SelectContent>
-                  {rooms.map((room) => {
-                    const occupation = occupiedRooms.get(room);
-                    const isOccupied = !!occupation;
-                    const displayText = isOccupied
-                      ? `${room} (Occupied - Patient: ${occupation.patientName})`
-                      : room;
-
-                    return (
-                      <SelectItem
-                        key={room}
-                        value={room}
-                        disabled={isOccupied}
-                        className={isOccupied ? 'text-gray-400' : ''}
-                      >
-                        {displayText}
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
+                onChange={(e) => setFormData({ ...formData, patientRoom: e.target.value })}
+                className={errors.patientRoom ? 'border-red-500' : ''}
+              />
               {errors.patientRoom && (
                 <p className="text-sm text-red-500">{errors.patientRoom}</p>
               )}

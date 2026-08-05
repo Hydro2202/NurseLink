@@ -17,25 +17,18 @@ import { Badge } from './Badge';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../constants/colors';
-
-interface Notification {
-  id: string;
-  type: 'critical' | 'warning' | 'info' | 'success';
-  title: string;
-  message: string;
-  time: string;
-  patient?: string;
-  isRead: boolean;
-  action?: {
-    label: string;
-    path: string;
-    highlightId?: string;
-  };
-}
+import {
+  fetchNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  ApiError,
+} from '../services/api';
+import type { AppNotification } from '../types/domain';
 
 interface NotificationPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  onUnreadChange?: (count: number) => void;
 }
 
 const PANEL_WIDTH = Math.min(Dimensions.get('window').width, 384);
@@ -45,76 +38,26 @@ function mapAppPath(path: string): string {
   return `/(app)/${clean}`;
 }
 
-export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
+export function NotificationPanel({ isOpen, onClose, onUnreadChange }: NotificationPanelProps) {
   const router = useRouter();
   const toast = useToast();
   const insets = useSafeAreaInsets();
   const slideAnim = useRef(new Animated.Value(PANEL_WIDTH)).current;
   const [visible, setVisible] = useState(false);
 
-  const [notifications, setNotifications] = useState<Notification[]>([
-    {
-      id: '1',
-      type: 'critical',
-      title: 'Critical Alert',
-      message: 'Vital signs unstable for Maria Garcia',
-      patient: 'ICU-202',
-      time: '2 mins ago',
-      isRead: false,
-      action: {
-        label: 'View Patient',
-        path: '/kardex',
-      },
-    },
-    {
-      id: '2',
-      type: 'warning',
-      title: 'Task Overdue',
-      message: 'Medication administration delayed',
-      patient: 'ICU-201',
-      time: '15 mins ago',
-      isRead: false,
-      action: {
-        label: 'Complete Task',
-        path: '/tasks',
-        highlightId: 'task-3',
-      },
-    },
-    {
-      id: '3',
-      type: 'info',
-      title: 'Lab Results Available',
-      message: 'Blood work results ready for review',
-      patient: 'Ward-105',
-      time: '30 mins ago',
-      isRead: false,
-      action: {
-        label: 'View Results',
-        path: '/charting',
-      },
-    },
-    {
-      id: '4',
-      type: 'success',
-      title: 'Task Completed',
-      message: 'Vital signs recorded successfully',
-      patient: 'ICU-203',
-      time: '1 hour ago',
-      isRead: false,
-    },
-    {
-      id: '5',
-      type: 'warning',
-      title: 'Shift Change Reminder',
-      message: 'Handover notes due in 30 minutes',
-      time: '1 hour ago',
-      isRead: false,
-      action: {
-        label: 'Review Handover',
-        path: '/handover',
-      },
-    },
-  ]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+
+  const loadNotifications = async () => {
+    try {
+      const data = await fetchNotifications();
+      setNotifications(data.results);
+      onUnreadChange?.(data.unreadCount);
+    } catch (error) {
+      toast.error('Failed to load notifications', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    }
+  };
 
   useEffect(() => {
     if (isOpen) {
@@ -125,6 +68,7 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
         duration: 280,
         useNativeDriver: true,
       }).start();
+      loadNotifications();
       return;
     }
 
@@ -151,19 +95,26 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
     }
   };
 
-  const handleMarkAllAsRead = () => {
-    const unreadCount = notifications.filter((n) => !n.isRead).length;
+  const handleMarkAllAsRead = async () => {
+    const unread = notifications.filter((n) => !n.isRead).length;
 
-    if (unreadCount === 0) {
+    if (unread === 0) {
       toast.info('All notifications are already marked as read');
       return;
     }
 
-    setNotifications(notifications.map((n) => ({ ...n, isRead: true })));
-
-    toast.success('All notifications marked as read', {
-      description: `${unreadCount} notification${unreadCount > 1 ? 's' : ''} marked as read`,
-    });
+    try {
+      await markAllNotificationsRead();
+      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+      onUnreadChange?.(0);
+      toast.success('All notifications marked as read', {
+        description: `${unread} notification${unread > 1 ? 's' : ''} marked as read`,
+      });
+    } catch (error) {
+      toast.error('Failed to update notifications', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    }
   };
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;

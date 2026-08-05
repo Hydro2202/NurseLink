@@ -33,8 +33,10 @@ export const Colors = {
   green50: '#F0FDF4',
   green100: '#DCFCE7',
   green200: '#BBF7D0',
+  green400: '#4ADE80',
   green600: '#16A34A',
   green700: '#15803D',
+  green800: '#166534',
 
   warning: '#F59E0B',
   warningHover: '#D97706',
@@ -44,6 +46,7 @@ export const Colors = {
   yellow200: '#FDE68A',
   orange50: '#FFF7ED',
   orange100: '#FFEDD5',
+  orange300: '#FDBA74',
   orange600: '#EA580C',
   orange700: '#C2410C',
 
@@ -53,6 +56,7 @@ export const Colors = {
   red50: '#FEF2F2',
   red100: '#FEE2E2',
   red200: '#FECACA',
+  red300: '#FCA5A5',
   red600: '#DC2626',
   red700: '#B91C1C',
 
@@ -75,9 +79,12 @@ export const Colors = {
   gray50: '#F9FAFB',
   gray100: '#F3F4F6',
   gray200: '#E5E7EB',
+  gray300: '#D1D5DB',
+  gray400: '#9CA3AF',
   gray500: '#6B7280',
   gray600: '#4B5563',
   gray700: '#374151',
+  gray800: '#1F2937',
   gray900: '#111827',
 
   white: '#FFFFFF',

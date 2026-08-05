@@ -1,5 +1,13 @@
-import React, { useState } from 'react';
-import { mockWorkloadData, mockTasks } from '../data/mockData';
+import React, { useMemo, useState } from 'react';
+import type { PatientAssignmentRecord, Task, WorkloadData } from '../types/domain';
+import {
+  fetchWorkload,
+  fetchTasks,
+  fetchAssignments,
+  createAssignment,
+  updateAssignment,
+  deleteAssignment,
+} from '../api/nurselink';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Progress } from '../components/ui/progress';
@@ -21,7 +29,6 @@ import {
   FileText,
 } from 'lucide-react';
 import { AssignPatientModal, PatientAssignment } from '../components/AssignPatientModal';
-import { addPatientAssignment, removePatientAssignment } from '../utils/patientAssignments';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,100 +39,100 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '../components/ui/alert-dialog';
+import { toast } from 'sonner';
+
+function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
+  return {
+    id: record.id,
+    patientName: record.patientName,
+    patientId: record.patientId,
+    room: record.room,
+    ward: record.ward,
+    diagnosis: record.diagnosis,
+    assignedNurse: record.assignedNurse,
+    assignedNurseId: record.assignedNurseId,
+    priority: record.priority,
+    notes: record.notes,
+    status: record.status,
+    assignedAt: new Date(record.assignedAt),
+    updatedAt: new Date(record.updatedAt),
+  };
+}
 
 export default function WorkloadPage() {
-  const highRiskNurses = mockWorkloadData.filter(n => n.burnoutRisk === 'high');
-  const mediumRiskNurses = mockWorkloadData.filter(n => n.burnoutRisk === 'medium');
-  const lowRiskNurses = mockWorkloadData.filter(n => n.burnoutRisk === 'low');
-
-  // Patient Assignment State
-  const [assignments, setAssignments] = useState<PatientAssignment[]>([
-    {
-      id: '1',
-      patientName: 'Maria Garcia',
-      patientId: 'P-2024-001',
-      room: 'ICU-202',
-      ward: 'ICU',
-      diagnosis: 'Myocardial Infarction',
-      assignedNurse: 'Sarah Johnson',
-      assignedNurseId: 'N001',
-      priority: 'urgent',
-      notes: 'Monitor vital signs every 15 minutes. Cardiac monitoring required.',
-      status: 'active',
-      assignedAt: new Date('2024-03-26T08:00:00'),
-      updatedAt: new Date('2024-03-26T08:00:00'),
-    },
-    {
-      id: '2',
-      patientName: 'John Smith',
-      patientId: 'P-2024-002',
-      room: 'ICU-201',
-      ward: 'ICU',
-      diagnosis: 'Post-operative care',
-      assignedNurse: 'David Kim',
-      assignedNurseId: 'N002',
-      priority: 'routine',
-      notes: 'Regular pain medication schedule. Monitor surgical site.',
-      status: 'active',
-      assignedAt: new Date('2024-03-26T07:30:00'),
-      updatedAt: new Date('2024-03-26T07:30:00'),
-    },
-  ]);
-
+  const [workloadData, setWorkloadData] = React.useState<WorkloadData[]>([]);
+  const [allTasks, setAllTasks] = React.useState<Task[]>([]);
+  const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingAssignment, setEditingAssignment] = useState<PatientAssignment | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [assignmentToDelete, setAssignmentToDelete] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // Available nurses for assignment
-  const availableNurses = mockWorkloadData.map(nurse => ({
+  const loadData = async () => {
+    try {
+      const [w, tasks, assignmentData] = await Promise.all([
+        fetchWorkload(),
+        fetchTasks(),
+        fetchAssignments({ status: 'active' }),
+      ]);
+      setWorkloadData(w);
+      setAllTasks(tasks);
+      setAssignments(assignmentData.map(toLocalAssignment));
+    } catch (e) {
+      console.error(e);
+      toast.error('Failed to load workload data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  React.useEffect(() => {
+    loadData();
+  }, []);
+
+  const highRiskNurses = workloadData.filter(n => n.burnoutRisk === 'high');
+  const mediumRiskNurses = workloadData.filter(n => n.burnoutRisk === 'medium');
+  const lowRiskNurses = workloadData.filter(n => n.burnoutRisk === 'low');
+
+  const availableNurses = workloadData.map(nurse => ({
     id: nurse.nurseId,
     name: nurse.nurseName,
     patientCount: nurse.patientCount,
   }));
 
-  const handleAssignPatient = (assignmentData: Omit<PatientAssignment, 'id' | 'assignedAt' | 'updatedAt' | 'status'>) => {
-    if (editingAssignment) {
-      // Update existing assignment
-      setAssignments(prev =>
-        prev.map(assignment =>
-          assignment.id === editingAssignment.id
-            ? {
-                ...assignment,
-                ...assignmentData,
-                updatedAt: new Date(),
-              }
-            : assignment
-        )
-      );
-      
-      // Update in patient assignments storage
-      addPatientAssignment({
+  const avgPatients = workloadData.length
+    ? workloadData.reduce((s, n) => s + n.patientCount, 0) / workloadData.length
+    : 0;
+  const avgOvertime = workloadData.length
+    ? workloadData.reduce((s, n) => s + n.overtimeHours, 0) / workloadData.length
+    : 0;
+
+  const handleAssignPatient = async (
+    assignmentData: Omit<PatientAssignment, 'id' | 'assignedAt' | 'updatedAt' | 'status'>
+  ) => {
+    try {
+      const payload = {
         patientId: assignmentData.patientId,
         nurseId: assignmentData.assignedNurseId,
         nurseName: assignmentData.assignedNurse,
-        attendingPhysician: 'Not Assigned', // Can be enhanced later
-      });
-      
-      setEditingAssignment(null);
-    } else {
-      // Create new assignment
-      const newAssignment: PatientAssignment = {
-        ...assignmentData,
-        id: `assignment-${Date.now()}`,
-        status: 'active',
-        assignedAt: new Date(),
-        updatedAt: new Date(),
+        priority: assignmentData.priority,
+        notes: assignmentData.notes,
+        ward: assignmentData.ward,
       };
-      setAssignments(prev => [newAssignment, ...prev]);
-      
-      // Save to patient assignments storage
-      addPatientAssignment({
-        patientId: assignmentData.patientId,
-        nurseId: assignmentData.assignedNurseId,
-        nurseName: assignmentData.assignedNurse,
-        attendingPhysician: 'Not Assigned', // Can be enhanced later
-      });
+      if (editingAssignment) {
+        await updateAssignment(editingAssignment.id, payload);
+        toast.success('Assignment updated');
+      } else {
+        await createAssignment(payload);
+        toast.success('Patient assigned');
+      }
+      setEditingAssignment(null);
+      setIsModalOpen(false);
+      await loadData();
+    } catch (e) {
+      console.error(e);
+      toast.error(editingAssignment ? 'Failed to update assignment' : 'Failed to create assignment');
     }
   };
 
@@ -139,9 +146,16 @@ export default function WorkloadPage() {
     setDeleteConfirmOpen(true);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (assignmentToDelete) {
-      setAssignments(prev => prev.filter(a => a.id !== assignmentToDelete));
+      try {
+        await deleteAssignment(assignmentToDelete);
+        setAssignments(prev => prev.filter(a => a.id !== assignmentToDelete));
+        toast.success('Assignment removed');
+      } catch (e) {
+        console.error(e);
+        toast.error('Failed to delete assignment');
+      }
       setAssignmentToDelete(null);
     }
     setDeleteConfirmOpen(false);
@@ -157,21 +171,53 @@ export default function WorkloadPage() {
     }).format(date);
   };
 
-  const avgOvertimeData = [
-    { shift: 'Morning', hours: 2.1 },
-    { shift: 'Afternoon', hours: 2.8 },
-    { shift: 'Night', hours: 3.5 },
-  ];
+  const avgOvertimeData = useMemo(() => {
+    const byShift: Record<string, number[]> = { Morning: [], Afternoon: [], Night: [] };
+    workloadData.forEach((n) => {
+      const key =
+        n.shift === 'afternoon' ? 'Afternoon' : n.shift === 'night' ? 'Night' : 'Morning';
+      byShift[key].push(n.overtimeHours);
+    });
+    return (['Morning', 'Afternoon', 'Night'] as const).map((shift) => {
+      const vals = byShift[shift];
+      const hours = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+      return { shift, hours: Math.round(hours * 10) / 10 };
+    });
+  }, [workloadData]);
 
-  const patientRatioData = [
-    { day: 'Mon', ratio: 3.2 },
-    { day: 'Tue', ratio: 3.5 },
-    { day: 'Wed', ratio: 3.8 },
-    { day: 'Thu', ratio: 3.4 },
-    { day: 'Fri', ratio: 3.6 },
-    { day: 'Sat', ratio: 3.9 },
-    { day: 'Sun', ratio: 4.1 },
-  ];
+  const patientRatioData = useMemo(
+    () =>
+      workloadData.map((n) => ({
+        day: n.nurseName.split(' ')[0] || n.nurseName,
+        ratio: n.patientCount,
+      })),
+    [workloadData]
+  );
+
+  const recommendations = useMemo(() => {
+    const items: string[] = [];
+    highRiskNurses.forEach((n) => {
+      items.push(
+        `Address high-risk nurse ${n.nurseName}: ${n.patientCount} patients, ${n.overtimeHours}h overtime`
+      );
+    });
+    if (avgPatients > 3) {
+      items.push(
+        `Optimize patient distribution: current average is 1:${avgPatients.toFixed(1)} patients per nurse`
+      );
+    }
+    const night = avgOvertimeData.find((d) => d.shift === 'Night');
+    if (night && night.hours > 2) {
+      items.push(
+        `Reduce night shift overtime: currently averaging ${night.hours}h — consider staffing adjustments`
+      );
+    }
+    return items;
+  }, [highRiskNurses, avgPatients, avgOvertimeData]);
+
+  if (loading) {
+    return <div className="p-8 text-center text-gray-600">Loading workload…</div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -213,7 +259,7 @@ export default function WorkloadPage() {
             <Users className="h-4 w-4 text-blue-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{mockWorkloadData.length}</div>
+            <div className="text-2xl font-bold">{workloadData.length}</div>
             <p className="text-xs text-gray-600 mt-1">Across all shifts</p>
           </CardContent>
         </Card>
@@ -224,8 +270,10 @@ export default function WorkloadPage() {
             <Activity className="h-4 w-4 text-blue-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">1:3.4</div>
-            <p className="text-xs text-gray-600 mt-1">Within acceptable range</p>
+            <div className="text-2xl font-bold">1:{avgPatients.toFixed(1)}</div>
+            <p className="text-xs text-gray-600 mt-1">
+              {workloadData.length ? 'Based on current assignments' : 'No nurses on duty'}
+            </p>
           </CardContent>
         </Card>
 
@@ -235,8 +283,8 @@ export default function WorkloadPage() {
             <Clock className="h-4 w-4 text-orange-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">2.8h</div>
-            <p className="text-xs text-orange-600 mt-1">+0.5h from last week</p>
+            <div className="text-2xl font-bold">{avgOvertime.toFixed(1)}h</div>
+            <p className="text-xs text-gray-600 mt-1">From nurse profiles</p>
           </CardContent>
         </Card>
 
@@ -492,8 +540,11 @@ export default function WorkloadPage() {
               <CardDescription>Detailed breakdown by nurse</CardDescription>
             </CardHeader>
             <CardContent>
+              {workloadData.length === 0 ? (
+                <p className="text-center py-8 text-gray-600">No records found.</p>
+              ) : (
               <div className="space-y-4">
-                {mockWorkloadData.map(nurse => (
+                {workloadData.map(nurse => (
                   <div key={nurse.nurseId} className={`p-4 border rounded-lg ${
                     nurse.burnoutRisk === 'high' ? 'bg-red-50 border-red-200' :
                     nurse.burnoutRisk === 'medium' ? 'bg-yellow-50 border-yellow-200' :
@@ -535,7 +586,9 @@ export default function WorkloadPage() {
                       <div>
                         <p className="text-xs text-gray-600">Completion Rate</p>
                         <p className="text-lg font-semibold">
-                          {Math.round((nurse.completedTasks / nurse.taskCount) * 100)}%
+                          {nurse.taskCount
+                            ? Math.round((nurse.completedTasks / nurse.taskCount) * 100)
+                            : 0}%
                         </p>
                       </div>
                       <div>
@@ -554,7 +607,7 @@ export default function WorkloadPage() {
                         <span>Task Progress</span>
                         <span>{nurse.completedTasks}/{nurse.taskCount}</span>
                       </div>
-                      <Progress value={(nurse.completedTasks / nurse.taskCount) * 100} />
+                      <Progress value={nurse.taskCount ? (nurse.completedTasks / nurse.taskCount) * 100 : 0} />
                     </div>
 
                     {nurse.burnoutRisk === 'high' && (
@@ -565,6 +618,7 @@ export default function WorkloadPage() {
                   </div>
                 ))}
               </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -576,6 +630,9 @@ export default function WorkloadPage() {
               <CardDescription>Overtime hours comparison across shifts</CardDescription>
             </CardHeader>
             <CardContent>
+              {workloadData.length === 0 ? (
+                <p className="text-center py-8 text-gray-600">No data available.</p>
+              ) : (
               <div className="w-full" key="overtime-chart-wrapper">
                 <ResponsiveContainer width="100%" height={300}>
                   <BarChart data={avgOvertimeData} key="workload-overtime-chart">
@@ -588,15 +645,20 @@ export default function WorkloadPage() {
                   </BarChart>
                 </ResponsiveContainer>
               </div>
+              )}
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
               <CardTitle>Nurse-to-Patient Ratio Trends</CardTitle>
-              <CardDescription>Weekly ratio analysis</CardDescription>
+              <CardDescription>Current patients per nurse</CardDescription>
             </CardHeader>
             <CardContent>
+              {patientRatioData.length === 0 ? (
+                <p className="text-center py-8 text-gray-600">No data available.</p>
+              ) : (
+              <>
               <div className="w-full" key="ratio-chart-wrapper">
                 <ResponsiveContainer width="100%" height={300}>
                   <LineChart data={patientRatioData} key="workload-ratio-chart">
@@ -611,9 +673,11 @@ export default function WorkloadPage() {
               </div>
               <div className="mt-4 p-3 bg-blue-50 rounded-lg">
                 <p className="text-sm text-blue-900">
-                  <strong>Note:</strong> Recommended ratio for ICU is 1:2. Current average is 1:3.4, which is above optimal levels.
+                  <strong>Note:</strong> Recommended ratio for ICU is 1:2. Current average is 1:{avgPatients.toFixed(1)}.
                 </p>
               </div>
+              </>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -622,70 +686,24 @@ export default function WorkloadPage() {
           <Card>
             <CardHeader>
               <CardTitle>Workload Optimization Recommendations</CardTitle>
-              <CardDescription>Evidence-based suggestions for improvement</CardDescription>
+              <CardDescription>Generated from live workload data</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {recommendations.length === 0 ? (
+                <p className="text-center py-8 text-gray-600">No recommendations available. Workload is within expected ranges or no data yet.</p>
+              ) : (
               <Alert>
                 <TrendingUp className="h-4 w-4" />
                 <AlertTitle>Priority Action Items</AlertTitle>
                 <AlertDescription>
                   <ul className="mt-2 space-y-2 text-sm">
-                    <li>• <strong>Reduce Night Shift Overtime:</strong> Night shift averaging 3.5h overtime - consider adding float nurse</li>
-                    <li>• <strong>Address High-Risk Nurses:</strong> David Kim requires immediate workload adjustment (3.5h overtime, 4 patients)</li>
-                    <li>• <strong>Optimize Patient Distribution:</strong> Redistribute patients to maintain 1:3 ratio maximum</li>
+                    {recommendations.map((item) => (
+                      <li key={item}>• {item}</li>
+                    ))}
                   </ul>
                 </AlertDescription>
               </Alert>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="p-4 border rounded-lg">
-                  <h4 className="font-semibold mb-2 flex items-center gap-2">
-                    <Users className="w-4 h-4 text-blue-600" />
-                    Staffing Recommendations
-                  </h4>
-                  <ul className="text-sm space-y-2 text-gray-700">
-                    <li>• Add 1 float nurse for night shifts</li>
-                    <li>• Consider part-time support for peak hours</li>
-                    <li>• Implement buddy system for high-workload periods</li>
-                  </ul>
-                </div>
-
-                <div className="p-4 border rounded-lg">
-                  <h4 className="font-semibold mb-2 flex items-center gap-2">
-                    <Clock className="w-4 h-4 text-orange-600" />
-                    Schedule Optimization
-                  </h4>
-                  <ul className="text-sm space-y-2 text-gray-700">
-                    <li>• Limit consecutive high-intensity shifts</li>
-                    <li>• Mandatory breaks after 6-hour periods</li>
-                    <li>• Rotate high-risk patient assignments</li>
-                  </ul>
-                </div>
-
-                <div className="p-4 border rounded-lg">
-                  <h4 className="font-semibold mb-2 flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-green-600" />
-                    Wellness Initiatives
-                  </h4>
-                  <ul className="text-sm space-y-2 text-gray-700">
-                    <li>• Weekly check-ins with high-risk nurses</li>
-                    <li>• Access to mental health resources</li>
-                    <li>• Peer support groups</li>
-                  </ul>
-                </div>
-
-                <div className="p-4 border rounded-lg">
-                  <h4 className="font-semibold mb-2 flex items-center gap-2">
-                    <CheckCircle className="w-4 h-4 text-blue-600" />
-                    Process Improvements
-                  </h4>
-                  <ul className="text-sm space-y-2 text-gray-700">
-                    <li>• Automate routine documentation</li>
-                    <li>• Streamline medication administration</li>
-                    <li>• Enhanced handover efficiency</li>
-                  </ul>
-                </div>
-              </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -701,7 +719,7 @@ export default function WorkloadPage() {
         onSubmit={handleAssignPatient}
         editingAssignment={editingAssignment}
         availableNurses={availableNurses}
-        allTasks={mockTasks}
+        allTasks={allTasks}
         allAssignments={assignments}
       />
 
