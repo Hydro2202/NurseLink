@@ -1,23 +1,24 @@
 import React from 'react';
 import { View, Text, StyleSheet, Image, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CheckCircle2, ChevronLeft, Clock, Eye, ShieldCheck } from 'lucide-react-native';
 import { Button } from '../components/Button';
 import { Card, CardContent } from '../components/Card';
 import { Colors, Radius, Shadows } from '../constants/colors';
 
-const COMPLETED_STEPS = [
-  'Identity Verification Completed',
-  'Hospital ID Successfully Verified',
-  'Face Verification Completed',
-  'Registration Information Submitted',
-];
-
 const PENDING_STEPS = ['PRC License Verification Pending', 'Account Approval Pending'];
 
 export default function PendingApprovalPage() {
   const router = useRouter();
+  const { method } = useLocalSearchParams<{ method?: string }>();
+
+  const COMPLETED_STEPS = [
+    'Identity Verification Completed',
+    'Hospital ID Successfully Verified',
+    method === 'EMAIL_OTP' ? 'Email OTP Verification Completed' : 'Face Verification Completed',
+    'Registration Information Submitted',
+  ];
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>

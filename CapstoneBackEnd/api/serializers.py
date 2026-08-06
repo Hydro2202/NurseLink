@@ -12,6 +12,7 @@ from .models import (
     NurseProfile,
     Patient,
     PatientAssignment,
+    RegistrationSession,
     Task,
 )
 from .utils import next_code
@@ -121,6 +122,9 @@ class SignupSerializer(serializers.Serializer):
     )
     department = serializers.CharField(required=False, allow_blank=True, default='')
     licenseNumber = serializers.CharField(required=False, allow_blank=True, default='')
+    registrationSessionId = serializers.UUIDField(
+        help_text='Session id returned by /auth/face-verification/, proving Face or Email OTP verification passed.',
+    )
 
     def validate_email(self, value):
         if User.objects.filter(username=value).exists() or User.objects.filter(email=value).exists():
@@ -131,11 +135,24 @@ class SignupSerializer(serializers.Serializer):
         validate_password(value)
         return value
 
+    def validate_registrationSessionId(self, value):
+        session = RegistrationSession.objects.filter(session_id=value).first()
+        if not session:
+            raise serializers.ValidationError('Registration session not found. Please restart verification.')
+        if session.user_id:
+            raise serializers.ValidationError('This registration session has already been used.')
+        if not session.is_verified:
+            raise serializers.ValidationError(
+                'Identity verification has not been completed. Please pass Face Verification or Email OTP first.'
+            )
+        return session
+
     def create(self, validated_data):
         email = validated_data['email']
         first_name = validated_data.get('firstName') or ''
         last_name = validated_data.get('lastName') or ''
         name = validated_data.get('name') or ''
+        session = validated_data['registrationSessionId']
 
         if not first_name and name:
             parts = name.split(' ', 1)
@@ -163,7 +180,10 @@ class SignupSerializer(serializers.Serializer):
                 license_number=validated_data.get('licenseNumber') or '',
                 middle_name=validated_data.get('middleName') or '',
                 approval_status='pending' if role == 'staff_nurse' else 'approved',
+                verification_method=session.verification_method,
             )
+            session.user = user
+            session.save(update_fields=['user', 'updated_at'])
         return user
 
 
@@ -186,6 +206,70 @@ class LoginSerializer(serializers.Serializer):
     class Meta:
         # Helps OpenAPI / Scalar show editable body fields
         ref_name = 'LoginRequest'
+
+
+class FaceVerificationSerializer(serializers.Serializer):
+    image = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text='Base64 (optionally data-URI prefixed) JPEG/PNG selfie capture. Required unless reset=true.',
+    )
+    idImage = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text='Base64 (optionally data-URI prefixed) Hospital ID photo to match against. Required unless reset=true.',
+    )
+    registrationSessionId = serializers.UUIDField(required=False)
+    registeredEmail = serializers.EmailField(
+        required=False,
+        help_text='The immutable registration email captured during Step 1. Required only when creating a session.',
+    )
+    reset = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text='Set true to reset the 3-attempt counter after the user chooses "Retake Face Verification".',
+    )
+
+    def validate(self, attrs):
+        if not attrs.get('reset'):
+            if not attrs.get('image'):
+                raise serializers.ValidationError({'image': 'This field is required.'})
+            if not attrs.get('idImage'):
+                raise serializers.ValidationError({'idImage': 'This field is required.'})
+            if not attrs.get('registrationSessionId') and not attrs.get('registeredEmail'):
+                raise serializers.ValidationError({'registeredEmail': 'The registered email is required to start verification.'})
+        return attrs
+
+
+class SendOtpSerializer(serializers.Serializer):
+    registrationSessionId = serializers.UUIDField()
+
+    def validate_registrationSessionId(self, value):
+        session = RegistrationSession.objects.filter(session_id=value).first()
+        if not session:
+            raise serializers.ValidationError('Registration session not found. Please restart verification.')
+        if not session.face_locked:
+            raise serializers.ValidationError('Email OTP is available only after three failed face verification attempts.')
+        if not session.email:
+            raise serializers.ValidationError('The registered email is unavailable. Please restart verification.')
+        return session
+
+
+class ResendOtpSerializer(SendOtpSerializer):
+    pass
+
+
+class VerifyOtpSerializer(serializers.Serializer):
+    otp = serializers.RegexField(r'^\d{6}$', error_messages={'invalid': 'OTP must be exactly 6 digits.'})
+    registrationSessionId = serializers.UUIDField()
+
+    def validate_registrationSessionId(self, value):
+        session = RegistrationSession.objects.filter(session_id=value).first()
+        if not session:
+            raise serializers.ValidationError('Registration session not found. Please restart verification.')
+        if not session.face_locked:
+            raise serializers.ValidationError('Email OTP is available only after three failed face verification attempts.')
+        return session
 
 
 class ChangePasswordSerializer(serializers.Serializer):

@@ -15,6 +15,18 @@ router.register(r'nurses', views.NurseViewSet, basename='nurse')
 
 urlpatterns = [
     path('auth/signup/', views.SignupView.as_view(), name='signup'),
+    path('auth/face-verification/', views.FaceVerificationView.as_view(), name='face-verification'),
+    path('auth/send-registration-otp/', views.SendRegistrationOtpView.as_view(), name='send-registration-otp'),
+    path(
+        'auth/verify-registration-otp/',
+        views.VerifyRegistrationOtpView.as_view(),
+        name='verify-registration-otp',
+    ),
+    path(
+        'auth/resend-registration-otp/',
+        views.ResendRegistrationOtpView.as_view(),
+        name='resend-registration-otp',
+    ),
     path('auth/login/', views.LoginView.as_view(), name='login'),
     path('auth/token/', views.OAuthTokenView.as_view(), name='oauth-token'),
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),

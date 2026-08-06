@@ -1,0 +1,158 @@
+"""Registration OTP lifecycle: generation, delivery, verification, resend."""
+
+from __future__ import annotations
+
+import secrets
+from datetime import timedelta
+
+from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
+from django.core.mail import send_mail
+from django.db import transaction
+from django.utils import timezone
+
+from .email_validation import validate_registration_email
+from .models import RegistrationOTP, RegistrationSession
+
+OTP_LENGTH = 6
+OTP_TTL = timedelta(minutes=5)
+RESEND_COOLDOWN = timedelta(seconds=60)
+MAX_VERIFY_ATTEMPTS = 5
+MAX_RESEND_ATTEMPTS = 3
+PURPOSE = 'registration'
+
+
+class OtpCooldownError(Exception):
+    def __init__(self, retry_after: int):
+        self.retry_after = retry_after
+        super().__init__(f'Please wait {retry_after}s before requesting another code.')
+
+
+class OtpDeliveryError(Exception):
+    pass
+
+
+class OtpResendLimitError(Exception):
+    pass
+
+
+def _generate_code() -> str:
+    return ''.join(secrets.choice('0123456789') for _ in range(OTP_LENGTH))
+
+
+def _send_otp_email(email: str, code: str) -> None:
+    subject = 'Your NurseLink verification code'
+    message = (
+        f'Your NurseLink registration verification code is: {code}\n\n'
+        'This code expires in 5 minutes. If you did not request this, you can '
+        'safely ignore this email.'
+    )
+    try:
+        send_mail(
+            subject,
+            message,
+            settings.DEFAULT_FROM_EMAIL,
+            [email],
+            fail_silently=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - collapse any transport failure into one error type
+        raise OtpDeliveryError('Failed to send OTP email. Please try again later.') from exc
+
+
+def issue_otp(session: RegistrationSession, *, is_resend: bool = False) -> RegistrationOTP:
+    """
+    Generate a new OTP, invalidate any previous active one for this session,
+    email it, and persist. Enforces the 60s resend cooldown based on the most
+    recently issued OTP for this session. Fully atomic: if email delivery
+    fails, the previous OTP is left untouched (no dangling undeliverable code).
+
+    Raises EmailValidationError (from api.email_validation) if the address
+    fails syntax/deliverability checks — no OTP is generated in that case.
+    """
+    email = validate_registration_email(session.email)
+
+    latest = (
+        RegistrationOTP.objects.filter(session=session, purpose=PURPOSE)
+        .order_by('-created_at')
+        .first()
+    )
+    if latest:
+        elapsed = timezone.now() - latest.created_at
+        if elapsed < RESEND_COOLDOWN:
+            retry_after = int((RESEND_COOLDOWN - elapsed).total_seconds()) + 1
+            raise OtpCooldownError(retry_after)
+
+    if is_resend:
+        issued_count = RegistrationOTP.objects.filter(session=session, purpose=PURPOSE).count()
+        # The first code is not a resend; at most three replacement codes are allowed.
+        if issued_count >= MAX_RESEND_ATTEMPTS + 1:
+            raise OtpResendLimitError('Maximum resend attempts reached. Please restart face verification.')
+
+    code = _generate_code()
+
+    with transaction.atomic():
+        RegistrationOTP.objects.filter(
+            session=session, purpose=PURPOSE, is_active=True
+        ).update(is_active=False)
+
+        otp = RegistrationOTP.objects.create(
+            session=session,
+            email=email,
+            otp_hash=make_password(code),
+            purpose=PURPOSE,
+            expires_at=timezone.now() + OTP_TTL,
+        )
+
+        _send_otp_email(email, code)
+
+        if session.email != email:
+            session.email = email
+            session.save(update_fields=['email', 'updated_at'])
+
+    return otp
+
+
+def verify_otp(session: RegistrationSession, submitted_code: str):
+    """
+    Returns (verified: bool, message: str, error_code: str | None).
+    error_code is one of NOT_FOUND, EXPIRED, MAX_ATTEMPTS, INVALID, or None on success.
+    """
+    otp = (
+        RegistrationOTP.objects.filter(
+            session=session, purpose=PURPOSE, is_active=True, verified=False
+        )
+        .order_by('-created_at')
+        .first()
+    )
+    if not otp:
+        return False, 'No active verification code found. Please request a new code.', 'NOT_FOUND'
+
+    if otp.expires_at < timezone.now():
+        otp.is_active = False
+        otp.save(update_fields=['is_active'])
+        return False, 'OTP expired. Please request a new code.', 'EXPIRED'
+
+    if otp.attempts >= MAX_VERIFY_ATTEMPTS:
+        otp.is_active = False
+        otp.save(update_fields=['is_active'])
+        return False, 'Maximum attempts reached. Please request a new code.', 'MAX_ATTEMPTS'
+
+    if otp.email.lower() != session.email.lower() or not check_password(submitted_code, otp.otp_hash):
+        otp.attempts += 1
+        if otp.attempts >= MAX_VERIFY_ATTEMPTS:
+            otp.is_active = False
+        otp.save(update_fields=['attempts', 'is_active'])
+        if otp.attempts >= MAX_VERIFY_ATTEMPTS:
+            return False, 'Maximum attempts reached. Please request a new code.', 'MAX_ATTEMPTS'
+        remaining = MAX_VERIFY_ATTEMPTS - otp.attempts
+        return False, f'Incorrect OTP. Please try again. {remaining} attempt(s) remaining.', 'INVALID'
+
+    otp.verified = True
+    otp.is_active = False
+    otp.save(update_fields=['verified', 'is_active'])
+
+    session.otp_verified = True
+    session.verification_method = 'EMAIL_OTP'
+    session.save(update_fields=['otp_verified', 'verification_method', 'updated_at'])
+
+    return True, 'OTP verified successfully.', None

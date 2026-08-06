@@ -4,12 +4,15 @@ from django.contrib.auth.models import User
 
 from .models import (
     ChartingNote,
+    FaceVerificationAttempt,
     HandoverNote,
     KardexRecord,
     Notification,
     NurseProfile,
     Patient,
     PatientAssignment,
+    RegistrationOTP,
+    RegistrationSession,
     Task,
 )
 
@@ -73,6 +76,38 @@ class PatientAssignmentAdmin(admin.ModelAdmin):
 class KardexRecordAdmin(admin.ModelAdmin):
     list_display = ('last_name', 'first_name', 'room', 'saved_by_name', 'saved_at')
     search_fields = ('last_name', 'first_name', 'room')
+
+
+@admin.register(RegistrationSession)
+class RegistrationSessionAdmin(admin.ModelAdmin):
+    list_display = (
+        'session_id',
+        'email',
+        'face_attempts',
+        'face_verified',
+        'otp_verified',
+        'verification_method',
+        'user',
+        'created_at',
+    )
+    list_filter = ('face_verified', 'otp_verified', 'verification_method')
+    search_fields = ('session_id', 'email')
+    readonly_fields = [f.name for f in RegistrationSession._meta.fields]
+
+
+@admin.register(RegistrationOTP)
+class RegistrationOTPAdmin(admin.ModelAdmin):
+    list_display = ('email', 'purpose', 'verified', 'is_active', 'attempts', 'created_at', 'expires_at')
+    list_filter = ('purpose', 'verified', 'is_active')
+    search_fields = ('email',)
+    readonly_fields = [f.name for f in RegistrationOTP._meta.fields]
+
+
+@admin.register(FaceVerificationAttempt)
+class FaceVerificationAttemptAdmin(admin.ModelAdmin):
+    list_display = ('session', 'matched', 'confidence', 'reason', 'countable', 'created_at')
+    list_filter = ('matched', 'reason', 'countable')
+    readonly_fields = [f.name for f in FaceVerificationAttempt._meta.fields]
 
 
 admin.site.unregister(User)

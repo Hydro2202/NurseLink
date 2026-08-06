@@ -34,7 +34,7 @@ export async function loginRequest(
 }
 
 export async function signupRequest(
-  userData: Omit<User, 'id'> & { password: string }
+  userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
 ): Promise<AuthResponse> {
   const data = await apiRequest<AuthResponse>('/auth/signup/', {
     method: 'POST',
@@ -43,6 +43,89 @@ export async function signupRequest(
   });
   setToken(data.token);
   return data;
+}
+
+export type FaceVerificationResponse = {
+  matched: boolean;
+  confidence: number;
+  registrationSessionId: string;
+  attemptsRemaining: number;
+  locked: boolean;
+  reason?: string | null;
+  message?: string;
+  reset?: boolean;
+};
+
+export async function faceVerificationRequest(
+  image: string,
+  idImage: string,
+  registrationSessionId?: string | null
+): Promise<FaceVerificationResponse> {
+  return apiRequest<FaceVerificationResponse>('/auth/face-verification/', {
+    method: 'POST',
+    body: registrationSessionId ? { image, idImage, registrationSessionId } : { image, idImage },
+    auth: false,
+  });
+}
+
+export async function resetFaceVerificationRequest(
+  registrationSessionId: string
+): Promise<FaceVerificationResponse> {
+  return apiRequest<FaceVerificationResponse>('/auth/face-verification/', {
+    method: 'POST',
+    body: { registrationSessionId, reset: true },
+    auth: false,
+  });
+}
+
+export type OtpSendResponse = {
+  success: boolean;
+  message: string;
+  expiresIn?: number;
+  resendCooldown?: number;
+  registrationSessionId?: string;
+  retryAfter?: number;
+};
+
+export async function sendRegistrationOtpRequest(
+  email: string,
+  registrationSessionId: string
+): Promise<OtpSendResponse> {
+  return apiRequest<OtpSendResponse>('/auth/send-registration-otp/', {
+    method: 'POST',
+    body: { email, registrationSessionId },
+    auth: false,
+  });
+}
+
+export async function resendRegistrationOtpRequest(
+  email: string,
+  registrationSessionId: string
+): Promise<OtpSendResponse> {
+  return apiRequest<OtpSendResponse>('/auth/resend-registration-otp/', {
+    method: 'POST',
+    body: { email, registrationSessionId },
+    auth: false,
+  });
+}
+
+export type OtpVerifyResponse = {
+  verified: boolean;
+  success: boolean;
+  method?: 'EMAIL_OTP';
+  message: string;
+};
+
+export async function verifyRegistrationOtpRequest(
+  email: string,
+  otp: string,
+  registrationSessionId: string
+): Promise<OtpVerifyResponse> {
+  return apiRequest<OtpVerifyResponse>('/auth/verify-registration-otp/', {
+    method: 'POST',
+    body: { email, otp, registrationSessionId },
+    auth: false,
+  });
 }
 
 export async function logoutRequest(): Promise<void> {

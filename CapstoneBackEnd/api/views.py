@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
+from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiExample, extend_schema, inline_serializer
@@ -9,32 +10,42 @@ from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from .email_validation import EmailValidationError
+from .face_match import FaceModelError, MAX_FACE_ATTEMPTS, verify_face_against_id
 from .models import (
     ChartingNote,
+    FaceVerificationAttempt,
     HandoverNote,
     KardexRecord,
     Notification,
     NurseProfile,
     Patient,
     PatientAssignment,
+    RegistrationSession,
     Task,
 )
+from .otp_service import OtpCooldownError, OtpDeliveryError, OtpResendLimitError, issue_otp, verify_otp
 from .permissions import IsSupervisor, get_user_role
 from .serializers import (
     ChangePasswordSerializer,
     ChartingNoteSerializer,
+    FaceVerificationSerializer,
     HandoverSerializer,
     KardexRecordSerializer,
     LoginSerializer,
     NotificationSerializer,
     PatientAssignmentSerializer,
     PatientSerializer,
+    ResendOtpSerializer,
+    SendOtpSerializer,
     SignupSerializer,
     TaskSerializer,
     UpdateMeSerializer,
     UserSerializer,
+    VerifyOtpSerializer,
 )
 
 
@@ -87,6 +98,276 @@ class SignupView(APIView):
         return Response(
             {'token': token.key, 'user': UserSerializer(user).data},
             status=status.HTTP_201_CREATED,
+        )
+
+
+class FaceVerificationView(APIView):
+    """
+    Real endpoint backing Step 3 of registration. Attempt counting and the
+    3-strike lockout are enforced server-side against RegistrationSession —
+    the frontend's local counter is just a mirror for instant UI feedback.
+
+    Two request shapes:
+      - {registrationSessionId, image, idImage}: run detection + recognition
+        (face_match.verify_face_against_id) comparing the selfie to the
+        Hospital ID photo.
+      - {registrationSessionId, reset: true}: called when the user picks
+        "Retake Face Verification" from the failure dialog after a lockout —
+        zeroes the attempt counter and clears the lock.
+
+    Detection/quality failures (no face, multiple faces, blurry, bad file
+    type) never consume an attempt — only a genuine face-to-face comparison
+    (match or mismatch) does. Every call is logged to FaceVerificationAttempt
+    for verification history; no raw image or embedding is ever persisted.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'face_verification'
+
+    @extend_schema(
+        request=FaceVerificationSerializer,
+        tags=['Auth'],
+        summary='Verify a live selfie against the Hospital ID photo (3-attempt face check)',
+        auth=None,
+    )
+    def post(self, request):
+        serializer = FaceVerificationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        session_id = data.get('registrationSessionId')
+        session = None
+        if session_id:
+            session = RegistrationSession.objects.filter(session_id=session_id).first()
+
+        if data.get('reset'):
+            if session is None:
+                return Response(
+                    {'success': False, 'message': 'Registration session not found. Please restart verification.'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            session.face_attempts = 0
+            session.face_locked = False
+            session.save(update_fields=['face_attempts', 'face_locked', 'updated_at'])
+            return Response(
+                {
+                    'matched': False,
+                    'confidence': 0,
+                    'registrationSessionId': str(session.session_id),
+                    'attemptsRemaining': MAX_FACE_ATTEMPTS,
+                    'locked': False,
+                    'reason': None,
+                    'reset': True,
+                }
+            )
+
+        if session is None:
+            # A client reload must resume the same server-side session instead
+            # of silently creating a fresh three-attempt budget.
+            registered_email = data['registeredEmail'].lower()
+            session = (
+                RegistrationSession.objects.filter(
+                    email=registered_email, user__isnull=True, face_verified=False, otp_verified=False
+                )
+                .order_by('-updated_at')
+                .first()
+            ) or RegistrationSession.objects.create(email=registered_email)
+
+        if session.face_verified:
+            return Response(
+                {
+                    'matched': True,
+                    'confidence': 100.0,
+                    'registrationSessionId': str(session.session_id),
+                    'attemptsRemaining': max(0, MAX_FACE_ATTEMPTS - session.face_attempts),
+                    'locked': False,
+                    'reason': None,
+                }
+            )
+
+        if session.face_locked:
+            return Response(
+                {
+                    'matched': False,
+                    'confidence': 0,
+                    'registrationSessionId': str(session.session_id),
+                    'attemptsRemaining': 0,
+                    'locked': True,
+                    'reason': None,
+                    'message': 'Maximum face verification attempts reached. Please use Email OTP verification.',
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            result = verify_face_against_id(data['image'], data['idImage'])
+        except FaceModelError as exc:
+            return Response(
+                {'success': False, 'message': str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # Re-read the session under a row lock so parallel requests cannot
+        # consume fewer than the required number of attempts.
+        with transaction.atomic():
+            session = RegistrationSession.objects.select_for_update().get(pk=session.pk)
+            if session.face_locked:
+                return Response(
+                    {
+                        'matched': False, 'confidence': 0,
+                        'registrationSessionId': str(session.session_id),
+                        'attemptsRemaining': 0, 'locked': True,
+                        'message': 'Maximum face verification attempts reached. Please use Email OTP verification.',
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            FaceVerificationAttempt.objects.create(
+                session=session,
+                matched=result.matched,
+                confidence=result.confidence,
+                reason=result.reason or '',
+                countable=True,
+            )
+
+            if result.matched:
+                session.face_verified = True
+                session.face_attempts = 0
+                session.face_locked = False
+                session.verification_method = 'FACE'
+                session.save(update_fields=['face_verified', 'face_attempts', 'face_locked', 'verification_method', 'updated_at'])
+                return Response(
+                    {
+                        'matched': True, 'confidence': result.confidence,
+                        'registrationSessionId': str(session.session_id),
+                        'attemptsRemaining': MAX_FACE_ATTEMPTS, 'locked': False, 'reason': None,
+                    }
+                )
+
+            session.face_attempts = min(MAX_FACE_ATTEMPTS, session.face_attempts + 1)
+            locked = session.face_attempts == MAX_FACE_ATTEMPTS
+            session.face_locked = locked
+            session.save(update_fields=['face_attempts', 'face_locked', 'updated_at'])
+            return Response(
+                {
+                    'matched': False, 'confidence': result.confidence,
+                    'registrationSessionId': str(session.session_id),
+                    'attemptsRemaining': MAX_FACE_ATTEMPTS - session.face_attempts,
+                    'locked': locked, 'reason': result.reason, 'message': result.message,
+                }
+            )
+
+class SendRegistrationOtpView(APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'registration_otp_send'
+
+    @extend_schema(
+        request=SendOtpSerializer,
+        tags=['Auth'],
+        summary='Send a registration OTP (used after 3 failed face attempts)',
+        auth=None,
+    )
+    def post(self, request):
+        serializer = SendOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        session = serializer.validated_data['registrationSessionId']
+
+        try:
+            issue_otp(session)
+        except EmailValidationError as exc:
+            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except OtpCooldownError as exc:
+            return Response(
+                {'success': False, 'message': str(exc), 'retryAfter': exc.retry_after},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        except OtpDeliveryError as exc:
+            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response(
+            {
+                'success': True,
+                'message': 'OTP sent successfully.',
+                'expiresIn': 300,
+                'resendCooldown': 60,
+                'registrationSessionId': str(session.session_id),
+            }
+        )
+
+
+class ResendRegistrationOtpView(APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'registration_otp_send'
+
+    @extend_schema(
+        request=ResendOtpSerializer,
+        tags=['Auth'],
+        summary='Resend a registration OTP (invalidates the previous code)',
+        auth=None,
+    )
+    def post(self, request):
+        serializer = ResendOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        session = serializer.validated_data['registrationSessionId']
+
+        try:
+            issue_otp(session, is_resend=True)
+        except EmailValidationError as exc:
+            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except OtpCooldownError as exc:
+            return Response(
+                {'success': False, 'message': str(exc), 'retryAfter': exc.retry_after},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        except OtpResendLimitError as exc:
+            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        except OtpDeliveryError as exc:
+            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response(
+            {
+                'success': True,
+                'message': 'OTP resent successfully.',
+                'expiresIn': 300,
+                'resendCooldown': 60,
+                'registrationSessionId': str(session.session_id),
+            }
+        )
+
+
+class VerifyRegistrationOtpView(APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'registration_otp_verify'
+
+    @extend_schema(
+        request=VerifyOtpSerializer,
+        tags=['Auth'],
+        summary='Verify a registration OTP code',
+        auth=None,
+    )
+    def post(self, request):
+        serializer = VerifyOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        session = serializer.validated_data['registrationSessionId']
+        code = serializer.validated_data['otp']
+
+        verified, message, error_code = verify_otp(session, code)
+
+        if verified:
+            return Response({'verified': True, 'success': True, 'method': 'EMAIL_OTP', 'message': message})
+
+        status_map = {
+            'NOT_FOUND': status.HTTP_404_NOT_FOUND,
+            'EXPIRED': status.HTTP_400_BAD_REQUEST,
+            'MAX_ATTEMPTS': status.HTTP_429_TOO_MANY_REQUESTS,
+            'INVALID': status.HTTP_400_BAD_REQUEST,
+        }
+        return Response(
+            {'verified': False, 'success': False, 'message': message},
+            status=status_map.get(error_code, status.HTTP_400_BAD_REQUEST),
         )
 
 

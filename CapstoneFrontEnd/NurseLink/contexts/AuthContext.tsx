@@ -18,7 +18,9 @@ export type { User, UserRole };
 interface AuthContextType {
   user: User | null;
   login: (email: string, password: string, role: UserRole) => Promise<boolean>;
-  signup: (userData: Omit<User, 'id'> & { password: string }) => Promise<boolean>;
+  signup: (
+    userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
+  ) => Promise<boolean>;
   logout: () => void;
   isAuthenticated: boolean;
   isLoading: boolean;
@@ -121,7 +123,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signup = async (userData: Omit<User, 'id'> & { password: string }): Promise<boolean> => {
+  const signup = async (
+    userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
+  ): Promise<boolean> => {
     setIsLoading(true);
     try {
       const { user: created } = await signupRequest(userData);

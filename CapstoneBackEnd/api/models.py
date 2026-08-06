@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -9,6 +11,10 @@ class NurseProfile(models.Model):
     ROLE_CHOICES = [
         ('staff_nurse', 'Staff Nurse'),
         ('supervisor', 'Supervisor'),
+    ]
+    VERIFICATION_METHOD_CHOICES = [
+        ('FACE', 'Face Verification'),
+        ('EMAIL_OTP', 'Email OTP'),
     ]
     CLINICAL_ROLE_CHOICES = [
         ('RN', 'RN'),
@@ -60,6 +66,9 @@ class NurseProfile(models.Model):
     hospital_name = models.CharField(max_length=200, blank=True, default='')
     ocr_position = models.CharField(max_length=120, blank=True, default='')
     rejection_reason = models.TextField(blank=True, default='')
+    verification_method = models.CharField(
+        max_length=20, choices=VERIFICATION_METHOD_CHOICES, blank=True, default=''
+    )
 
     class Meta:
         indexes = [
@@ -452,3 +461,127 @@ class KardexRecord(models.Model):
     def patient_name(self):
         parts = [self.first_name, self.middle_name, self.last_name]
         return ' '.join(p for p in parts if p).strip()
+
+
+class RegistrationSession(models.Model):
+    """
+    Tracks one in-progress signup wizard from the moment Face Verification is
+    first attempted through account creation. Anonymous (no user yet) — the
+    frontend carries `session_id` across steps 3-7 as its proof of identity
+    verification progress. The backend, not the client, is the source of
+    truth for face attempt counts and OTP verification status.
+    """
+
+    VERIFICATION_METHOD_CHOICES = NurseProfile.VERIFICATION_METHOD_CHOICES
+
+    session_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, db_index=True)
+    email = models.EmailField(blank=True, default='')
+    face_attempts = models.PositiveSmallIntegerField(default=0)
+    face_verified = models.BooleanField(default=False)
+    face_locked = models.BooleanField(default=False)
+    otp_verified = models.BooleanField(default=False)
+    verification_method = models.CharField(
+        max_length=20, choices=VERIFICATION_METHOD_CHOICES, blank=True, default=''
+    )
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='registration_session',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['session_id']),
+        ]
+
+    def __str__(self):
+        return f'RegistrationSession({self.session_id})'
+
+    @property
+    def is_verified(self) -> bool:
+        return self.face_verified or self.otp_verified
+
+
+class FaceVerificationAttempt(models.Model):
+    """
+    Verification history: one row per face-verification call. Stores only the
+    outcome (never raw images or biometric embeddings — those are decoded in
+    memory, compared, and discarded within the request).
+    """
+
+    REASON_CHOICES = [
+        ('', 'Match / genuine mismatch'),
+        ('NO_FACE', 'No face detected (selfie)'),
+        ('MULTIPLE_FACES', 'Multiple faces detected (selfie)'),
+        ('BLURRY', 'Selfie too blurry'),
+        ('ID_NO_FACE', 'No face detected (Hospital ID)'),
+        ('ID_MULTIPLE_FACES', 'Multiple faces detected (Hospital ID)'),
+        ('ID_BLURRY', 'Hospital ID photo too blurry'),
+        ('ID_NOT_IMAGE', 'Hospital ID not an image (e.g. PDF)'),
+        ('INVALID_IMAGE', 'Invalid/corrupt selfie image'),
+        ('ID_INVALID_IMAGE', 'Invalid/corrupt Hospital ID image'),
+        ('MISMATCH', 'Face did not match Hospital ID'),
+    ]
+
+    session = models.ForeignKey(
+        RegistrationSession,
+        on_delete=models.CASCADE,
+        related_name='face_attempts_log',
+    )
+    matched = models.BooleanField(default=False)
+    confidence = models.FloatField(default=0.0)
+    reason = models.CharField(max_length=30, choices=REASON_CHOICES, blank=True, default='')
+    countable = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['session', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f'FaceVerificationAttempt(session={self.session_id}, matched={self.matched}, reason={self.reason})'
+
+
+class RegistrationOTP(models.Model):
+    """One issued OTP code for email-based registration verification."""
+
+    PURPOSE_CHOICES = [
+        ('registration', 'Registration'),
+    ]
+
+    session = models.ForeignKey(
+        RegistrationSession,
+        on_delete=models.CASCADE,
+        related_name='otps',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='registration_otps',
+    )
+    email = models.EmailField(db_index=True)
+    otp_hash = models.CharField(max_length=128)
+    purpose = models.CharField(max_length=30, choices=PURPOSE_CHOICES, default='registration')
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    verified = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['session', 'purpose', 'is_active']),
+            models.Index(fields=['email']),
+        ]
+
+    def __str__(self):
+        return f'OTP({self.email}, active={self.is_active}, verified={self.verified})'

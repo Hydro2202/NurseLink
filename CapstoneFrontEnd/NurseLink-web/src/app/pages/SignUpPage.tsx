@@ -29,8 +29,50 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Card, CardContent } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
+import { InputOTP, InputOTPGroup, InputOTPSlot } from '../components/ui/input-otp';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../components/ui/alert-dialog';
 import { useAuth } from '../contexts/AuthContext';
+import { ApiError } from '../api/client';
+import {
+  faceVerificationRequest,
+  resendRegistrationOtpRequest,
+  resetFaceVerificationRequest,
+  sendRegistrationOtpRequest,
+  verifyRegistrationOtpRequest,
+} from '../api/nurselink';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
+
+function buildDirectoryEmail(fullName: string, hospitalName: string): string {
+  const parts = fullName.toLowerCase().split(/\s+/).filter(Boolean);
+  const first = parts[0] ?? 'employee';
+  const last = parts[parts.length - 1] ?? '';
+  const domain = hospitalName.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 24) || 'hospital';
+  return `${first}${last ? `.${last}` : ''}@${domain}.com`;
+}
+
+function maskEmail(email: string): string {
+  const [local, domain] = email.split('@');
+  if (!local || !domain) return email;
+  return `${local[0]}${'*'.repeat(Math.max(3, local.length - 1))}@${domain}`;
+}
+
+function extractErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    const data = err.data as { message?: string; detail?: string } | undefined;
+    return data?.message || data?.detail || fallback;
+  }
+  if (err instanceof TypeError) {
+    return 'Network error. Please check your connection and try again.';
+  }
+  return fallback;
+}
 
 const STEP_LABELS = ['Hospital ID', 'ID Review', 'Face Check', 'Role', 'PRC License', 'Role Check', 'Credentials'];
 const NURSE_POSITIONS = ['nurse', 'registered nurse', 'staff nurse'];
@@ -45,6 +87,7 @@ type OcrData = {
   hospitalName: string;
   department: string;
   position: string;
+  email: string;
 };
 
 const roleOptions: Array<{ value: SelectedRole; title: string; detail: string; emoji: string }> = [
@@ -181,11 +224,17 @@ function NavButtons({
   );
 }
 
-function RegistrationSubmitted({ onLogin }: { onLogin: () => void }) {
+function RegistrationSubmitted({
+  onLogin,
+  verificationMethod,
+}: {
+  onLogin: () => void;
+  verificationMethod: 'FACE' | 'EMAIL_OTP' | null;
+}) {
   const completedSteps = [
     'Identity Verification Completed',
     'Hospital ID Successfully Verified',
-    'Face Verification Completed',
+    verificationMethod === 'EMAIL_OTP' ? 'Email OTP Verification Completed' : 'Face Verification Completed',
     'Registration Information Submitted',
   ];
   const pendingSteps = ['PRC License Verification Pending', 'Account Approval Pending'];
@@ -311,6 +360,19 @@ export default function SignUpPage() {
   const [faceStatus, setFaceStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
   const [faceError, setFaceError] = useState('');
 
+  const [registrationSessionId, setRegistrationSessionId] = useState<string | null>(null);
+  const [faceAttemptsUsed, setFaceAttemptsUsed] = useState(0);
+  const [faceLocked, setFaceLocked] = useState(false);
+  const [faceModalOpen, setFaceModalOpen] = useState(false);
+  const [faceResetPending, setFaceResetPending] = useState(false);
+  const [showOtpPanel, setShowOtpPanel] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpStatus, setOtpStatus] = useState<'idle' | 'sending' | 'awaiting' | 'verifying' | 'verified'>('idle');
+  const [otpError, setOtpError] = useState('');
+  const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null);
+  const [otpResendAvailableAt, setOtpResendAvailableAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState(Date.now());
+
   const [selectedRole, setSelectedRole] = useState<SelectedRole>(null);
   const [roleMatch, setRoleMatch] = useState<'idle' | 'matched' | 'mismatch'>('idle');
   const [roleSelectError, setRoleSelectError] = useState('');
@@ -370,12 +432,15 @@ export default function SignUpPage() {
   const simulateOcr = useCallback(() => {
     setOcrStatus('processing');
     window.setTimeout(() => {
+      const fullName = 'Maria Santos Dela Cruz';
+      const hospitalName = "St. Luke's Medical Center";
       setOcrData({
-        fullName: 'Maria Santos Dela Cruz',
+        fullName,
         employeeId: `EMP-${Math.floor(10000 + Math.random() * 90000)}`,
-        hospitalName: "St. Luke's Medical Center",
+        hospitalName,
         department: 'Intensive Care Unit',
         position: 'Registered Nurse',
+        email: buildDirectoryEmail(fullName, hospitalName),
       });
       setOcrStatus('success');
     }, 1600);
@@ -443,7 +508,7 @@ export default function SignUpPage() {
   };
 
   const captureSelfie = () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || !hospitalIdPreview) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
     canvas.width = video.videoWidth || 640;
@@ -455,8 +520,133 @@ export default function SignUpPage() {
     setSelfiePreview(image);
     clearMedia();
     setFaceStatus('processing');
-    window.setTimeout(() => setFaceStatus('success'), 1500);
+    setFaceError('');
+
+    faceVerificationRequest(image, hospitalIdPreview, registrationSessionId)
+      .then((res) => {
+        setRegistrationSessionId(res.registrationSessionId);
+        setFaceAttemptsUsed(Math.max(0, 3 - res.attemptsRemaining));
+        if (res.matched) {
+          setFaceStatus('success');
+          return;
+        }
+        setFaceStatus('error');
+        setFaceError(res.message || 'Face verification failed. Please try again.');
+        if (res.locked) {
+          setFaceLocked(true);
+          setFaceModalOpen(true);
+        }
+      })
+      .catch((err) => {
+        setFaceStatus('error');
+        if (err instanceof ApiError && err.status === 403) {
+          const data = err.data as { registrationSessionId?: string; message?: string } | undefined;
+          if (data?.registrationSessionId) setRegistrationSessionId(data.registrationSessionId);
+          setFaceAttemptsUsed(3);
+          setFaceLocked(true);
+          setFaceModalOpen(true);
+        } else {
+          setFaceError(extractErrorMessage(err, 'Face verification failed. Please try again.'));
+        }
+      });
   };
+
+  const handleModalRetake = async () => {
+    if (!registrationSessionId) {
+      setFaceModalOpen(false);
+      setFaceLocked(false);
+      setFaceAttemptsUsed(0);
+      setFaceStatus('idle');
+      setFaceError('');
+      setSelfiePreview(null);
+      setCameraState('idle');
+      return;
+    }
+    setFaceResetPending(true);
+    try {
+      await resetFaceVerificationRequest(registrationSessionId);
+      setFaceModalOpen(false);
+      setFaceLocked(false);
+      setFaceAttemptsUsed(0);
+      setFaceStatus('idle');
+      setFaceError('');
+      setSelfiePreview(null);
+      setCameraState('idle');
+    } catch (err) {
+      setFaceError(extractErrorMessage(err, 'Could not reset verification. Please try again.'));
+    } finally {
+      setFaceResetPending(false);
+    }
+  };
+
+  const handleOpenOtp = async () => {
+    if (!registrationSessionId || !ocrData) return;
+    setOtpStatus('sending');
+    setOtpError('');
+    try {
+      const res = await sendRegistrationOtpRequest(ocrData.email, registrationSessionId);
+      setFaceModalOpen(false);
+      setShowOtpPanel(true);
+      setOtpStatus('awaiting');
+      setOtpCode('');
+      setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
+      setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
+    } catch (err) {
+      // Keep the failure modal open so the error is visible and retry is easy.
+      setOtpStatus('idle');
+      setOtpError(extractErrorMessage(err, 'Failed to send verification code. Please try again.'));
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (!registrationSessionId || !ocrData) return;
+    setOtpStatus('sending');
+    setOtpError('');
+    try {
+      const res = await resendRegistrationOtpRequest(ocrData.email, registrationSessionId);
+      setOtpStatus('awaiting');
+      setOtpCode('');
+      setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
+      setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
+    } catch (err) {
+      setOtpStatus('awaiting');
+      setOtpError(extractErrorMessage(err, 'Failed to resend verification code. Please try again.'));
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    if (!registrationSessionId || !ocrData || otpCode.length !== 6) return;
+    setOtpStatus('verifying');
+    setOtpError('');
+    try {
+      const res = await verifyRegistrationOtpRequest(ocrData.email, otpCode, registrationSessionId);
+      if (res.verified) {
+        setOtpStatus('verified');
+      } else {
+        setOtpStatus('awaiting');
+        setOtpError(res.message || 'Invalid OTP.');
+      }
+    } catch (err) {
+      setOtpStatus('awaiting');
+      setOtpError(extractErrorMessage(err, 'Verification failed. Please try again.'));
+    }
+  };
+
+  const handleBackToFaceFromOtp = async () => {
+    setShowOtpPanel(false);
+    await handleModalRetake();
+  };
+
+  useEffect(() => {
+    if (!showOtpPanel) return;
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [showOtpPanel]);
+
+  const otpResendSecondsLeft = otpResendAvailableAt
+    ? Math.max(0, Math.ceil((otpResendAvailableAt - nowTick) / 1000))
+    : 0;
+  const otpExpired = otpExpiresAt ? nowTick > otpExpiresAt && otpStatus !== 'verified' : false;
 
   const handlePrcVerify = useCallback(() => {
     if (!licenseNumber.trim()) {
@@ -518,6 +708,11 @@ export default function SignUpPage() {
     event.preventDefault();
     if (!validateCredentials()) return;
 
+    if (!registrationSessionId) {
+      setGlobalError('Identity verification session was lost. Please redo Face or Email OTP verification.');
+      return;
+    }
+
     setIsSubmitting(true);
     setGlobalError('');
 
@@ -534,6 +729,7 @@ export default function SignUpPage() {
         department: ocrData?.department ?? '',
         licenseNumber,
         createdAt: new Date().toISOString(),
+        registrationSessionId,
       });
       if (ok) {
         // Keep the user on the pending-approval screen; do not leave them logged in.
@@ -552,11 +748,13 @@ export default function SignUpPage() {
   const idUploaded = !!hospitalIdPreview && !hospitalIdError;
   const ocrDone = ocrStatus === 'success';
   const faceDone = faceStatus === 'success';
+  const identityVerified = faceDone || otpStatus === 'verified';
+  const verificationMethod: 'FACE' | 'EMAIL_OTP' | null = faceDone ? 'FACE' : otpStatus === 'verified' ? 'EMAIL_OTP' : null;
   const roleSelected = !!selectedRole;
   const prcDone = prcStatus === 'success';
   const roleVerified = roleMatch === 'matched';
   const credsDone = email.trim() !== '' && password.length >= 8 && password === confirmPassword;
-  const canSubmitCredentials = roleVerified && prcDone && faceDone && ocrDone && idUploaded && roleSelected;
+  const canSubmitCredentials = roleVerified && prcDone && identityVerified && ocrDone && idUploaded && roleSelected;
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
@@ -569,7 +767,7 @@ export default function SignUpPage() {
         </div>
 
         {submitted ? (
-          <RegistrationSubmitted onLogin={() => navigate('/login')} />
+          <RegistrationSubmitted onLogin={() => navigate('/login')} verificationMethod={verificationMethod} />
         ) : (
           <>
             <StepStepper current={step} />
@@ -769,95 +967,325 @@ export default function SignUpPage() {
                   <div className="space-y-5">
                     <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                       <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
-                      <p>
-                        This step is <strong className="text-amber-700">required</strong>. To verify your identity,
-                        you must capture a live selfie using your device&apos;s camera. Uploading images from your
-                        gallery is not permitted.
-                      </p>
+                      <div>
+                        <p>
+                          This step is <strong className="text-amber-700">required</strong>. To verify your identity,
+                          you must capture a live selfie using your device&apos;s camera. Uploading images from your
+                          gallery is not permitted.
+                        </p>
+                        <p className="mt-1">
+                          If face verification cannot be completed after 3 attempts, an alternative Email OTP option
+                          will be offered.
+                        </p>
+                      </div>
                     </div>
 
                     <canvas ref={canvasRef} className="hidden" />
 
-                    {selfiePreview ? (
-                      <div className="space-y-4">
-                        <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-950">
-                          <img src={selfiePreview} alt="Captured selfie" className="h-72 w-full object-cover" />
-                          {faceStatus === 'processing' && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
-                              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Analyzing face...
+                    {faceAttemptsUsed > 0 && !showOtpPanel && (
+                      <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5">
+                        <span className="text-sm font-medium text-gray-600">Face verification attempts</span>
+                        <div className="flex items-center gap-2">
+                          <div className="flex gap-1">
+                            {[0, 1, 2].map((i) => (
+                              <span
+                                key={i}
+                                className={`h-2 w-2 rounded-full ${
+                                  i < faceAttemptsUsed ? 'bg-red-500' : 'bg-gray-300'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <span className="text-sm font-bold text-red-600">{faceAttemptsUsed}/3</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {!faceLocked && !showOtpPanel && (
+                      <>
+                        {selfiePreview ? (
+                          <div className="space-y-4">
+                            <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-950">
+                              <img src={selfiePreview} alt="Captured selfie" className="h-72 w-full object-cover" />
+                              {faceStatus === 'processing' && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
+                                  <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Analyzing face...
+                                </div>
+                              )}
+                              {faceStatus === 'success' && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-green-500/20">
+                                  <div className="rounded-full bg-white p-4 shadow-lg">
+                                    <CheckCircle className="h-8 w-8 text-green-600" />
+                                  </div>
+                                </div>
+                              )}
+                              {faceStatus === 'error' && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-red-500/20">
+                                  <div className="rounded-full bg-white p-4 shadow-lg">
+                                    <XCircle className="h-8 w-8 text-red-600" />
+                                  </div>
+                                </div>
+                              )}
                             </div>
-                          )}
-                          {faceStatus === 'success' && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-green-500/20">
-                              <div className="rounded-full bg-white p-4 shadow-lg">
-                                <CheckCircle className="h-8 w-8 text-green-600" />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => {
+                                setSelfiePreview(null);
+                                setFaceStatus('idle');
+                                setFaceError('');
+                                setCameraState('idle');
+                              }}
+                              disabled={faceStatus === 'processing'}
+                              className="h-11 w-full rounded-full"
+                            >
+                              <RefreshCw className="mr-2 h-4 w-4" /> Retake Photo
+                            </Button>
+                          </div>
+                        ) : cameraState === 'active' ? (
+                          <div className="space-y-4">
+                            <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-black">
+                              <video ref={videoRef} className="h-72 w-full object-cover" playsInline muted autoPlay />
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <div className="h-40 w-32 rounded-3xl border-4 border-white/60" />
                               </div>
                             </div>
-                          )}
-                        </div>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={() => {
-                            setSelfiePreview(null);
-                            setFaceStatus('idle');
-                            setFaceError('');
-                            setCameraState('idle');
-                          }}
-                          className="h-11 w-full rounded-full"
-                        >
-                          <RefreshCw className="mr-2 h-4 w-4" /> Retake Photo
-                        </Button>
-                      </div>
-                    ) : cameraState === 'active' ? (
-                      <div className="space-y-4">
-                        <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-black">
-                          <video ref={videoRef} className="h-72 w-full object-cover" playsInline muted autoPlay />
-                          <div className="absolute inset-0 flex items-center justify-center">
-                            <div className="h-40 w-32 rounded-3xl border-4 border-white/60" />
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <Button
+                                type="button"
+                                onClick={captureSelfie}
+                                className="h-12 rounded-full bg-blue-600 text-white hover:bg-blue-700"
+                              >
+                                <Camera className="mr-2 h-4 w-4" /> Capture Photo
+                              </Button>
+                              <Button type="button" variant="outline" onClick={clearMedia} className="h-12 rounded-full">
+                                <X className="mr-2 h-4 w-4" /> Cancel
+                              </Button>
+                            </div>
                           </div>
-                        </div>
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <Button
-                            type="button"
-                            onClick={captureSelfie}
-                            className="h-12 rounded-full bg-blue-600 text-white hover:bg-blue-700"
-                          >
-                            <Camera className="mr-2 h-4 w-4" /> Capture Photo
-                          </Button>
-                          <Button type="button" variant="outline" onClick={clearMedia} className="h-12 rounded-full">
-                            <X className="mr-2 h-4 w-4" /> Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        <button
-                          type="button"
-                          onClick={openCamera}
-                          className="flex h-44 w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-blue-200 bg-blue-50/50 transition hover:border-blue-300 hover:bg-blue-50"
-                        >
-                          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-100">
-                            <Video className="h-7 w-7 text-blue-600" />
+                        ) : (
+                          <div className="space-y-4">
+                            <button
+                              type="button"
+                              onClick={openCamera}
+                              className="flex h-44 w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-blue-200 bg-blue-50/50 transition hover:border-blue-300 hover:bg-blue-50"
+                            >
+                              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-100">
+                                <Video className="h-7 w-7 text-blue-600" />
+                              </div>
+                              <span className="text-sm font-semibold text-blue-700">Open Camera</span>
+                              <span className="text-xs text-slate-500">
+                                Live selfie only — gallery uploads are not allowed
+                              </span>
+                            </button>
                           </div>
-                          <span className="text-sm font-semibold text-blue-700">Open Camera</span>
-                          <span className="text-xs text-slate-500">
-                            Live selfie only — gallery uploads are not allowed
-                          </span>
-                        </button>
+                        )}
+
                         {faceError && (
                           <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                            <AlertCircle className="h-4 w-4" />
+                            <XCircle className="h-4 w-4 shrink-0" />
                             {faceError}
                           </div>
                         )}
+                      </>
+                    )}
+
+                    <AlertDialog open={faceModalOpen}>
+                      <AlertDialogContent onEscapeKeyDown={(e) => e.preventDefault()}>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Face Verification Failed</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            We couldn&apos;t verify your identity after three attempts.
+                            <br />
+                            <br />
+                            Would you like to try Face Verification again or verify your identity using your
+                            registered email?
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        {otpError && (
+                          <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                            <AlertCircle className="h-4 w-4 shrink-0" />
+                            {otpError}
+                          </div>
+                        )}
+                        <AlertDialogFooter>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={handleModalRetake}
+                            disabled={faceResetPending || otpStatus === 'sending'}
+                            className="w-full sm:w-auto"
+                          >
+                            {faceResetPending ? (
+                              <>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Resetting...
+                              </>
+                            ) : (
+                              <>
+                                <RefreshCw className="mr-2 h-4 w-4" /> Retake Face Verification
+                              </>
+                            )}
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={handleOpenOtp}
+                            disabled={otpStatus === 'sending' || faceResetPending}
+                            className="w-full bg-gradient-to-r from-[#2563EB] to-blue-600 text-white sm:w-auto"
+                          >
+                            {otpStatus === 'sending' ? (
+                              <>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending code...
+                              </>
+                            ) : (
+                              <>
+                                <Mail className="mr-2 h-4 w-4" /> Verify via Email OTP
+                              </>
+                            )}
+                          </Button>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+
+                    {showOtpPanel && ocrData && (
+                      <div className="space-y-5 rounded-2xl border border-blue-200 bg-white p-5 sm:p-6">
+                        <div className="flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50 p-4">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100">
+                            <Mail className="h-5 w-5 text-blue-600" />
+                          </div>
+                          <div>
+                            <p className="font-bold text-blue-900">Alternative Identity Verification</p>
+                            <p className="text-sm text-blue-700">
+                              Receive a one-time verification code in your registered email address.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-800">
+                          <ShieldCheck className="h-4 w-4 shrink-0 text-amber-600" />
+                          Alternative verification method — used only when Face Verification cannot be completed
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-xs font-medium text-gray-500">Email Address</Label>
+                          <div className="relative">
+                            <Input
+                              readOnly
+                              value={maskEmail(ocrData.email)}
+                              aria-label="Registered email address"
+                              className="h-12 cursor-not-allowed rounded-xl border-gray-200 bg-gray-100 pr-20 font-medium text-gray-900"
+                            />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
+                              Read-only
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-xs font-medium text-gray-500">Enter 6-Digit Verification Code</Label>
+                          <InputOTP
+                            maxLength={6}
+                            value={otpCode}
+                            onChange={(value) => {
+                              setOtpCode(value);
+                              setOtpError('');
+                            }}
+                            disabled={otpStatus === 'verifying' || otpStatus === 'verified'}
+                          >
+                            <InputOTPGroup>
+                              {[0, 1, 2, 3, 4, 5].map((i) => (
+                                <InputOTPSlot key={i} index={i} className="h-11 w-11 text-base" />
+                              ))}
+                            </InputOTPGroup>
+                          </InputOTP>
+                        </div>
+
+                        {otpExpired && otpStatus !== 'verified' && (
+                          <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                            <AlertCircle className="h-4 w-4 shrink-0" />
+                            This code has expired. Please resend a new code.
+                          </div>
+                        )}
+
+                        {otpError && !otpExpired && (
+                          <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                            <AlertCircle className="h-4 w-4 shrink-0" />
+                            {otpError}
+                          </div>
+                        )}
+
+                        {otpStatus === 'verified' && (
+                          <div className="flex items-center gap-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                            <CheckCircle className="h-4 w-4 shrink-0" /> Email verified successfully.
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-500">
+                            {otpStatus === 'verified' ? (
+                              'Verification complete'
+                            ) : otpResendSecondsLeft > 0 ? (
+                              <>
+                                Resend available in{' '}
+                                <span className="font-semibold text-blue-600">{otpResendSecondsLeft}s</span>
+                              </>
+                            ) : (
+                              'You can resend the code now'
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={otpResendSecondsLeft > 0 || otpStatus === 'sending' || otpStatus === 'verified'}
+                            onClick={handleResendOtp}
+                            className="inline-flex items-center gap-1 font-semibold text-blue-600 disabled:cursor-not-allowed disabled:text-gray-400"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" /> Resend Code
+                          </button>
+                        </div>
+
+                        <Button
+                          type="button"
+                          onClick={handleVerifyOtp}
+                          disabled={
+                            otpCode.length !== 6 ||
+                            otpStatus === 'verifying' ||
+                            otpStatus === 'verified' ||
+                            otpExpired
+                          }
+                          className="h-12 w-full rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white shadow-md shadow-blue-200 disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-none disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none"
+                        >
+                          {otpStatus === 'verifying' ? (
+                            <>
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying...
+                            </>
+                          ) : (
+                            <>
+                              <Lock className="mr-2 h-4 w-4" /> Verify Code
+                            </>
+                          )}
+                        </Button>
+
+                        <div className="relative flex items-center py-1">
+                          <div className="h-px flex-1 bg-gray-200" />
+                          <span className="px-3 text-xs text-gray-400">or</span>
+                          <div className="h-px flex-1 bg-gray-200" />
+                        </div>
+
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleBackToFaceFromOtp}
+                          disabled={otpStatus === 'verified'}
+                          className="h-11 w-full rounded-full"
+                        >
+                          <RefreshCw className="mr-2 h-4 w-4" /> Try Face Verification Again
+                        </Button>
                       </div>
                     )}
 
                     <NavButtons
                       onBack={() => setStep(2)}
                       onContinue={() => setStep(4)}
-                      continueDisabled={faceStatus !== 'success'}
+                      continueDisabled={!identityVerified}
                     />
                   </div>
                 )}
@@ -1161,7 +1589,10 @@ export default function SignUpPage() {
                         {[
                           { label: 'Hospital ID Uploaded', done: idUploaded },
                           { label: 'OCR Completed', done: ocrDone },
-                          { label: 'Face Verified', done: faceDone },
+                          {
+                            label: verificationMethod === 'EMAIL_OTP' ? 'Email OTP Verified' : 'Face Verified',
+                            done: identityVerified,
+                          },
                           { label: 'Role Selected', done: roleSelected },
                           { label: 'PRC Verified', done: prcDone },
                           { label: 'Role Matched', done: roleVerified },
