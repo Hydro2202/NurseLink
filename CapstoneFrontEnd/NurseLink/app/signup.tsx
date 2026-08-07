@@ -28,9 +28,7 @@ import {
   Upload,
   UserPlus,
   Users,
-  Video,
   X,
-  XCircle,
 } from 'lucide-react-native';
 import type { UserRole } from '../contexts/AuthContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -39,6 +37,9 @@ import { Input } from '../components/Input';
 import { Card, CardContent } from '../components/Card';
 import { Alert, AlertDescription } from '../components/Alert';
 import { Colors, Radius, Shadows } from '../constants/colors';
+import { FaceCheckStep } from './components/FaceCheckStep';
+import { uploadIdDocument, submitFaceCapture } from '../services/api';
+import type { FaceVerificationResponse } from '../services/api';
 
 type WizardStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 type ProcessStatus = 'idle' | 'processing' | 'success' | 'failed';
@@ -214,8 +215,15 @@ export default function SignUpPage() {
   const [role, setRole] = useState<UserRole | ''>('');
   const [licenseNumber, setLicenseNumber] = useState('');
   const [hospitalIdUri, setHospitalIdUri] = useState<string | null>(null);
+  const [idDocumentId, setIdDocumentId] = useState<number | null>(null);
+  const [uploadingId, setUploadingId] = useState(false);
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
+  const [faceCaptureUris, setFaceCaptureUris] = useState<string[]>([]);
+  const [faceVerificationResult, setFaceVerificationResult] = useState<FaceVerificationResponse | null>(null);
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
+  // I change this by rai
+  const [faceFailedAttempts, setFaceFailedAttempts] = useState(0);
+  const [otpVerificationId, setOtpVerificationId] = useState<number | null>(null);
   const [prcStatus, setPrcStatus] = useState<ProcessStatus>('idle');
   const [prcData, setPrcData] = useState<{ profession: string; expiration: string } | null>(null);
   const [ocrData, setOcrData] = useState(defaultOcrData);
@@ -238,30 +246,45 @@ export default function SignUpPage() {
     return 1;
   })();
 
-  const simulateOcr = () => {
-    setOcrStatus('processing');
-    setTimeout(() => {
-      setOcrData({
-        fullName: 'Maria Santos Dela Cruz',
-        employeeId: `EMP-${Math.floor(10000 + Math.random() * 90000)}`,
-        hospitalName: "St. Luke's Medical Center",
-        department: 'Intensive Care Unit',
-        position: 'Registered Nurse',
-      });
-      setOcrStatus('success');
-      setHospitalIdCompleted(true);
-    }, 900);
-  };
-
-  const handleIdImage = (uri: string) => {
+  const handleIdImage = async (uri: string) => {
+    setError('');
     setHospitalIdUri(uri);
+    setHospitalIdCompleted(true);
+    setIdDocumentId(null);
+    setUploadingId(true);
     setIdReviewCompleted(false);
     setFaceVerificationCompleted(false);
     setRoleSelected(false);
     setRole('');
     setPrcVerified(false);
     setRoleVerified(false);
-    simulateOcr();
+    setFaceVerificationResult(null);
+    setFaceCaptureUris([]);
+    setOcrStatus('processing');
+    setOcrData(defaultOcrData);
+
+    try {
+      const uploadResponse = await uploadIdDocument(uri);
+      setIdDocumentId(uploadResponse.idDocumentId);
+      // I change this by rai — real OCR data from the backend, replacing the
+      // old simulateOcr() that faked a hardcoded name after a timer
+      setOcrData({
+        fullName: uploadResponse.ocrData.fullName,
+        employeeId: uploadResponse.ocrData.employeeId,
+        hospitalName: uploadResponse.ocrData.hospitalName,
+        department: uploadResponse.ocrData.department,
+        position: uploadResponse.ocrData.position,
+      });
+      setOcrStatus('success');
+    } catch (uploadError) {
+      const message = uploadError instanceof Error ? uploadError.message : 'ID upload failed.';
+      setError(message);
+      setOcrStatus('idle');
+      setUploadingId(false);
+      return;
+    } finally {
+      setUploadingId(false);
+    }
   };
 
   const handleIdUpload = async () => {
@@ -290,28 +313,33 @@ export default function SignUpPage() {
     if (!result.canceled) handleIdImage(result.assets[0].uri);
   };
 
-  const handleFaceVerification = async () => {
+  const handleFaceVerificationComplete = async (capturedUris: string[]) => {
+    if (!idDocumentId) {
+      setError('Please upload your ID first before attempting face verification.');
+      return;
+    }
     setError('');
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      setError('Camera access is required for face verification.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      quality: 0.9,
-      allowsEditing: false,
-      cameraType: ImagePicker.CameraType.front,
-    });
-    if (result.canceled) {
-      setFaceStatus('failed');
-      return;
-    }
-    setSelfieUri(result.assets[0].uri);
     setFaceStatus('processing');
-    setTimeout(() => {
-      setFaceStatus('success');
-      setFaceVerificationCompleted(true);
-    }, 900);
+    setFaceCaptureUris(capturedUris);
+    setSelfieUri(capturedUris[0] || null);
+
+    try {
+      const result = await submitFaceCapture(idDocumentId, capturedUris);
+      setFaceVerificationResult(result);
+      if (result.status === 'verified') {
+        setFaceStatus('success');
+        setFaceVerificationCompleted(true);
+      } else {
+        setFaceStatus('failed');
+        setFaceVerificationCompleted(false);
+        setError(result.message || 'Face verification did not meet the required confidence threshold. Please try again.');
+      }
+    } catch (verificationError) {
+      const message = verificationError instanceof Error ? verificationError.message : 'Face verification failed. Please try again.';
+      setError(message);
+      setFaceStatus('failed');
+      setFaceVerificationCompleted(false);
+    }
   };
 
   const verifyPrc = () => {
@@ -351,7 +379,7 @@ export default function SignUpPage() {
   const handleCreateAccount = async () => {
     setError('');
     if (!validateCredentials()) return;
-    if (!roleVerified || !prcVerified || !faceVerificationCompleted || !hospitalIdCompleted || !roleSelected) {
+    if (!roleVerified || !prcVerified || !faceVerificationCompleted || !hospitalIdCompleted || !roleSelected || !idDocumentId) {
       setError('Please complete all verification steps before creating your account.');
       return;
     }
@@ -367,6 +395,9 @@ export default function SignUpPage() {
         password,
         department: ocrData.department,
         licenseNumber: licenseNumber.trim(),
+        idDocumentId,
+        faceVerificationId: faceVerificationResult?.faceVerificationId,
+        otpVerificationId: otpVerificationId ?? undefined, // I change this by rai
       });
     } catch (err) {
       console.error(err);
@@ -378,9 +409,9 @@ export default function SignUpPage() {
   };
 
   const roleMatch = getRoleMatch(ocrData.position, role);
-  const idUploaded = !!hospitalIdUri && hospitalIdCompleted;
+  const idUploaded = !!hospitalIdUri && hospitalIdCompleted && !!idDocumentId;
   const ocrDone = ocrStatus === 'success';
-  const faceDone = faceStatus === 'success';
+  const faceDone = faceStatus === 'success' || otpVerificationId != null; // I change this by rai
   const credsDone = email.trim() !== '' && password.length >= 8 && password === confirmPassword;
   const canSubmit =
     roleVerified && prcVerified && faceDone && ocrDone && idUploaded && roleSelected && credsDone;
@@ -496,7 +527,14 @@ export default function SignUpPage() {
                       </View>
                     )}
 
-                    <NavButtons showBack={false} onContinue={() => setCurrentStep(2)} continueDisabled={ocrStatus !== 'success'} />
+                    <NavButtons
+                      showBack={false}
+                      onContinue={() => {
+                        setIdReviewCompleted(true);
+                        setCurrentStep(2);
+                      }}
+                      continueDisabled={!hospitalIdUri || ocrStatus !== 'success'}
+                    />
                   </View>
                 )}
 
@@ -546,38 +584,57 @@ export default function SignUpPage() {
                       </Text>
                     </View>
 
-                    {selfieUri ? (
-                      <View style={styles.selfieWrap}>
-                        <Image source={{ uri: selfieUri }} style={styles.selfieImage} />
-                        {faceStatus === 'processing' && (
-                          <View style={styles.selfieOverlay}>
-                            <ActivityIndicator color={Colors.white} />
-                            <Text style={styles.selfieOverlayText}>Analyzing face...</Text>
-                          </View>
-                        )}
-                        {faceStatus === 'success' && (
-                          <View style={[styles.selfieOverlay, styles.selfieOverlaySuccess]}>
-                            <CheckCircle2 size={32} color={Colors.green600} />
-                          </View>
-                        )}
-                      </View>
-                    ) : (
-                      <Pressable style={styles.cameraZone} onPress={handleFaceVerification}>
-                        <View style={styles.cameraIconCircle}>
-                          <Video size={28} color={Colors.blue600} />
+                    {/* I change this by rai — failedAttempts + OTP fallback wiring below */}
+                    <FaceCheckStep
+                      idDocumentId={idDocumentId}
+                      isLoading={faceStatus === 'processing'}
+                      error={faceStatus === 'failed' ? error : undefined}
+                      failedAttempts={faceFailedAttempts}
+                      onFailedAttemptsChange={setFaceFailedAttempts}
+                      onCaptureComplete={handleFaceVerificationComplete}
+                      onRetry={() => {
+                        setFaceStatus('idle');
+                        setFaceVerificationCompleted(false);
+                        setFaceVerificationResult(null);
+                        setFaceCaptureUris([]);
+                        setError('');
+                      }}
+                      onCancel={() => setCurrentStep(2)}
+                      onOtpFallbackVerified={(id, verifiedEmail) => {
+                        setOtpVerificationId(id);
+                        setEmail(verifiedEmail);
+                        setFaceVerificationCompleted(true);
+                        setError('');
+                      }}
+                    />
+
+                    {faceVerificationResult && faceVerificationResult.status === 'verified' && (
+                      <View style={styles.successBox}>
+                        <CheckCircle2 size={18} color={Colors.green600} />
+                        <View style={styles.successBoxText}>
+                          <Text style={styles.successBoxTitle}>Face Verified Successfully</Text>
+                          <Text style={styles.successBoxDesc}>Your live captures matched the uploaded ID photo. Continue to complete registration.</Text>
                         </View>
-                        <Text style={styles.cameraZoneTitle}>Open Camera</Text>
-                        <Text style={styles.cameraZoneHint}>Live selfie only — gallery uploads are not allowed</Text>
-                      </Pressable>
+                      </View>
                     )}
 
-                    {selfieUri && faceStatus !== 'processing' && (
-                      <Button variant="outline" size="lg" onPress={() => { setSelfieUri(null); setFaceStatus('idle'); setFaceVerificationCompleted(false); }}>
-                        <Text style={navStyles.backText}>Retake Photo</Text>
-                      </Button>
+                    {/* I change this by rai */}
+                    {otpVerificationId != null && (
+                      <View style={styles.successBox}>
+                        <CheckCircle2 size={18} color={Colors.green600} />
+                        <View style={styles.successBoxText}>
+                          <Text style={styles.successBoxTitle}>Email Verified Successfully</Text>
+                          <Text style={styles.successBoxDesc}>Your identity was confirmed by email code. Continue to complete registration.</Text>
+                        </View>
+                      </View>
                     )}
 
-                    <NavButtons onBack={() => setCurrentStep(2)} onContinue={() => setCurrentStep(4)} continueDisabled={faceStatus !== 'success'} />
+                    {/* I change this by rai — continue is now also allowed via the OTP fallback path */}
+                    <NavButtons
+                      onBack={() => setCurrentStep(2)}
+                      onContinue={() => setCurrentStep(4)}
+                      continueDisabled={faceCaptureUris.length === 0 && otpVerificationId == null}
+                    />
                   </View>
                 )}
 
@@ -791,7 +848,8 @@ export default function SignUpPage() {
                       {[
                         { label: 'Hospital ID Uploaded', done: idUploaded },
                         { label: 'OCR Information Extracted', done: ocrDone },
-                        { label: 'Face Verification Passed', done: faceDone },
+                        // I change this by rai
+                        { label: otpVerificationId != null ? 'Identity Verified by Email' : 'Face Verification Passed', done: faceDone },
                         { label: 'Role Selected', done: roleSelected },
                         { label: 'PRC License Verified', done: prcVerified },
                         { label: 'Role Verified & Matched', done: roleVerified },

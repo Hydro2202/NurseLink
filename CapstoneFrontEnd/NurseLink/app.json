@@ -40,6 +40,18 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "NurseLink uses your camera to verify your identity by matching a live photo against your uploaded ID."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "NurseLink uses your camera to verify your identity by matching a live photo against your uploaded ID."
+        }
       ]
     ],
     "experiments": {

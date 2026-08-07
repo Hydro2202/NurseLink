@@ -8,9 +8,27 @@
  * - Run Django as: python manage.py runserver 0.0.0.0:8000
  */
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 
-const DEFAULT_HOST =
-  Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://127.0.0.1:8000';
+function getHostFromManifest(): string | null {
+  const hostString =
+    typeof Constants.manifest === 'object' && Constants.manifest?.debuggerHost
+      ? String(Constants.manifest.debuggerHost)
+      : typeof Constants.manifest2 === 'object' && Constants.manifest2?.debuggerHost
+      ? String(Constants.manifest2.debuggerHost)
+      : null;
+
+  if (!hostString) return null;
+  const [host] = hostString.split(':');
+  return host || null;
+}
+
+const manifestHost = getHostFromManifest();
+const DEFAULT_HOST = manifestHost
+  ? `http://${manifestHost}:8000`
+  : Platform.OS === 'android'
+  ? 'http://10.0.2.2:8000'
+  : 'http://127.0.0.1:8000';
 
 export const API_BASE_URL = (
   process.env.EXPO_PUBLIC_API_URL || `${DEFAULT_HOST}/api`

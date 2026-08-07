@@ -2,6 +2,8 @@
   "extends": "./node_modules/expo/tsconfig.base.json",
   "compilerOptions": {
     "strict": true,
+    // I change this by rai
+    "moduleSuffixes": [".ios", ".android", ".native", ""],
     "paths": {
       "@/*": [
         "./*"
