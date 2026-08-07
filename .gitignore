@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+**/node_modules/
+
+# python
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+
+# django
+db.sqlite3
+media/
+
+# expo / vite build output
+.expo/
+dist/
+web-build/
+
+# editor
+.vscode/
+
+# env
+.env
+.env*.local
+**/.env
+!**/.env.example
