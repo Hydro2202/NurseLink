@@ -145,11 +145,34 @@ export type FaceVerificationResponse = {
   matched: boolean;
   confidence: number;
   registrationSessionId: string;
+  attemptsUsed?: number;
   attemptsRemaining: number;
+  maxAttempts?: number;
   locked: boolean;
+  faceVerified?: boolean;
+  otpVerified?: boolean;
+  verificationMethod?: string | null;
+  status?: string;
+  registeredEmail?: string | null;
   reason?: string | null;
   message?: string;
   reset?: boolean;
+  countable?: boolean;
+};
+
+export type FaceVerificationStatusResponse = {
+  success?: boolean;
+  message?: string;
+  registrationSessionId?: string;
+  attemptsUsed: number;
+  attemptsRemaining: number;
+  maxAttempts: number;
+  locked: boolean;
+  faceVerified: boolean;
+  otpVerified: boolean;
+  verificationMethod?: string | null;
+  status: string;
+  registeredEmail?: string | null;
 };
 
 export async function faceVerificationRequest(
@@ -175,6 +198,19 @@ export async function resetFaceVerificationRequest(
   });
 }
 
+export async function faceVerificationStatusRequest(params: {
+  registrationSessionId?: string | null;
+  registeredEmail?: string;
+}): Promise<FaceVerificationStatusResponse> {
+  return apiRequest<FaceVerificationStatusResponse>('/auth/face-verification/status/', {
+    method: 'POST',
+    body: params.registrationSessionId
+      ? { registrationSessionId: params.registrationSessionId }
+      : { registeredEmail: params.registeredEmail },
+    auth: false,
+  });
+}
+
 export type OtpSendResponse = {
   success: boolean;
   message: string;
@@ -185,21 +221,23 @@ export type OtpSendResponse = {
 };
 
 export async function sendRegistrationOtpRequest(
+  email: string,
   registrationSessionId: string
 ): Promise<OtpSendResponse> {
   return apiRequest<OtpSendResponse>('/auth/send-registration-otp/', {
     method: 'POST',
-    body: { registrationSessionId },
+    body: { email, registrationSessionId },
     auth: false,
   });
 }
 
 export async function resendRegistrationOtpRequest(
+  email: string,
   registrationSessionId: string
 ): Promise<OtpSendResponse> {
   return apiRequest<OtpSendResponse>('/auth/resend-registration-otp/', {
     method: 'POST',
-    body: { registrationSessionId },
+    body: { email, registrationSessionId },
     auth: false,
   });
 }

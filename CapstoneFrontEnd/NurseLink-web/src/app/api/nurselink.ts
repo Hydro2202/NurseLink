@@ -49,21 +49,45 @@ export type FaceVerificationResponse = {
   matched: boolean;
   confidence: number;
   registrationSessionId: string;
+  attemptsUsed?: number;
   attemptsRemaining: number;
+  maxAttempts?: number;
   locked: boolean;
+  faceVerified?: boolean;
+  otpVerified?: boolean;
+  verificationMethod?: string | null;
+  status?: string;
+  registeredEmail?: string | null;
   reason?: string | null;
   message?: string;
   reset?: boolean;
+  countable?: boolean;
+};
+
+export type FaceVerificationStatusResponse = {
+  success?: boolean;
+  message?: string;
+  registrationSessionId?: string;
+  attemptsUsed: number;
+  attemptsRemaining: number;
+  maxAttempts: number;
+  locked: boolean;
+  faceVerified: boolean;
+  otpVerified: boolean;
+  verificationMethod?: string | null;
+  status: string;
+  registeredEmail?: string | null;
 };
 
 export async function faceVerificationRequest(
   image: string,
   idImage: string,
-  registrationSessionId?: string | null
+  registrationSessionId?: string | null,
+  registeredEmail?: string
 ): Promise<FaceVerificationResponse> {
   return apiRequest<FaceVerificationResponse>('/auth/face-verification/', {
     method: 'POST',
-    body: registrationSessionId ? { image, idImage, registrationSessionId } : { image, idImage },
+    body: registrationSessionId ? { image, idImage, registrationSessionId } : { image, idImage, registeredEmail },
     auth: false,
   });
 }
@@ -74,6 +98,19 @@ export async function resetFaceVerificationRequest(
   return apiRequest<FaceVerificationResponse>('/auth/face-verification/', {
     method: 'POST',
     body: { registrationSessionId, reset: true },
+    auth: false,
+  });
+}
+
+export async function faceVerificationStatusRequest(params: {
+  registrationSessionId?: string | null;
+  registeredEmail?: string;
+}): Promise<FaceVerificationStatusResponse> {
+  return apiRequest<FaceVerificationStatusResponse>('/auth/face-verification/status/', {
+    method: 'POST',
+    body: params.registrationSessionId
+      ? { registrationSessionId: params.registrationSessionId }
+      : { registeredEmail: params.registeredEmail },
     auth: false,
   });
 }
@@ -123,7 +160,7 @@ export async function verifyRegistrationOtpRequest(
 ): Promise<OtpVerifyResponse> {
   return apiRequest<OtpVerifyResponse>('/auth/verify-registration-otp/', {
     method: 'POST',
-    body: { email, otp, registrationSessionId },
+    body: { otp, registrationSessionId },
     auth: false,
   });
 }

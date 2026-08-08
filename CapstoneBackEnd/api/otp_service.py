@@ -41,11 +41,26 @@ def _generate_code() -> str:
 
 
 def _send_otp_email(email: str, code: str) -> None:
-    subject = 'Your NurseLink verification code'
+    backend = (getattr(settings, 'EMAIL_BACKEND', '') or '').lower()
+    host = (getattr(settings, 'EMAIL_HOST', '') or '').strip()
+    # Reject console-only delivery so registration OTP always goes through a
+    # real SMTP provider configured via EMAIL_* environment variables.
+    if 'console' in backend or not host:
+        raise OtpDeliveryError(
+            'Email delivery is not configured on the server. '
+            'Set EMAIL_HOST, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, and DEFAULT_FROM_EMAIL '
+            'in the backend .env, then restart the API.'
+        )
+
+    subject = 'Your Verification Code'
     message = (
-        f'Your NurseLink registration verification code is: {code}\n\n'
-        'This code expires in 5 minutes. If you did not request this, you can '
-        'safely ignore this email.'
+        'Hello,\n\n'
+        'Your verification code is:\n\n'
+        f'{code}\n\n'
+        'This code will expire shortly.\n\n'
+        'If you did not request this code, please ignore this email.\n\n'
+        'Regards,\n'
+        'NurseLink'
     )
     try:
         send_mail(
@@ -55,8 +70,12 @@ def _send_otp_email(email: str, code: str) -> None:
             [email],
             fail_silently=False,
         )
+    except OtpDeliveryError:
+        raise
     except Exception as exc:  # noqa: BLE001 - collapse any transport failure into one error type
-        raise OtpDeliveryError('Failed to send OTP email. Please try again later.') from exc
+        raise OtpDeliveryError(
+            "We couldn't send the verification code. Please try again."
+        ) from exc
 
 
 def issue_otp(session: RegistrationSession, *, is_resend: bool = False) -> RegistrationOTP:
@@ -130,7 +149,7 @@ def verify_otp(session: RegistrationSession, submitted_code: str):
     if otp.expires_at < timezone.now():
         otp.is_active = False
         otp.save(update_fields=['is_active'])
-        return False, 'OTP expired. Please request a new code.', 'EXPIRED'
+        return False, 'Verification Code Expired. Your verification code has expired.', 'EXPIRED'
 
     if otp.attempts >= MAX_VERIFY_ATTEMPTS:
         otp.is_active = False
@@ -144,8 +163,7 @@ def verify_otp(session: RegistrationSession, submitted_code: str):
         otp.save(update_fields=['attempts', 'is_active'])
         if otp.attempts >= MAX_VERIFY_ATTEMPTS:
             return False, 'Maximum attempts reached. Please request a new code.', 'MAX_ATTEMPTS'
-        remaining = MAX_VERIFY_ATTEMPTS - otp.attempts
-        return False, f'Incorrect OTP. Please try again. {remaining} attempt(s) remaining.', 'INVALID'
+        return False, 'Invalid Verification Code. The code you entered is incorrect. Please try again.', 'INVALID'
 
     otp.verified = True
     otp.is_active = False

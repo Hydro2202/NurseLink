@@ -135,23 +135,27 @@ REST_FRAMEWORK = {
     },
 }
 
+# Face verification sends the selfie and Hospital ID photo as base64 in a
+# single JSON body (up to ~10MB each pre-encoding, ~33% larger once base64
+# encoded). Django's 2.5MB default would reject legitimate photos before
+# they ever reach our own friendly "file too large" validation.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 30 * 1024 * 1024
+
 # --- Email (registration OTP delivery) ---------------------------------
-# In DEBUG with no EMAIL_HOST configured, fall back to the console backend so
-# OTP codes print to the runserver terminal — no SMTP setup required for
-# local development. Set the EMAIL_* vars in .env to send real email.
-EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
-_default_email_backend = (
-    'django.core.mail.backends.console.EmailBackend'
-    if DEBUG and not EMAIL_HOST
-    else 'django.core.mail.backends.smtp.EmailBackend'
+# Real SMTP is required for Email OTP. Set EMAIL_* in CapstoneBackEnd/.env
+# (Gmail App Password, SendGrid, Mailgun, SES, etc). Never commit credentials.
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '').strip()
+EMAIL_BACKEND = os.environ.get(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.smtp.EmailBackend',
 )
-EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', _default_email_backend)
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 EMAIL_USE_TLS = env_bool('EMAIL_USE_TLS', True)
 EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'NurseLink <no-reply@nurselink.local>')
+# Locmem/console backends are allowed only for automated tests via EMAIL_BACKEND override.
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'NurseLink API',

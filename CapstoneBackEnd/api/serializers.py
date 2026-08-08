@@ -241,18 +241,51 @@ class FaceVerificationSerializer(serializers.Serializer):
         return attrs
 
 
+class FaceVerificationStatusSerializer(serializers.Serializer):
+    registrationSessionId = serializers.UUIDField(required=False)
+    registeredEmail = serializers.EmailField(required=False)
+
+    def validate(self, attrs):
+        if not attrs.get('registrationSessionId') and not attrs.get('registeredEmail'):
+            raise serializers.ValidationError(
+                {'registrationSessionId': 'Provide registrationSessionId or registeredEmail.'}
+            )
+        return attrs
+
+
 class SendOtpSerializer(serializers.Serializer):
     registrationSessionId = serializers.UUIDField()
+    email = serializers.EmailField(
+        help_text='Must match the email associated with this registration session.',
+    )
 
-    def validate_registrationSessionId(self, value):
-        session = RegistrationSession.objects.filter(session_id=value).first()
+    def validate(self, attrs):
+        session = RegistrationSession.objects.filter(session_id=attrs['registrationSessionId']).first()
         if not session:
-            raise serializers.ValidationError('Registration session not found. Please restart verification.')
+            raise serializers.ValidationError(
+                {'registrationSessionId': 'Registration session not found. Please restart verification.'}
+            )
         if not session.face_locked:
-            raise serializers.ValidationError('Email OTP is available only after three failed face verification attempts.')
+            raise serializers.ValidationError(
+                {'registrationSessionId': 'Email OTP is available only after three failed face verification attempts.'}
+            )
         if not session.email:
-            raise serializers.ValidationError('The registered email is unavailable. Please restart verification.')
-        return session
+            raise serializers.ValidationError(
+                {'email': 'The registered email is unavailable. Please restart verification.'}
+            )
+        submitted = attrs['email'].strip().lower()
+        if submitted != session.email.strip().lower():
+            raise serializers.ValidationError(
+                {
+                    'email': (
+                        'Email Not Found. This email is not associated with your registration. '
+                        'Please enter your registered email.'
+                    )
+                }
+            )
+        attrs['registrationSessionId'] = session
+        attrs['email'] = submitted
+        return attrs
 
 
 class ResendOtpSerializer(SendOtpSerializer):
@@ -267,8 +300,10 @@ class VerifyOtpSerializer(serializers.Serializer):
         session = RegistrationSession.objects.filter(session_id=value).first()
         if not session:
             raise serializers.ValidationError('Registration session not found. Please restart verification.')
-        if not session.face_locked:
-            raise serializers.ValidationError('Email OTP is available only after three failed face verification attempts.')
+        if not session.face_locked and not session.otp_verified:
+            raise serializers.ValidationError(
+                'Email OTP is available only after three failed face verification attempts.'
+            )
         return session
 
 

@@ -12,10 +12,12 @@ import {
   Eye,
   FileText,
   IdCard,
+  KeyRound,
   Loader2,
   Lock,
   Mail,
   RefreshCw,
+  Send,
   ShieldCheck,
   Upload,
   UserPlus,
@@ -30,14 +32,6 @@ import { Label } from '../components/ui/label';
 import { Card, CardContent } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '../components/ui/input-otp';
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '../components/ui/alert-dialog';
 import { useAuth } from '../contexts/AuthContext';
 import { ApiError } from '../api/client';
 import {
@@ -49,6 +43,46 @@ import {
 } from '../api/nurselink';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
 
+const FACE_SESSION_KEY = 'nurselink.faceVerificationSession';
+const MAX_FACE_ATTEMPTS = 3;
+
+function persistFaceSession(id: string, attempts: number, locked: boolean) {
+  try {
+    localStorage.setItem(
+      FACE_SESSION_KEY,
+      JSON.stringify({ id, attempts: Math.min(MAX_FACE_ATTEMPTS, Math.max(0, attempts)), locked })
+    );
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function clearPersistedFaceSession() {
+  try {
+    localStorage.removeItem(FACE_SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function readPersistedFaceSession(): { id?: string; attempts?: number; locked?: boolean } | null {
+  try {
+    const raw = localStorage.getItem(FACE_SESSION_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as { id?: string; attempts?: number; locked?: boolean };
+  } catch {
+    return null;
+  }
+}
+
+function resolveAttemptsUsed(res: { attemptsUsed?: number; attemptsRemaining?: number }): number {
+  if (typeof res.attemptsUsed === 'number') return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, res.attemptsUsed));
+  if (typeof res.attemptsRemaining === 'number') {
+    return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, MAX_FACE_ATTEMPTS - res.attemptsRemaining));
+  }
+  return 0;
+}
+
 function buildDirectoryEmail(fullName: string, hospitalName: string): string {
   const parts = fullName.toLowerCase().split(/\s+/).filter(Boolean);
   const first = parts[0] ?? 'employee';
@@ -57,16 +91,25 @@ function buildDirectoryEmail(fullName: string, hospitalName: string): string {
   return `${first}${last ? `.${last}` : ''}@${domain}.com`;
 }
 
-function maskEmail(email: string): string {
-  const [local, domain] = email.split('@');
-  if (!local || !domain) return email;
-  return `${local[0]}${'*'.repeat(Math.max(3, local.length - 1))}@${domain}`;
-}
-
 function extractErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
-    const data = err.data as { message?: string; detail?: string } | undefined;
-    return data?.message || data?.detail || fallback;
+    const data = err.data as
+      | { message?: string; detail?: string; email?: string | string[]; non_field_errors?: string | string[] }
+      | string
+      | undefined;
+    if (typeof data === 'string' && data.trim()) return data;
+    if (data && typeof data === 'object') {
+      if (data.message) return data.message;
+      if (typeof data.detail === 'string') return data.detail;
+      const emailErr = data.email;
+      if (Array.isArray(emailErr) && emailErr[0]) return String(emailErr[0]);
+      if (typeof emailErr === 'string') return emailErr;
+      const nonField = data.non_field_errors;
+      if (Array.isArray(nonField) && nonField[0]) return String(nonField[0]);
+      const firstField = Object.values(data).find((v) => Array.isArray(v) && v[0]) as string[] | undefined;
+      if (firstField?.[0]) return String(firstField[0]);
+    }
+    if (err.message) return err.message;
   }
   if (err instanceof TypeError) {
     return 'Network error. Please check your connection and try again.';
@@ -342,6 +385,12 @@ export default function SignUpPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const cameraRequestInFlight = useRef(false);
+  const faceVerificationInFlight = useRef(false);
+  const otpSendInFlight = useRef(false);
+  const otpVerifyInFlight = useRef(false);
+  const faceAutoOpenDone = useRef(false);
 
   const [step, setStep] = useState<StepNumber>(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -363,11 +412,11 @@ export default function SignUpPage() {
   const [registrationSessionId, setRegistrationSessionId] = useState<string | null>(null);
   const [faceAttemptsUsed, setFaceAttemptsUsed] = useState(0);
   const [faceLocked, setFaceLocked] = useState(false);
-  const [faceModalOpen, setFaceModalOpen] = useState(false);
   const [faceResetPending, setFaceResetPending] = useState(false);
   const [showOtpPanel, setShowOtpPanel] = useState(false);
+  const [otpEmailInput, setOtpEmailInput] = useState('');
   const [otpCode, setOtpCode] = useState('');
-  const [otpStatus, setOtpStatus] = useState<'idle' | 'sending' | 'awaiting' | 'verifying' | 'verified'>('idle');
+  const [otpStatus, setOtpStatus] = useState<'idle' | 'email_entry' | 'sending' | 'awaiting' | 'verifying' | 'verified'>('idle');
   const [otpError, setOtpError] = useState('');
   const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null);
   const [otpResendAvailableAt, setOtpResendAvailableAt] = useState<number | null>(null);
@@ -410,12 +459,21 @@ export default function SignUpPage() {
   const acceptedFormats = ['image/jpeg', 'image/png', 'application/pdf'];
 
   const clearMedia = useCallback(() => {
-    if (mediaStream) {
-      mediaStream.getTracks().forEach((track) => track.stop());
-      setMediaStream(null);
-    }
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    setMediaStream(null);
     setCameraState('idle');
-  }, [mediaStream]);
+  }, []);
+
+  // Attach the live stream to the <video> element once both exist. The
+  // element only mounts after cameraState flips to 'active', one render
+  // after openCamera sets it, so this can't be done inline in openCamera.
+  useEffect(() => {
+    if (cameraState === 'active' && videoRef.current && mediaStream) {
+      videoRef.current.srcObject = mediaStream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [cameraState, mediaStream]);
 
   useEffect(() => {
     return () => {
@@ -423,11 +481,43 @@ export default function SignUpPage() {
     };
   }, [clearMedia]);
 
+  // Always begin Face Verification at Attempt 1 for this visit.
+  // Do NOT restore lockouts from localStorage/status sync — that skipped real scans.
+  useEffect(() => {
+    clearPersistedFaceSession();
+    setRegistrationSessionId(null);
+    setFaceAttemptsUsed(0);
+    setFaceLocked(false);
+    setFaceStatus('idle');
+    setSelfiePreview(null);
+    setShowOtpPanel(false);
+  }, []);
+
   useEffect(() => {
     if (step !== 3) {
       clearMedia();
+      faceAutoOpenDone.current = false;
     }
   }, [step, clearMedia]);
+
+  const resetFaceCycleLocal = useCallback(() => {
+    clearPersistedFaceSession();
+    setRegistrationSessionId(null);
+    setFaceAttemptsUsed(0);
+    setFaceLocked(false);
+    setFaceStatus('idle');
+    setFaceError('');
+    setSelfiePreview(null);
+    setShowOtpPanel(false);
+    setOtpCode('');
+    setOtpEmailInput('');
+    setOtpError('');
+    setOtpStatus('idle');
+    setOtpExpiresAt(null);
+    setOtpResendAvailableAt(null);
+    faceAutoOpenDone.current = false;
+    faceVerificationInFlight.current = false;
+  }, []);
 
   const simulateOcr = useCallback(() => {
     setOcrStatus('processing');
@@ -440,7 +530,7 @@ export default function SignUpPage() {
         hospitalName,
         department: 'Intensive Care Unit',
         position: 'Registered Nurse',
-        email: buildDirectoryEmail(fullName, hospitalName),
+        email: '',
       });
       setOcrStatus('success');
     }, 1600);
@@ -451,6 +541,7 @@ export default function SignUpPage() {
     setOcrStatus('idle');
     setOcrData(null);
     setRoleMatch('idle');
+    resetFaceCycleLocal();
 
     if (!acceptedFormats.includes(file.type)) {
       setHospitalIdError('Unsupported file format. Please upload JPG, PNG, or PDF.');
@@ -478,9 +569,12 @@ export default function SignUpPage() {
   };
 
   const openCamera = async () => {
+    if (cameraRequestInFlight.current) return;
+    cameraRequestInFlight.current = true;
     setFaceError('');
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraState('not-supported');
+      cameraRequestInFlight.current = false;
       return;
     }
 
@@ -489,12 +583,9 @@ export default function SignUpPage() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
       });
+      mediaStreamRef.current = stream;
       setMediaStream(stream);
       setCameraState('active');
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
     } catch (error) {
       const message = error instanceof DOMException ? error.name : 'Camera access failed.';
       if (message === 'NotAllowedError' || message === 'PermissionDeniedError') {
@@ -504,17 +595,46 @@ export default function SignUpPage() {
         setCameraState('idle');
         setFaceError('Unable to access the camera. Please try again or use a different device.');
       }
+    } finally {
+      cameraRequestInFlight.current = false;
     }
   };
 
+  useEffect(() => {
+    if (step !== 3) {
+      faceAutoOpenDone.current = false;
+      return;
+    }
+    if (
+      faceAutoOpenDone.current ||
+      faceLocked ||
+      showOtpPanel ||
+      faceStatus === 'success' ||
+      faceStatus === 'processing' ||
+      faceStatus === 'error' ||
+      selfiePreview
+    ) {
+      return;
+    }
+    faceAutoOpenDone.current = true;
+    void openCamera();
+  }, [step, faceLocked, showOtpPanel, faceStatus, selfiePreview]);
+
   const captureSelfie = () => {
+    if (faceVerificationInFlight.current) return;
     if (!videoRef.current || !canvasRef.current || !hospitalIdPreview) return;
+    if (faceStatus === 'processing') return;
+
+    faceVerificationInFlight.current = true;
     const video = videoRef.current;
     const canvas = canvasRef.current;
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      faceVerificationInFlight.current = false;
+      return;
+    }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const image = canvas.toDataURL('image/jpeg', 0.9);
     setSelfiePreview(image);
@@ -522,56 +642,97 @@ export default function SignUpPage() {
     setFaceStatus('processing');
     setFaceError('');
 
-    faceVerificationRequest(image, hospitalIdPreview, registrationSessionId)
+    faceVerificationRequest(image, hospitalIdPreview, registrationSessionId, ocrData?.email)
       .then((res) => {
         setRegistrationSessionId(res.registrationSessionId);
-        setFaceAttemptsUsed(Math.max(0, 3 - res.attemptsRemaining));
-        if (res.matched) {
+        const attempts = resolveAttemptsUsed(res);
+        // Only trust backend attempt counts from THIS validate response.
+        setFaceAttemptsUsed(attempts);
+        persistFaceSession(res.registrationSessionId, attempts, Boolean(res.locked));
+        if (res.matched || res.faceVerified) {
           setFaceStatus('success');
+          setFaceLocked(false);
+          clearPersistedFaceSession();
           return;
         }
         setFaceStatus('error');
         setFaceError(res.message || 'Face verification failed. Please try again.');
-        if (res.locked) {
-          setFaceLocked(true);
-          setFaceModalOpen(true);
-        }
+        // Fallback UI only after backend confirms 3 real failures.
+        setFaceLocked(Boolean(res.locked) && attempts >= MAX_FACE_ATTEMPTS);
       })
       .catch((err) => {
         setFaceStatus('error');
         if (err instanceof ApiError && err.status === 403) {
-          const data = err.data as { registrationSessionId?: string; message?: string } | undefined;
+          const data = err.data as {
+            registrationSessionId?: string;
+            message?: string;
+            attemptsUsed?: number;
+            attemptsRemaining?: number;
+            locked?: boolean;
+          } | undefined;
           if (data?.registrationSessionId) setRegistrationSessionId(data.registrationSessionId);
-          setFaceAttemptsUsed(3);
-          setFaceLocked(true);
-          setFaceModalOpen(true);
+          const attempts = resolveAttemptsUsed(data ?? {});
+          setFaceAttemptsUsed(Math.min(MAX_FACE_ATTEMPTS, Math.max(0, attempts)));
+          const locked = Boolean(data?.locked) && attempts >= MAX_FACE_ATTEMPTS;
+          setFaceLocked(locked);
+          if (data?.registrationSessionId) {
+            persistFaceSession(data.registrationSessionId, attempts, locked);
+          }
+          setFaceError(
+            locked
+              ? data?.message ||
+                  "You've reached the maximum number of face verification attempts. Choose Retry Face Verification or Verify Using Email OTP."
+              : data?.message || 'Face verification failed. Please try again.'
+          );
+        } else if (err instanceof ApiError && err.status === 503) {
+          setFaceError(extractErrorMessage(err, 'Face verification is temporarily unavailable. Please try again.'));
         } else {
-          setFaceError(extractErrorMessage(err, 'Face verification failed. Please try again.'));
+          // Network/UI errors do not count as face attempts.
+          setFaceError(extractErrorMessage(err, 'Something went wrong. Please try again.'));
         }
+      })
+      .finally(() => {
+        faceVerificationInFlight.current = false;
       });
   };
 
+  const resetOtpState = () => {
+    setOtpCode('');
+    setOtpEmailInput('');
+    setOtpError('');
+    setOtpStatus('idle');
+    setOtpExpiresAt(null);
+    setOtpResendAvailableAt(null);
+    setShowOtpPanel(false);
+  };
+
   const handleModalRetake = async () => {
+    if (faceResetPending) return;
     if (!registrationSessionId) {
-      setFaceModalOpen(false);
       setFaceLocked(false);
       setFaceAttemptsUsed(0);
       setFaceStatus('idle');
       setFaceError('');
       setSelfiePreview(null);
       setCameraState('idle');
+      resetOtpState();
+      faceAutoOpenDone.current = false;
+      await openCamera();
       return;
     }
     setFaceResetPending(true);
     try {
-      await resetFaceVerificationRequest(registrationSessionId);
-      setFaceModalOpen(false);
+      const res = await resetFaceVerificationRequest(registrationSessionId);
       setFaceLocked(false);
       setFaceAttemptsUsed(0);
       setFaceStatus('idle');
       setFaceError('');
       setSelfiePreview(null);
       setCameraState('idle');
+      resetOtpState();
+      persistFaceSession(res.registrationSessionId || registrationSessionId, 0, false);
+      faceAutoOpenDone.current = false;
+      await openCamera();
     } catch (err) {
       setFaceError(extractErrorMessage(err, 'Could not reset verification. Please try again.'));
     } finally {
@@ -579,31 +740,47 @@ export default function SignUpPage() {
     }
   };
 
-  const handleOpenOtp = async () => {
-    if (!registrationSessionId || !ocrData) return;
+  const handleOpenOtp = () => {
+    setShowOtpPanel(true);
+    setOtpStatus('email_entry');
+    setOtpError('');
+    setOtpCode('');
+    setOtpEmailInput('');
+  };
+
+  const handleSendOtp = async () => {
+    if (otpSendInFlight.current) return;
+    if (!registrationSessionId) return;
+    const email = otpEmailInput.trim();
+    if (!email) {
+      setOtpError('Please enter your registered email address.');
+      return;
+    }
+    otpSendInFlight.current = true;
     setOtpStatus('sending');
     setOtpError('');
     try {
-      const res = await sendRegistrationOtpRequest(ocrData.email, registrationSessionId);
-      setFaceModalOpen(false);
-      setShowOtpPanel(true);
+      const res = await sendRegistrationOtpRequest(email, registrationSessionId);
       setOtpStatus('awaiting');
       setOtpCode('');
       setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
       setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
     } catch (err) {
-      // Keep the failure modal open so the error is visible and retry is easy.
-      setOtpStatus('idle');
-      setOtpError(extractErrorMessage(err, 'Failed to send verification code. Please try again.'));
+      setOtpStatus('email_entry');
+      setOtpError(extractErrorMessage(err, 'Email Not Found. This email is not associated with your registration.'));
+    } finally {
+      otpSendInFlight.current = false;
     }
   };
 
   const handleResendOtp = async () => {
-    if (!registrationSessionId || !ocrData) return;
+    if (otpSendInFlight.current) return;
+    if (!registrationSessionId || !otpEmailInput.trim()) return;
+    otpSendInFlight.current = true;
     setOtpStatus('sending');
     setOtpError('');
     try {
-      const res = await resendRegistrationOtpRequest(ocrData.email, registrationSessionId);
+      const res = await resendRegistrationOtpRequest(otpEmailInput.trim(), registrationSessionId);
       setOtpStatus('awaiting');
       setOtpCode('');
       setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
@@ -611,24 +788,31 @@ export default function SignUpPage() {
     } catch (err) {
       setOtpStatus('awaiting');
       setOtpError(extractErrorMessage(err, 'Failed to resend verification code. Please try again.'));
+    } finally {
+      otpSendInFlight.current = false;
     }
   };
 
   const handleVerifyOtp = async () => {
-    if (!registrationSessionId || !ocrData || otpCode.length !== 6) return;
+    if (otpVerifyInFlight.current) return;
+    if (!registrationSessionId || otpCode.length !== 6) return;
+    otpVerifyInFlight.current = true;
     setOtpStatus('verifying');
     setOtpError('');
     try {
-      const res = await verifyRegistrationOtpRequest(ocrData.email, otpCode, registrationSessionId);
+      const res = await verifyRegistrationOtpRequest(otpEmailInput.trim(), otpCode, registrationSessionId);
       if (res.verified) {
         setOtpStatus('verified');
+        clearPersistedFaceSession();
       } else {
         setOtpStatus('awaiting');
-        setOtpError(res.message || 'Invalid OTP.');
+        setOtpError(res.message || 'Invalid or expired verification code.');
       }
     } catch (err) {
       setOtpStatus('awaiting');
-      setOtpError(extractErrorMessage(err, 'Verification failed. Please try again.'));
+      setOtpError(extractErrorMessage(err, 'Invalid or expired verification code.'));
+    } finally {
+      otpVerifyInFlight.current = false;
     }
   };
 
@@ -957,34 +1141,66 @@ export default function SignUpPage() {
                           />
                         </div>
                       </div>
+                      <div className="space-y-1.5 sm:col-span-2">
+                        <Label className="text-xs font-medium text-gray-500">Registered Email Address</Label>
+                        <div className="relative">
+                          <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                          <Input
+                            type="email"
+                            value={ocrData.email}
+                            onChange={(e) => setOcrData({ ...ocrData, email: e.target.value.trim() })}
+                            placeholder="Enter the email associated with this registration"
+                            aria-label="Registered email address"
+                            className="h-12 rounded-xl border-gray-200 bg-white pl-10 font-medium text-gray-900"
+                          />
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          This email is stored with your registration and used for Email OTP if face verification fails.
+                          Use a real inbox you can access.
+                        </p>
+                      </div>
                     </div>
 
-                    <NavButtons onBack={() => setStep(1)} onContinue={() => setStep(3)} />
+                    <NavButtons
+                      onBack={() => setStep(1)}
+                      onContinue={() => {
+                        if (!ocrData.email || !ocrData.email.includes('@')) {
+                          setGlobalError('Please enter the registered email address before continuing.');
+                          return;
+                        }
+                        setGlobalError('');
+                        resetFaceCycleLocal();
+                        setStep(3);
+                      }}
+                    />
                   </div>
                 )}
 
                 {step === 3 && (
                   <div className="space-y-5">
-                    <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+                    <div className="flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
+                      <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" />
                       <div>
                         <p>
-                          This step is <strong className="text-amber-700">required</strong>. To verify your identity,
-                          you must capture a live selfie using your device&apos;s camera. Uploading images from your
-                          gallery is not permitted.
+                          <strong className="font-bold">Face Verification</strong> is required. Use your device camera
+                          for a live face scan — gallery uploads are not permitted.
                         </p>
-                        <p className="mt-1">
-                          If face verification cannot be completed after 3 attempts, an alternative Email OTP option
-                          will be offered.
+                        <ul className="mt-2 list-disc space-y-1 pl-4 text-blue-700">
+                          <li>Position your face inside the frame.</li>
+                          <li>Make sure your face is clearly visible.</li>
+                          <li>Keep your face centered.</li>
+                        </ul>
+                        <p className="mt-2 text-blue-700">
+                          After 3 failed attempts you can retry face verification or verify using Email OTP.
                         </p>
                       </div>
                     </div>
 
                     <canvas ref={canvasRef} className="hidden" />
 
-                    {faceAttemptsUsed > 0 && !showOtpPanel && (
+                    {!showOtpPanel && (
                       <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5">
-                        <span className="text-sm font-medium text-gray-600">Face verification attempts</span>
+                        <span className="text-sm font-medium text-gray-600">Attempt</span>
                         <div className="flex items-center gap-2">
                           <div className="flex gap-1">
                             {[0, 1, 2].map((i) => (
@@ -996,30 +1212,37 @@ export default function SignUpPage() {
                               />
                             ))}
                           </div>
-                          <span className="text-sm font-bold text-red-600">{faceAttemptsUsed}/3</span>
+                          <span className={`text-sm font-bold ${faceAttemptsUsed > 0 ? 'text-red-600' : 'text-gray-500'}`}>
+                            {faceLocked
+                              ? `${MAX_FACE_ATTEMPTS} of ${MAX_FACE_ATTEMPTS}`
+                              : `${Math.min(faceAttemptsUsed + 1, MAX_FACE_ATTEMPTS)} of ${MAX_FACE_ATTEMPTS}`}
+                          </span>
                         </div>
                       </div>
                     )}
 
-                    {!faceLocked && !showOtpPanel && (
+                    {!showOtpPanel && (
                       <>
-                        {selfiePreview ? (
+                        {faceStatus === 'success' ? (
+                          <div className="space-y-4 rounded-2xl border border-green-200 bg-green-50 p-6 text-center">
+                            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-white shadow">
+                              <CheckCircle className="h-8 w-8 text-green-600" />
+                            </div>
+                            <div>
+                              <p className="text-lg font-bold text-green-900">Face Verified Successfully</p>
+                              <p className="mt-1 text-sm text-green-700">Your identity has been verified.</p>
+                            </div>
+                          </div>
+                        ) : selfiePreview && !faceLocked ? (
                           <div className="space-y-4">
                             <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-950">
                               <img src={selfiePreview} alt="Captured selfie" className="h-72 w-full object-cover" />
                               {faceStatus === 'processing' && (
                                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
-                                  <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Analyzing face...
+                                  <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Verifying your face...
                                 </div>
                               )}
-                              {faceStatus === 'success' && (
-                                <div className="absolute inset-0 flex items-center justify-center bg-green-500/20">
-                                  <div className="rounded-full bg-white p-4 shadow-lg">
-                                    <CheckCircle className="h-8 w-8 text-green-600" />
-                                  </div>
-                                </div>
-                              )}
-                              {faceStatus === 'error' && (
+                              {faceStatus === 'error' && !faceLocked && (
                                 <div className="absolute inset-0 flex items-center justify-center bg-red-500/20">
                                   <div className="rounded-full bg-white p-4 shadow-lg">
                                     <XCircle className="h-8 w-8 text-red-600" />
@@ -1027,22 +1250,39 @@ export default function SignUpPage() {
                                 </div>
                               )}
                             </div>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              onClick={() => {
-                                setSelfiePreview(null);
-                                setFaceStatus('idle');
-                                setFaceError('');
-                                setCameraState('idle');
-                              }}
-                              disabled={faceStatus === 'processing'}
-                              className="h-11 w-full rounded-full"
-                            >
-                              <RefreshCw className="mr-2 h-4 w-4" /> Retake Photo
-                            </Button>
+                            {faceStatus === 'error' && !faceLocked && (
+                              <div className="space-y-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                                <p className="font-bold">Face Verification Failed</p>
+                                <p>We couldn&apos;t verify your face.</p>
+                                <p className="font-semibold">
+                                  Attempt {faceAttemptsUsed} of {MAX_FACE_ATTEMPTS}
+                                </p>
+                                <p>
+                                  {faceAttemptsUsed === 1
+                                    ? 'Please make sure your face is clearly visible and positioned inside the frame.'
+                                    : 'Please try again.'}
+                                </p>
+                                {faceError ? <p className="text-xs opacity-90">{faceError}</p> : null}
+                              </div>
+                            )}
+                            {!faceLocked && faceStatus !== 'processing' && (
+                              <Button
+                                type="button"
+                                onClick={() => {
+                                  // Manual progression only — do not call the API / increment attempts here.
+                                  setSelfiePreview(null);
+                                  setFaceStatus('idle');
+                                  setFaceError('');
+                                  faceAutoOpenDone.current = false;
+                                  void openCamera();
+                                }}
+                                className="h-11 w-full rounded-full bg-blue-600 text-white hover:bg-blue-700"
+                              >
+                                <RefreshCw className="mr-2 h-4 w-4" /> Try Again
+                              </Button>
+                            )}
                           </div>
-                        ) : cameraState === 'active' ? (
+                        ) : faceLocked ? null : cameraState === 'active' ? (
                           <div className="space-y-4">
                             <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-black">
                               <video ref={videoRef} className="h-72 w-full object-cover" playsInline muted autoPlay />
@@ -1050,13 +1290,27 @@ export default function SignUpPage() {
                                 <div className="h-40 w-32 rounded-3xl border-4 border-white/60" />
                               </div>
                             </div>
+                            <p className="text-center text-sm text-gray-600">
+                              {faceAttemptsUsed === 2
+                                ? 'This is your final face verification attempt.'
+                                : 'Please position your face inside the camera.'}
+                            </p>
                             <div className="grid gap-3 sm:grid-cols-2">
                               <Button
                                 type="button"
                                 onClick={captureSelfie}
-                                className="h-12 rounded-full bg-blue-600 text-white hover:bg-blue-700"
+                                disabled={faceStatus === 'processing'}
+                                className="h-12 rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-70"
                               >
-                                <Camera className="mr-2 h-4 w-4" /> Capture Photo
+                                {faceStatus === 'processing' ? (
+                                  <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying your face...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Camera className="mr-2 h-4 w-4" /> Verify Face
+                                  </>
+                                )}
                               </Button>
                               <Button type="button" variant="outline" onClick={clearMedia} className="h-12 rounded-full">
                                 <X className="mr-2 h-4 w-4" /> Cancel
@@ -1068,201 +1322,254 @@ export default function SignUpPage() {
                             <button
                               type="button"
                               onClick={openCamera}
-                              className="flex h-44 w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-blue-200 bg-blue-50/50 transition hover:border-blue-300 hover:bg-blue-50"
+                              disabled={cameraState === 'requesting'}
+                              className="flex h-44 w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-blue-200 bg-blue-50/50 transition hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-70"
                             >
                               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-100">
-                                <Video className="h-7 w-7 text-blue-600" />
+                                {cameraState === 'requesting' ? (
+                                  <Loader2 className="h-7 w-7 animate-spin text-blue-600" />
+                                ) : (
+                                  <Video className="h-7 w-7 text-blue-600" />
+                                )}
                               </div>
-                              <span className="text-sm font-semibold text-blue-700">Open Camera</span>
+                              <span className="text-sm font-semibold text-blue-700">
+                                {cameraState === 'requesting' ? 'Requesting camera access...' : 'Open Live Camera'}
+                              </span>
                               <span className="text-xs text-slate-500">
-                                Live selfie only — gallery uploads are not allowed
+                                Live face scan only — image uploads are not allowed
                               </span>
                             </button>
                           </div>
                         )}
 
-                        {faceError && (
+                        {faceError && !faceLocked && faceStatus !== 'error' && (
                           <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                             <XCircle className="h-4 w-4 shrink-0" />
                             {faceError}
                           </div>
                         )}
+
+                        {faceLocked && faceAttemptsUsed >= MAX_FACE_ATTEMPTS && (
+                          <div className="space-y-4 rounded-2xl border border-amber-200 bg-white p-5 sm:p-6">
+                            <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-100">
+                                <AlertTriangle className="h-5 w-5 text-amber-600" />
+                              </div>
+                              <div>
+                                <p className="font-bold text-amber-900">Face Verification Failed</p>
+                                <p className="text-sm text-amber-700">
+                                  You&apos;ve reached the maximum number of face verification attempts.
+                                </p>
+                              </div>
+                            </div>
+
+                            <p className="text-sm text-gray-600">Please choose another option.</p>
+
+                            {otpError && (
+                              <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                                <AlertCircle className="h-4 w-4 shrink-0" />
+                                {otpError}
+                              </div>
+                            )}
+
+                            <div className="space-y-3">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={handleModalRetake}
+                                disabled={faceResetPending || otpStatus === 'sending'}
+                                className="h-12 w-full rounded-full"
+                              >
+                                {faceResetPending ? (
+                                  <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Resetting...
+                                  </>
+                                ) : (
+                                  <>
+                                    <RefreshCw className="mr-2 h-4 w-4" /> Retry Face Verification
+                                  </>
+                                )}
+                              </Button>
+                              <div className="relative flex items-center py-1">
+                                <div className="h-px flex-1 bg-gray-200" />
+                                <span className="px-3 text-xs text-gray-400">or</span>
+                                <div className="h-px flex-1 bg-gray-200" />
+                              </div>
+                              <Button
+                                type="button"
+                                onClick={handleOpenOtp}
+                                disabled={otpStatus === 'sending' || faceResetPending}
+                                className="h-12 w-full rounded-full bg-gradient-to-r from-[#2563EB] to-blue-600 text-white"
+                              >
+                                <Send className="mr-2 h-4 w-4" /> Verify Using Email OTP
+                              </Button>
+                            </div>
+                          </div>
+                        )}
                       </>
                     )}
 
-                    <AlertDialog open={faceModalOpen}>
-                      <AlertDialogContent onEscapeKeyDown={(e) => e.preventDefault()}>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Face Verification Failed</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            We couldn&apos;t verify your identity after three attempts.
-                            <br />
-                            <br />
-                            Would you like to try Face Verification again or verify your identity using your
-                            registered email?
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        {otpError && (
-                          <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                            <AlertCircle className="h-4 w-4 shrink-0" />
-                            {otpError}
-                          </div>
-                        )}
-                        <AlertDialogFooter>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={handleModalRetake}
-                            disabled={faceResetPending || otpStatus === 'sending'}
-                            className="w-full sm:w-auto"
-                          >
-                            {faceResetPending ? (
-                              <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Resetting...
-                              </>
-                            ) : (
-                              <>
-                                <RefreshCw className="mr-2 h-4 w-4" /> Retake Face Verification
-                              </>
-                            )}
-                          </Button>
-                          <Button
-                            type="button"
-                            onClick={handleOpenOtp}
-                            disabled={otpStatus === 'sending' || faceResetPending}
-                            className="w-full bg-gradient-to-r from-[#2563EB] to-blue-600 text-white sm:w-auto"
-                          >
-                            {otpStatus === 'sending' ? (
-                              <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending code...
-                              </>
-                            ) : (
-                              <>
-                                <Mail className="mr-2 h-4 w-4" /> Verify via Email OTP
-                              </>
-                            )}
-                          </Button>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-
-                    {showOtpPanel && ocrData && (
+                    {showOtpPanel && (
                       <div className="space-y-5 rounded-2xl border border-blue-200 bg-white p-5 sm:p-6">
                         <div className="flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50 p-4">
                           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100">
                             <Mail className="h-5 w-5 text-blue-600" />
                           </div>
                           <div>
-                            <p className="font-bold text-blue-900">Alternative Identity Verification</p>
+                            <p className="font-bold text-blue-900">Email Verification</p>
                             <p className="text-sm text-blue-700">
-                              Receive a one-time verification code in your registered email address.
+                              Enter the email address associated with your registration.
                             </p>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-800">
-                          <ShieldCheck className="h-4 w-4 shrink-0 text-amber-600" />
-                          Alternative verification method — used only when Face Verification cannot be completed
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <Label className="text-xs font-medium text-gray-500">Email Address</Label>
-                          <div className="relative">
-                            <Input
-                              readOnly
-                              value={maskEmail(ocrData.email)}
-                              aria-label="Registered email address"
-                              className="h-12 cursor-not-allowed rounded-xl border-gray-200 bg-gray-100 pr-20 font-medium text-gray-900"
-                            />
-                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
-                              Read-only
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label className="text-xs font-medium text-gray-500">Enter 6-Digit Verification Code</Label>
-                          <InputOTP
-                            maxLength={6}
-                            value={otpCode}
-                            onChange={(value) => {
-                              setOtpCode(value);
-                              setOtpError('');
-                            }}
-                            disabled={otpStatus === 'verifying' || otpStatus === 'verified'}
-                          >
-                            <InputOTPGroup>
-                              {[0, 1, 2, 3, 4, 5].map((i) => (
-                                <InputOTPSlot key={i} index={i} className="h-11 w-11 text-base" />
-                              ))}
-                            </InputOTPGroup>
-                          </InputOTP>
-                        </div>
-
-                        {otpExpired && otpStatus !== 'verified' && (
-                          <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                            <AlertCircle className="h-4 w-4 shrink-0" />
-                            This code has expired. Please resend a new code.
-                          </div>
-                        )}
-
-                        {otpError && !otpExpired && (
-                          <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                            <AlertCircle className="h-4 w-4 shrink-0" />
-                            {otpError}
-                          </div>
-                        )}
-
-                        {otpStatus === 'verified' && (
-                          <div className="flex items-center gap-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                            <CheckCircle className="h-4 w-4 shrink-0" /> Email verified successfully.
-                          </div>
-                        )}
-
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-gray-500">
-                            {otpStatus === 'verified' ? (
-                              'Verification complete'
-                            ) : otpResendSecondsLeft > 0 ? (
-                              <>
-                                Resend available in{' '}
-                                <span className="font-semibold text-blue-600">{otpResendSecondsLeft}s</span>
-                              </>
-                            ) : (
-                              'You can resend the code now'
+                        {(otpStatus === 'email_entry' || otpStatus === 'sending') && (
+                          <div className="space-y-3">
+                            <div className="space-y-1.5">
+                              <Label className="text-xs font-medium text-gray-500">Email Address</Label>
+                              <div className="relative">
+                                <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                                <Input
+                                  type="email"
+                                  value={otpEmailInput}
+                                  onChange={(e) => {
+                                    setOtpEmailInput(e.target.value);
+                                    setOtpError('');
+                                  }}
+                                  placeholder="Enter your registered email"
+                                  disabled={otpStatus === 'sending'}
+                                  className="h-12 rounded-xl border-gray-200 pl-10 font-medium text-gray-900"
+                                />
+                              </div>
+                            </div>
+                            {otpError && (
+                              <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                                <AlertCircle className="h-4 w-4 shrink-0" />
+                                {otpError}
+                              </div>
                             )}
-                          </span>
-                          <button
-                            type="button"
-                            disabled={otpResendSecondsLeft > 0 || otpStatus === 'sending' || otpStatus === 'verified'}
-                            onClick={handleResendOtp}
-                            className="inline-flex items-center gap-1 font-semibold text-blue-600 disabled:cursor-not-allowed disabled:text-gray-400"
-                          >
-                            <RefreshCw className="h-3.5 w-3.5" /> Resend Code
-                          </button>
-                        </div>
+                            <Button
+                              type="button"
+                              onClick={handleSendOtp}
+                              disabled={otpStatus === 'sending' || !otpEmailInput.trim()}
+                              className="h-12 w-full rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white"
+                            >
+                              {otpStatus === 'sending' ? (
+                                <>
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending verification code...
+                                </>
+                              ) : (
+                                <>
+                                  <Send className="mr-2 h-4 w-4" /> Send Verification Code
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        )}
 
-                        <Button
-                          type="button"
-                          onClick={handleVerifyOtp}
-                          disabled={
-                            otpCode.length !== 6 ||
-                            otpStatus === 'verifying' ||
-                            otpStatus === 'verified' ||
-                            otpExpired
-                          }
-                          className="h-12 w-full rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white shadow-md shadow-blue-200 disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-none disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none"
-                        >
-                          {otpStatus === 'verifying' ? (
-                            <>
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying...
-                            </>
-                          ) : (
-                            <>
-                              <Lock className="mr-2 h-4 w-4" /> Verify Code
-                            </>
-                          )}
-                        </Button>
+                        {(otpStatus === 'awaiting' || otpStatus === 'verifying' || otpStatus === 'verified') && (
+                          <>
+                            <div>
+                              <p className="font-bold text-gray-900">Verify Your Email</p>
+                              <p className="mt-1 text-sm text-gray-600">
+                                We&apos;ve sent a 6-digit verification code to your registered email.
+                              </p>
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label className="text-xs font-medium text-gray-500">Enter Verification Code</Label>
+                              <InputOTP
+                                maxLength={6}
+                                value={otpCode}
+                                onChange={(value) => {
+                                  setOtpCode(value);
+                                  setOtpError('');
+                                }}
+                                disabled={otpStatus === 'verifying' || otpStatus === 'verified'}
+                              >
+                                <InputOTPGroup>
+                                  {[0, 1, 2, 3, 4, 5].map((i) => (
+                                    <InputOTPSlot key={i} index={i} className="h-12 w-12 rounded-xl text-lg" />
+                                  ))}
+                                </InputOTPGroup>
+                              </InputOTP>
+                            </div>
+
+                            {otpExpired && otpStatus !== 'verified' && (
+                              <div className="space-y-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                                <p className="font-bold">Verification Code Expired</p>
+                                <p>Your verification code has expired.</p>
+                                <Button
+                                  type="button"
+                                  onClick={handleResendOtp}
+                                  disabled={otpStatus === 'sending'}
+                                  className="h-10 w-full rounded-full bg-blue-600 text-white hover:bg-blue-700"
+                                >
+                                  Send New Code
+                                </Button>
+                              </div>
+                            )}
+
+                            {otpError && !otpExpired && (
+                              <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                                <AlertCircle className="h-4 w-4 shrink-0" />
+                                {otpError}
+                              </div>
+                            )}
+
+                            {otpStatus === 'verified' && (
+                              <div className="space-y-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                                <p className="font-bold">Email Verified Successfully</p>
+                                <p>Your identity has been verified.</p>
+                              </div>
+                            )}
+
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="text-gray-500">
+                                {otpStatus === 'verified' ? (
+                                  'Verification complete'
+                                ) : otpResendSecondsLeft > 0 ? (
+                                  <>
+                                    Resend available in{' '}
+                                    <span className="font-semibold text-blue-600">{otpResendSecondsLeft}s</span>
+                                  </>
+                                ) : (
+                                  "Didn't receive the code?"
+                                )}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={otpResendSecondsLeft > 0 || otpStatus === 'sending' || otpStatus === 'verified'}
+                                onClick={handleResendOtp}
+                                className="inline-flex items-center gap-1 font-semibold text-blue-600 disabled:cursor-not-allowed disabled:text-gray-400"
+                              >
+                                <RefreshCw className="h-3.5 w-3.5" /> Resend OTP
+                              </button>
+                            </div>
+
+                            <Button
+                              type="button"
+                              onClick={handleVerifyOtp}
+                              disabled={
+                                otpCode.length !== 6 ||
+                                otpStatus === 'verifying' ||
+                                otpStatus === 'verified' ||
+                                otpExpired
+                              }
+                              className="h-12 w-full rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white shadow-md shadow-blue-200 disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-none disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none"
+                            >
+                              {otpStatus === 'verifying' ? (
+                                <>
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying code...
+                                </>
+                              ) : (
+                                <>
+                                  <KeyRound className="mr-2 h-4 w-4" /> Verify OTP
+                                </>
+                              )}
+                            </Button>
+                          </>
+                        )}
 
                         <div className="relative flex items-center py-1">
                           <div className="h-px flex-1 bg-gray-200" />
@@ -1274,10 +1581,10 @@ export default function SignUpPage() {
                           type="button"
                           variant="outline"
                           onClick={handleBackToFaceFromOtp}
-                          disabled={otpStatus === 'verified'}
+                          disabled={otpStatus === 'verified' || faceResetPending}
                           className="h-11 w-full rounded-full"
                         >
-                          <RefreshCw className="mr-2 h-4 w-4" /> Try Face Verification Again
+                          <RefreshCw className="mr-2 h-4 w-4" /> Retry Face Verification
                         </Button>
                       </div>
                     )}
@@ -1286,6 +1593,7 @@ export default function SignUpPage() {
                       onBack={() => setStep(2)}
                       onContinue={() => setStep(4)}
                       continueDisabled={!identityVerified}
+                      continueLabel={identityVerified ? 'Continue' : 'Continue'}
                     />
                   </div>
                 )}

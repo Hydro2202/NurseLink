@@ -33,6 +33,7 @@ from .serializers import (
     ChangePasswordSerializer,
     ChartingNoteSerializer,
     FaceVerificationSerializer,
+    FaceVerificationStatusSerializer,
     HandoverSerializer,
     KardexRecordSerializer,
     LoginSerializer,
@@ -101,6 +102,89 @@ class SignupView(APIView):
         )
 
 
+def _face_session_status(session: RegistrationSession) -> str:
+    if session.face_verified or session.otp_verified:
+        return 'success'
+    if session.face_locked:
+        return 'max_attempts_reached'
+    if session.face_attempts > 0:
+        return 'failed'
+    return 'idle'
+
+
+def _face_session_payload(session: RegistrationSession, **extra):
+    attempts_used = min(MAX_FACE_ATTEMPTS, session.face_attempts)
+    status_value = _face_session_status(session)
+    payload = {
+        'registrationSessionId': str(session.session_id),
+        'attemptsUsed': attempts_used,
+        'attemptsRemaining': max(0, MAX_FACE_ATTEMPTS - attempts_used),
+        'maxAttempts': MAX_FACE_ATTEMPTS,
+        'locked': session.face_locked,
+        'faceVerified': session.face_verified,
+        'otpVerified': session.otp_verified,
+        'verificationMethod': session.verification_method or None,
+        'status': status_value,
+        # Explicit contract aliases for attempt/fallback gating.
+        'failed_attempts': attempts_used,
+        'max_attempts': MAX_FACE_ATTEMPTS,
+        'verification_status': status_value,
+        'registeredEmail': session.email or None,
+    }
+    payload.update(extra)
+    return payload
+
+
+class FaceVerificationStatusView(APIView):
+    """Return the server-side face/OTP verification state for session resume."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'face_verification'
+
+    @extend_schema(
+        request=FaceVerificationStatusSerializer,
+        tags=['Auth'],
+        summary='Get face verification session status (attempt count, lock, OTP)',
+        auth=None,
+    )
+    def post(self, request):
+        serializer = FaceVerificationStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        session = None
+        if data.get('registrationSessionId'):
+            session = RegistrationSession.objects.filter(session_id=data['registrationSessionId']).first()
+        if session is None and data.get('registeredEmail'):
+            session = (
+                RegistrationSession.objects.filter(
+                    email=data['registeredEmail'].lower(),
+                    user__isnull=True,
+                )
+                .order_by('-updated_at')
+                .first()
+            )
+
+        if session is None:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Registration session not found.',
+                    'attemptsUsed': 0,
+                    'attemptsRemaining': MAX_FACE_ATTEMPTS,
+                    'maxAttempts': MAX_FACE_ATTEMPTS,
+                    'locked': False,
+                    'faceVerified': False,
+                    'otpVerified': False,
+                    'status': 'idle',
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(_face_session_payload(session, success=True))
+
+
 class FaceVerificationView(APIView):
     """
     Real endpoint backing Step 3 of registration. Attempt counting and the
@@ -112,13 +196,13 @@ class FaceVerificationView(APIView):
         (face_match.verify_face_against_id) comparing the selfie to the
         Hospital ID photo.
       - {registrationSessionId, reset: true}: called when the user picks
-        "Retake Face Verification" from the failure dialog after a lockout —
-        zeroes the attempt counter and clears the lock.
+        "Retry Face Verification" after lockout — zeroes the attempt counter
+        and clears the lock.
 
-    Detection/quality failures (no face, multiple faces, blurry, bad file
-    type) never consume an attempt — only a genuine face-to-face comparison
-    (match or mismatch) does. Every call is logged to FaceVerificationAttempt
-    for verification history; no raw image or embedding is ever persisted.
+    A completed validation failure (no face, multiple faces, blurry, mismatch,
+    etc.) consumes one attempt. Camera permission / UI / model-unavailable
+    errors that never finish validation do not. Every call is logged to
+    FaceVerificationAttempt; no raw image or embedding is persisted.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -151,24 +235,27 @@ class FaceVerificationView(APIView):
             session.face_locked = False
             session.save(update_fields=['face_attempts', 'face_locked', 'updated_at'])
             return Response(
-                {
-                    'matched': False,
-                    'confidence': 0,
-                    'registrationSessionId': str(session.session_id),
-                    'attemptsRemaining': MAX_FACE_ATTEMPTS,
-                    'locked': False,
-                    'reason': None,
-                    'reset': True,
-                }
+                _face_session_payload(
+                    session,
+                    matched=False,
+                    confidence=0,
+                    reason=None,
+                    reset=True,
+                )
             )
 
         if session is None:
-            # A client reload must resume the same server-side session instead
-            # of silently creating a fresh three-attempt budget.
+            # First scan of a client cycle: resume only an unlockable in-progress
+            # session. Never silently re-attach a previously locked session — that
+            # would jump the user straight to "3 attempts failed" without scanning.
             registered_email = data['registeredEmail'].lower()
             session = (
                 RegistrationSession.objects.filter(
-                    email=registered_email, user__isnull=True, face_verified=False, otp_verified=False
+                    email=registered_email,
+                    user__isnull=True,
+                    face_verified=False,
+                    otp_verified=False,
+                    face_locked=False,
                 )
                 .order_by('-updated_at')
                 .first()
@@ -176,58 +263,71 @@ class FaceVerificationView(APIView):
 
         if session.face_verified:
             return Response(
-                {
-                    'matched': True,
-                    'confidence': 100.0,
-                    'registrationSessionId': str(session.session_id),
-                    'attemptsRemaining': max(0, MAX_FACE_ATTEMPTS - session.face_attempts),
-                    'locked': False,
-                    'reason': None,
-                }
+                _face_session_payload(
+                    session,
+                    matched=True,
+                    confidence=100.0,
+                    reason=None,
+                )
             )
 
         if session.face_locked:
             return Response(
-                {
-                    'matched': False,
-                    'confidence': 0,
-                    'registrationSessionId': str(session.session_id),
-                    'attemptsRemaining': 0,
-                    'locked': True,
-                    'reason': None,
-                    'message': 'Maximum face verification attempts reached. Please use Email OTP verification.',
-                },
+                _face_session_payload(
+                    session,
+                    matched=False,
+                    confidence=0,
+                    reason=None,
+                    message=(
+                        "You've reached the maximum number of face verification attempts. "
+                        'Choose Retry Face Verification or Verify Using Email OTP.'
+                    ),
+                ),
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         try:
             result = verify_face_against_id(data['image'], data['idImage'])
         except FaceModelError as exc:
+            # Model/service failure is not a completed validation attempt.
             return Response(
-                {'success': False, 'message': str(exc)},
+                {
+                    'success': False,
+                    'message': str(exc),
+                    'countable': False,
+                    **_face_session_payload(session, matched=False, confidence=0),
+                },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
         # Re-read the session under a row lock so parallel requests cannot
-        # consume fewer than the required number of attempts.
+        # double-consume attempts from one logical scan.
         with transaction.atomic():
             session = RegistrationSession.objects.select_for_update().get(pk=session.pk)
+            if session.face_verified:
+                return Response(
+                    _face_session_payload(session, matched=True, confidence=100.0, reason=None)
+                )
             if session.face_locked:
                 return Response(
-                    {
-                        'matched': False, 'confidence': 0,
-                        'registrationSessionId': str(session.session_id),
-                        'attemptsRemaining': 0, 'locked': True,
-                        'message': 'Maximum face verification attempts reached. Please use Email OTP verification.',
-                    },
+                    _face_session_payload(
+                        session,
+                        matched=False,
+                        confidence=0,
+                        message=(
+                            "You've reached the maximum number of face verification attempts. "
+                            'Choose Retry Face Verification or Verify Using Email OTP.'
+                        ),
+                    ),
                     status=status.HTTP_403_FORBIDDEN,
                 )
+
             FaceVerificationAttempt.objects.create(
                 session=session,
                 matched=result.matched,
                 confidence=result.confidence,
                 reason=result.reason or '',
-                countable=True,
+                countable=result.countable and not result.matched,
             )
 
             if result.matched:
@@ -235,26 +335,47 @@ class FaceVerificationView(APIView):
                 session.face_attempts = 0
                 session.face_locked = False
                 session.verification_method = 'FACE'
-                session.save(update_fields=['face_verified', 'face_attempts', 'face_locked', 'verification_method', 'updated_at'])
+                session.save(
+                    update_fields=[
+                        'face_verified',
+                        'face_attempts',
+                        'face_locked',
+                        'verification_method',
+                        'updated_at',
+                    ]
+                )
                 return Response(
-                    {
-                        'matched': True, 'confidence': result.confidence,
-                        'registrationSessionId': str(session.session_id),
-                        'attemptsRemaining': MAX_FACE_ATTEMPTS, 'locked': False, 'reason': None,
-                    }
+                    _face_session_payload(
+                        session,
+                        matched=True,
+                        confidence=result.confidence,
+                        reason=None,
+                        message='Face Verified Successfully',
+                    )
                 )
 
-            session.face_attempts = min(MAX_FACE_ATTEMPTS, session.face_attempts + 1)
-            locked = session.face_attempts == MAX_FACE_ATTEMPTS
-            session.face_locked = locked
-            session.save(update_fields=['face_attempts', 'face_locked', 'updated_at'])
+            if result.countable:
+                session.face_attempts = min(MAX_FACE_ATTEMPTS, session.face_attempts + 1)
+                session.face_locked = session.face_attempts >= MAX_FACE_ATTEMPTS
+                session.save(update_fields=['face_attempts', 'face_locked', 'updated_at'])
+
+            message = result.message or 'Face verification failed. Please try again.'
+            if session.face_locked:
+                message = (
+                    "You've reached the maximum number of face verification attempts. "
+                    'Choose Retry Face Verification or Verify Using Email OTP.'
+                )
+
             return Response(
-                {
-                    'matched': False, 'confidence': result.confidence,
-                    'registrationSessionId': str(session.session_id),
-                    'attemptsRemaining': MAX_FACE_ATTEMPTS - session.face_attempts,
-                    'locked': locked, 'reason': result.reason, 'message': result.message,
-                }
+                _face_session_payload(
+                    session,
+                    matched=False,
+                    confidence=result.confidence,
+                    locked=session.face_locked,
+                    reason=result.reason,
+                    message=message,
+                    countable=result.countable,
+                )
             )
 
 class SendRegistrationOtpView(APIView):

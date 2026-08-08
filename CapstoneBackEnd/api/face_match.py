@@ -29,6 +29,7 @@ import cv2
 import numpy as np
 
 MAX_FACE_ATTEMPTS = 3
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB, matches the documented upload limit
 
 MODEL_DIR = Path(__file__).resolve().parent / 'ml_models'
 YUNET_PATH = MODEL_DIR / 'face_detection_yunet_2023mar.onnx'
@@ -116,6 +117,8 @@ def _decode_image(image_data: str, *, allow_pdf_hint: bool = False) -> np.ndarra
 
     if len(raw) < 500:
         raise InvalidImageError('Image data is too small to be a valid photo.')
+    if len(raw) > MAX_IMAGE_BYTES:
+        raise InvalidImageError('Image is too large. Maximum file size is 10 MB.')
 
     array = np.frombuffer(raw, dtype=np.uint8)
     img = cv2.imdecode(array, cv2.IMREAD_COLOR)
@@ -181,8 +184,12 @@ class FaceVerificationOutcome:
 def verify_face_against_id(selfie_data: str, id_data: str) -> FaceVerificationOutcome:
     """
     Full pipeline: decode both images, detect a single clear face in each,
-    then compare embeddings. Detection/quality failures never consume an
-    attempt — only a genuine face-to-face comparison (match or mismatch) does.
+    then compare embeddings.
+
+    Any completed validation that does not match (no face, multiple faces,
+    blurry, corrupt image, ID issues, or mismatch) is countable=True and
+    consumes one of the three face-verification attempts. Camera permission /
+    UI / network failures that never reach this function do not count.
     """
     try:
         id_img = _decode_image(id_data, allow_pdf_hint=True)
@@ -201,11 +208,7 @@ def verify_face_against_id(selfie_data: str, id_data: str) -> FaceVerificationOu
     try:
         selfie_img = _decode_image(selfie_data)
     except InvalidImageError as exc:
-        return FaceVerificationOutcome(
-            False, 0.0, 'INVALID_IMAGE',
-            'Face not detected. Only a real human face captured using the camera is accepted.',
-            countable=True,
-        )
+        return FaceVerificationOutcome(False, 0.0, 'INVALID_IMAGE', str(exc), countable=True)
 
     id_check = _detect_single_face(id_img, label='Hospital ID photo')
     if not id_check.ok:
@@ -224,12 +227,12 @@ def verify_face_against_id(selfie_data: str, id_data: str) -> FaceVerificationOu
     confidence = round(max(0.0, min(1.0, cosine_score)) * 100, 2)
 
     if matched:
-        return FaceVerificationOutcome(True, confidence, None, None, countable=True)
+        return FaceVerificationOutcome(True, confidence, None, None, countable=False)
 
     return FaceVerificationOutcome(
         False,
         confidence,
         'MISMATCH',
-        'Face does not match your Hospital ID. Please try again.',
+        'Face verification failed. Please position your face correctly and try again.',
         countable=True,
     )

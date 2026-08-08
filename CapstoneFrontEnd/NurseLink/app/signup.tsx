@@ -15,6 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Link, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   AlertCircle,
@@ -28,6 +29,7 @@ import {
   Lock,
   Mail,
   RefreshCw,
+  Send,
   ShieldCheck,
   Upload,
   UserPlus,
@@ -52,26 +54,38 @@ import {
   verifyRegistrationOtpRequest,
 } from '../services/api';
 
-function buildDirectoryEmail(fullName: string, hospitalName: string): string {
-  const parts = fullName.toLowerCase().split(/\s+/).filter(Boolean);
-  const first = parts[0] ?? 'employee';
-  const last = parts[parts.length - 1] ?? '';
-  const domain = hospitalName.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 24) || 'hospital';
-  return `${first}${last ? `.${last}` : ''}@${domain}.com`;
-}
-
-function maskEmail(email: string): string {
-  const [local, domain] = email.split('@');
-  if (!local || !domain) return email;
-  return `${local[0]}${'*'.repeat(Math.max(3, local.length - 1))}@${domain}`;
-}
+const FACE_SESSION_KEY = 'nurselink.faceVerificationSession';
+const MAX_FACE_ATTEMPTS = 3;
 
 function extractErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
-    const data = err.data as { message?: string; detail?: string } | undefined;
-    return data?.message || data?.detail || fallback;
+    const data = err.data as
+      | { message?: string; detail?: string; email?: string | string[]; non_field_errors?: string | string[] }
+      | string
+      | undefined;
+    if (typeof data === 'string' && data.trim()) return data;
+    if (data && typeof data === 'object') {
+      if (data.message) return data.message;
+      if (typeof data.detail === 'string') return data.detail;
+      const emailErr = data.email;
+      if (Array.isArray(emailErr) && emailErr[0]) return String(emailErr[0]);
+      if (typeof emailErr === 'string') return emailErr;
+      const nonField = data.non_field_errors;
+      if (Array.isArray(nonField) && nonField[0]) return String(nonField[0]);
+      const firstField = Object.values(data).find((v) => Array.isArray(v) && v[0]) as string[] | undefined;
+      if (firstField?.[0]) return String(firstField[0]);
+    }
+    if (err.message) return err.message;
   }
   return fallback;
+}
+
+function resolveAttemptsUsed(res: { attemptsUsed?: number; attemptsRemaining?: number }): number {
+  if (typeof res.attemptsUsed === 'number') return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, res.attemptsUsed));
+  if (typeof res.attemptsRemaining === 'number') {
+    return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, MAX_FACE_ATTEMPTS - res.attemptsRemaining));
+  }
+  return 0;
 }
 
 function OtpDigitsInput({
@@ -295,6 +309,11 @@ export default function SignUpPage() {
   const router = useRouter();
   const { signup, logout } = useAuth();
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const faceVerificationInFlight = useRef(false);
+  const otpSendInFlight = useRef(false);
+  const otpVerifyInFlight = useRef(false);
+  const cameraRef = useRef<CameraView>(null);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const [currentStep, setCurrentStep] = useState<WizardStep>(1);
   const [hospitalIdCompleted, setHospitalIdCompleted] = useState(false);
@@ -313,6 +332,7 @@ export default function SignUpPage() {
   const [hospitalIdBase64, setHospitalIdBase64] = useState<string | null>(null);
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
+  const [liveCameraActive, setLiveCameraActive] = useState(false);
   const [prcStatus, setPrcStatus] = useState<ProcessStatus>('idle');
   const [prcData, setPrcData] = useState<{ profession: string; expiration: string } | null>(null);
   const [ocrData, setOcrData] = useState(defaultOcrData);
@@ -326,8 +346,9 @@ export default function SignUpPage() {
   const [faceLocked, setFaceLocked] = useState(false);
   const [faceResetPending, setFaceResetPending] = useState(false);
   const [showOtpPanel, setShowOtpPanel] = useState(false);
+  const [otpEmailInput, setOtpEmailInput] = useState('');
   const [otpCode, setOtpCode] = useState('');
-  const [otpStatus, setOtpStatus] = useState<'idle' | 'sending' | 'awaiting' | 'verifying' | 'verified'>('idle');
+  const [otpStatus, setOtpStatus] = useState<'idle' | 'email_entry' | 'sending' | 'awaiting' | 'verifying' | 'verified'>('idle');
   const [otpError, setOtpError] = useState('');
   const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null);
   const [otpResendAvailableAt, setOtpResendAvailableAt] = useState<number | null>(null);
@@ -337,23 +358,54 @@ export default function SignUpPage() {
     Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
   }, [fadeAnim]);
 
-  useEffect(() => {
-    AsyncStorage.getItem('nurselink.faceVerificationSession').then((serialized) => {
-      if (!serialized) return;
-      const persisted = JSON.parse(serialized) as { id?: string; attempts?: number; locked?: boolean };
-      if (persisted.id) {
-        setRegistrationSessionId(persisted.id);
-        setFaceAttemptsUsed(Math.min(3, Math.max(0, persisted.attempts ?? 0)));
-        setFaceLocked(Boolean(persisted.locked));
-      }
-    }).catch(() => undefined);
-  }, []);
-
   const persistFaceSession = (id: string, attempts: number, locked: boolean) =>
     AsyncStorage.setItem(
-      'nurselink.faceVerificationSession',
-      JSON.stringify({ id, attempts: Math.min(3, Math.max(0, attempts)), locked })
+      FACE_SESSION_KEY,
+      JSON.stringify({ id, attempts: Math.min(MAX_FACE_ATTEMPTS, Math.max(0, attempts)), locked })
     );
+
+  const clearFaceCycleLocal = async () => {
+    await AsyncStorage.removeItem(FACE_SESSION_KEY).catch(() => undefined);
+    setRegistrationSessionId(null);
+    setFaceAttemptsUsed(0);
+    setFaceLocked(false);
+    setFaceStatus('idle');
+    setError('');
+    setSelfieUri(null);
+    setLiveCameraActive(false);
+    setShowOtpPanel(false);
+    setOtpCode('');
+    setOtpEmailInput('');
+    setOtpError('');
+    setOtpStatus('idle');
+    setOtpExpiresAt(null);
+    setOtpResendAvailableAt(null);
+    faceVerificationInFlight.current = false;
+  };
+
+  useEffect(() => {
+    void clearFaceCycleLocal();
+  }, []);
+
+  // Always begin Face Verification at Attempt 1 for this visit.
+  // Do NOT restore lockouts from AsyncStorage/status sync — that skipped real scans.
+  useEffect(() => {
+    if (currentStep !== 3) {
+      setLiveCameraActive(false);
+      return;
+    }
+    if (
+      faceLocked ||
+      showOtpPanel ||
+      faceStatus === 'success' ||
+      faceStatus === 'processing' ||
+      faceStatus === 'failed' ||
+      selfieUri
+    ) {
+      return;
+    }
+    setLiveCameraActive(true);
+  }, [currentStep, faceLocked, showOtpPanel, faceStatus, selfieUri]);
 
   const completedThrough: WizardStep = (() => {
     if (roleVerified) return 7;
@@ -376,7 +428,7 @@ export default function SignUpPage() {
         hospitalName,
         department: 'Intensive Care Unit',
         position: 'Registered Nurse',
-        email: buildDirectoryEmail(fullName, hospitalName),
+        email: '',
       });
       setOcrStatus('success');
       setHospitalIdCompleted(true);
@@ -392,6 +444,7 @@ export default function SignUpPage() {
     setRole('');
     setPrcVerified(false);
     setRoleVerified(false);
+    void clearFaceCycleLocal();
     simulateOcr();
   };
 
@@ -422,87 +475,134 @@ export default function SignUpPage() {
     if (!result.canceled) handleIdImage(result.assets[0].uri, result.assets[0].base64 ?? null);
   };
 
-  const handleFaceVerification = async () => {
+  const openLiveCamera = async () => {
     setError('');
-    if (!hospitalIdBase64) {
-      setError('Please re-upload your Hospital ID photo in Step 1 before continuing.');
-      return;
-    }
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      setError('Camera access is required for face verification.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      quality: 0.9,
-      allowsEditing: false,
-      cameraType: ImagePicker.CameraType.front,
-      base64: true,
-    });
-    if (result.canceled) {
-      setFaceStatus('idle');
-      return;
-    }
-    const asset = result.assets[0];
-    setSelfieUri(asset.uri);
-    setFaceStatus('processing');
-
-    if (!asset.base64) {
-      setFaceStatus('failed');
-      setError('Could not read the captured photo. Please try again.');
-      return;
-    }
-
-    try {
-      const res = await faceVerificationRequest(
-        `data:image/jpeg;base64,${asset.base64}`,
-        `data:image/jpeg;base64,${hospitalIdBase64}`,
-        registrationSessionId,
-        ocrData.email
-      );
-      setRegistrationSessionId(res.registrationSessionId);
-      setFaceAttemptsUsed(Math.max(0, 3 - res.attemptsRemaining));
-      void persistFaceSession(res.registrationSessionId, Math.max(0, 3 - res.attemptsRemaining), res.locked);
-      if (res.matched) {
-        setFaceStatus('success');
-        setFaceVerificationCompleted(true);
-        await AsyncStorage.removeItem('nurselink.faceVerificationSession');
-        setCurrentStep(4);
+    if (!cameraPermission?.granted) {
+      const permission = await requestCameraPermission();
+      if (!permission.granted) {
+        setError('Camera access is required for face verification.');
+        setLiveCameraActive(false);
         return;
       }
-      setFaceStatus('failed');
-      setError('The photo did not match the required live face verification. Please try again.');
-      if (res.locked) {
-        setFaceLocked(true);
+    }
+    setSelfieUri(null);
+    setFaceStatus('idle');
+    setLiveCameraActive(true);
+  };
+
+  const handleFaceVerification = async () => {
+    if (faceVerificationInFlight.current) return;
+    faceVerificationInFlight.current = true;
+    try {
+      setError('');
+      if (!hospitalIdBase64) {
+        setError('Please re-upload your Hospital ID photo in Step 1 before continuing.');
+        return;
       }
-    } catch (err) {
-      setFaceStatus('failed');
-      if (err instanceof ApiError && err.status === 403) {
-        const data = err.data as { registrationSessionId?: string } | undefined;
-        if (data?.registrationSessionId) {
-          setRegistrationSessionId(data.registrationSessionId);
-          void persistFaceSession(data.registrationSessionId, 3, true);
+      if (!cameraRef.current) {
+        setError('Camera is not ready. Please try again.');
+        return;
+      }
+
+      let photo;
+      try {
+        photo = await cameraRef.current.takePictureAsync({
+          quality: 0.85,
+          base64: true,
+          skipProcessing: false,
+        });
+      } catch {
+        setError('Camera capture failed. Please try again.');
+        return;
+      }
+
+      if (!photo?.base64) {
+        setError('Could not read the captured photo. Please try again.');
+        return;
+      }
+
+      setSelfieUri(photo.uri);
+      setLiveCameraActive(false);
+      setFaceStatus('processing');
+
+      try {
+        const res = await faceVerificationRequest(
+          `data:image/jpeg;base64,${photo.base64}`,
+          `data:image/jpeg;base64,${hospitalIdBase64}`,
+          registrationSessionId,
+          ocrData.email
+        );
+        setRegistrationSessionId(res.registrationSessionId);
+        const attempts = resolveAttemptsUsed(res);
+        setFaceAttemptsUsed(attempts);
+        void persistFaceSession(res.registrationSessionId, attempts, Boolean(res.locked));
+        if (res.matched || res.faceVerified) {
+          setFaceStatus('success');
+          setFaceVerificationCompleted(true);
+          setFaceLocked(false);
+          await AsyncStorage.removeItem(FACE_SESSION_KEY);
+          return;
         }
-        setFaceAttemptsUsed(3);
-        setFaceLocked(true);
-      } else {
-        setError(extractErrorMessage(err, 'Face verification failed. Please try again.'));
+        setFaceStatus('failed');
+        setError(res.message || 'Face verification failed. Please position your face correctly and try again.');
+        // Fallback UI only after backend confirms 3 real failures.
+        setFaceLocked(Boolean(res.locked) && attempts >= MAX_FACE_ATTEMPTS);
+      } catch (err) {
+        setFaceStatus('failed');
+        if (err instanceof ApiError && err.status === 403) {
+          const data = err.data as {
+            registrationSessionId?: string;
+            message?: string;
+            attemptsUsed?: number;
+            attemptsRemaining?: number;
+            locked?: boolean;
+          } | undefined;
+          if (data?.registrationSessionId) setRegistrationSessionId(data.registrationSessionId);
+          const attempts = resolveAttemptsUsed(data ?? {});
+          setFaceAttemptsUsed(Math.min(MAX_FACE_ATTEMPTS, Math.max(0, attempts)));
+          const locked = Boolean(data?.locked) && attempts >= MAX_FACE_ATTEMPTS;
+          setFaceLocked(locked);
+          if (data?.registrationSessionId) {
+            void persistFaceSession(data.registrationSessionId, attempts, locked);
+          }
+          setError(
+            locked
+              ? data?.message ||
+                  "You've reached the maximum number of face verification attempts. Choose Retry Face Verification or Verify Using Email OTP."
+              : data?.message || 'Face verification failed. Please try again.'
+          );
+        } else if (err instanceof ApiError && err.status === 503) {
+          setError(extractErrorMessage(err, 'Face verification is temporarily unavailable. Please try again.'));
+        } else {
+          // Network/UI errors do not count as face attempts.
+          setError(extractErrorMessage(err, 'Face verification failed. Please try again.'));
+        }
       }
+    } finally {
+      faceVerificationInFlight.current = false;
     }
   };
 
   const removeFailedSelfie = () => {
+    // Manual progression only — do not call the API / increment attempts here.
     setSelfieUri(null);
     setFaceStatus('idle');
     setError('');
+    void openLiveCamera();
   };
 
-  const tryFaceVerificationAgain = async () => {
-    removeFailedSelfie();
-    await handleFaceVerification();
+  const resetOtpState = () => {
+    setOtpCode('');
+    setOtpEmailInput('');
+    setOtpError('');
+    setOtpStatus('idle');
+    setOtpExpiresAt(null);
+    setOtpResendAvailableAt(null);
+    setShowOtpPanel(false);
   };
 
   const handleModalRetake = async () => {
+    if (faceResetPending) return;
     if (!registrationSessionId) {
       setFaceLocked(false);
       setFaceAttemptsUsed(0);
@@ -510,20 +610,22 @@ export default function SignUpPage() {
       setError('');
       setSelfieUri(null);
       setFaceVerificationCompleted(false);
-      await handleFaceVerification();
+      resetOtpState();
+      await openLiveCamera();
       return;
     }
     setFaceResetPending(true);
     try {
       await resetFaceVerificationRequest(registrationSessionId);
-      await AsyncStorage.removeItem('nurselink.faceVerificationSession');
+      await AsyncStorage.removeItem(FACE_SESSION_KEY);
       setFaceLocked(false);
       setFaceAttemptsUsed(0);
       setFaceStatus('idle');
       setError('');
       setSelfieUri(null);
       setFaceVerificationCompleted(false);
-      await handleFaceVerification();
+      resetOtpState();
+      await openLiveCamera();
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not reset verification. Please try again.'));
     } finally {
@@ -531,30 +633,48 @@ export default function SignUpPage() {
     }
   };
 
-  const handleOpenOtp = async () => {
-    if (!registrationSessionId || !ocrData.email) return;
+  const handleOpenOtp = () => {
+    setLiveCameraActive(false);
+    setShowOtpPanel(true);
+    setOtpStatus('email_entry');
+    setOtpError('');
+    setOtpCode('');
+    setOtpEmailInput('');
+  };
+
+  const handleSendOtp = async () => {
+    if (otpSendInFlight.current) return;
+    if (!registrationSessionId) return;
+    const submittedEmail = otpEmailInput.trim();
+    if (!submittedEmail) {
+      setOtpError('Please enter your registered email address.');
+      return;
+    }
+    otpSendInFlight.current = true;
     setOtpStatus('sending');
     setOtpError('');
     try {
-      const res = await sendRegistrationOtpRequest(registrationSessionId);
-      setShowOtpPanel(true);
+      const res = await sendRegistrationOtpRequest(submittedEmail, registrationSessionId);
       setOtpStatus('awaiting');
       setOtpCode('');
       setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
       setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
     } catch (err) {
-      // Keep the failure modal open so the error is visible and retry is easy.
-      setOtpStatus('idle');
-      setOtpError(extractErrorMessage(err, 'Failed to send verification code. Please try again.'));
+      setOtpStatus('email_entry');
+      setOtpError(extractErrorMessage(err, 'Email Not Found. This email is not associated with your registration.'));
+    } finally {
+      otpSendInFlight.current = false;
     }
   };
 
   const handleResendOtp = async () => {
-    if (!registrationSessionId || !ocrData.email) return;
+    if (otpSendInFlight.current) return;
+    if (!registrationSessionId || !otpEmailInput.trim()) return;
+    otpSendInFlight.current = true;
     setOtpStatus('sending');
     setOtpError('');
     try {
-      const res = await resendRegistrationOtpRequest(registrationSessionId);
+      const res = await resendRegistrationOtpRequest(otpEmailInput.trim(), registrationSessionId);
       setOtpStatus('awaiting');
       setOtpCode('');
       setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
@@ -562,26 +682,31 @@ export default function SignUpPage() {
     } catch (err) {
       setOtpStatus('awaiting');
       setOtpError(extractErrorMessage(err, 'Failed to resend verification code. Please try again.'));
+    } finally {
+      otpSendInFlight.current = false;
     }
   };
 
   const handleVerifyOtp = async () => {
-    if (!registrationSessionId || !ocrData.email || otpCode.length !== 6) return;
+    if (otpVerifyInFlight.current) return;
+    if (!registrationSessionId || otpCode.length !== 6) return;
+    otpVerifyInFlight.current = true;
     setOtpStatus('verifying');
     setOtpError('');
     try {
       const res = await verifyRegistrationOtpRequest(otpCode, registrationSessionId);
       if (res.verified) {
         setOtpStatus('verified');
-        await AsyncStorage.removeItem('nurselink.faceVerificationSession');
-        setCurrentStep(4);
+        await AsyncStorage.removeItem(FACE_SESSION_KEY);
       } else {
         setOtpStatus('awaiting');
-        setOtpError(res.message || 'Invalid OTP.');
+        setOtpError(res.message || 'Invalid or expired verification code.');
       }
     } catch (err) {
       setOtpStatus('awaiting');
-      setOtpError(extractErrorMessage(err, 'Verification failed. Please try again.'));
+      setOtpError(extractErrorMessage(err, 'Invalid or expired verification code.'));
+    } finally {
+      otpVerifyInFlight.current = false;
     }
   };
 
@@ -823,12 +948,29 @@ export default function SignUpPage() {
                       <Input key={field.label} label={field.label} value={field.value} editable={false} inputWrapperStyle={styles.readOnlyInput} />
                     ))}
                     <Input label="Position" value={ocrData.position} editable={false} inputWrapperStyle={styles.readOnlyInput} />
+                    <Input
+                      label="Registered Email Address"
+                      value={ocrData.email}
+                      onChangeText={(v) => setOcrData({ ...ocrData, email: v.trim() })}
+                      placeholder="Enter the email associated with this registration"
+                      autoCapitalize="none"
+                      keyboardType="email-address"
+                    />
+                    <Text style={styles.registeredEmailHint}>
+                      This email is stored with your registration and used for Email OTP if face verification fails. Use
+                      a real inbox you can access.
+                    </Text>
 
                     <NavButtons
                       onBack={() => setCurrentStep(1)}
                       onContinue={() => {
+                        if (!ocrData.email || !ocrData.email.includes('@')) {
+                          setError('Please enter the registered email address before continuing.');
+                          return;
+                        }
+                        setError('');
                         setIdReviewCompleted(true);
-                        setCurrentStep(3);
+                        void clearFaceCycleLocal().then(() => setCurrentStep(3));
                       }}
                     />
                   </View>
@@ -836,22 +978,28 @@ export default function SignUpPage() {
 
                 {currentStep === 3 && (
                   <View style={styles.stepBody}>
-                    {!showOtpPanel && <View style={styles.warningBox}>
-                      <AlertTriangle size={18} color={Colors.orange600} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.warningText}>
-                          This step is <Text style={styles.warningBold}>required</Text>. To verify your identity, you must capture a live selfie using your device&apos;s camera. Uploading images from your gallery is not permitted.
-                        </Text>
-                        <Text style={[styles.warningText, { marginTop: 4 }]}>
-                          If face verification cannot be completed after 3 attempts, an alternative Email OTP option
-                          will be offered.
-                        </Text>
+                    {!showOtpPanel && (
+                      <View style={styles.warningBox}>
+                        <AlertTriangle size={18} color={Colors.orange600} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.warningText}>
+                            <Text style={styles.warningBold}>Face Verification</Text> is required. Use your device
+                            camera for a live face scan — gallery uploads are not permitted.
+                          </Text>
+                          <Text style={[styles.warningText, { marginTop: 6 }]}>
+                            Position your face inside the frame. Make sure your face is clearly visible. Keep your face
+                            centered.
+                          </Text>
+                          <Text style={[styles.warningText, { marginTop: 4 }]}>
+                            After 3 failed attempts you can retry face verification or verify using Email OTP.
+                          </Text>
+                        </View>
                       </View>
-                    </View>}
+                    )}
 
                     {!showOtpPanel && (
                       <View style={styles.attemptsBar}>
-                        <Text style={styles.attemptsBarLabel}>Face verification attempts</Text>
+                        <Text style={styles.attemptsBarLabel}>Attempt</Text>
                         <View style={styles.attemptsBarRight}>
                           <View style={styles.attemptsDotsRow}>
                             {[0, 1, 2].map((i) => (
@@ -861,25 +1009,30 @@ export default function SignUpPage() {
                               />
                             ))}
                           </View>
-                          <Text style={styles.attemptsCount}>{faceAttemptsUsed} / 3</Text>
+                          <Text style={styles.attemptsCount}>
+                            {faceLocked
+                              ? `${MAX_FACE_ATTEMPTS} of ${MAX_FACE_ATTEMPTS}`
+                              : `${Math.min(faceAttemptsUsed + 1, MAX_FACE_ATTEMPTS)} of ${MAX_FACE_ATTEMPTS}`}
+                          </Text>
                         </View>
                       </View>
                     )}
 
                     {!faceLocked && !showOtpPanel && (
                       <>
-                        {selfieUri ? (
+                        {faceStatus === 'success' ? (
+                          <View style={styles.faceSuccessCard}>
+                            <CheckCircle2 size={36} color={Colors.green600} />
+                            <Text style={styles.faceSuccessTitle}>Face Verified Successfully</Text>
+                            <Text style={styles.faceSuccessDesc}>Your identity has been verified.</Text>
+                          </View>
+                        ) : selfieUri && !faceLocked ? (
                           <View style={styles.selfieWrap}>
                             <Image source={{ uri: selfieUri }} style={styles.selfieImage} />
                             {faceStatus === 'processing' && (
                               <View style={styles.selfieOverlay}>
                                 <ActivityIndicator color={Colors.white} />
-                                <Text style={styles.selfieOverlayText}>Analyzing face...</Text>
-                              </View>
-                            )}
-                            {faceStatus === 'success' && (
-                              <View style={[styles.selfieOverlay, styles.selfieOverlaySuccess]}>
-                                <CheckCircle2 size={32} color={Colors.green600} />
+                                <Text style={styles.selfieOverlayText}>Verifying your face...</Text>
                               </View>
                             )}
                             {faceStatus === 'failed' && (
@@ -890,35 +1043,67 @@ export default function SignUpPage() {
                               </View>
                             )}
                           </View>
+                        ) : liveCameraActive && cameraPermission?.granted ? (
+                          <View style={styles.liveCameraWrap}>
+                            <View style={styles.liveCameraInner}>
+                              <CameraView ref={cameraRef} style={styles.liveCamera} facing="front" />
+                              <View style={styles.liveCameraFrame} pointerEvents="none" />
+                            </View>
+                            <Text style={styles.liveCameraHint}>
+                              {faceAttemptsUsed === 2
+                                ? 'This is your final face verification attempt.'
+                                : 'Please position your face inside the camera.'}
+                            </Text>
+                            <Button
+                              size="lg"
+                              onPress={handleFaceVerification}
+                              disabled={faceStatus === 'processing'}
+                              style={navStyles.continueFull}
+                            >
+                              {faceStatus === 'processing' ? (
+                                <ActivityIndicator color={Colors.white} />
+                              ) : (
+                                <Camera size={16} color={Colors.white} />
+                              )}
+                              <Text style={navStyles.btnText}>
+                                {faceStatus === 'processing' ? 'Verifying your face...' : 'Verify Face'}
+                              </Text>
+                            </Button>
+                          </View>
                         ) : (
-                          <Pressable style={styles.cameraZone} onPress={handleFaceVerification}>
+                          <Pressable style={styles.cameraZone} onPress={openLiveCamera}>
                             <View style={styles.cameraIconCircle}>
                               <Video size={28} color={Colors.blue600} />
                             </View>
-                            <Text style={styles.cameraZoneTitle}>Open Camera</Text>
-                            <Text style={styles.cameraZoneHint}>Live selfie only — gallery uploads are not allowed</Text>
+                            <Text style={styles.cameraZoneTitle}>Open Live Camera</Text>
+                            <Text style={styles.cameraZoneHint}>Live face scan only — image uploads are not allowed</Text>
                           </Pressable>
                         )}
 
-                        {selfieUri && faceStatus === 'failed' && (
+                        {selfieUri && faceStatus === 'failed' && !faceLocked && (
                           <>
                             <View style={styles.faceFailureCard}>
                               <XCircle size={18} color={Colors.red600} />
                               <View style={{ flex: 1 }}>
                                 <Text style={styles.faceFailureTitle}>Face Verification Failed</Text>
-                                <Text style={styles.faceFailureMessage}>
-                                  The photo did not match the required live face verification. Please try again.
+                                <Text style={styles.faceFailureMessage}>We couldn&apos;t verify your face.</Text>
+                                <Text style={[styles.faceFailureMessage, { marginTop: 4, fontWeight: '700' }]}>
+                                  Attempt {faceAttemptsUsed} of {MAX_FACE_ATTEMPTS}
                                 </Text>
+                                <Text style={[styles.faceFailureMessage, { marginTop: 4 }]}>
+                                  {faceAttemptsUsed === 1
+                                    ? 'Please make sure your face is clearly visible and positioned inside the frame.'
+                                    : 'Please try again.'}
+                                </Text>
+                                {error ? (
+                                  <Text style={[styles.faceFailureMessage, { marginTop: 4, fontSize: 11 }]}>{error}</Text>
+                                ) : null}
                               </View>
                             </View>
                             <View style={styles.faceRetryActions}>
                               <Button variant="outline" size="lg" onPress={removeFailedSelfie} style={{ flex: 1 }}>
-                                <X size={16} color={Colors.gray700} />
-                                <Text style={navStyles.backText}>Remove</Text>
-                              </Button>
-                              <Button size="lg" onPress={tryFaceVerificationAgain} style={{ flex: 1 }}>
-                                <RefreshCw size={16} color={Colors.white} />
-                                <Text style={navStyles.btnText}>Try Again</Text>
+                                <RefreshCw size={16} color={Colors.gray700} />
+                                <Text style={navStyles.backText}>Try Again</Text>
                               </Button>
                             </View>
                           </>
@@ -926,52 +1111,49 @@ export default function SignUpPage() {
                       </>
                     )}
 
-                    {faceLocked && !showOtpPanel && (
-                      <>
-                        {selfieUri && (
-                          <View style={styles.selfieWrap}>
-                            <Image source={{ uri: selfieUri }} style={styles.selfieImage} />
-                            <View style={[styles.selfieOverlay, styles.selfieOverlayError]}>
-                              <View style={styles.selfieFailureIcon}>
-                                <XCircle size={38} color={Colors.red600} />
-                              </View>
-                            </View>
+                    {faceLocked && faceAttemptsUsed >= MAX_FACE_ATTEMPTS && !showOtpPanel && (
+                      <View style={styles.verificationWarningCard}>
+                        <View style={styles.verificationWarningHeader}>
+                          <View style={styles.warningIconCircle}>
+                            <AlertTriangle size={20} color={Colors.orange600} />
                           </View>
-                        )}
-                        <View style={styles.verificationWarningCard}>
-                          <View style={styles.verificationWarningHeader}>
-                            <View style={styles.warningIconCircle}>
-                              <AlertTriangle size={20} color={Colors.orange600} />
-                            </View>
-                            <View style={{ flex: 1 }}>
-                              <Text style={styles.verificationWarningTitle}>Face Verification Unsuccessful</Text>
-                              <Text style={styles.verificationWarningSubtitle}>3 consecutive attempts failed</Text>
-                            </View>
-                          </View>
-                          <View style={styles.verificationWarningBody}>
-                            <Text style={styles.verificationWarningMessage}>
-                              We couldn&apos;t verify your identity after multiple attempts. You may try Face
-                              Verification again or choose an alternative verification method.
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.verificationWarningTitle}>Face Verification Failed</Text>
+                            <Text style={styles.verificationWarningSubtitle}>
+                              You&apos;ve reached the maximum number of face verification attempts.
                             </Text>
-                            {otpError && (
-                              <View style={styles.errorBox}>
-                                <AlertCircle size={16} color={Colors.red700} />
-                                <Text style={styles.errorBoxText}>{otpError}</Text>
-                              </View>
-                            )}
-                            <Button variant="outline" size="lg" onPress={handleModalRetake} disabled={faceResetPending || otpStatus === 'sending'}>
-                              {faceResetPending ? <ActivityIndicator color={Colors.primary} /> : <RefreshCw size={16} color={Colors.orange700} />}
-                              <Text style={[navStyles.backText, { color: Colors.orange700 }]}>
-                                {faceResetPending ? 'Resetting...' : 'Try Face Verification Again'}
-                              </Text>
-                            </Button>
-                            <Button size="lg" onPress={handleOpenOtp} disabled={otpStatus === 'sending' || faceResetPending}>
-                              {otpStatus === 'sending' ? <ActivityIndicator color={Colors.white} /> : <Mail size={16} color={Colors.white} />}
-                              <Text style={navStyles.btnText}>{otpStatus === 'sending' ? 'Sending code...' : 'Verify Using Email OTP (Optional)'}</Text>
-                            </Button>
                           </View>
                         </View>
-                      </>
+                        <View style={styles.verificationWarningBody}>
+                          <Text style={styles.verificationWarningMessage}>Please choose another option.</Text>
+                          {otpError ? (
+                            <View style={styles.errorBox}>
+                              <AlertCircle size={16} color={Colors.red700} />
+                              <Text style={styles.errorBoxText}>{otpError}</Text>
+                            </View>
+                          ) : null}
+                          <Button
+                            variant="outline"
+                            size="lg"
+                            onPress={handleModalRetake}
+                            disabled={faceResetPending || otpStatus === 'sending'}
+                          >
+                            {faceResetPending ? (
+                              <ActivityIndicator color={Colors.primary} />
+                            ) : (
+                              <RefreshCw size={16} color={Colors.orange700} />
+                            )}
+                            <Text style={[navStyles.backText, { color: Colors.orange700 }]}>
+                              {faceResetPending ? 'Resetting...' : 'Retry Face Verification'}
+                            </Text>
+                          </Button>
+                          <Text style={styles.otpDividerText}>or</Text>
+                          <Button size="lg" onPress={handleOpenOtp} disabled={otpStatus === 'sending' || faceResetPending}>
+                            <Mail size={16} color={Colors.white} />
+                            <Text style={navStyles.btnText}>Verify Using Email OTP</Text>
+                          </Button>
+                        </View>
+                      </View>
                     )}
 
                     {showOtpPanel && (
@@ -981,98 +1163,142 @@ export default function SignUpPage() {
                             <Mail size={20} color={Colors.blue600} />
                           </View>
                           <View style={{ flex: 1 }}>
-                            <Text style={styles.otpPanelTitle}>Alternative Identity Verification</Text>
+                            <Text style={styles.otpPanelTitle}>Email Verification</Text>
                             <Text style={styles.otpPanelDesc}>
-                              Receive a one-time verification code in your registered email address.
+                              Enter the email address associated with your registration.
                             </Text>
                           </View>
                         </View>
 
-                        <View style={styles.otpNoticeBox}>
-                          <ShieldCheck size={14} color={Colors.orange600} />
-                          <Text style={styles.otpNoticeText}>
-                            Alternative verification method — used only when Face Verification cannot be completed
-                          </Text>
-                        </View>
-
-                        <View style={styles.otpEmailRow}>
-                          <Mail size={17} color={Colors.gray400} />
-                          <Text style={styles.otpEmailText}>{maskEmail(ocrData.email)}</Text>
-                          <View style={styles.readOnlyBadge}>
-                            <Text style={styles.readOnlyBadgeText}>Read-only</Text>
-                          </View>
-                        </View>
-
-                        <View style={{ gap: 8 }}>
-                          <Text style={styles.otpFieldLabel}>Enter 6-Digit Verification Code</Text>
-                          <OtpDigitsInput
-                            value={otpCode}
-                            onChange={(v) => {
-                              setOtpCode(v);
-                              setOtpError('');
-                            }}
-                            disabled={otpStatus === 'verifying' || otpStatus === 'verified'}
-                          />
-                        </View>
-
-                        {otpExpired && otpStatus !== 'verified' && (
-                          <View style={styles.errorBox}>
-                            <AlertCircle size={16} color={Colors.red700} />
-                            <Text style={styles.errorBoxText}>OTP expired. Please request a new code.</Text>
-                          </View>
-                        )}
-
-                        {otpError && !otpExpired && (
-                          <View style={styles.errorBox}>
-                            <AlertCircle size={16} color={Colors.red700} />
-                            <Text style={styles.errorBoxText}>{otpError}</Text>
+                        {(otpStatus === 'email_entry' || otpStatus === 'sending') && (
+                          <View style={{ gap: 12 }}>
+                            <Input
+                              label="Email Address"
+                              value={otpEmailInput}
+                              onChangeText={(v) => {
+                                setOtpEmailInput(v);
+                                setOtpError('');
+                              }}
+                              placeholder="Enter your registered email"
+                              autoCapitalize="none"
+                              keyboardType="email-address"
+                              editable={otpStatus !== 'sending'}
+                            />
+                            {otpError ? (
+                              <View style={styles.errorBox}>
+                                <AlertCircle size={16} color={Colors.red700} />
+                                <Text style={styles.errorBoxText}>{otpError}</Text>
+                              </View>
+                            ) : null}
+                            <Button
+                              size="lg"
+                              onPress={handleSendOtp}
+                              disabled={otpStatus === 'sending' || !otpEmailInput.trim()}
+                              style={navStyles.continueFull}
+                            >
+                              {otpStatus === 'sending' ? (
+                                <ActivityIndicator color={Colors.white} />
+                              ) : (
+                                <Send size={16} color={Colors.white} />
+                              )}
+                              <Text style={navStyles.btnText}>
+                                {otpStatus === 'sending' ? 'Sending verification code...' : 'Send Verification Code'}
+                              </Text>
+                            </Button>
                           </View>
                         )}
 
-                        {otpStatus === 'verified' && (
-                          <View style={styles.successBox}>
-                            <CheckCircle2 size={16} color={Colors.green600} />
-                            <Text style={styles.successBoxDesc}>Identity Successfully Verified</Text>
-                          </View>
-                        )}
+                        {(otpStatus === 'awaiting' || otpStatus === 'verifying' || otpStatus === 'verified') && (
+                          <>
+                            <Text style={styles.otpPanelTitle}>Verify Your Email</Text>
+                            <Text style={styles.otpPanelDesc}>
+                              We&apos;ve sent a 6-digit verification code to your registered email.
+                            </Text>
+                            <View style={{ gap: 8 }}>
+                              <Text style={styles.otpFieldLabel}>Enter Verification Code</Text>
+                              <OtpDigitsInput
+                                value={otpCode}
+                                onChange={(v) => {
+                                  setOtpCode(v);
+                                  setOtpError('');
+                                }}
+                                disabled={otpStatus === 'verifying' || otpStatus === 'verified'}
+                              />
+                            </View>
 
-                        <View style={styles.otpFooterRow}>
-                          <Text style={styles.otpResendText}>
-                            {otpStatus === 'verified'
-                              ? 'Verification complete'
-                              : otpResendSecondsLeft > 0
-                                ? `Resend available in ${otpResendSecondsLeft}s`
-                                : 'You can resend the code now'}
-                          </Text>
-                          <Pressable
-                            disabled={otpResendSecondsLeft > 0 || otpStatus === 'sending' || otpStatus === 'verified'}
-                            onPress={handleResendOtp}
-                          >
-                            <Text
+                            {otpExpired && otpStatus !== 'verified' ? (
+                              <View style={styles.errorBox}>
+                                <AlertCircle size={16} color={Colors.red700} />
+                                <View style={{ flex: 1, gap: 8 }}>
+                                  <Text style={styles.errorBoxText}>Verification Code Expired</Text>
+                                  <Text style={styles.errorBoxText}>Your verification code has expired.</Text>
+                                  <Button size="lg" onPress={handleResendOtp}>
+                                    <Text style={navStyles.btnText}>Send New Code</Text>
+                                  </Button>
+                                </View>
+                              </View>
+                            ) : null}
+
+                            {otpError && !otpExpired ? (
+                              <View style={styles.errorBox}>
+                                <AlertCircle size={16} color={Colors.red700} />
+                                <Text style={styles.errorBoxText}>{otpError}</Text>
+                              </View>
+                            ) : null}
+
+                            {otpStatus === 'verified' ? (
+                              <View style={styles.successBox}>
+                                <CheckCircle2 size={16} color={Colors.green600} />
+                                <View style={{ flex: 1 }}>
+                                  <Text style={[styles.successBoxDesc, { fontWeight: '700' }]}>
+                                    Email Verified Successfully
+                                  </Text>
+                                  <Text style={styles.successBoxDesc}>Your identity has been verified.</Text>
+                                </View>
+                              </View>
+                            ) : null}
+
+                            <View style={styles.otpFooterRow}>
+                              <Text style={styles.otpResendText}>
+                                {otpStatus === 'verified'
+                                  ? 'Verification complete'
+                                  : otpResendSecondsLeft > 0
+                                    ? `Resend available in ${otpResendSecondsLeft}s`
+                                    : 'You can resend the code now'}
+                              </Text>
+                              <Pressable
+                                disabled={otpResendSecondsLeft > 0 || otpStatus === 'verified'}
+                                onPress={handleResendOtp}
+                              >
+                                <Text
+                                  style={[
+                                    styles.otpResendLink,
+                                    (otpResendSecondsLeft > 0 || otpStatus === 'verified') && styles.otpResendLinkDisabled,
+                                  ]}
+                                >
+                                  Resend OTP
+                                </Text>
+                              </Pressable>
+                            </View>
+
+                            <Button
+                              size="lg"
+                              onPress={handleVerifyOtp}
+                              disabled={otpCode.length !== 6 || otpStatus === 'verifying' || otpStatus === 'verified' || otpExpired}
                               style={[
-                                styles.otpResendLink,
-                                (otpResendSecondsLeft > 0 || otpStatus === 'sending' || otpStatus === 'verified') &&
-                                  styles.otpResendLinkDisabled,
+                                navStyles.continueFull,
+                                (otpCode.length !== 6 || otpStatus === 'verified' || otpExpired) && navStyles.btnDisabled,
                               ]}
                             >
-                              Resend Code
-                            </Text>
-                          </Pressable>
-                        </View>
-
-                        <Button
-                          size="lg"
-                          onPress={handleVerifyOtp}
-                          disabled={otpCode.length !== 6 || otpStatus === 'verifying' || otpStatus === 'verified' || otpExpired}
-                          style={[navStyles.continueFull, (otpCode.length !== 6 || otpStatus === 'verified' || otpExpired) && navStyles.btnDisabled]}
-                        >
-                          {otpStatus === 'verifying' ? (
-                            <ActivityIndicator color={Colors.white} />
-                          ) : (
-                            <Lock size={16} color={Colors.white} />
-                          )}
-                          <Text style={navStyles.btnText}>{otpStatus === 'verifying' ? 'Verifying...' : 'Verify Code'}</Text>
-                        </Button>
+                              {otpStatus === 'verifying' ? (
+                                <ActivityIndicator color={Colors.white} />
+                              ) : (
+                                <Lock size={16} color={Colors.white} />
+                              )}
+                              <Text style={navStyles.btnText}>{otpStatus === 'verifying' ? 'Verifying code...' : 'Verify OTP'}</Text>
+                            </Button>
+                          </>
+                        )}
 
                         <View style={styles.otpDivider}>
                           <View style={styles.otpDividerLine} />
@@ -1084,10 +1310,10 @@ export default function SignUpPage() {
                           variant="outline"
                           size="lg"
                           onPress={handleBackToFaceFromOtp}
-                          disabled={otpStatus === 'verified'}
+                          disabled={otpStatus === 'verified' || faceResetPending}
                         >
                           <RefreshCw size={16} color={Colors.gray700} />
-                          <Text style={navStyles.backText}>Try Face Verification Again</Text>
+                          <Text style={navStyles.backText}>Retry Face Verification</Text>
                         </Button>
                       </View>
                     )}
@@ -1526,6 +1752,9 @@ const styles = StyleSheet.create({
     gap: 8,
     padding: 16,
   },
+  cameraZoneDisabled: {
+    opacity: 0.7,
+  },
   cameraIconCircle: {
     width: 56,
     height: 56,
@@ -1536,6 +1765,41 @@ const styles = StyleSheet.create({
   },
   cameraZoneTitle: { fontSize: 14, fontWeight: '700', color: Colors.blue700 },
   cameraZoneHint: { fontSize: 12, color: Colors.gray500, textAlign: 'center' },
+  liveCameraWrap: { gap: 12 },
+  liveCameraInner: {
+    position: 'relative',
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+    backgroundColor: Colors.gray900,
+  },
+  liveCamera: {
+    width: '100%',
+    height: 280,
+  },
+  liveCameraFrame: {
+    position: 'absolute',
+    top: 50,
+    left: '50%',
+    marginLeft: -70,
+    width: 140,
+    height: 180,
+    borderRadius: 28,
+    borderWidth: 3,
+    borderColor: 'rgba(255,255,255,0.65)',
+  },
+  liveCameraHint: { fontSize: 13, color: Colors.gray600, textAlign: 'center', lineHeight: 18 },
+  faceSuccessCard: {
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: Colors.green200,
+    backgroundColor: Colors.green50,
+    borderRadius: Radius.lg,
+    paddingVertical: 28,
+    paddingHorizontal: 16,
+  },
+  faceSuccessTitle: { fontSize: 17, fontWeight: '700', color: Colors.green700 },
+  faceSuccessDesc: { fontSize: 13, color: Colors.green700 },
   selfieWrap: { borderRadius: Radius.lg, overflow: 'hidden', position: 'relative' },
   selfieImage: { width: '100%', height: 220, backgroundColor: Colors.gray900 },
   selfieOverlay: {
@@ -1585,6 +1849,7 @@ const styles = StyleSheet.create({
   },
   faceFailureTitle: { fontSize: 14, fontWeight: '700', color: Colors.red700 },
   faceFailureMessage: { marginTop: 3, fontSize: 13, lineHeight: 18, color: Colors.red700 },
+  registeredEmailHint: { fontSize: 12, color: Colors.gray500, lineHeight: 17, marginTop: -4 },
   faceRetryActions: { flexDirection: 'row', gap: 12 },
   errorBox: {
     flexDirection: 'row',
