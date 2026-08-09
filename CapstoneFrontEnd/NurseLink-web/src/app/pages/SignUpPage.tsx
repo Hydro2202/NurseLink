@@ -36,6 +36,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ApiError } from '../api/client';
 import {
   faceVerificationRequest,
+  faceVerificationStatusRequest,
   resendRegistrationOtpRequest,
   resetFaceVerificationRequest,
   sendRegistrationOtpRequest,
@@ -73,6 +74,10 @@ function readPersistedFaceSession(): { id?: string; attempts?: number; locked?: 
   } catch {
     return null;
   }
+}
+
+function resolveMaxAttempts(res: { maxAttempts?: number }): number {
+  return typeof res.maxAttempts === 'number' && res.maxAttempts > 0 ? res.maxAttempts : MAX_FACE_ATTEMPTS;
 }
 
 function resolveAttemptsUsed(res: { attemptsUsed?: number; attemptsRemaining?: number }): number {
@@ -411,8 +416,10 @@ export default function SignUpPage() {
 
   const [registrationSessionId, setRegistrationSessionId] = useState<string | null>(null);
   const [faceAttemptsUsed, setFaceAttemptsUsed] = useState(0);
+  const [faceMaxAttempts, setFaceMaxAttempts] = useState(MAX_FACE_ATTEMPTS);
   const [faceLocked, setFaceLocked] = useState(false);
   const [faceResetPending, setFaceResetPending] = useState(false);
+  const [faceResuming, setFaceResuming] = useState(true);
   const [showOtpPanel, setShowOtpPanel] = useState(false);
   const [otpEmailInput, setOtpEmailInput] = useState('');
   const [otpCode, setOtpCode] = useState('');
@@ -481,16 +488,44 @@ export default function SignUpPage() {
     };
   }, [clearMedia]);
 
-  // Always begin Face Verification at Attempt 1 for this visit.
-  // Do NOT restore lockouts from localStorage/status sync — that skipped real scans.
+  // Resume face/OTP verification state from the backend on mount, so a page
+  // refresh cannot silently reset the 3-attempt counter or an active
+  // lockout — RegistrationSession on the server is the sole source of truth.
+  // Only a persisted session id that the backend confirms is gone (expired,
+  // already used, never existed) falls back to a clean cycle.
   useEffect(() => {
-    clearPersistedFaceSession();
-    setRegistrationSessionId(null);
-    setFaceAttemptsUsed(0);
-    setFaceLocked(false);
-    setFaceStatus('idle');
-    setSelfiePreview(null);
-    setShowOtpPanel(false);
+    const persisted = readPersistedFaceSession();
+    if (!persisted?.id) {
+      setFaceResuming(false);
+      return;
+    }
+    let cancelled = false;
+    faceVerificationStatusRequest({ registrationSessionId: persisted.id })
+      .then((res) => {
+        if (cancelled) return;
+        setRegistrationSessionId(res.registrationSessionId ?? persisted.id ?? null);
+        setFaceMaxAttempts(resolveMaxAttempts(res));
+        setFaceAttemptsUsed(resolveAttemptsUsed(res));
+        setFaceLocked(Boolean(res.locked));
+        if (res.faceVerified) {
+          setFaceStatus('success');
+        } else if (res.otpVerified) {
+          setOtpStatus('verified');
+        }
+      })
+      .catch(() => {
+        clearPersistedFaceSession();
+        setRegistrationSessionId(null);
+        setFaceAttemptsUsed(0);
+        setFaceLocked(false);
+        setFaceStatus('idle');
+      })
+      .finally(() => {
+        if (!cancelled) setFaceResuming(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -504,6 +539,7 @@ export default function SignUpPage() {
     clearPersistedFaceSession();
     setRegistrationSessionId(null);
     setFaceAttemptsUsed(0);
+    setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
     setFaceLocked(false);
     setFaceStatus('idle');
     setFaceError('');
@@ -607,6 +643,7 @@ export default function SignUpPage() {
     }
     if (
       faceAutoOpenDone.current ||
+      faceResuming ||
       faceLocked ||
       showOtpPanel ||
       faceStatus === 'success' ||
@@ -618,7 +655,7 @@ export default function SignUpPage() {
     }
     faceAutoOpenDone.current = true;
     void openCamera();
-  }, [step, faceLocked, showOtpPanel, faceStatus, selfiePreview]);
+  }, [step, faceResuming, faceLocked, showOtpPanel, faceStatus, selfiePreview]);
 
   const captureSelfie = () => {
     if (faceVerificationInFlight.current) return;
@@ -646,8 +683,10 @@ export default function SignUpPage() {
       .then((res) => {
         setRegistrationSessionId(res.registrationSessionId);
         const attempts = resolveAttemptsUsed(res);
+        const maxAttempts = resolveMaxAttempts(res);
         // Only trust backend attempt counts from THIS validate response.
         setFaceAttemptsUsed(attempts);
+        setFaceMaxAttempts(maxAttempts);
         persistFaceSession(res.registrationSessionId, attempts, Boolean(res.locked));
         if (res.matched || res.faceVerified) {
           setFaceStatus('success');
@@ -657,8 +696,8 @@ export default function SignUpPage() {
         }
         setFaceStatus('error');
         setFaceError(res.message || 'Face verification failed. Please try again.');
-        // Fallback UI only after backend confirms 3 real failures.
-        setFaceLocked(Boolean(res.locked) && attempts >= MAX_FACE_ATTEMPTS);
+        // Fallback UI only after backend confirms all attempts are used.
+        setFaceLocked(Boolean(res.locked) && attempts >= maxAttempts);
       })
       .catch((err) => {
         setFaceStatus('error');
@@ -668,12 +707,15 @@ export default function SignUpPage() {
             message?: string;
             attemptsUsed?: number;
             attemptsRemaining?: number;
+            maxAttempts?: number;
             locked?: boolean;
           } | undefined;
           if (data?.registrationSessionId) setRegistrationSessionId(data.registrationSessionId);
           const attempts = resolveAttemptsUsed(data ?? {});
-          setFaceAttemptsUsed(Math.min(MAX_FACE_ATTEMPTS, Math.max(0, attempts)));
-          const locked = Boolean(data?.locked) && attempts >= MAX_FACE_ATTEMPTS;
+          const maxAttempts = resolveMaxAttempts(data ?? {});
+          setFaceAttemptsUsed(Math.min(maxAttempts, Math.max(0, attempts)));
+          setFaceMaxAttempts(maxAttempts);
+          const locked = Boolean(data?.locked) && attempts >= maxAttempts;
           setFaceLocked(locked);
           if (data?.registrationSessionId) {
             persistFaceSession(data.registrationSessionId, attempts, locked);
@@ -681,7 +723,7 @@ export default function SignUpPage() {
           setFaceError(
             locked
               ? data?.message ||
-                  "You've reached the maximum number of face verification attempts. Choose Retry Face Verification or Verify Using Email OTP."
+                  `You've used all ${maxAttempts} face verification attempts. Choose Retry Face Verification or Verify Using Email OTP.`
               : data?.message || 'Face verification failed. Please try again.'
           );
         } else if (err instanceof ApiError && err.status === 503) {
@@ -711,6 +753,7 @@ export default function SignUpPage() {
     if (!registrationSessionId) {
       setFaceLocked(false);
       setFaceAttemptsUsed(0);
+      setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
       setFaceStatus('idle');
       setFaceError('');
       setSelfiePreview(null);
@@ -725,6 +768,7 @@ export default function SignUpPage() {
       const res = await resetFaceVerificationRequest(registrationSessionId);
       setFaceLocked(false);
       setFaceAttemptsUsed(0);
+      setFaceMaxAttempts(resolveMaxAttempts(res));
       setFaceStatus('idle');
       setFaceError('');
       setSelfiePreview(null);
@@ -748,6 +792,18 @@ export default function SignUpPage() {
     setOtpEmailInput('');
   };
 
+  // A 429 (cooldown / resend limit) response carries the server's authoritative
+  // wait time in `retryAfter` — resync the resend countdown to it instead of
+  // leaving the button keyed off a possibly-stale local timestamp.
+  const applyOtpRetryAfter = (err: unknown) => {
+    if (err instanceof ApiError && err.status === 429) {
+      const retryAfter = (err.data as { retryAfter?: number } | undefined)?.retryAfter;
+      if (typeof retryAfter === 'number' && retryAfter > 0) {
+        setOtpResendAvailableAt(Date.now() + retryAfter * 1000);
+      }
+    }
+  };
+
   const handleSendOtp = async () => {
     if (otpSendInFlight.current) return;
     if (!registrationSessionId) return;
@@ -767,6 +823,7 @@ export default function SignUpPage() {
       setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
     } catch (err) {
       setOtpStatus('email_entry');
+      applyOtpRetryAfter(err);
       setOtpError(extractErrorMessage(err, 'Email Not Found. This email is not associated with your registration.'));
     } finally {
       otpSendInFlight.current = false;
@@ -787,6 +844,7 @@ export default function SignUpPage() {
       setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
     } catch (err) {
       setOtpStatus('awaiting');
+      applyOtpRetryAfter(err);
       setOtpError(extractErrorMessage(err, 'Failed to resend verification code. Please try again.'));
     } finally {
       otpSendInFlight.current = false;
@@ -800,7 +858,7 @@ export default function SignUpPage() {
     setOtpStatus('verifying');
     setOtpError('');
     try {
-      const res = await verifyRegistrationOtpRequest(otpEmailInput.trim(), otpCode, registrationSessionId);
+      const res = await verifyRegistrationOtpRequest(otpCode, registrationSessionId);
       if (res.verified) {
         setOtpStatus('verified');
         clearPersistedFaceSession();
@@ -902,7 +960,7 @@ export default function SignUpPage() {
 
     try {
       const fullName = ocrData?.fullName ?? `${email.split('@')[0]}`;
-      const ok = await signup({
+      await signup({
         name: fullName,
         firstName: ocrData?.fullName.split(' ')[0] ?? '',
         middleName: ocrData?.fullName.split(' ').slice(1, -1).join(' ') ?? '',
@@ -915,15 +973,11 @@ export default function SignUpPage() {
         createdAt: new Date().toISOString(),
         registrationSessionId,
       });
-      if (ok) {
-        // Keep the user on the pending-approval screen; do not leave them logged in.
-        logout();
-        setSubmitted(true);
-      } else {
-        setGlobalError('Unable to create account. Please try again.');
-      }
-    } catch {
-      setGlobalError('An unexpected error occurred. Please try again.');
+      // Keep the user on the pending-approval screen; do not leave them logged in.
+      logout();
+      setSubmitted(true);
+    } catch (err) {
+      setGlobalError(extractErrorMessage(err, 'Unable to create account. Please try again.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -1198,25 +1252,31 @@ export default function SignUpPage() {
 
                     <canvas ref={canvasRef} className="hidden" />
 
+                    {faceResuming ? (
+                      <div className="flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-4 py-6 text-sm text-gray-500">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Restoring your verification progress...
+                      </div>
+                    ) : (
+                      <>
                     {!showOtpPanel && (
                       <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5">
-                        <span className="text-sm font-medium text-gray-600">Attempt</span>
-                        <div className="flex items-center gap-2">
-                          <div className="flex gap-1">
-                            {[0, 1, 2].map((i) => (
-                              <span
-                                key={i}
-                                className={`h-2 w-2 rounded-full ${
-                                  i < faceAttemptsUsed ? 'bg-red-500' : 'bg-gray-300'
-                                }`}
-                              />
-                            ))}
-                          </div>
-                          <span className={`text-sm font-bold ${faceAttemptsUsed > 0 ? 'text-red-600' : 'text-gray-500'}`}>
-                            {faceLocked
-                              ? `${MAX_FACE_ATTEMPTS} of ${MAX_FACE_ATTEMPTS}`
-                              : `${Math.min(faceAttemptsUsed + 1, MAX_FACE_ATTEMPTS)} of ${MAX_FACE_ATTEMPTS}`}
+                        <span className="text-sm font-medium text-gray-600">
+                          Attempts remaining:{' '}
+                          <span
+                            className={`font-bold ${faceAttemptsUsed > 0 ? 'text-red-600' : 'text-gray-700'}`}
+                          >
+                            {Math.max(0, faceMaxAttempts - faceAttemptsUsed)}
                           </span>
+                        </span>
+                        <div className="flex gap-1">
+                          {Array.from({ length: faceMaxAttempts }).map((_, i) => (
+                            <span
+                              key={i}
+                              className={`h-2 w-2 rounded-full ${
+                                i < faceAttemptsUsed ? 'bg-red-500' : 'bg-gray-300'
+                              }`}
+                            />
+                          ))}
                         </div>
                       </div>
                     )}
@@ -1255,7 +1315,7 @@ export default function SignUpPage() {
                                 <p className="font-bold">Face Verification Failed</p>
                                 <p>We couldn&apos;t verify your face.</p>
                                 <p className="font-semibold">
-                                  Attempt {faceAttemptsUsed} of {MAX_FACE_ATTEMPTS}
+                                  Attempts remaining: {Math.max(0, faceMaxAttempts - faceAttemptsUsed)}
                                 </p>
                                 <p>
                                   {faceAttemptsUsed === 1
@@ -1291,7 +1351,7 @@ export default function SignUpPage() {
                               </div>
                             </div>
                             <p className="text-center text-sm text-gray-600">
-                              {faceAttemptsUsed === 2
+                              {faceAttemptsUsed === faceMaxAttempts - 1
                                 ? 'This is your final face verification attempt.'
                                 : 'Please position your face inside the camera.'}
                             </p>
@@ -1315,6 +1375,41 @@ export default function SignUpPage() {
                               <Button type="button" variant="outline" onClick={clearMedia} className="h-12 rounded-full">
                                 <X className="mr-2 h-4 w-4" /> Cancel
                               </Button>
+                            </div>
+                          </div>
+                        ) : cameraState === 'denied' ? (
+                          <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center">
+                            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-white shadow">
+                              <Video className="h-7 w-7 text-amber-600" />
+                            </div>
+                            <div>
+                              <p className="font-bold text-amber-900">Camera Access Denied</p>
+                              <p className="mt-1 text-sm text-amber-700">
+                                NurseLink needs camera access to verify your identity. Click the camera icon in your
+                                browser&apos;s address bar (or open your browser&apos;s Site Settings) and allow
+                                Camera for this site, then try again.
+                              </p>
+                            </div>
+                            <Button
+                              type="button"
+                              onClick={openCamera}
+                              className="h-11 w-full rounded-full bg-amber-600 text-white hover:bg-amber-700"
+                            >
+                              <RefreshCw className="mr-2 h-4 w-4" /> Try Again
+                            </Button>
+                          </div>
+                        ) : cameraState === 'not-supported' ? (
+                          <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center">
+                            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-white shadow">
+                              <AlertTriangle className="h-7 w-7 text-amber-600" />
+                            </div>
+                            <div>
+                              <p className="font-bold text-amber-900">Camera Not Available</p>
+                              <p className="mt-1 text-sm text-amber-700">
+                                This browser or device doesn&apos;t support live camera capture. Please try again from
+                                a recent version of Chrome, Edge, Firefox, or Safari, or switch to a device with a
+                                camera.
+                              </p>
                             </div>
                           </div>
                         ) : (
@@ -1342,14 +1437,18 @@ export default function SignUpPage() {
                           </div>
                         )}
 
-                        {faceError && !faceLocked && faceStatus !== 'error' && (
-                          <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                            <XCircle className="h-4 w-4 shrink-0" />
-                            {faceError}
-                          </div>
-                        )}
+                        {faceError &&
+                          !faceLocked &&
+                          faceStatus !== 'error' &&
+                          cameraState !== 'denied' &&
+                          cameraState !== 'not-supported' && (
+                            <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                              <XCircle className="h-4 w-4 shrink-0" />
+                              {faceError}
+                            </div>
+                          )}
 
-                        {faceLocked && faceAttemptsUsed >= MAX_FACE_ATTEMPTS && (
+                        {faceLocked && faceAttemptsUsed >= faceMaxAttempts && (
                           <div className="space-y-4 rounded-2xl border border-amber-200 bg-white p-5 sm:p-6">
                             <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
                               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-100">
@@ -1358,7 +1457,7 @@ export default function SignUpPage() {
                               <div>
                                 <p className="font-bold text-amber-900">Face Verification Failed</p>
                                 <p className="text-sm text-amber-700">
-                                  You&apos;ve reached the maximum number of face verification attempts.
+                                  {faceError || `You've used all ${faceMaxAttempts} face verification attempts.`}
                                 </p>
                               </div>
                             </div>
@@ -1587,6 +1686,8 @@ export default function SignUpPage() {
                           <RefreshCw className="mr-2 h-4 w-4" /> Retry Face Verification
                         </Button>
                       </div>
+                    )}
+                      </>
                     )}
 
                     <NavButtons

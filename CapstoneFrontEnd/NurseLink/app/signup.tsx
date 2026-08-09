@@ -48,6 +48,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import {
   ApiError,
   faceVerificationRequest,
+  faceVerificationStatusRequest,
   resendRegistrationOtpRequest,
   resetFaceVerificationRequest,
   sendRegistrationOtpRequest,
@@ -86,6 +87,10 @@ function resolveAttemptsUsed(res: { attemptsUsed?: number; attemptsRemaining?: n
     return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, MAX_FACE_ATTEMPTS - res.attemptsRemaining));
   }
   return 0;
+}
+
+function resolveMaxAttempts(res: { maxAttempts?: number }): number {
+  return typeof res.maxAttempts === 'number' && res.maxAttempts > 0 ? res.maxAttempts : MAX_FACE_ATTEMPTS;
 }
 
 function OtpDigitsInput({
@@ -343,8 +348,10 @@ export default function SignUpPage() {
 
   const [registrationSessionId, setRegistrationSessionId] = useState<string | null>(null);
   const [faceAttemptsUsed, setFaceAttemptsUsed] = useState(0);
+  const [faceMaxAttempts, setFaceMaxAttempts] = useState(MAX_FACE_ATTEMPTS);
   const [faceLocked, setFaceLocked] = useState(false);
   const [faceResetPending, setFaceResetPending] = useState(false);
+  const [faceResuming, setFaceResuming] = useState(true);
   const [showOtpPanel, setShowOtpPanel] = useState(false);
   const [otpEmailInput, setOtpEmailInput] = useState('');
   const [otpCode, setOtpCode] = useState('');
@@ -358,6 +365,14 @@ export default function SignUpPage() {
     Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
   }, [fadeAnim]);
 
+  // The error banner is shared across the whole wizard (rendered once, above
+  // every step) — clear it on every step change so a stale error from a
+  // previous step (e.g. a resolved face-verification lockout) doesn't keep
+  // showing after the user has moved on.
+  useEffect(() => {
+    setError('');
+  }, [currentStep]);
+
   const persistFaceSession = (id: string, attempts: number, locked: boolean) =>
     AsyncStorage.setItem(
       FACE_SESSION_KEY,
@@ -368,6 +383,7 @@ export default function SignUpPage() {
     await AsyncStorage.removeItem(FACE_SESSION_KEY).catch(() => undefined);
     setRegistrationSessionId(null);
     setFaceAttemptsUsed(0);
+    setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
     setFaceLocked(false);
     setFaceStatus('idle');
     setError('');
@@ -383,18 +399,57 @@ export default function SignUpPage() {
     faceVerificationInFlight.current = false;
   };
 
+  // Resume face/OTP verification state from the backend on mount, so closing
+  // and reopening the app cannot silently reset the 3-attempt counter or an
+  // active lockout — RegistrationSession on the server is the sole source of
+  // truth. Only a persisted session id the backend confirms is gone
+  // (expired, already used, never existed) falls back to a clean cycle.
   useEffect(() => {
-    void clearFaceCycleLocal();
+    let cancelled = false;
+    (async () => {
+      const raw = await AsyncStorage.getItem(FACE_SESSION_KEY).catch(() => null);
+      let persistedId: string | undefined;
+      try {
+        persistedId = raw ? (JSON.parse(raw) as { id?: string }).id : undefined;
+      } catch {
+        persistedId = undefined;
+      }
+      if (!persistedId) {
+        await clearFaceCycleLocal();
+        if (!cancelled) setFaceResuming(false);
+        return;
+      }
+      try {
+        const res = await faceVerificationStatusRequest({ registrationSessionId: persistedId });
+        if (cancelled) return;
+        setRegistrationSessionId(res.registrationSessionId ?? persistedId ?? null);
+        setFaceMaxAttempts(resolveMaxAttempts(res));
+        setFaceAttemptsUsed(resolveAttemptsUsed(res));
+        setFaceLocked(Boolean(res.locked));
+        if (res.faceVerified) {
+          setFaceStatus('success');
+          setFaceVerificationCompleted(true);
+        } else if (res.otpVerified) {
+          setOtpStatus('verified');
+        }
+      } catch {
+        await clearFaceCycleLocal();
+      } finally {
+        if (!cancelled) setFaceResuming(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Always begin Face Verification at Attempt 1 for this visit.
-  // Do NOT restore lockouts from AsyncStorage/status sync — that skipped real scans.
   useEffect(() => {
     if (currentStep !== 3) {
       setLiveCameraActive(false);
       return;
     }
     if (
+      faceResuming ||
       faceLocked ||
       showOtpPanel ||
       faceStatus === 'success' ||
@@ -405,7 +460,7 @@ export default function SignUpPage() {
       return;
     }
     setLiveCameraActive(true);
-  }, [currentStep, faceLocked, showOtpPanel, faceStatus, selfieUri]);
+  }, [currentStep, faceResuming, faceLocked, showOtpPanel, faceStatus, selfieUri]);
 
   const completedThrough: WizardStep = (() => {
     if (roleVerified) return 7;
@@ -533,6 +588,8 @@ export default function SignUpPage() {
           ocrData.email
         );
         setRegistrationSessionId(res.registrationSessionId);
+        const maxAttempts = resolveMaxAttempts(res);
+        setFaceMaxAttempts(maxAttempts);
         const attempts = resolveAttemptsUsed(res);
         setFaceAttemptsUsed(attempts);
         void persistFaceSession(res.registrationSessionId, attempts, Boolean(res.locked));
@@ -545,8 +602,8 @@ export default function SignUpPage() {
         }
         setFaceStatus('failed');
         setError(res.message || 'Face verification failed. Please position your face correctly and try again.');
-        // Fallback UI only after backend confirms 3 real failures.
-        setFaceLocked(Boolean(res.locked) && attempts >= MAX_FACE_ATTEMPTS);
+        // Fallback UI only after backend confirms all attempts are used.
+        setFaceLocked(Boolean(res.locked) && attempts >= maxAttempts);
       } catch (err) {
         setFaceStatus('failed');
         if (err instanceof ApiError && err.status === 403) {
@@ -555,12 +612,15 @@ export default function SignUpPage() {
             message?: string;
             attemptsUsed?: number;
             attemptsRemaining?: number;
+            maxAttempts?: number;
             locked?: boolean;
           } | undefined;
           if (data?.registrationSessionId) setRegistrationSessionId(data.registrationSessionId);
+          const maxAttempts = resolveMaxAttempts(data ?? {});
+          setFaceMaxAttempts(maxAttempts);
           const attempts = resolveAttemptsUsed(data ?? {});
-          setFaceAttemptsUsed(Math.min(MAX_FACE_ATTEMPTS, Math.max(0, attempts)));
-          const locked = Boolean(data?.locked) && attempts >= MAX_FACE_ATTEMPTS;
+          setFaceAttemptsUsed(Math.min(maxAttempts, Math.max(0, attempts)));
+          const locked = Boolean(data?.locked) && attempts >= maxAttempts;
           setFaceLocked(locked);
           if (data?.registrationSessionId) {
             void persistFaceSession(data.registrationSessionId, attempts, locked);
@@ -568,7 +628,7 @@ export default function SignUpPage() {
           setError(
             locked
               ? data?.message ||
-                  "You've reached the maximum number of face verification attempts. Choose Retry Face Verification or Verify Using Email OTP."
+                  `You've used all ${maxAttempts} face verification attempts. Choose Retry Face Verification or Verify Using Email OTP.`
               : data?.message || 'Face verification failed. Please try again.'
           );
         } else if (err instanceof ApiError && err.status === 503) {
@@ -606,6 +666,7 @@ export default function SignUpPage() {
     if (!registrationSessionId) {
       setFaceLocked(false);
       setFaceAttemptsUsed(0);
+      setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
       setFaceStatus('idle');
       setError('');
       setSelfieUri(null);
@@ -616,10 +677,11 @@ export default function SignUpPage() {
     }
     setFaceResetPending(true);
     try {
-      await resetFaceVerificationRequest(registrationSessionId);
+      const res = await resetFaceVerificationRequest(registrationSessionId);
       await AsyncStorage.removeItem(FACE_SESSION_KEY);
       setFaceLocked(false);
       setFaceAttemptsUsed(0);
+      setFaceMaxAttempts(resolveMaxAttempts(res));
       setFaceStatus('idle');
       setError('');
       setSelfieUri(null);
@@ -642,6 +704,18 @@ export default function SignUpPage() {
     setOtpEmailInput('');
   };
 
+  // A 429 (cooldown / resend limit) response carries the server's authoritative
+  // wait time in `retryAfter` — resync the resend countdown to it instead of
+  // leaving the button keyed off a possibly-stale local timestamp.
+  const applyOtpRetryAfter = (err: unknown) => {
+    if (err instanceof ApiError && err.status === 429) {
+      const retryAfter = (err.data as { retryAfter?: number } | undefined)?.retryAfter;
+      if (typeof retryAfter === 'number' && retryAfter > 0) {
+        setOtpResendAvailableAt(Date.now() + retryAfter * 1000);
+      }
+    }
+  };
+
   const handleSendOtp = async () => {
     if (otpSendInFlight.current) return;
     if (!registrationSessionId) return;
@@ -661,6 +735,7 @@ export default function SignUpPage() {
       setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
     } catch (err) {
       setOtpStatus('email_entry');
+      applyOtpRetryAfter(err);
       setOtpError(extractErrorMessage(err, 'Email Not Found. This email is not associated with your registration.'));
     } finally {
       otpSendInFlight.current = false;
@@ -681,6 +756,7 @@ export default function SignUpPage() {
       setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
     } catch (err) {
       setOtpStatus('awaiting');
+      applyOtpRetryAfter(err);
       setOtpError(extractErrorMessage(err, 'Failed to resend verification code. Please try again.'));
     } finally {
       otpSendInFlight.current = false;
@@ -790,12 +866,11 @@ export default function SignUpPage() {
         licenseNumber: licenseNumber.trim(),
         registrationSessionId,
       });
-    } catch (err) {
-      console.error(err);
-    } finally {
       // Keep the user on the pending-approval screen; do not leave them logged in.
       logout();
       router.replace({ pathname: '/pending-approval', params: { method: verificationMethod ?? '' } });
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Unable to create account. Please try again.'));
     }
   };
 
@@ -999,21 +1074,19 @@ export default function SignUpPage() {
 
                     {!showOtpPanel && (
                       <View style={styles.attemptsBar}>
-                        <Text style={styles.attemptsBarLabel}>Attempt</Text>
-                        <View style={styles.attemptsBarRight}>
-                          <View style={styles.attemptsDotsRow}>
-                            {[0, 1, 2].map((i) => (
-                              <View
-                                key={i}
-                                style={[styles.attemptsDot, i < faceAttemptsUsed && styles.attemptsDotFilled]}
-                              />
-                            ))}
-                          </View>
+                        <Text style={styles.attemptsBarLabel}>
+                          Attempts remaining:{' '}
                           <Text style={styles.attemptsCount}>
-                            {faceLocked
-                              ? `${MAX_FACE_ATTEMPTS} of ${MAX_FACE_ATTEMPTS}`
-                              : `${Math.min(faceAttemptsUsed + 1, MAX_FACE_ATTEMPTS)} of ${MAX_FACE_ATTEMPTS}`}
+                            {Math.max(0, faceMaxAttempts - faceAttemptsUsed)}
                           </Text>
+                        </Text>
+                        <View style={styles.attemptsDotsRow}>
+                          {Array.from({ length: faceMaxAttempts }).map((_, i) => (
+                            <View
+                              key={i}
+                              style={[styles.attemptsDot, i < faceAttemptsUsed && styles.attemptsDotFilled]}
+                            />
+                          ))}
                         </View>
                       </View>
                     )}
@@ -1050,7 +1123,7 @@ export default function SignUpPage() {
                               <View style={styles.liveCameraFrame} pointerEvents="none" />
                             </View>
                             <Text style={styles.liveCameraHint}>
-                              {faceAttemptsUsed === 2
+                              {faceAttemptsUsed === faceMaxAttempts - 1
                                 ? 'This is your final face verification attempt.'
                                 : 'Please position your face inside the camera.'}
                             </Text>
@@ -1088,7 +1161,7 @@ export default function SignUpPage() {
                                 <Text style={styles.faceFailureTitle}>Face Verification Failed</Text>
                                 <Text style={styles.faceFailureMessage}>We couldn&apos;t verify your face.</Text>
                                 <Text style={[styles.faceFailureMessage, { marginTop: 4, fontWeight: '700' }]}>
-                                  Attempt {faceAttemptsUsed} of {MAX_FACE_ATTEMPTS}
+                                  Attempts remaining: {Math.max(0, faceMaxAttempts - faceAttemptsUsed)}
                                 </Text>
                                 <Text style={[styles.faceFailureMessage, { marginTop: 4 }]}>
                                   {faceAttemptsUsed === 1
@@ -1111,7 +1184,7 @@ export default function SignUpPage() {
                       </>
                     )}
 
-                    {faceLocked && faceAttemptsUsed >= MAX_FACE_ATTEMPTS && !showOtpPanel && (
+                    {faceLocked && faceAttemptsUsed >= faceMaxAttempts && !showOtpPanel && (
                       <View style={styles.verificationWarningCard}>
                         <View style={styles.verificationWarningHeader}>
                           <View style={styles.warningIconCircle}>
@@ -1120,7 +1193,7 @@ export default function SignUpPage() {
                           <View style={{ flex: 1 }}>
                             <Text style={styles.verificationWarningTitle}>Face Verification Failed</Text>
                             <Text style={styles.verificationWarningSubtitle}>
-                              You&apos;ve reached the maximum number of face verification attempts.
+                              {error || `You've used all ${faceMaxAttempts} face verification attempts.`}
                             </Text>
                           </View>
                         </View>

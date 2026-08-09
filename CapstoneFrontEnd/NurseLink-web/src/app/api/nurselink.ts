@@ -154,7 +154,6 @@ export type OtpVerifyResponse = {
 };
 
 export async function verifyRegistrationOtpRequest(
-  email: string,
   otp: string,
   registrationSessionId: string
 ): Promise<OtpVerifyResponse> {

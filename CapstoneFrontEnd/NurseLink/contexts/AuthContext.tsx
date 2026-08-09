@@ -133,9 +133,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await AsyncStorage.setItem(USER_KEY, JSON.stringify(created));
       lastActivity.current = Date.now();
       return true;
-    } catch (error) {
-      console.error('Signup failed:', error);
-      return false;
     } finally {
       setIsLoading(false);
     }
