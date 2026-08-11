@@ -1127,3 +1127,106 @@ class KardexRecordSerializer(serializers.ModelSerializer):
                 validated_data['saved_by_name'] = user.get_full_name().strip() or user.username
 
             return KardexRecord.objects.create(**validated_data)
+
+
+# --- n8n-backed features ------------------------------------------------
+# Request/response contracts for the three workflows. The response
+# serializers exist for the API docs — the views return whatever n8n sends
+# merged with server-owned fields, so they document the shape rather than
+# constrain it.
+
+
+class VerifyIdSerializer(serializers.Serializer):
+    """Persona steps 1 & 2 — read a Hospital ID photo via the n8n verify-id workflow."""
+
+    idImage = serializers.CharField(
+        help_text='Base64 (optionally data-URI prefixed) photo of the Hospital ID.',
+    )
+    registrationSessionId = serializers.UUIDField(
+        required=False,
+        help_text='Existing signup session. Omit on the first call — one is created and returned.',
+    )
+    documentType = serializers.ChoiceField(
+        choices=['hospital_id', 'prc_license'],
+        required=False,
+        default='hospital_id',
+        help_text='Which document is being read.',
+    )
+    expectedRole = serializers.ChoiceField(
+        choices=['staff_nurse', 'supervisor'],
+        required=False,
+        allow_blank=True,
+        help_text='Optional. The workflow flags a mismatch against the position it reads.',
+    )
+
+    class Meta:
+        ref_name = 'VerifyIdRequest'
+
+
+class VerifyIdResponseSerializer(serializers.Serializer):
+    success = serializers.BooleanField()
+    verified = serializers.BooleanField(help_text='True when the workflow could read the document.')
+    fullName = serializers.CharField(allow_blank=True)
+    employeeId = serializers.CharField(allow_blank=True)
+    department = serializers.CharField(allow_blank=True)
+    position = serializers.CharField(allow_blank=True)
+    hospitalName = serializers.CharField(allow_blank=True)
+    email = serializers.CharField(allow_blank=True)
+    roleMatch = serializers.BooleanField(required=False)
+    confidence = serializers.FloatField(required=False)
+    message = serializers.CharField(required=False, allow_blank=True)
+    registrationSessionId = serializers.CharField()
+
+    class Meta:
+        ref_name = 'VerifyIdResponse'
+
+
+class StructureChartSerializer(serializers.Serializer):
+    """Autocharting — raw assessment in, structured nursing note out via n8n."""
+
+    patientId = serializers.CharField(
+        help_text='Patient code, e.g. P-1042. Vitals and demographics are attached server-side.',
+    )
+    assessment = serializers.CharField(
+        help_text='Free-text assessment the nurse typed. This is what the workflow structures.',
+    )
+    interventions = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        help_text='Interventions performed this shift.',
+    )
+    patientResponse = serializers.CharField(
+        required=False, allow_blank=True, help_text='How the patient responded to those interventions.'
+    )
+    noteType = serializers.ChoiceField(
+        choices=['progress', 'assessment', 'medication', 'vital_signs'],
+        required=False,
+        default='progress',
+    )
+    shift = serializers.ChoiceField(
+        choices=['morning', 'afternoon', 'night'], required=False, allow_blank=True
+    )
+    vitalSigns = serializers.DictField(
+        required=False,
+        help_text='Overrides the vitals on record. Omit to use the patient\u2019s current vitals.',
+    )
+    save = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text='True also persists the generated note as a ChartingNote with aiGenerated=true.',
+    )
+
+    class Meta:
+        ref_name = 'StructureChartRequest'
+
+
+class StructureChartResponseSerializer(serializers.Serializer):
+    success = serializers.BooleanField()
+    note = serializers.CharField(help_text='The generated narrative note.')
+    structured = serializers.DictField(help_text='Section-by-section note, as the app renders it.')
+    aiGenerated = serializers.BooleanField()
+    saved = serializers.BooleanField(help_text='True when save=true persisted a ChartingNote.')
+    noteId = serializers.CharField(required=False, allow_blank=True)
+
+    class Meta:
+        ref_name = 'StructureChartResponse'

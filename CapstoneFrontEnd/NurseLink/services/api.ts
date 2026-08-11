@@ -175,6 +175,47 @@ export type FaceVerificationStatusResponse = {
   registeredEmail?: string | null;
 };
 
+/**
+ * Persona steps 1 & 2 — the backend forwards the ID photo to the n8n
+ * verify-id workflow and returns the fields it read.
+ */
+export type VerifyIdResponse = {
+  success: boolean;
+  verified: boolean;
+  fullName: string;
+  employeeId: string;
+  department: string;
+  position: string;
+  hospitalName: string;
+  email: string;
+  roleMatch?: boolean | null;
+  confidence?: number | null;
+  message?: string;
+  registrationSessionId: string;
+};
+
+export async function verifyIdRequest(
+  idImage: string,
+  options?: {
+    registrationSessionId?: string | null;
+    documentType?: 'hospital_id' | 'prc_license';
+    expectedRole?: UserRole | '';
+  }
+): Promise<VerifyIdResponse> {
+  return apiRequest<VerifyIdResponse>('/auth/verify-id/', {
+    method: 'POST',
+    body: {
+      idImage,
+      documentType: options?.documentType ?? 'hospital_id',
+      ...(options?.registrationSessionId
+        ? { registrationSessionId: options.registrationSessionId }
+        : {}),
+      ...(options?.expectedRole ? { expectedRole: options.expectedRole } : {}),
+    },
+    auth: false,
+  });
+}
+
 export async function faceVerificationRequest(
   image: string,
   idImage: string,
@@ -388,6 +429,35 @@ export async function fetchChartingNotes(options?: {
     ? `?patientId=${encodeURIComponent(options.patientId)}`
     : '';
   return apiRequest<ChartingNote[]>(`/charting/${query}`);
+}
+
+/**
+ * Autocharting — the backend attaches the patient's demographics and vitals,
+ * then runs the n8n structure-chart workflow to build the note.
+ */
+export type StructureChartResponse = {
+  success: boolean;
+  note: string;
+  structured: Record<string, unknown>;
+  aiGenerated: boolean;
+  saved: boolean;
+  noteId?: string;
+};
+
+export async function structureChartRequest(payload: {
+  patientId: string;
+  assessment: string;
+  interventions?: string[];
+  patientResponse?: string;
+  noteType?: 'progress' | 'assessment' | 'medication' | 'vital_signs';
+  shift?: 'morning' | 'afternoon' | 'night';
+  vitalSigns?: Record<string, unknown>;
+  save?: boolean;
+}): Promise<StructureChartResponse> {
+  return apiRequest<StructureChartResponse>('/charting/structure/', {
+    method: 'POST',
+    body: payload,
+  });
 }
 
 export async function createChartingNote(data: Partial<ChartingNote>): Promise<ChartingNote> {

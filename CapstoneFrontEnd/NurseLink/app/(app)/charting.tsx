@@ -29,6 +29,7 @@ import {
   fetchChartingNotes,
   createChartingNote,
   updateChartingNote,
+  structureChartRequest,
   ApiError,
 } from '../../services/api';
 import type { ChartingNote, Patient } from '../../types/domain';
@@ -124,139 +125,97 @@ export default function ChartingScreen() {
     return patient?.attendingPhysician || 'Attending Physician';
   };
 
-  const handleGenerateNote = () => {
+  /**
+   * Autocharting. The backend attaches the patient's demographics and current
+   * vitals, runs the n8n structure-chart workflow, and returns the generated
+   * note plus the section-by-section structure this screen renders.
+   */
+  const handleGenerateNote = async () => {
     if (!inputText || !selectedPatient) {
       toast.error('Please select a patient and enter assessment data');
       return;
     }
 
+    const patient = patients.find((p) => p.id === selectedPatient);
+    if (!patient) {
+      toast.error('Select a patient before generating a note');
+      return;
+    }
+
     setIsGenerating(true);
 
-    setTimeout(() => {
-      const patient = patients.find((p) => p.id === selectedPatient);
-      if (!patient) {
-        setIsGenerating(false);
-        return;
-      }
+    try {
+      const res = await structureChartRequest({
+        patientId: patient.id,
+        assessment: inputText,
+        noteType: 'progress',
+      });
 
       const now = new Date();
-      const dateStr = now.toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      });
-      const timeStr = now.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-      });
-      const attendingPhysician = getAttendingPhysician(patient);
-      const nurseName = getNurseName();
+      const structured = (res.structured ?? {}) as Partial<StructuredData>;
 
-      const generatedNote = `NURSING PROGRESS NOTE
+      setAiGeneratedNote(res.note);
 
-═══════════════════════════════════════════════════════════════
-
-PATIENT INFORMATION
-Patient Name: ${patient.name}
-Patient ID: ${patient.id}
-Room: ${patient.room}
-Date: ${dateStr}
-Time: ${timeStr}
-Attending Physician: ${attendingPhysician}
-Nurse: ${nurseName}
-
-═══════════════════════════════════════════════════════════════
-
-VITAL SIGNS
-• Heart Rate: ${patient.vitalSigns.heartRate} bpm
-• Blood Pressure: ${patient.vitalSigns.bloodPressure} mmHg
-• Temperature: ${patient.vitalSigns.temperature}°C
-• Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%
-• Respiratory Rate: ${patient.vitalSigns.respiratoryRate} breaths/min
-
-═══════════════════════════════════════════════════════════════
-
-ASSESSMENT & OBSERVATIONS
-${inputText}
-
-Current Diagnosis: ${patient.diagnosis}
-Risk Level: ${patient.riskLevel.charAt(0).toUpperCase() + patient.riskLevel.slice(1)}
-
-Allergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}
-
-Active Medications: ${patient.medications.join(', ')}
-
-Alerts: ${patient.alerts.join('; ')}
-
-═══════════════════════════════════════════════════════════════
-
-INTERVENTIONS PERFORMED
-• Comprehensive patient assessment completed
-• Vital signs monitored and recorded
-• Medication administration as prescribed
-• Patient safety measures verified
-• Documentation updated in electronic medical record
-
-═══════════════════════════════════════════════════════════════
-
-PATIENT RESPONSE
-Patient responded appropriately to interventions. Vital signs remain within acceptable parameters. Patient appears comfortable and cooperative with care plan.
-
-═══════════════════════════════════════════════════════════════
-
-CLINICAL SUMMARY
-Patient condition assessed and deemed stable. All vital signs trending appropriately. Continue current treatment regimen as ordered by ${attendingPhysician}. Will continue to monitor closely and report any significant changes to attending physician.
-
-Plan: Continue current medications, monitor vital signs per protocol, reassess in 4 hours or PRN.
-
-═══════════════════════════════════════════════════════════════
-
-Electronically signed by: ${nurseName}
-Timestamp: ${now.toISOString()}
-`;
-
-      setAiGeneratedNote(generatedNote);
-
+      // The workflow owns the clinical content; this screen fills in only the
+      // presentational fields it needs and the workflow did not send.
       setStructuredData({
-        patientName: patient.name,
-        patientId: patient.id,
-        room: patient.room,
-        date: dateStr,
-        time: timeStr,
-        attendingPhysician,
-        nurseName,
-        vitalSigns: {
+        patientName: structured.patientName ?? patient.name,
+        patientId: structured.patientId ?? patient.id,
+        room: structured.room ?? patient.room,
+        date:
+          structured.date ??
+          now.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          }),
+        time:
+          structured.time ??
+          now.toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+          }),
+        attendingPhysician: structured.attendingPhysician ?? getAttendingPhysician(patient),
+        nurseName: structured.nurseName ?? getNurseName(),
+        vitalSigns: structured.vitalSigns ?? {
           heartRate: `${patient.vitalSigns.heartRate} bpm`,
           bloodPressure: `${patient.vitalSigns.bloodPressure} mmHg`,
           temperature: `${patient.vitalSigns.temperature}°C`,
           oxygenSaturation: `${patient.vitalSigns.oxygenSaturation}%`,
           respiratoryRate: `${patient.vitalSigns.respiratoryRate} breaths/min`,
         },
-        assessment: inputText,
-        diagnosis: patient.diagnosis,
-        riskLevel: patient.riskLevel.charAt(0).toUpperCase() + patient.riskLevel.slice(1),
-        allergies: patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known',
-        medications: patient.medications.join(', '),
-        alerts: patient.alerts.join('; '),
-        interventions: [
-          'Comprehensive patient assessment completed',
-          'Vital signs monitored and recorded',
-          'Medication administration as prescribed',
-          'Patient safety measures verified',
-          'Documentation updated in electronic medical record',
-        ],
-        patientResponse:
-          'Patient responded appropriately to interventions. Vital signs remain within acceptable parameters. Patient appears comfortable and cooperative with care plan.',
-        clinicalSummary: `Patient condition assessed and deemed stable. All vital signs trending appropriately. Continue current treatment regimen as ordered by ${attendingPhysician}. Will continue to monitor closely and report any significant changes to attending physician.`,
-        plan: 'Continue current medications, monitor vital signs per protocol, reassess in 4 hours or PRN.',
-        timestamp: now.toISOString(),
+        assessment: structured.assessment ?? inputText,
+        diagnosis: structured.diagnosis ?? patient.diagnosis,
+        riskLevel:
+          structured.riskLevel ??
+          patient.riskLevel.charAt(0).toUpperCase() + patient.riskLevel.slice(1),
+        allergies:
+          structured.allergies ??
+          (patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'),
+        medications: structured.medications ?? patient.medications.join(', '),
+        alerts: structured.alerts ?? patient.alerts.join('; '),
+        interventions: structured.interventions ?? [],
+        patientResponse: structured.patientResponse ?? '',
+        clinicalSummary: structured.clinicalSummary ?? '',
+        plan: structured.plan ?? '',
+        timestamp: structured.timestamp ?? now.toISOString(),
       });
 
       setShowPreview(true);
+    } catch (error) {
+      // 503 means the n8n workflow is not listening. Surface that plainly
+      // rather than leaving the nurse staring at a spinner.
+      toast.error('Could not generate the note', {
+        description:
+          error instanceof ApiError
+            ? error.message
+            : 'The charting workflow is unavailable. Please try again.',
+      });
+    } finally {
       setIsGenerating(false);
-    }, 2000);
+    }
   };
 
   const handleApproveNote = async () => {

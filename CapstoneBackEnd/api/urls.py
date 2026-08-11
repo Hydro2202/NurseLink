@@ -15,6 +15,7 @@ router.register(r'nurses', views.NurseViewSet, basename='nurse')
 
 urlpatterns = [
     path('auth/signup/', views.SignupView.as_view(), name='signup'),
+    path('auth/verify-id/', views.VerifyIdView.as_view(), name='verify-id'),
     path('auth/face-verification/', views.FaceVerificationView.as_view(), name='face-verification'),
     path(
         'auth/face-verification/status/',

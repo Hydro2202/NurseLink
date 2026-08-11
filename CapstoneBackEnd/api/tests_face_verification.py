@@ -17,6 +17,10 @@ from api.otp_service import issue_otp, verify_otp
     EMAIL_HOST_USER='nurselink@test.local',
     EMAIL_HOST_PASSWORD='test-password',
     DEFAULT_FROM_EMAIL='NurseLink <nurselink@test.local>',
+    # These cover attempt counting and lockout, not the matcher itself, so
+    # they run against the local engine and patch verify_face_against_id.
+    # The n8n path has its own suite in tests_n8n_integration.py.
+    N8N_FACE_VERIFY_ENABLED=False,
 )
 class FaceVerificationFlowTests(TestCase):
     def setUp(self):

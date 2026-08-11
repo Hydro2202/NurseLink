@@ -1,0 +1,217 @@
+"""
+Server-side client for the NurseLink n8n workflows.
+
+Every n8n call goes through :func:`call_workflow`. Keeping it in one place
+means the workflow URLs, the shared secret, the timeout and the failure
+taxonomy are defined once rather than re-implemented per view.
+
+Deliberately built on ``urllib`` from the standard library — the backend has
+no ``requests`` dependency and this is not worth adding one for.
+
+Failure taxonomy (all subclass :class:`N8nError`, all carry an
+``http_status`` the views map straight onto a DRF response):
+
+    N8nNotConfigured   no URL configured for that workflow key    -> 503
+    N8nWorkflowOffline n8n answered 404 "webhook not registered"  -> 503
+    N8nTimeout         workflow did not answer in time            -> 504
+    N8nUnavailable     DNS/TLS/connection failure                 -> 502
+    N8nHTTPError       workflow answered with a non-2xx status     -> 502
+    N8nInvalidResponse 2xx body was not usable JSON               -> 502
+
+Nothing here retries. These workflows are not guaranteed idempotent — a
+retried face check would burn a second verification attempt — so a caller
+that wants a retry has to ask for one explicitly.
+"""
+
+import json
+import logging
+import urllib.error
+import urllib.request
+from typing import Any
+
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
+
+# n8n returns this shape when a workflow exists but nothing is listening:
+# test URLs need "Execute workflow" pressed, production URLs need the
+# workflow toggled Active. Worth its own exception — it is by far the most
+# common failure in development and the fix is not "retry later".
+_NOT_REGISTERED_HINT = 'not registered'
+
+
+class N8nError(Exception):
+    """Base class for every n8n failure. ``http_status`` is what the API returns."""
+
+    http_status = 502
+    default_detail = 'The n8n workflow could not be reached.'
+
+    def __init__(self, message: str = '', *, workflow: str = '', payload: Any = None):
+        self.workflow = workflow
+        self.payload = payload
+        super().__init__(message or self.default_detail)
+
+
+class N8nNotConfigured(N8nError):
+    http_status = 503
+    default_detail = 'No n8n webhook URL is configured for this feature.'
+
+
+class N8nWorkflowOffline(N8nError):
+    http_status = 503
+    default_detail = (
+        'The n8n workflow is not listening. In test mode press "Execute workflow" on the '
+        'n8n canvas (it accepts one call), or activate the workflow and set '
+        'N8N_WEBHOOK_PREFIX=webhook.'
+    )
+
+
+class N8nTimeout(N8nError):
+    http_status = 504
+    default_detail = 'The n8n workflow did not respond in time.'
+
+
+class N8nUnavailable(N8nError):
+    http_status = 502
+    default_detail = 'Could not connect to n8n.'
+
+
+class N8nHTTPError(N8nError):
+    http_status = 502
+    default_detail = 'The n8n workflow returned an error.'
+
+    def __init__(self, message='', *, workflow='', status=None, body=None):
+        self.status = status
+        self.body = body
+        super().__init__(message, workflow=workflow, payload=body)
+
+
+class N8nInvalidResponse(N8nError):
+    http_status = 502
+    default_detail = 'The n8n workflow returned a response that was not valid JSON.'
+
+
+def webhook_url(workflow: str) -> str:
+    """
+    Full URL for a workflow key, or '' when it is not configured.
+
+    Assembled from three settings so the same code hits the test URL in
+    development and the production URL in deployment:
+    ``{N8N_BASE_URL}/{N8N_WEBHOOK_PREFIX}/{path}``
+    """
+    path = (settings.N8N_WEBHOOKS or {}).get(workflow, '')
+    if not path:
+        return ''
+    # An absolute override in N8N_WEBHOOKS wins over the assembled form.
+    if path.startswith(('http://', 'https://')):
+        return path
+    base = settings.N8N_BASE_URL.rstrip('/')
+    prefix = settings.N8N_WEBHOOK_PREFIX.strip('/')
+    return f'{base}/{prefix}/{path.strip("/")}'
+
+
+def configured_workflows() -> dict:
+    """Every workflow key mapped to its resolved URL — used by docs and the check command."""
+    return {key: webhook_url(key) for key in (settings.N8N_WEBHOOKS or {})}
+
+
+def call_workflow(workflow: str, payload: dict, *, timeout: float | None = None) -> Any:
+    """
+    POST ``payload`` as JSON to the named n8n workflow and return its parsed body.
+
+    ``workflow`` is a key of ``settings.N8N_WEBHOOKS`` ('structure_chart',
+    'verify_id', 'face_verify'). Raises an :class:`N8nError` subclass on any
+    failure — callers are expected to translate that into a response rather
+    than let it escape as a 500.
+    """
+    url = webhook_url(workflow)
+    if not url:
+        raise N8nNotConfigured(
+            f'No webhook path configured for "{workflow}". Set it in settings.N8N_WEBHOOKS.',
+            workflow=workflow,
+        )
+
+    body = json.dumps(payload).encode('utf-8')
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'NurseLink-Backend/1.0',
+    }
+    if settings.N8N_WEBHOOK_TOKEN:
+        headers['X-NurseLink-Token'] = settings.N8N_WEBHOOK_TOKEN
+
+    request = urllib.request.Request(url, data=body, headers=headers, method='POST')
+    seconds = timeout if timeout is not None else settings.N8N_TIMEOUT_SECONDS
+
+    # Log the size, never the payload — these carry base64 ID photos and selfies.
+    logger.info('n8n call workflow=%s url=%s bytes=%d', workflow, url, len(body))
+
+    try:
+        with urllib.request.urlopen(request, timeout=seconds) as response:
+            raw = response.read()
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        raw = b''
+        try:
+            raw = exc.read()
+        except Exception:  # noqa: BLE001 - body is best-effort context only
+            pass
+        text = raw.decode('utf-8', errors='replace')[:500]
+        logger.warning('n8n HTTP %s workflow=%s body=%s', exc.code, workflow, text)
+        if exc.code == 404 and _NOT_REGISTERED_HINT in text.lower():
+            raise N8nWorkflowOffline(workflow=workflow, payload=text) from exc
+        raise N8nHTTPError(
+            f'n8n returned HTTP {exc.code} for "{workflow}".',
+            workflow=workflow,
+            status=exc.code,
+            body=text,
+        ) from exc
+    except TimeoutError as exc:
+        logger.warning('n8n timeout workflow=%s after %ss', workflow, seconds)
+        raise N8nTimeout(
+            f'"{workflow}" did not respond within {seconds:g}s.', workflow=workflow
+        ) from exc
+    except urllib.error.URLError as exc:
+        # URLError wraps socket.timeout on some Python builds.
+        if isinstance(exc.reason, TimeoutError):
+            raise N8nTimeout(
+                f'"{workflow}" did not respond within {seconds:g}s.', workflow=workflow
+            ) from exc
+        logger.warning('n8n unreachable workflow=%s reason=%s', workflow, exc.reason)
+        raise N8nUnavailable(f'Could not reach n8n: {exc.reason}', workflow=workflow) from exc
+
+    if not raw.strip():
+        # A workflow ending in a node with no "Respond to Webhook" returns 200
+        # and an empty body. Treat as success-with-nothing rather than an error.
+        logger.info('n8n empty body workflow=%s status=%s', workflow, status)
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        snippet = raw.decode('utf-8', errors='replace')[:500]
+        logger.warning('n8n non-JSON workflow=%s body=%s', workflow, snippet)
+        raise N8nInvalidResponse(
+            f'"{workflow}" returned a non-JSON body.', workflow=workflow, payload=snippet
+        ) from exc
+
+    # n8n commonly answers with a single-item list (one item per workflow item).
+    # Unwrap it so views can treat every workflow as returning an object.
+    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+        parsed = parsed[0]
+    # "Respond to Webhook" set to "First Incoming Item" nests the real payload.
+    if isinstance(parsed, dict) and set(parsed) == {'json'} and isinstance(parsed['json'], dict):
+        parsed = parsed['json']
+
+    return parsed
+
+
+def error_response_body(exc: N8nError) -> dict:
+    """Uniform JSON body for a failed n8n call, shared by all three integrations."""
+    return {
+        'success': False,
+        'detail': str(exc),
+        'source': 'n8n',
+        'workflow': exc.workflow,
+        'workflowUrl': webhook_url(exc.workflow) if exc.workflow else '',
+    }

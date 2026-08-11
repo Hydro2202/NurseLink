@@ -167,6 +167,49 @@ EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'NurseLink <no-reply@nurselink.local>')
 # Locmem/console backends are allowed only for automated tests via EMAIL_BACKEND override.
 
+# --- n8n workflow webhooks ---------------------------------------------
+# Three n8n workflows back AI/verification features. Each is called
+# server-side by api/n8n_client.py — never from the mobile client, so the
+# workflow URLs and any auth header stay off the device.
+#
+# N8N_WEBHOOK_PREFIX picks which n8n URL space to hit:
+#   'webhook-test'  the editor's test URL. Only answers for ONE call, and
+#                   only right after you press "Execute workflow" on the
+#                   canvas. Anything else returns 404 "not registered".
+#   'webhook'       the production URL. Answers continuously, but only once
+#                   the workflow is toggled Active in n8n.
+# Flip this to 'webhook' in .env after activating the workflows.
+N8N_BASE_URL = os.environ.get('N8N_BASE_URL', 'https://nurselink.app.n8n.cloud').rstrip('/')
+N8N_WEBHOOK_PREFIX = os.environ.get('N8N_WEBHOOK_PREFIX', 'webhook-test').strip('/')
+
+N8N_WEBHOOKS = {
+    # Autocharting — raw assessment input in, structured nursing note out.
+    'structure_chart': os.environ.get('N8N_STRUCTURE_CHART_PATH', 'structure-chart'),
+    # Persona steps 1 & 2 — Hospital ID photo in, OCR'd identity fields out.
+    'verify_id': os.environ.get('N8N_VERIFY_ID_PATH', 'verify-id'),
+    # Face ID — selfie + ID photo in, match decision out.
+    'face_verify': os.environ.get('N8N_FACE_VERIFY_PATH', 'face-verify'),
+}
+
+# n8n workflows that call an LLM or a vision model are slow; a short timeout
+# would abort a run that was going to succeed.
+N8N_TIMEOUT_SECONDS = float(os.environ.get('N8N_TIMEOUT_SECONDS', '60'))
+
+# Optional shared secret. When set, sent as `X-NurseLink-Token` so the
+# workflow can reject calls that did not come from this backend.
+N8N_WEBHOOK_TOKEN = os.environ.get('N8N_WEBHOOK_TOKEN', '').strip()
+
+# Face matching engine. True routes matching to the n8n face-verify workflow;
+# False uses the bundled local OpenCV SFace comparison in api/face_match.py.
+# Attempt counting, the 3-strike lockout and audit logging stay server-side
+# either way — only the match decision moves.
+N8N_FACE_VERIFY_ENABLED = env_bool('N8N_FACE_VERIFY_ENABLED', True)
+
+# When n8n is unreachable, fall back to the local OpenCV matcher instead of
+# failing the request. Off by default: a silent fallback would hide a broken
+# workflow behind results that look fine.
+N8N_FACE_VERIFY_FALLBACK_LOCAL = env_bool('N8N_FACE_VERIFY_FALLBACK_LOCAL', False)
+
 SPECTACULAR_SETTINGS = {
     'TITLE': 'NurseLink API',
     'DESCRIPTION': (

@@ -52,6 +52,7 @@ import {
   resendRegistrationOtpRequest,
   resetFaceVerificationRequest,
   sendRegistrationOtpRequest,
+  verifyIdRequest,
   verifyRegistrationOtpRequest,
 } from '../services/api';
 
@@ -472,22 +473,53 @@ export default function SignUpPage() {
     return 1;
   })();
 
-  const simulateOcr = () => {
+  /**
+   * Steps 1 & 2 — read the Hospital ID. The backend forwards the photo to the
+   * n8n verify-id workflow; the fields it returns pre-fill the wizard.
+   */
+  const runIdVerification = async (base64: string | null) => {
+    if (!base64) {
+      setOcrStatus('failed');
+      setError('Could not read the ID photo. Please retake it.');
+      return;
+    }
+
     setOcrStatus('processing');
-    setTimeout(() => {
-      const fullName = 'Maria Santos Dela Cruz';
-      const hospitalName = "St. Luke's Medical Center";
+    setError('');
+
+    try {
+      const res = await verifyIdRequest(`data:image/jpeg;base64,${base64}`, {
+        registrationSessionId,
+        documentType: 'hospital_id',
+        expectedRole: role,
+      });
+
+      setRegistrationSessionId(res.registrationSessionId);
+
+      if (!res.verified) {
+        setOcrStatus('failed');
+        setError(res.message || 'Could not read the ID clearly. Please retake the photo.');
+        return;
+      }
+
       setOcrData({
-        fullName,
-        employeeId: `EMP-${Math.floor(10000 + Math.random() * 90000)}`,
-        hospitalName,
-        department: 'Intensive Care Unit',
-        position: 'Registered Nurse',
-        email: '',
+        fullName: res.fullName,
+        employeeId: res.employeeId,
+        hospitalName: res.hospitalName,
+        department: res.department,
+        position: res.position,
+        email: res.email,
       });
       setOcrStatus('success');
       setHospitalIdCompleted(true);
-    }, 900);
+    } catch (err) {
+      setOcrStatus('failed');
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'ID verification is unavailable right now. Please try again.'
+      );
+    }
   };
 
   const handleIdImage = (uri: string, base64: string | null) => {
@@ -500,7 +532,7 @@ export default function SignUpPage() {
     setPrcVerified(false);
     setRoleVerified(false);
     void clearFaceCycleLocal();
-    simulateOcr();
+    void runIdVerification(base64);
   };
 
   const handleIdUpload = async () => {
