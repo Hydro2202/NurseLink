@@ -206,6 +206,25 @@ def call_workflow(workflow: str, payload: dict, *, timeout: float | None = None)
     return parsed
 
 
+def strip_data_uri(value: str) -> str:
+    """
+    Return bare base64, dropping any ``data:image/jpeg;base64,`` prefix.
+
+    The mobile client sends data-URIs because that is what the camera and
+    ``<img>` tags want. Cloud vision APIs do not: AWS Rekognition's
+    ``Image.Bytes`` and Google Vision's ``content`` both reject the prefix,
+    and an n8n workflow that forwards the field verbatim fails on it. Sending
+    bare base64 keeps that stripping out of the workflow, where it is easy to
+    forget and hard to debug.
+    """
+    if not isinstance(value, str):
+        return ''
+    payload = value.strip()
+    if payload.startswith('data:'):
+        _, _, payload = payload.partition(',')
+    return payload
+
+
 def error_response_body(exc: N8nError) -> dict:
     """Uniform JSON body for a failed n8n call, shared by all three integrations."""
     return {

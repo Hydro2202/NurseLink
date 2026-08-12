@@ -167,6 +167,14 @@ EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'NurseLink <no-reply@nurselink.local>')
 # Locmem/console backends are allowed only for automated tests via EMAIL_BACKEND override.
 
+# --- PRC licence OCR ----------------------------------------------------
+# api/prc_ocr.py shells out to the Tesseract binary, which is a separate
+# install from the pytesseract Python package. Leave blank when tesseract is
+# on PATH (macOS/Linux); on Windows point this at the installed exe, e.g.
+#   TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+# Windows build: https://github.com/UB-Mannheim/tesseract/wiki
+TESSERACT_CMD = os.environ.get('TESSERACT_CMD', '').strip()
+
 # --- n8n workflow webhooks ---------------------------------------------
 # Three n8n workflows back AI/verification features. Each is called
 # server-side by api/n8n_client.py — never from the mobile client, so the

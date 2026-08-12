@@ -28,7 +28,19 @@ from .face_match import (
     MAX_FACE_ATTEMPTS,
     verify_face_against_id,
 )
-from .n8n_client import N8nError, call_workflow, configured_workflows, error_response_body
+from .n8n_client import (
+    N8nError,
+    N8nInvalidResponse,
+    call_workflow,
+    configured_workflows,
+    error_response_body,
+    strip_data_uri,
+)
+# face_match and prc_ocr each define their own InvalidImageError. They are
+# distinct classes, so the portrait check's version is aliased rather than
+# assumed to be the same one prc_ocr raises.
+from .id_photo_check import InvalidImageError as PortraitImageError, check_id_has_portrait
+from .prc_ocr import InvalidImageError, PrcOcrError, scan_prc_license
 from .models import (
     ChartingNote,
     FaceVerificationAttempt,
@@ -67,6 +79,7 @@ from .schema_examples import (
     UPDATE_ME_EXAMPLES,
     VERIFY_ID_EXAMPLES,
     VERIFY_OTP_EXAMPLES,
+    VERIFY_PRC_EXAMPLES,
 )
 from .serializers import (
     ChangePasswordSerializer,
@@ -75,6 +88,8 @@ from .serializers import (
     StructureChartResponseSerializer,
     VerifyIdSerializer,
     VerifyIdResponseSerializer,
+    VerifyPrcSerializer,
+    VerifyPrcResponseSerializer,
     FaceVerificationSerializer,
     FaceVerificationStatusSerializer,
     HandoverSerializer,
@@ -186,6 +201,88 @@ def _face_session_payload(session: RegistrationSession, **extra):
     return payload
 
 
+#: Keys any one of which means the workflow actually rendered a decision.
+_FACE_VERDICT_KEYS = ('matched', 'match', 'verified')
+
+#: What went wrong, in words a nurse can act on. A face check can fail for
+#: very different reasons and the fix differs each time — "try again" is
+#: useless if the real problem is that the ID has no photo on it. Keyed by
+#: the reason codes in FaceVerificationAttempt.REASON_CHOICES.
+FACE_FAILURE_MESSAGES = {
+    'MISMATCH': (
+        'Face not matched with your Hospital ID. The face we captured does not match the '
+        'photo on the ID you uploaded in Step 1. Make sure you are using your own Hospital '
+        'ID and that the ID photo is clear and uncovered.'
+    ),
+    'NO_FACE': (
+        'No face detected. Centre your face in the frame, remove anything covering it, '
+        'and make sure the lighting is even.'
+    ),
+    'MULTIPLE_FACES': (
+        'More than one face is visible. Make sure only you are in the frame and try again.'
+    ),
+    'BLURRY': (
+        'The photo is too blurry to verify. Hold the phone steady, move somewhere brighter, '
+        'and retake it.'
+    ),
+    'ID_NO_FACE': (
+        'No photo found on your Hospital ID. Re-upload the ID in Step 1 with the portrait '
+        'clearly visible and not cropped off.'
+    ),
+    'ID_MULTIPLE_FACES': (
+        'More than one face was found on the Hospital ID. Re-upload a photo of just the ID '
+        'card, with nothing else in the frame.'
+    ),
+    'ID_BLURRY': (
+        'The Hospital ID photo is too blurry to compare against. Re-upload it in Step 1, '
+        'square-on and in good light.'
+    ),
+    'ID_NOT_IMAGE': (
+        'Your Hospital ID was uploaded as a PDF, which cannot be used for face matching. '
+        'Re-upload it as a JPG or PNG photo in Step 1.'
+    ),
+    'INVALID_IMAGE': (
+        'The captured photo could not be read. Please retake it.'
+    ),
+    'ID_INVALID_IMAGE': (
+        'The Hospital ID image could not be read. Re-upload it in Step 1.'
+    ),
+}
+
+#: Used when the check completed and simply did not match. A verdict of
+#: "no match" with no reason attached IS a mismatch, so say so plainly
+#: rather than falling back to a vague retry prompt.
+DEFAULT_FACE_FAILURE_REASON = 'MISMATCH'
+
+
+def _face_failure_message(result, session) -> str:
+    """
+    Explain a failed face check, and say how many tries are left.
+
+    Attempts remaining matters here: a nurse who does not know they are on
+    their last try cannot make an informed choice between retrying and
+    switching to the Email OTP fallback.
+    """
+    reason = (result.reason or DEFAULT_FACE_FAILURE_REASON).upper()
+    message = result.message or FACE_FAILURE_MESSAGES.get(
+        reason, FACE_FAILURE_MESSAGES[DEFAULT_FACE_FAILURE_REASON]
+    )
+
+    if result.countable and not session.face_locked:
+        remaining = max(0, MAX_FACE_ATTEMPTS - session.face_attempts)
+        if remaining == 1:
+            message = f'{message} 1 attempt remaining before Email OTP is offered.'
+        elif remaining > 1:
+            message = f'{message} {remaining} attempts remaining.'
+
+    return message
+
+
+def _has_face_verdict(data) -> bool:
+    """True only when the workflow returned an explicit match decision."""
+    return isinstance(data, dict) and any(key in data for key in _FACE_VERDICT_KEYS)
+
+
 def _face_outcome_from_n8n(data) -> FaceVerificationOutcome:
     """
     Map the n8n face-verify response onto the same outcome the local matcher
@@ -211,6 +308,10 @@ def _face_outcome_from_n8n(data) -> FaceVerificationOutcome:
         confidence *= 100
 
     reason = (data.get('reason') or data.get('errorCode') or '').strip().upper()
+    # A completed "no match" with no reason given is a mismatch — record it as
+    # one so the audit trail distinguishes it from an image-quality failure.
+    if not reason and not matched:
+        reason = DEFAULT_FACE_FAILURE_REASON
     message = data.get('message') or data.get('detail') or None
 
     # A workflow that could not complete validation (bad image, no model)
@@ -237,9 +338,11 @@ def _run_face_match(selfie_data: str, id_data: str, *, session=None) -> FaceVeri
     if not settings.N8N_FACE_VERIFY_ENABLED:
         return verify_face_against_id(selfie_data, id_data)
 
+    # Bare base64: AWS Rekognition CompareFaces rejects a data-URI prefix in
+    # Image.Bytes, so strip it here rather than in the workflow.
     payload = {
-        'image': selfie_data,
-        'idImage': id_data,
+        'image': strip_data_uri(selfie_data),
+        'idImage': strip_data_uri(id_data),
         'registrationSessionId': str(session.session_id) if session else '',
         'registeredEmail': session.email if session else '',
         'attemptsUsed': session.face_attempts if session else 0,
@@ -247,7 +350,20 @@ def _run_face_match(selfie_data: str, id_data: str, *, session=None) -> FaceVeri
     }
 
     try:
-        return _face_outcome_from_n8n(call_workflow('face_verify', payload))
+        result = call_workflow('face_verify', payload)
+        # A webhook node left on "Respond: Immediately" answers 200 with an
+        # empty body. Read literally that is "no match", which would fail the
+        # check *and* consume one of three attempts — locking a nurse out over
+        # a workflow misconfiguration. Absence of a verdict is not a verdict.
+        if not _has_face_verdict(result):
+            raise N8nInvalidResponse(
+                'The face-verify workflow returned no match result. Set its Webhook node to '
+                'respond "Using Respond to Webhook Node" and return {"matched": true|false, '
+                '"confidence": 0-1}.',
+                workflow='face_verify',
+                payload=result,
+            )
+        return _face_outcome_from_n8n(result)
     except N8nError as exc:
         if settings.N8N_FACE_VERIFY_FALLBACK_LOCAL:
             logger.warning(
@@ -500,7 +616,7 @@ class FaceVerificationView(APIView):
                 session.face_locked = session.face_attempts >= MAX_FACE_ATTEMPTS
                 session.save(update_fields=['face_attempts', 'face_locked', 'updated_at'])
 
-            message = result.message or 'Face verification failed. Please try again.'
+            message = _face_failure_message(result, session)
             if session.face_locked:
                 message = (
                     "You've reached the maximum number of face verification attempts. "
@@ -513,7 +629,7 @@ class FaceVerificationView(APIView):
                     matched=False,
                     confidence=result.confidence,
                     locked=session.face_locked,
-                    reason=result.reason,
+                    reason=result.reason or DEFAULT_FACE_FAILURE_REASON,
                     message=message,
                     countable=result.countable,
                 )
@@ -579,8 +695,58 @@ class VerifyIdView(APIView):
         if session is None:
             session = RegistrationSession.objects.create()
 
+        # Portrait check first. An ID whose photo has been erased or cropped
+        # out is not a usable identity document, and the later face match
+        # would have nothing to compare the selfie against. Rejecting here
+        # also avoids spending an OCR call on a document that cannot pass.
+        try:
+            portrait = check_id_has_portrait(data['idImage'])
+        except PortraitImageError as exc:
+            return Response(
+                {
+                    'success': False,
+                    'verified': False,
+                    'hasPhoto': False,
+                    'message': str(exc),
+                    'registrationSessionId': str(session.session_id),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except FaceModelError as exc:
+            # Detector unavailable is a server fault, not a bad upload.
+            logger.error('ID portrait detector unavailable: %s', exc)
+            return Response(
+                {
+                    'success': False,
+                    'verified': False,
+                    'message': str(exc),
+                    'registrationSessionId': str(session.session_id),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        if not portrait.has_photo:
+            return Response(
+                {
+                    'success': True,
+                    'verified': False,
+                    **portrait.as_dict(),
+                    'registrationSessionId': str(session.session_id),
+                }
+            )
+
+        # --- temporary not use - rai --------------------------------------
+        # The n8n verify-id OCR workflow is not published, so the OCR step is
+        # skipped and the portrait check above is what gates Step 1. The ID is
+        # accepted once a real photo is present; the wizard's fields are left
+        # blank for the nurse to fill rather than guessed at.
+        # Restore by deleting this stub and uncommenting the block below.
+        result = {}
+
+        """ --- temporary not use - rai : n8n verify-id OCR ------------------
         payload = {
-            'idImage': data['idImage'],
+            # Bare base64 — cloud OCR/vision APIs reject the data-URI prefix.
+            'idImage': strip_data_uri(data['idImage']),
             'documentType': data.get('documentType') or 'hospital_id',
             'expectedRole': data.get('expectedRole') or '',
             'registrationSessionId': str(session.session_id),
@@ -600,13 +766,21 @@ class VerifyIdView(APIView):
 
         if not isinstance(result, dict):
             result = {}
+        ------------------------------------------------------------------ """
 
         fields = {
             name: self._pick(result, aliases) for name, aliases in self._FIELD_ALIASES.items()
         }
-        # Without a name or an employee id there is nothing for the wizard to
-        # pre-fill, so treat that as an unreadable document rather than success.
-        verified = bool(result.get('verified', bool(fields['fullName'] or fields['employeeId'])))
+        if result:
+            # Without a name or an employee id there is nothing for the wizard
+            # to pre-fill, so treat that as unreadable rather than success.
+            verified = bool(
+                result.get('verified', bool(fields['fullName'] or fields['employeeId']))
+            )
+        else:
+            # temporary not use - rai: OCR is skipped, so the portrait check is
+            # the whole gate. It already passed to reach here.
+            verified = True
 
         # Carry the email onto the session so the OTP fallback can find it later.
         if fields['email'] and not session.email:
@@ -618,13 +792,85 @@ class VerifyIdView(APIView):
                 'success': True,
                 'verified': verified,
                 **fields,
+                'hasPhoto': True,
+                'faceCount': portrait.face_count,
                 'roleMatch': result.get('roleMatch'),
-                'confidence': result.get('confidence'),
+                'confidence': result.get('confidence', portrait.confidence),
                 'message': result.get('message')
                 or ('' if verified else 'Could not read the ID clearly. Please retake the photo.'),
                 'registrationSessionId': str(session.session_id),
             }
         )
+
+
+class VerifyPrcLicenseView(APIView):
+    """
+    Scan a PRC nursing licence and return the fields the wizard pre-fills.
+
+    Document-type gate first: the card must show both "REPUBLIC OF THE
+    PHILIPPINES" and "PROFESSIONAL REGULATION COMMISSION", and the
+    profession must read NURSE. A PRC card for another profession, or any
+    other ID, is rejected before parsing — so nothing from an unverified
+    document can reach the registration form.
+
+    OCR is local (Tesseract), not an n8n workflow. It is deterministic,
+    needs no network round trip, and the licence check should not fail just
+    because a workflow is paused.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'face_verification'
+
+    @extend_schema(
+        request=VerifyPrcSerializer,
+        responses={200: VerifyPrcResponseSerializer},
+        tags=['Auth'],
+        summary='Scan a PRC nursing licence (Tesseract OCR)',
+        description=(
+            'Editable request body. Runs Tesseract over the uploaded licence photo.\n\n'
+            '**Rejects anything that is not a PRC nursing licence** with '
+            '`valid: false` and every field blank — a 200 with `valid: false` is a '
+            'rejected document, not a server error.\n\n'
+            'Returns 400 for an unreadable upload and 503 when Tesseract is not '
+            'installed on the server.'
+        ),
+        auth=None,
+        examples=VERIFY_PRC_EXAMPLES,
+    )
+    def post(self, request):
+        serializer = VerifyPrcSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            result = scan_prc_license(data['image'])
+        except InvalidImageError as exc:
+            return Response(
+                {'valid': False, 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PrcOcrError as exc:
+            # Server-side capability problem — do not report it as a bad upload.
+            logger.error('PRC OCR unavailable: %s', exc)
+            return Response(
+                {'valid': False, 'message': str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        payload = result.as_dict()
+
+        if not result.is_valid:
+            return Response(payload)
+
+        # Record that this session cleared the licence check.
+        session_id = data.get('registrationSessionId')
+        if session_id:
+            session = RegistrationSession.objects.filter(session_id=session_id).first()
+            if session:
+                payload['registrationSessionId'] = str(session.session_id)
+
+        return Response(payload)
 
 
 class SendRegistrationOtpView(APIView):

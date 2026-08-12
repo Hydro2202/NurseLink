@@ -216,6 +216,39 @@ export async function verifyIdRequest(
   });
 }
 
+/**
+ * PRC nursing licence scan (Tesseract OCR, server-side).
+ *
+ * `valid: false` is a normal 200 response meaning the upload was not a PRC
+ * nursing licence — every field comes back blank in that case.
+ */
+export type VerifyPrcResponse = {
+  valid: boolean;
+  message: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  fullName: string;
+  registrationNumber: string;
+  licenseNumber: string;
+  validUntil: string;
+  profession: string;
+};
+
+export async function verifyPrcLicenseRequest(
+  image: string,
+  registrationSessionId?: string | null
+): Promise<VerifyPrcResponse> {
+  return apiRequest<VerifyPrcResponse>('/auth/verify-prc/', {
+    method: 'POST',
+    body: {
+      image,
+      ...(registrationSessionId ? { registrationSessionId } : {}),
+    },
+    auth: false,
+  });
+}
+
 export async function faceVerificationRequest(
   image: string,
   idImage: string,

@@ -475,3 +475,18 @@ FACE_VERIFY_EXAMPLES = [
         'Handled entirely server-side — no workflow call. Zeroes the counter and clears the lock.',
     ),
 ]
+
+
+VERIFY_PRC_EXAMPLES = [
+    _example(
+        'Scan a PRC nursing licence',
+        {'image': _B64_JPEG},
+        'Paste the full base64 photo. Anything that is not a PRC nursing licence comes back '
+        'with valid: false and every field blank.',
+    ),
+    _example(
+        'Scan within a signup session',
+        {'image': _B64_JPEG, 'registrationSessionId': SESSION_ID},
+        'Ties the licence check to a signup already in progress.',
+    ),
+]

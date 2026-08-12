@@ -7,12 +7,15 @@ hit nurselink.app.n8n.cloud from CI. Live reachability is a separate,
 deliberate check: ``python manage.py check_n8n``.
 """
 
+from unittest import skip
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from api.id_photo_check import PortraitCheckResult
 from api.models import ChartingNote, NurseProfile, Patient, RegistrationSession
 from api.n8n_client import (
     N8nTimeout,
@@ -34,7 +37,7 @@ class WebhookUrlTests(TestCase):
             webhook_url('face_verify'),
             'https://nurselink.app.n8n.cloud/webhook-test/face-verify',
         )
-
+# API STEP 1 ID
     @override_settings(
         N8N_BASE_URL='https://nurselink.app.n8n.cloud',
         N8N_WEBHOOK_PREFIX='webhook',
@@ -55,8 +58,22 @@ class VerifyIdEndpointTests(TestCase):
     """POST /api/auth/verify-id/ — Persona steps 1 & 2."""
 
     def setUp(self):
+        cache.clear()  # throttle history leaks in from real traffic
         self.client = APIClient()
+        # These cover the n8n field mapping, not the portrait gate that now
+        # runs ahead of it. Stub the gate open so the dummy images below
+        # still reach the workflow; the gate has its own suite in
+        # tests_id_photo_check.py.
+        patcher = patch(
+            'api.views.check_id_has_portrait',
+            return_value=PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
+    @skip(
+        'temporary not use - rai: the n8n verify-id OCR call is commented out in VerifyIdView, so these assert behaviour that returns when it is restored'
+    )
     @patch('api.views.call_workflow')
     def test_posts_to_verify_id_workflow_and_maps_fields(self, mock_call):
         mock_call.return_value = {
@@ -80,7 +97,8 @@ class VerifyIdEndpointTests(TestCase):
         # It called the right workflow, with the image.
         workflow, payload = mock_call.call_args[0]
         self.assertEqual(workflow, 'verify_id')
-        self.assertEqual(payload['idImage'], 'data:image/jpeg;base64,AAAA')
+        # Bare base64 — the data-URI prefix is stripped for the vision API.
+        self.assertEqual(payload['idImage'], 'AAAA')
         self.assertEqual(payload['documentType'], 'hospital_id')
         # And mapped the OCR fields the wizard pre-fills.
         self.assertTrue(res.data['verified'])
@@ -88,6 +106,9 @@ class VerifyIdEndpointTests(TestCase):
         self.assertEqual(res.data['department'], 'ICU')
         self.assertTrue(res.data['registrationSessionId'])
 
+    @skip(
+        'temporary not use - rai: the n8n verify-id OCR call is commented out in VerifyIdView, so these assert behaviour that returns when it is restored'
+    )
     @patch('api.views.call_workflow')
     def test_creates_session_and_stores_email(self, mock_call):
         mock_call.return_value = {'verified': True, 'fullName': 'Sarah Johnson',
@@ -117,6 +138,9 @@ class VerifyIdEndpointTests(TestCase):
         self.assertEqual(res.data['registrationSessionId'], str(existing.session_id))
         self.assertEqual(RegistrationSession.objects.count(), 1)
 
+    @skip(
+        'temporary not use - rai: the n8n verify-id OCR call is commented out in VerifyIdView, so these assert behaviour that returns when it is restored'
+    )
     @patch('api.views.call_workflow')
     def test_unreadable_document_is_not_verified(self, mock_call):
         mock_call.return_value = {}
@@ -127,6 +151,9 @@ class VerifyIdEndpointTests(TestCase):
         self.assertFalse(res.data['verified'])
         self.assertIn('retake', res.data['message'].lower())
 
+    @skip(
+        'temporary not use - rai: the n8n verify-id OCR call is commented out in VerifyIdView, so these assert behaviour that returns when it is restored'
+    )
     @patch('api.views.call_workflow', side_effect=N8nWorkflowOffline(workflow='verify_id'))
     def test_offline_workflow_returns_503_not_500(self, _mock_call):
         res = self.client.post('/api/auth/verify-id/', {'idImage': 'x'}, format='json')
@@ -147,6 +174,7 @@ class FaceVerifyWorkflowTests(TestCase):
     """The face matcher routes through n8n, but the session rules stay server-side."""
 
     def setUp(self):
+        cache.clear()  # throttle history leaks in from real traffic
         self.client = APIClient()
         self.session = RegistrationSession.objects.create(email='nurse@hospital.com')
 
@@ -160,6 +188,23 @@ class FaceVerifyWorkflowTests(TestCase):
             },
             format='json',
         )
+
+    @patch('api.views.call_workflow')
+    def test_images_are_sent_as_bare_base64(self, mock_call):
+        """
+        AWS Rekognition CompareFaces rejects a data-URI prefix in Image.Bytes.
+        The client sends data-URIs, so the prefix must be stripped here rather
+        than left for the workflow to remember.
+        """
+        mock_call.return_value = {'matched': True, 'confidence': 0.9}
+
+        self._post()
+
+        payload = mock_call.call_args[0][1]
+        self.assertEqual(payload['image'], 'AAAA')
+        self.assertEqual(payload['idImage'], 'BBBB')
+        self.assertNotIn('data:', payload['image'])
+        self.assertNotIn('base64,', payload['idImage'])
 
     @patch('api.views.call_workflow')
     def test_match_from_workflow_verifies_session(self, mock_call):
@@ -180,6 +225,49 @@ class FaceVerifyWorkflowTests(TestCase):
         self.assertAlmostEqual(res.data['confidence'], 91.0, places=3)
 
     @patch('api.views.call_workflow')
+    def test_mismatch_says_the_face_did_not_match_the_hospital_id(self, mock_call):
+        """
+        A no-match must name the actual problem. "Please try again" sends the
+        nurse to retake a photo when the real issue is that the captured face
+        does not match the ID they uploaded in Step 1.
+        """
+        mock_call.return_value = {'matched': False, 'confidence': 0.2}
+
+        res = self._post()
+
+        self.assertIn('not matched with your hospital id', res.data['message'].lower())
+        self.assertEqual(res.data['reason'], 'MISMATCH')
+
+    @patch('api.views.call_workflow')
+    def test_failure_message_reports_attempts_remaining(self, mock_call):
+        mock_call.return_value = {'matched': False, 'confidence': 0.2}
+
+        first = self._post()
+        self.assertIn('2 attempts remaining', first.data['message'])
+
+        second = self._post()
+        self.assertIn('1 attempt remaining', second.data['message'])
+
+    @patch('api.views.call_workflow')
+    def test_reason_specific_message_is_used_when_workflow_supplies_one(self, mock_call):
+        mock_call.return_value = {'matched': False, 'reason': 'ID_NO_FACE', 'confidence': 0}
+
+        res = self._post()
+
+        self.assertIn('No photo found on your Hospital ID', res.data['message'])
+        self.assertEqual(res.data['reason'], 'ID_NO_FACE')
+
+    @patch('api.views.call_workflow')
+    def test_workflow_message_wins_over_the_canned_one(self, mock_call):
+        mock_call.return_value = {
+            'matched': False, 'message': 'Similarity 41% — below the 85% threshold.'
+        }
+
+        res = self._post()
+
+        self.assertIn('Similarity 41%', res.data['message'])
+
+    @patch('api.views.call_workflow')
     def test_mismatch_consumes_one_attempt(self, mock_call):
         mock_call.return_value = {'matched': False, 'confidence': 0.2, 'reason': 'MISMATCH'}
 
@@ -188,6 +276,39 @@ class FaceVerifyWorkflowTests(TestCase):
         self.session.refresh_from_db()
         self.assertEqual(self.session.face_attempts, 1)
         self.assertFalse(self.session.face_locked)
+
+    @patch('api.views.call_workflow', return_value={})
+    def test_empty_workflow_response_does_not_consume_an_attempt(self, _mock_call):
+        """
+        Regression, found against the live workflow.
+
+        A Webhook node left on "Respond: Immediately" answers 200 with an
+        empty body. Parsed literally that reads as "no match", which would
+        fail the check *and* burn one of three attempts — locking a nurse out
+        after three photos because of a workflow setting.
+        """
+        res = self._post()
+
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(res.data['countable'])
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.face_attempts, 0)
+        self.assertIn('Respond to Webhook', res.data['detail'])
+
+    @patch('api.views.call_workflow', return_value={'confidence': 0.9, 'message': 'ok'})
+    def test_response_without_a_verdict_key_is_rejected(self, _mock_call):
+        # Confidence alone is not a decision.
+        res = self._post()
+        self.assertEqual(res.status_code, 502)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.face_attempts, 0)
+
+    @patch('api.views.call_workflow', return_value={'matched': False, 'confidence': 0.1})
+    def test_explicit_false_verdict_still_consumes_an_attempt(self, _mock_call):
+        # The guard must not swallow a genuine "no match".
+        self._post()
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.face_attempts, 1)
 
     @patch('api.views.call_workflow', side_effect=N8nTimeout(workflow='face_verify'))
     def test_workflow_failure_does_not_consume_an_attempt(self, _mock_call):
@@ -250,6 +371,7 @@ class StructureChartEndpointTests(TestCase):
     """POST /api/charting/structure/ — autocharting."""
 
     def setUp(self):
+        cache.clear()  # throttle history leaks in from real traffic
         self.client = APIClient()
         self.user = User.objects.create_user(
             username='nurse@hospital.com', email='nurse@hospital.com',

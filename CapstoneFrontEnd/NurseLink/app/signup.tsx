@@ -53,6 +53,7 @@ import {
   resetFaceVerificationRequest,
   sendRegistrationOtpRequest,
   verifyIdRequest,
+  verifyPrcLicenseRequest,
   verifyRegistrationOtpRequest,
 } from '../services/api';
 
@@ -474,8 +475,13 @@ export default function SignUpPage() {
   })();
 
   /**
-   * Steps 1 & 2 — read the Hospital ID. The backend forwards the photo to the
-   * n8n verify-id workflow; the fields it returns pre-fill the wizard.
+   * Steps 1 & 2 — Hospital ID capture and verification.
+   *
+   * The backend checks the upload actually carries a portrait photo (OpenCV,
+   * runs locally) and rejects an ID whose photo has been erased or cropped
+   * out. OCR text extraction is skipped for now — see "temporary not use -
+   * rai" in VerifyIdView — so the returned fields come back blank and the
+   * nurse fills them in on Step 2.
    */
   const runIdVerification = async (base64: string | null) => {
     if (!base64) {
@@ -498,6 +504,7 @@ export default function SignUpPage() {
 
       if (!res.verified) {
         setOcrStatus('failed');
+        // Covers the no-portrait rejection as well as an unreadable document.
         setError(res.message || 'Could not read the ID clearly. Please retake the photo.');
         return;
       }
@@ -840,27 +847,86 @@ export default function SignUpPage() {
       ? 'EMAIL_OTP'
       : null;
 
-  const verifyPrc = () => {
-    if (licenseNumber.trim().length < 5) {
+  /**
+   * Step 5 — scan the PRC nursing licence. The backend runs Tesseract, rejects
+   * anything that is not a PRC nurse card, and returns the fields to pre-fill.
+   */
+  const scanPrcLicense = async (base64: string | null) => {
+    if (!base64) {
       setPrcStatus('failed');
       setPrcVerified(false);
       setPrcData(null);
+      setError('Could not read the licence photo. Please retake it.');
       return;
     }
+
     setPrcStatus('processing');
-    setTimeout(() => {
-      setPrcData({ profession: 'Registered Nurse', expiration: '2026-06-30' });
+    setError('');
+
+    try {
+      const res = await verifyPrcLicenseRequest(
+        `data:image/jpeg;base64,${base64}`,
+        registrationSessionId
+      );
+
+      if (!res.valid) {
+        setPrcStatus('failed');
+        setPrcVerified(false);
+        setPrcData(null);
+        setError(res.message || 'Please upload a valid PRC nursing license.');
+        return;
+      }
+
+      // Pre-fill from the card, but never blank out something the nurse typed.
+      if (res.registrationNumber) setLicenseNumber(res.registrationNumber);
+      setPrcData({ profession: res.profession, expiration: res.validUntil });
       setPrcStatus('success');
       setPrcVerified(true);
-    }, 900);
+    } catch (err) {
+      setPrcStatus('failed');
+      setPrcVerified(false);
+      setPrcData(null);
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Licence verification is unavailable right now. Please try again.'
+      );
+    }
   };
 
-  useEffect(() => {
-    if (currentStep === 5 && licenseNumber.trim().length >= 5 && prcStatus === 'idle') {
-      const timer = setTimeout(verifyPrc, 600);
-      return () => clearTimeout(timer);
+  const handlePrcUpload = async () => {
+    setError('');
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setError('Camera roll access is required to upload your PRC licence.');
+      return;
     }
-  }, [licenseNumber, currentStep, prcStatus]);
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.9,
+      allowsEditing: true,
+      base64: true,
+    });
+    if (!result.canceled) void scanPrcLicense(result.assets[0].base64 ?? null);
+  };
+
+  const handlePrcScan = async () => {
+    setError('');
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      setError('Camera access is required to scan the PRC licence.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      quality: 0.9,
+      allowsEditing: true,
+      base64: true,
+    });
+    if (!result.canceled) void scanPrcLicense(result.assets[0].base64 ?? null);
+  };
+
+  // Verification is driven by scanning the card, not by typing a number —
+  // a typed number proves nothing, so there is no auto-verify on input.
 
   const validateCredentials = () => {
     const errors: Record<string, string> = {};
@@ -1491,6 +1557,29 @@ export default function SignUpPage() {
                         ) : null
                       }
                     />
+
+                    <Text style={styles.uploadHint}>
+                      Scan your PRC nursing license to verify it. The number above fills in
+                      automatically.
+                    </Text>
+
+                    <View style={styles.actionRow}>
+                      <Button variant="outline" size="lg" onPress={handlePrcScan} style={styles.scanBtn}>
+                        <Camera size={18} color={Colors.blue600} />
+                        <Text style={styles.scanBtnText}>Camera Scan</Text>
+                      </Button>
+                      <Button variant="outline" size="lg" onPress={handlePrcUpload} style={styles.uploadBtn}>
+                        <Upload size={18} color={Colors.gray600} />
+                        <Text style={styles.uploadBtnText}>Upload File</Text>
+                      </Button>
+                    </View>
+
+                    {prcStatus === 'processing' && (
+                      <View style={styles.actionRow}>
+                        <ActivityIndicator size="small" color={Colors.blue600} />
+                        <Text style={styles.uploadHint}>Reading your license…</Text>
+                      </View>
+                    )}
 
                     {prcStatus === 'success' && prcData && (
                       <View style={styles.prcBox}>

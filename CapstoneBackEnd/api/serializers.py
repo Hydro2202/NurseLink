@@ -1166,6 +1166,11 @@ class VerifyIdSerializer(serializers.Serializer):
 class VerifyIdResponseSerializer(serializers.Serializer):
     success = serializers.BooleanField()
     verified = serializers.BooleanField(help_text='True when the workflow could read the document.')
+    hasPhoto = serializers.BooleanField(
+        required=False,
+        help_text='False when no portrait was found on the ID — the upload is rejected before OCR.',
+    )
+    faceCount = serializers.IntegerField(required=False)
     fullName = serializers.CharField(allow_blank=True)
     employeeId = serializers.CharField(allow_blank=True)
     department = serializers.CharField(allow_blank=True)
@@ -1230,3 +1235,40 @@ class StructureChartResponseSerializer(serializers.Serializer):
 
     class Meta:
         ref_name = 'StructureChartResponse'
+
+
+class VerifyPrcSerializer(serializers.Serializer):
+    """Scan a PRC nursing licence with Tesseract OCR."""
+
+    image = serializers.CharField(
+        help_text='Base64 (optionally data-URI prefixed) JPEG/PNG photo of the PRC licence.',
+    )
+    registrationSessionId = serializers.UUIDField(
+        required=False,
+        help_text='Signup session to attach the result to. Optional.',
+    )
+
+    class Meta:
+        ref_name = 'VerifyPrcRequest'
+
+
+class VerifyPrcResponseSerializer(serializers.Serializer):
+    valid = serializers.BooleanField(
+        help_text='False when the upload is not a PRC nursing licence. All fields are blank then.'
+    )
+    message = serializers.CharField(allow_blank=True)
+    lastName = serializers.CharField(allow_blank=True)
+    firstName = serializers.CharField(allow_blank=True)
+    middleName = serializers.CharField(allow_blank=True)
+    fullName = serializers.CharField(allow_blank=True)
+    registrationNumber = serializers.CharField(
+        allow_blank=True, help_text='7 digits, or blank if it could not be read confidently.'
+    )
+    licenseNumber = serializers.CharField(
+        allow_blank=True, help_text='Alias of registrationNumber, for the signup form.'
+    )
+    validUntil = serializers.CharField(allow_blank=True, help_text='MM/DD/YYYY.')
+    profession = serializers.CharField(allow_blank=True)
+
+    class Meta:
+        ref_name = 'VerifyPrcResponse'
