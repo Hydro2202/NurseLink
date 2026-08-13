@@ -188,6 +188,12 @@ export type VerifyIdResponse = {
   position: string;
   hospitalName: string;
   email: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  registrationNumber: string;
+  registrationDate: string;
+  validUntil: string;
   roleMatch?: boolean | null;
   confidence?: number | null;
   message?: string;

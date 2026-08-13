@@ -340,7 +340,10 @@ def _run_face_match(selfie_data: str, id_data: str, *, session=None) -> FaceVeri
 
     # Bare base64: AWS Rekognition CompareFaces rejects a data-URI prefix in
     # Image.Bytes, so strip it here rather than in the workflow.
+    # -rai: identity-verify is a single combined webhook — `action` is what
+    # routes this call to the face-match branch instead of extract_id.
     payload = {
+        'action': 'verify_face',
         'image': strip_data_uri(selfie_data),
         'idImage': strip_data_uri(id_data),
         'registrationSessionId': str(session.session_id) if session else '',
@@ -651,6 +654,9 @@ class VerifyIdView(APIView):
     throttle_scope = 'face_verification'
 
     # Keys the workflow may use for each field we care about, best first.
+    # -rai: the real extract_id response only fills name/licenseNumber/
+    # validityDate today — employeeId/department/position/hospitalName/email
+    # have no source yet and simply come back blank via _pick's fallback.
     _FIELD_ALIASES = {
         'fullName': ('fullName', 'full_name', 'name'),
         'employeeId': ('employeeId', 'employee_id', 'idNumber', 'id_number'),
@@ -658,6 +664,15 @@ class VerifyIdView(APIView):
         'position': ('position', 'role', 'title', 'designation'),
         'hospitalName': ('hospitalName', 'hospital_name', 'hospital', 'facility'),
         'email': ('email', 'emailAddress', 'email_address'),
+        'lastName': ('lastName', 'last_name', 'surname'),
+        'firstName': ('firstName', 'first_name', 'givenName', 'given_name'),
+        'middleName': ('middleName', 'middle_name'),
+        'registrationNumber': (
+            'registrationNumber', 'registration_number', 'registrationNo',
+            'licenseNumber', 'license_number',
+        ),
+        'registrationDate': ('registrationDate', 'registration_date'),
+        'validUntil': ('validUntil', 'valid_until', 'validityDate', 'validity_date'),
     }
 
     @staticmethod
@@ -735,17 +750,12 @@ class VerifyIdView(APIView):
                 }
             )
 
-        # --- temporary not use - rai --------------------------------------
-        # The n8n verify-id OCR workflow is not published, so the OCR step is
-        # skipped and the portrait check above is what gates Step 1. The ID is
-        # accepted once a real photo is present; the wizard's fields are left
-        # blank for the nurse to fill rather than guessed at.
-        # Restore by deleting this stub and uncommenting the block below.
-        result = {}
-
-        """ --- temporary not use - rai : n8n verify-id OCR ------------------
+        # -rai: identity-verify is a single combined webhook — `action` picks
+        # the extract_id branch. Restored now that the path/action mismatch
+        # (this used to call a nonexistent separate "verify-id" URL) is fixed.
         payload = {
             # Bare base64 — cloud OCR/vision APIs reject the data-URI prefix.
+            'action': 'extract_id',
             'idImage': strip_data_uri(data['idImage']),
             'documentType': data.get('documentType') or 'hospital_id',
             'expectedRole': data.get('expectedRole') or '',
@@ -766,21 +776,31 @@ class VerifyIdView(APIView):
 
         if not isinstance(result, dict):
             result = {}
-        ------------------------------------------------------------------ """
+
+        # -rai: a good read answers {success: true, data: {...}}; an
+        # unreadable document answers {success: false, reason, message} with
+        # no `data` at all. Unwrap `data` so alias lookup sees the real keys.
+        ocr_ok = bool(result.get('success'))
+        ocr_data = result['data'] if isinstance(result.get('data'), dict) else {}
 
         fields = {
-            name: self._pick(result, aliases) for name, aliases in self._FIELD_ALIASES.items()
+            name: self._pick(ocr_data, aliases) for name, aliases in self._FIELD_ALIASES.items()
         }
-        if result:
-            # Without a name or an employee id there is nothing for the wizard
-            # to pre-fill, so treat that as unreadable rather than success.
-            verified = bool(
-                result.get('verified', bool(fields['fullName'] or fields['employeeId']))
-            )
-        else:
-            # temporary not use - rai: OCR is skipped, so the portrait check is
-            # the whole gate. It already passed to reach here.
-            verified = True
+
+        # -rai: the workflow doesn't split PRC's "LASTNAME, FIRSTNAME
+        # MIDDLENAME" format into separate fields yet — do it here so
+        # Last/First/Middle Name are populated regardless of whether n8n
+        # ever adds those keys itself.
+        if fields['fullName'] and not (fields['lastName'] or fields['firstName']):
+            last, _, rest = fields['fullName'].partition(',')
+            rest_parts = rest.strip().split()
+            fields['lastName'] = last.strip()
+            fields['firstName'] = rest_parts[0] if rest_parts else ''
+            fields['middleName'] = ' '.join(rest_parts[1:])
+
+        # Without a name or an employee id there is nothing for the wizard to
+        # pre-fill, so treat that as unreadable rather than success.
+        verified = ocr_ok and bool(fields['fullName'] or fields['employeeId'] or fields['lastName'])
 
         # Carry the email onto the session so the OTP fallback can find it later.
         if fields['email'] and not session.email:
@@ -794,8 +814,8 @@ class VerifyIdView(APIView):
                 **fields,
                 'hasPhoto': True,
                 'faceCount': portrait.face_count,
-                'roleMatch': result.get('roleMatch'),
-                'confidence': result.get('confidence', portrait.confidence),
+                'roleMatch': ocr_data.get('roleMatch'),
+                'confidence': ocr_data.get('confidence', portrait.confidence),
                 'message': result.get('message')
                 or ('' if verified else 'Could not read the ID clearly. Please retake the photo.'),
                 'registrationSessionId': str(session.session_id),

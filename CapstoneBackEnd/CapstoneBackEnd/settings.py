@@ -193,10 +193,13 @@ N8N_WEBHOOK_PREFIX = os.environ.get('N8N_WEBHOOK_PREFIX', 'webhook-test').strip(
 N8N_WEBHOOKS = {
     # Autocharting — raw assessment input in, structured nursing note out.
     'structure_chart': os.environ.get('N8N_STRUCTURE_CHART_PATH', 'structure-chart'),
-    # Persona steps 1 & 2 — Hospital ID photo in, OCR'd identity fields out.
-    'verify_id': os.environ.get('N8N_VERIFY_ID_PATH', 'verify-id'),
-    # Face ID — selfie + ID photo in, match decision out.
-    'face_verify': os.environ.get('N8N_FACE_VERIFY_PATH', 'face-verify'),
+    # Persona steps 1 & 2 and Face ID share ONE n8n workflow — a single
+    # "identity-verify" webhook routed internally by an `action` field
+    # ("extract_id" / "verify_face") in the request body, not by separate
+    # URL paths. Both keys resolve to the same endpoint; the call site is
+    # what sets `action`. -rai
+    'verify_id': os.environ.get('N8N_VERIFY_ID_PATH', 'identity-verify'),
+    'face_verify': os.environ.get('N8N_FACE_VERIFY_PATH', 'identity-verify'),
 }
 
 # n8n workflows that call an LLM or a vision model are slow; a short timeout

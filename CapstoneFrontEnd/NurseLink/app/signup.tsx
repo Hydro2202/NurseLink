@@ -206,6 +206,12 @@ const defaultOcrData = {
   position: '',
   hospitalName: '',
   email: '',
+  lastName: '',
+  firstName: '',
+  middleName: '',
+  registrationNumber: '',
+  registrationDate: '',
+  validUntil: '',
 };
 
 function getRoleMatch(position: string, selectedRole: UserRole | '') {
@@ -516,6 +522,12 @@ export default function SignUpPage() {
         department: res.department,
         position: res.position,
         email: res.email,
+        lastName: res.lastName,
+        firstName: res.firstName,
+        middleName: res.middleName,
+        registrationNumber: res.registrationNumber,
+        registrationDate: res.registrationDate,
+        validUntil: res.validUntil,
       });
       setOcrStatus('success');
       setHospitalIdCompleted(true);
@@ -1113,14 +1125,15 @@ export default function SignUpPage() {
                     </View>
 
                     {[
-                      { label: 'Full Name', value: ocrData.fullName },
-                      { label: 'Employee ID', value: ocrData.employeeId },
-                      { label: 'Hospital Name', value: ocrData.hospitalName },
-                      { label: 'Department', value: ocrData.department },
+                      { label: 'Last name', value: ocrData.lastName },
+                      { label: 'First name', value: ocrData.firstName },
+                      { label: 'Middle Name', value: ocrData.middleName },
+                      { label: 'Registration no', value: ocrData.registrationNumber },
+                      { label: 'Registration date', value: ocrData.registrationDate },
+                      { label: 'Valid until', value: ocrData.validUntil },
                     ].map((field) => (
                       <Input key={field.label} label={field.label} value={field.value} editable={false} inputWrapperStyle={styles.readOnlyInput} />
                     ))}
-                    <Input label="Position" value={ocrData.position} editable={false} inputWrapperStyle={styles.readOnlyInput} />
                     <Input
                       label="Registered Email Address"
                       value={ocrData.email}

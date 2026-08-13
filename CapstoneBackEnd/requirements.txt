@@ -13,3 +13,4 @@ numpy>=2.0
 pytesseract>=0.3.10
 email-validator>=2.0
 dnspython>=2.0
+requests>=2.31

@@ -40,6 +40,7 @@ import {
   resendRegistrationOtpRequest,
   resetFaceVerificationRequest,
   sendRegistrationOtpRequest,
+  verifyIdRequest,
   verifyRegistrationOtpRequest,
 } from '../api/nurselink';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
@@ -136,6 +137,12 @@ type OcrData = {
   department: string;
   position: string;
   email: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  registrationNumber: string;
+  registrationDate: string;
+  validUntil: string;
 };
 
 const roleOptions: Array<{ value: SelectedRole; title: string; detail: string; emoji: string }> = [
@@ -405,7 +412,7 @@ export default function SignUpPage() {
 
   const [hospitalIdPreview, setHospitalIdPreview] = useState<string | null>(null);
   const [hospitalIdError, setHospitalIdError] = useState('');
-  const [ocrStatus, setOcrStatus] = useState<'idle' | 'processing' | 'success'>('idle');
+  const [ocrStatus, setOcrStatus] = useState<'idle' | 'processing' | 'success' | 'failed'>('idle');
   const [ocrData, setOcrData] = useState<OcrData | null>(null);
 
   const [cameraState, setCameraState] = useState<'idle' | 'requesting' | 'active' | 'denied' | 'not-supported'>('idle');
@@ -555,22 +562,46 @@ export default function SignUpPage() {
     faceVerificationInFlight.current = false;
   }, []);
 
-  const simulateOcr = useCallback(() => {
-    setOcrStatus('processing');
-    window.setTimeout(() => {
-      const fullName = 'Maria Santos Dela Cruz';
-      const hospitalName = "St. Luke's Medical Center";
-      setOcrData({
-        fullName,
-        employeeId: `EMP-${Math.floor(10000 + Math.random() * 90000)}`,
-        hospitalName,
-        department: 'Intensive Care Unit',
-        position: 'Registered Nurse',
-        email: '',
-      });
-      setOcrStatus('success');
-    }, 1600);
-  }, []);
+  const runIdVerification = useCallback(
+    async (dataUri: string) => {
+      setOcrStatus('processing');
+      try {
+        const res = await verifyIdRequest(dataUri, {
+          registrationSessionId,
+          documentType: 'hospital_id',
+          expectedRole: selectedRole === 'nurse' ? 'staff_nurse' : selectedRole === 'supervisor' ? 'supervisor' : '',
+        });
+
+        setRegistrationSessionId(res.registrationSessionId);
+
+        if (!res.verified) {
+          setOcrStatus('failed');
+          setHospitalIdError(res.message || 'Could not read the ID clearly. Please retake the photo.');
+          return;
+        }
+
+        setOcrData({
+          fullName: res.fullName,
+          employeeId: res.employeeId,
+          hospitalName: res.hospitalName,
+          department: res.department,
+          position: res.position,
+          email: res.email,
+          lastName: res.lastName,
+          firstName: res.firstName,
+          middleName: res.middleName,
+          registrationNumber: res.registrationNumber,
+          registrationDate: res.registrationDate,
+          validUntil: res.validUntil,
+        });
+        setOcrStatus('success');
+      } catch (err) {
+        setOcrStatus('failed');
+        setHospitalIdError(extractErrorMessage(err, 'ID verification is unavailable right now. Please try again.'));
+      }
+    },
+    [registrationSessionId, selectedRole]
+  );
 
   const handleHospitalFile = (file: File) => {
     setHospitalIdError('');
@@ -591,8 +622,9 @@ export default function SignUpPage() {
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      setHospitalIdPreview(event.target?.result as string);
-      simulateOcr();
+      const dataUri = event.target?.result as string;
+      setHospitalIdPreview(dataUri);
+      void runIdVerification(dataUri);
     };
     reader.readAsDataURL(file);
   };
@@ -1159,10 +1191,12 @@ export default function SignUpPage() {
 
                     <div className="grid gap-4 sm:grid-cols-2">
                       {[
-                        { label: 'Full Name', value: ocrData.fullName },
-                        { label: 'Employee ID', value: ocrData.employeeId },
-                        { label: 'Hospital', value: ocrData.hospitalName },
-                        { label: 'Department', value: ocrData.department },
+                        { label: 'Last name', value: ocrData.lastName },
+                        { label: 'First name', value: ocrData.firstName },
+                        { label: 'Middle Name', value: ocrData.middleName },
+                        { label: 'Registration no', value: ocrData.registrationNumber },
+                        { label: 'Registration date', value: ocrData.registrationDate },
+                        { label: 'Valid until', value: ocrData.validUntil },
                       ].map((field) => (
                         <div key={field.label} className="space-y-1.5">
                           <Label className="text-xs font-medium text-gray-500">{field.label}</Label>
@@ -1180,21 +1214,6 @@ export default function SignUpPage() {
                           </div>
                         </div>
                       ))}
-                      <div className="space-y-1.5 sm:col-span-2">
-                        <Label className="text-xs font-medium text-gray-500">Position</Label>
-                        <div className="relative">
-                          <Input
-                            readOnly
-                            value={ocrData.position}
-                            aria-label="Position"
-                            className="h-12 cursor-not-allowed rounded-xl border-gray-200 bg-gray-100 pr-10 font-medium text-gray-900"
-                          />
-                          <Lock
-                            className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
-                            aria-hidden
-                          />
-                        </div>
-                      </div>
                       <div className="space-y-1.5 sm:col-span-2">
                         <Label className="text-xs font-medium text-gray-500">Registered Email Address</Label>
                         <div className="relative">
