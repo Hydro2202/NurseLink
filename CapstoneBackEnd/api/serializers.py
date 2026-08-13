@@ -179,7 +179,13 @@ class SignupSerializer(serializers.Serializer):
                 department=department,
                 license_number=validated_data.get('licenseNumber') or '',
                 middle_name=validated_data.get('middleName') or '',
-                approval_status='pending' if role == 'staff_nurse' else 'approved',
+                # Identity is already established by the time we get here: the
+                # Hospital ID was scanned and OCR'd, a portrait was confirmed
+                # on it, and the applicant passed either face matching against
+                # that portrait or email OTP. A further manual approval step
+                # gated an account that nothing in the codebase actually
+                # checked, so it only delayed first login. -rai
+                approval_status='approved',
                 verification_method=session.verification_method,
             )
             session.user = user

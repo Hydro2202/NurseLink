@@ -92,10 +92,13 @@ class PrcScanResult:
     first_name: str = ''
     middle_name: str = ''
     registration_number: str = ''
+    registration_date: str = ''
     valid_until: str = ''
     profession: str = ''
     raw_text: str = ''
     matched_markers: list = field(default_factory=list)
+    #: Per-field confidence and review flags — see :func:`field_report`.
+    report: dict = field(default_factory=dict)
 
     @property
     def full_name(self) -> str:
@@ -113,8 +116,14 @@ class PrcScanResult:
             'fullName': self.full_name,
             'registrationNumber': self.registration_number,
             'licenseNumber': self.registration_number,  # alias the wizard uses
+            'registrationDate': self.registration_date,
             'validUntil': self.valid_until,
             'profession': self.profession,
+            'confidence': self.report.get('confidence', {}),
+            'overallConfidence': self.report.get('overallConfidence', 0.0),
+            'needsReview': self.report.get('needsReview', []),
+            'missingRequired': self.report.get('missingRequired', []),
+            'complete': self.report.get('complete', False),
         }
 
 
@@ -259,9 +268,9 @@ def _has_profession(words: list, profession: str = PROFESSION_MARKER) -> bool:
 # Labels sit either on the same line as their value or directly above it,
 # depending on card generation and how the photo was cropped. Both are tried.
 _NAME_LABELS = {
-    'last_name': r'LAST\s*NAME',
-    'first_name': r'FIRST\s*NAME',
-    'middle_name': r'MIDDLE\s*NAME',
+    'last_name': r'(?:LAST|SUR)\s*NAME',
+    'first_name': r'(?:FIRST|GIVEN)\s*NAME',
+    'middle_name': r'MIDDLE\s*(?:NAME|INITIAL)',
 }
 
 # A name value: letters, spaces, hyphens, apostrophes, periods (JR., ST.).
@@ -279,6 +288,7 @@ _VALID_UNTIL = re.compile(
     r'VALID\s*(?:UNTIL|THRU|TO)?\s*:?\s*(\d{1,2}\s*[/\-.]\s*\d{1,2}\s*[/\-.]\s*\d{2,4})'
 )
 _ANY_DATE = re.compile(r'\b(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{4})\b')
+_WORD_DATE = r'(?:JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:TEMBER)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)\s+\d{1,2},?\s+\d{4}'
 
 # OCR reliably confuses these with digits inside an otherwise numeric run.
 _DIGIT_FIXES = str.maketrans({'O': '0', 'o': '0', 'I': '1', 'l': '1', 'S': '5', 's': '5', 'B': '8', 'b': '8'})
@@ -368,6 +378,218 @@ def _extract_valid_until(text: str) -> str:
     return max(candidates, key=lambda d: datetime.strptime(d, '%m/%d/%Y'))
 
 
+def _extract_labelled_date(text: str, label: str) -> str:
+    """
+    Extract a numeric or written date anchored to an ID-card label.
+
+    ``label`` is wrapped in a non-capturing group before interpolation. A
+    label containing a top-level alternation — "REG DATE|DATE OF ISSUE" —
+    would otherwise split the whole pattern in two, leaving the first branch
+    with no capture group and returning None instead of a date.
+    """
+    match = re.search(
+        rf'(?:{label})\s*[:\-.]?\s*({_WORD_DATE}|\d{{1,2}}\s*[/\-.]\s*\d{{1,2}}\s*[/\-.]\s*\d{{2,4}})',
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ''
+    value = re.sub(r'\s+', ' ', match.group(1)).strip()
+    for pattern in ('%B %d, %Y', '%B %d %Y', '%b %d, %Y', '%b %d %Y'):
+        try:
+            return datetime.strptime(value, pattern).strftime('%m/%d/%Y')
+        except ValueError:
+            continue
+    return _normalize_date(value)
+
+
+def _extract_latest_card_date(text: str) -> str:
+    """Return the latest readable date when an OCR label was missed."""
+    candidates = []
+    for match in re.finditer(_WORD_DATE, text, re.IGNORECASE):
+        value = re.sub(r'\s+', ' ', match.group(0)).strip()
+        for pattern in ('%B %d, %Y', '%B %d %Y', '%b %d, %Y', '%b %d %Y'):
+            try:
+                candidates.append(datetime.strptime(value, pattern))
+                break
+            except ValueError:
+                continue
+    for match in _ANY_DATE.finditer(text):
+        normalized = _normalize_date(match.group(1))
+        if normalized:
+            candidates.append(datetime.strptime(normalized, '%m/%d/%Y'))
+    return max(candidates).strftime('%m/%d/%Y') if candidates else ''
+
+
+def scan_labelled_id(image_data: str) -> dict:
+    """Read explicitly labelled identity fields from a Hospital ID card."""
+    image = _decode_image(image_data)
+    text = _run_tesseract(_preprocess(image))
+    last_name = _extract_name(text, _NAME_LABELS['last_name'])
+    first_name = _extract_name(text, _NAME_LABELS['first_name'])
+    middle_name = _extract_name(text, _NAME_LABELS['middle_name'])
+    return {
+        'lastName': last_name,
+        'firstName': first_name,
+        'middleName': middle_name,
+        'fullName': ' '.join(part for part in (first_name, middle_name, last_name) if part),
+        'registrationNumber': _extract_registration_number(text),
+        'registrationDate': _extract_labelled_date(text, r'REGISTRATION\s*DATE'),
+        'validUntil': (
+            _extract_labelled_date(
+                text, r'(?:VALID\s*(?:UNTIL|THRU|TO)?|EXPIR(?:Y|ATION)\s*DATE)'
+            )
+            or _extract_latest_card_date(text)
+        ),
+    }
+
+
+# --- per-field confidence -----------------------------------------------
+#
+# OCR either found a value next to the label that names it, or it guessed
+# from a pattern somewhere on the card. Those are very different levels of
+# trust, and collapsing them loses the one signal that tells a reviewer
+# which field to check. Every extractor below therefore reports *how* it
+# found a value, and that provenance becomes the confidence score.
+
+#: How much to trust a value given how it was located.
+CONFIDENCE_BY_SOURCE = {
+    'label': 0.95,     # sat directly after the label that names it
+    'pattern': 0.75,   # matched the field's shape, but unlabelled
+    'fallback': 0.50,  # inferred (e.g. "the latest date on the card")
+    '': 0.0,           # not found at all
+}
+
+#: Below this a field is flagged for human review before anything is saved.
+LOW_CONFIDENCE_THRESHOLD = 0.75
+
+#: Fields a registration cannot proceed without. Middle name is genuinely
+#: optional (many people have none) and registration date is often absent or
+#: unreadable on older cards, so neither blocks — they are merely flagged.
+REQUIRED_FIELDS = ('lastName', 'firstName', 'registrationNumber', 'validUntil')
+
+_LABELLED_REG_DATE = r'(?:REGISTRATION|REG\.?)\s*DATE|DATE\s*(?:OF\s*)?(?:REGISTRATION|ISSUE[D]?)'
+_LABELLED_VALID_UNTIL = r'(?:VALID\s*(?:UNTIL|THRU|TO)?|EXPIR(?:Y|ATION)\s*DATE)'
+
+
+@dataclass
+class FieldValue:
+    """One extracted field, with how confident we are and why."""
+
+    value: str = ''
+    source: str = ''
+
+    @property
+    def confidence(self) -> float:
+        return CONFIDENCE_BY_SOURCE.get(self.source, 0.0)
+
+    @property
+    def needs_review(self) -> bool:
+        return self.confidence < LOW_CONFIDENCE_THRESHOLD
+
+
+def _name_with_source(text: str, label_pattern: str) -> FieldValue:
+    value = _extract_name(text, label_pattern)
+    # Names are only ever taken from beside their label, never guessed —
+    # a name pulled from an unlabelled line could be anyone's.
+    return FieldValue(value, 'label' if value else '')
+
+
+def _reg_no_with_source(text: str) -> FieldValue:
+    labelled = _REG_NO_LABEL.search(text)
+    if labelled:
+        candidate = labelled.group(1).translate(_DIGIT_FIXES)
+        if candidate.isdigit() and len(candidate) == 7:
+            return FieldValue(candidate, 'label')
+    bare = _extract_registration_number(text)
+    return FieldValue(bare, 'pattern' if bare else '')
+
+
+def _date_with_source(text: str, label: str, *, allow_fallback: bool) -> FieldValue:
+    labelled = _extract_labelled_date(text, label)
+    if labelled:
+        return FieldValue(labelled, 'label')
+    if allow_fallback:
+        guess = _extract_latest_card_date(text)
+        if guess:
+            return FieldValue(guess, 'fallback')
+    return FieldValue('', '')
+
+
+def extract_id_fields(text: str) -> dict:
+    """
+    Every field the signup form needs, each with its provenance.
+
+    Layout independent by design: values are located by the labels printed
+    beside them and by each field's own shape, not by position on the card.
+    A differently laid out ID still reads correctly as long as it labels its
+    fields — and where it does not, the value is flagged rather than guessed
+    at silently.
+    """
+    return {
+        'lastName': _name_with_source(text, _NAME_LABELS['last_name']),
+        'firstName': _name_with_source(text, _NAME_LABELS['first_name']),
+        'middleName': _name_with_source(text, _NAME_LABELS['middle_name']),
+        'registrationNumber': _reg_no_with_source(text),
+        'registrationDate': _date_with_source(text, _LABELLED_REG_DATE, allow_fallback=False),
+        # An expiry is the latest date on a card, so a fallback guess is
+        # defensible here — but it is scored low and flagged for review.
+        'validUntil': _date_with_source(text, _LABELLED_VALID_UNTIL, allow_fallback=True),
+    }
+
+
+def field_report(text: str) -> dict:
+    """
+    Serialisable extraction report: values, confidences, and what to check.
+
+    ``needsReview`` is what the UI acts on — it names the fields a human must
+    confirm before anything is saved, so a low-confidence read is never
+    written silently.
+    """
+    fields = extract_id_fields(text)
+    values = {name: fv.value for name, fv in fields.items()}
+    confidences = {name: round(fv.confidence, 2) for name, fv in fields.items()}
+
+    missing_required = [name for name in REQUIRED_FIELDS if not fields[name].value]
+    needs_review = sorted(
+        {name for name, fv in fields.items() if fv.value and fv.needs_review}
+        | set(missing_required)
+    )
+
+    present = [fv.confidence for fv in fields.values() if fv.value]
+    overall = round(sum(present) / len(present), 2) if present else 0.0
+
+    values['fullName'] = ' '.join(
+        part for part in (values['firstName'], values['middleName'], values['lastName']) if part
+    )
+
+    return {
+        **values,
+        'confidence': confidences,
+        'overallConfidence': overall,
+        'needsReview': needs_review,
+        'missingRequired': missing_required,
+        'complete': not missing_required,
+    }
+
+
+def scan_id_fields(image_data: str) -> dict:
+    """
+    OCR an ID card and return every field with confidence, plus the raw text.
+
+    This is the entry point for the Hospital ID step. It does not gate on
+    document type — that is the PRC licence scanner's job — so it works
+    across the different ID layouts a hospital issues. The raw text travels
+    with the result so n8n (and a human debugging a bad read) can see exactly
+    what Tesseract produced.
+    """
+    image = _decode_image(image_data)
+    text = _run_tesseract(_preprocess(image))
+    report = field_report(text)
+    report['rawText'] = text
+    return report
+
+
 # --- public API ---------------------------------------------------------
 
 
@@ -404,15 +626,25 @@ def scan_prc_license(image_data: str) -> PrcScanResult:
             matched_markers=matched,
         )
 
+    report = field_report(text)
     return PrcScanResult(
         is_valid=True,
-        message='',
-        last_name=_extract_name(text, _NAME_LABELS['last_name']),
-        first_name=_extract_name(text, _NAME_LABELS['first_name']),
-        middle_name=_extract_name(text, _NAME_LABELS['middle_name']),
-        registration_number=_extract_registration_number(text),
-        valid_until=_extract_valid_until(text),
+        # A valid card whose fields could not all be read is still a pass at
+        # the document-type gate — the reviewer is told what to check rather
+        # than the whole scan being thrown away.
+        message=(
+            ''
+            if report['complete']
+            else 'Some fields could not be read clearly. Please check them before continuing.'
+        ),
+        last_name=report['lastName'],
+        first_name=report['firstName'],
+        middle_name=report['middleName'],
+        registration_number=report['registrationNumber'],
+        registration_date=report['registrationDate'],
+        valid_until=report['validUntil'],
         profession='Registered Nurse',
         raw_text=text,
         matched_markers=matched,
+        report=report,
     )

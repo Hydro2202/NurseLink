@@ -53,7 +53,6 @@ import {
   resetFaceVerificationRequest,
   sendRegistrationOtpRequest,
   verifyIdRequest,
-  verifyPrcLicenseRequest,
   verifyRegistrationOtpRequest,
 } from '../services/api';
 
@@ -156,18 +155,16 @@ const otpStyles = StyleSheet.create({
   boxDisabled: { backgroundColor: Colors.gray100, color: Colors.gray500 },
 });
 
-type WizardStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type WizardStep = 1 | 2 | 3 | 4 | 5;
 type ProcessStatus = 'idle' | 'processing' | 'success' | 'failed';
 
-const STEP_LABELS = ['Hospital ID', 'ID Review', 'Face Check', 'Role', 'PRC License', 'Role Check', 'Credentials'];
+const STEP_LABELS = ['Hospital ID', 'ID Review', 'Face Check', 'Role', 'Credentials'];
 
 const STEP_TITLES = [
   'Hospital Identity Verification',
   'Extracted ID Information',
   'Mandatory Face Verification',
   'Role Selection',
-  'PRC License Verification',
-  'Role Verification',
   'Account Credentials',
 ];
 
@@ -175,9 +172,7 @@ const STEP_DESCRIPTIONS = [
   'Upload or scan your official Hospital ID to begin.',
   'Review your extracted information. These fields are read-only.',
   'Capture a live selfie to confirm your identity.',
-  'Select the role you are registering for. It must match your verified employment information.',
-  'Enter and verify your PRC Professional License number.',
-  'Confirming your selected role matches your Hospital ID and PRC records.',
+  'Select the role you are registering for.',
   'Set your login credentials to complete registration.',
 ];
 
@@ -214,14 +209,6 @@ const defaultOcrData = {
   validUntil: '',
 };
 
-function getRoleMatch(position: string, selectedRole: UserRole | '') {
-  if (!selectedRole || !position) return false;
-  const normalized = position.toLowerCase();
-  const matchesNurse = NURSE_KEYWORDS.some((k) => normalized.includes(k));
-  const matchesSupervisor = SUPERVISOR_KEYWORDS.some((k) => normalized.includes(k));
-  if (selectedRole === 'staff_nurse') return matchesNurse;
-  return matchesSupervisor;
-}
 
 function StepStepper({ current, completedThrough }: { current: WizardStep; completedThrough: WizardStep }) {
   return (
@@ -333,23 +320,27 @@ export default function SignUpPage() {
   const [idReviewCompleted, setIdReviewCompleted] = useState(false);
   const [faceVerificationCompleted, setFaceVerificationCompleted] = useState(false);
   const [roleSelected, setRoleSelected] = useState(false);
-  const [prcVerified, setPrcVerified] = useState(false);
-  const [roleVerified, setRoleVerified] = useState(false);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [role, setRole] = useState<UserRole | ''>('');
-  const [licenseNumber, setLicenseNumber] = useState('');
   const [hospitalIdUri, setHospitalIdUri] = useState<string | null>(null);
   const [hospitalIdBase64, setHospitalIdBase64] = useState<string | null>(null);
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
   const [liveCameraActive, setLiveCameraActive] = useState(false);
-  const [prcStatus, setPrcStatus] = useState<ProcessStatus>('idle');
-  const [prcData, setPrcData] = useState<{ profession: string; expiration: string } | null>(null);
   const [ocrData, setOcrData] = useState(defaultOcrData);
   const [ocrStatus, setOcrStatus] = useState<ProcessStatus>('idle');
+  // What the backend flagged for human confirmation on Step 2. A low-confidence
+  // read is never saved silently — the nurse has to look at it first.
+  const [ocrReview, setOcrReview] = useState<{
+    needsReview: string[];
+    missingRequired: string[];
+    overallConfidence: number;
+    n8nStatus: string;
+    duplicateScan: boolean;
+  }>({ needsReview: [], missingRequired: [], overallConfidence: 0, n8nStatus: '', duplicateScan: false });
 
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -471,8 +462,6 @@ export default function SignUpPage() {
   }, [currentStep, faceResuming, faceLocked, showOtpPanel, faceStatus, selfieUri]);
 
   const completedThrough: WizardStep = (() => {
-    if (roleVerified) return 7;
-    if (prcVerified) return 6;
     if (roleSelected) return 5;
     if (faceVerificationCompleted || otpStatus === 'verified') return 4;
     if (idReviewCompleted) return 3;
@@ -508,7 +497,20 @@ export default function SignUpPage() {
 
       setRegistrationSessionId(res.registrationSessionId);
 
-      if (!res.verified) {
+      // A rejected document (no portrait, unreadable) has nothing to review.
+      // A partial read does — surface it instead of forcing a rescan, and let
+      // the nurse correct the flagged fields on Step 2.
+      const flagged = res.needsReview ?? [];
+      const missing = res.missingRequired ?? [];
+      setOcrReview({
+        needsReview: flagged,
+        missingRequired: missing,
+        overallConfidence: res.overallConfidence ?? 0,
+        n8nStatus: res.n8nStatus ?? '',
+        duplicateScan: Boolean(res.duplicateScan),
+      });
+
+      if (!res.verified && flagged.length === 0) {
         setOcrStatus('failed');
         // Covers the no-portrait rejection as well as an unreadable document.
         setError(res.message || 'Could not read the ID clearly. Please retake the photo.');
@@ -548,8 +550,6 @@ export default function SignUpPage() {
     setFaceVerificationCompleted(false);
     setRoleSelected(false);
     setRole('');
-    setPrcVerified(false);
-    setRoleVerified(false);
     void clearFaceCycleLocal();
     void runIdVerification(base64);
   };
@@ -657,7 +657,7 @@ export default function SignUpPage() {
         setFaceLocked(Boolean(res.locked) && attempts >= maxAttempts);
       } catch (err) {
         setFaceStatus('failed');
-        if (err instanceof ApiError && err.status === 403) {
+        if (err instanceof ApiError) {
           const data = err.data as {
             registrationSessionId?: string;
             message?: string;
@@ -666,24 +666,22 @@ export default function SignUpPage() {
             maxAttempts?: number;
             locked?: boolean;
           } | undefined;
-          if (data?.registrationSessionId) setRegistrationSessionId(data.registrationSessionId);
-          const maxAttempts = resolveMaxAttempts(data ?? {});
-          setFaceMaxAttempts(maxAttempts);
-          const attempts = resolveAttemptsUsed(data ?? {});
-          setFaceAttemptsUsed(Math.min(maxAttempts, Math.max(0, attempts)));
-          const locked = Boolean(data?.locked) && attempts >= maxAttempts;
-          setFaceLocked(locked);
           if (data?.registrationSessionId) {
+            setRegistrationSessionId(data.registrationSessionId);
+            const maxAttempts = resolveMaxAttempts(data);
+            const attempts = resolveAttemptsUsed(data);
+            const locked = Boolean(data.locked) && attempts >= maxAttempts;
+            setFaceMaxAttempts(maxAttempts);
+            setFaceAttemptsUsed(Math.min(maxAttempts, Math.max(0, attempts)));
+            setFaceLocked(locked);
             void persistFaceSession(data.registrationSessionId, attempts, locked);
           }
-          setError(
-            locked
-              ? data?.message ||
-                  `You've used all ${maxAttempts} face verification attempts. Choose Retry Face Verification or Verify Using Email OTP.`
-              : data?.message || 'Face verification failed. Please try again.'
-          );
-        } else if (err instanceof ApiError && err.status === 503) {
-          setError(extractErrorMessage(err, 'Face verification is temporarily unavailable. Please try again.'));
+          const maxAttempts = resolveMaxAttempts(data ?? {});
+          const attempts = resolveAttemptsUsed(data ?? {});
+          const locked = Boolean(data?.locked) && attempts >= maxAttempts;
+          setError(locked
+            ? data?.message || `You've used all ${maxAttempts} face verification attempts. Choose Retry Face Verification or Verify Using Email OTP.`
+            : extractErrorMessage(err, 'Face verification failed. Please try again.'));
         } else {
           // Network/UI errors do not count as face attempts.
           setError(extractErrorMessage(err, 'Face verification failed. Please try again.'));
@@ -859,86 +857,9 @@ export default function SignUpPage() {
       ? 'EMAIL_OTP'
       : null;
 
-  /**
-   * Step 5 — scan the PRC nursing licence. The backend runs Tesseract, rejects
-   * anything that is not a PRC nurse card, and returns the fields to pre-fill.
-   */
-  const scanPrcLicense = async (base64: string | null) => {
-    if (!base64) {
-      setPrcStatus('failed');
-      setPrcVerified(false);
-      setPrcData(null);
-      setError('Could not read the licence photo. Please retake it.');
-      return;
-    }
 
-    setPrcStatus('processing');
-    setError('');
 
-    try {
-      const res = await verifyPrcLicenseRequest(
-        `data:image/jpeg;base64,${base64}`,
-        registrationSessionId
-      );
 
-      if (!res.valid) {
-        setPrcStatus('failed');
-        setPrcVerified(false);
-        setPrcData(null);
-        setError(res.message || 'Please upload a valid PRC nursing license.');
-        return;
-      }
-
-      // Pre-fill from the card, but never blank out something the nurse typed.
-      if (res.registrationNumber) setLicenseNumber(res.registrationNumber);
-      setPrcData({ profession: res.profession, expiration: res.validUntil });
-      setPrcStatus('success');
-      setPrcVerified(true);
-    } catch (err) {
-      setPrcStatus('failed');
-      setPrcVerified(false);
-      setPrcData(null);
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : 'Licence verification is unavailable right now. Please try again.'
-      );
-    }
-  };
-
-  const handlePrcUpload = async () => {
-    setError('');
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      setError('Camera roll access is required to upload your PRC licence.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.9,
-      allowsEditing: true,
-      base64: true,
-    });
-    if (!result.canceled) void scanPrcLicense(result.assets[0].base64 ?? null);
-  };
-
-  const handlePrcScan = async () => {
-    setError('');
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      setError('Camera access is required to scan the PRC licence.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      quality: 0.9,
-      allowsEditing: true,
-      base64: true,
-    });
-    if (!result.canceled) void scanPrcLicense(result.assets[0].base64 ?? null);
-  };
-
-  // Verification is driven by scanning the card, not by typing a number —
-  // a typed number proves nothing, so there is no auto-verify on input.
 
   const validateCredentials = () => {
     const errors: Record<string, string> = {};
@@ -955,7 +876,7 @@ export default function SignUpPage() {
   const handleCreateAccount = async () => {
     setError('');
     if (!validateCredentials()) return;
-    if (!roleVerified || !prcVerified || !identityVerified || !hospitalIdCompleted || !roleSelected) {
+    if (!identityVerified || !hospitalIdCompleted || !roleSelected) {
       setError('Please complete all verification steps before creating your account.');
       return;
     }
@@ -973,7 +894,8 @@ export default function SignUpPage() {
         email,
         password,
         department: ocrData.department,
-        licenseNumber: licenseNumber.trim(),
+        // Read from the Hospital ID in Step 1; there is no separate PRC step.
+        licenseNumber: (ocrData.registrationNumber || '').trim(),
         registrationSessionId,
       });
       // Keep the user on the pending-approval screen; do not leave them logged in.
@@ -984,12 +906,11 @@ export default function SignUpPage() {
     }
   };
 
-  const roleMatch = getRoleMatch(ocrData.position, role);
   const idUploaded = !!hospitalIdUri && hospitalIdCompleted;
   const ocrDone = ocrStatus === 'success';
   const credsDone = email.trim() !== '' && password.length >= 8 && password === confirmPassword;
   const canSubmit =
-    roleVerified && prcVerified && identityVerified && ocrDone && idUploaded && roleSelected && credsDone;
+    identityVerified && ocrDone && idUploaded && roleSelected && credsDone;
 
   const stepIcon = () => {
     switch (currentStep) {
@@ -1002,9 +923,7 @@ export default function SignUpPage() {
       case 4:
         return <Users size={20} color={Colors.white} />;
       case 5:
-        return <ShieldCheck size={20} color={Colors.white} />;
-      case 6:
-        return <CheckCircle2 size={20} color={Colors.white} />;
+        return <Lock size={20} color={Colors.white} />;
       default:
         return <Lock size={20} color={Colors.white} />;
     }
@@ -1032,7 +951,7 @@ export default function SignUpPage() {
                 <View style={styles.headerIcon}>{stepIcon()}</View>
                 <View style={styles.headerText}>
                   <Text style={styles.headerTitle}>
-                    Step {currentStep} of 7 — {STEP_TITLES[currentStep - 1]}
+                    Step {currentStep} of 5 — {STEP_TITLES[currentStep - 1]}
                   </Text>
                   <Text style={styles.headerDesc}>{STEP_DESCRIPTIONS[currentStep - 1]}</Text>
                 </View>
@@ -1124,16 +1043,61 @@ export default function SignUpPage() {
                       </Text>
                     </View>
 
+                    {ocrReview.needsReview.length > 0 && (
+                      <Alert variant="warning">
+                        <AlertDescription>
+                          {ocrReview.needsReview.length} field
+                          {ocrReview.needsReview.length === 1 ? '' : 's'} could not be read
+                          confidently. Check the highlighted field
+                          {ocrReview.needsReview.length === 1 ? '' : 's'} below and correct
+                          {ocrReview.needsReview.length === 1 ? ' it' : ' them'}, or go back and
+                          rescan your ID.
+                        </AlertDescription>
+                      </Alert>
+                    )}
+
+                    {ocrReview.duplicateScan && (
+                      <Alert variant="warning">
+                        <AlertDescription>
+                          This licence number was already scanned recently. Continue only if this
+                          is your own ID.
+                        </AlertDescription>
+                      </Alert>
+                    )}
+
                     {[
-                      { label: 'Last name', value: ocrData.lastName },
-                      { label: 'First name', value: ocrData.firstName },
-                      { label: 'Middle Name', value: ocrData.middleName },
-                      { label: 'Registration no', value: ocrData.registrationNumber },
-                      { label: 'Registration date', value: ocrData.registrationDate },
-                      { label: 'Valid until', value: ocrData.validUntil },
-                    ].map((field) => (
-                      <Input key={field.label} label={field.label} value={field.value} editable={false} inputWrapperStyle={styles.readOnlyInput} />
-                    ))}
+                      { key: 'lastName', label: 'Last name', value: ocrData.lastName },
+                      { key: 'firstName', label: 'First name', value: ocrData.firstName },
+                      { key: 'middleName', label: 'Middle Name', value: ocrData.middleName },
+                      { key: 'registrationNumber', label: 'Registration no', value: ocrData.registrationNumber },
+                      { key: 'registrationDate', label: 'Registration date', value: ocrData.registrationDate },
+                      { key: 'validUntil', label: 'Valid until', value: ocrData.validUntil },
+                    ].map((field) => {
+                      // Only a flagged field is editable. A value OCR read
+                      // cleanly stays locked, so the scan keeps its integrity
+                      // while a bad read is still fixable without a rescan.
+                      const flagged = ocrReview.needsReview.includes(field.key);
+                      return (
+                        <Input
+                          key={field.key}
+                          label={flagged ? `${field.label} — please check` : field.label}
+                          value={field.value}
+                          editable={flagged}
+                          onChangeText={
+                            flagged
+                              ? (v) => setOcrData({ ...ocrData, [field.key]: v })
+                              : undefined
+                          }
+                          placeholder={flagged ? 'Could not be read — type it from your ID' : undefined}
+                          inputWrapperStyle={flagged ? undefined : styles.readOnlyInput}
+                          error={
+                            flagged && !field.value
+                              ? 'Required — could not be read from the ID'
+                              : undefined
+                          }
+                        />
+                      );
+                    })}
                     <Input
                       label="Registered Email Address"
                       value={ocrData.email}
@@ -1150,6 +1114,17 @@ export default function SignUpPage() {
                     <NavButtons
                       onBack={() => setCurrentStep(1)}
                       onContinue={() => {
+                        // Nothing proceeds until every required field actually
+                        // has a value — a blank one must never be saved as read.
+                        const stillMissing = ocrReview.missingRequired.filter(
+                          (key) => !String((ocrData as Record<string, string>)[key] ?? '').trim()
+                        );
+                        if (stillMissing.length > 0) {
+                          setError(
+                            `Please fill in the highlighted field${stillMissing.length === 1 ? '' : 's'} before continuing.`
+                          );
+                          return;
+                        }
                         if (!ocrData.email || !ocrData.email.includes('@')) {
                           setError('Please enter the registered email address before continuing.');
                           return;
@@ -1520,8 +1495,7 @@ export default function SignUpPage() {
                           onPress={() => {
                             setRole(option.value);
                             setRoleSelected(true);
-                            setRoleVerified(false);
-                            setFieldErrors((prev) => ({ ...prev, role: '' }));
+                                                    setFieldErrors((prev) => ({ ...prev, role: '' }));
                           }}
                         >
                           <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
@@ -1547,145 +1521,6 @@ export default function SignUpPage() {
                 )}
 
                 {currentStep === 5 && (
-                  <View style={styles.stepBody}>
-                    <Input
-                      label="PRC License Number *"
-                      placeholder="1234567"
-                      value={licenseNumber}
-                      onChangeText={(value) => {
-                        setLicenseNumber(value);
-                        setPrcStatus('idle');
-                        setPrcVerified(false);
-                        setPrcData(null);
-                      }}
-                      error={fieldErrors.licenseNumber}
-                      rightIcon={
-                        prcStatus === 'processing' ? (
-                          <ActivityIndicator size="small" color={Colors.blue600} />
-                        ) : prcStatus === 'success' ? (
-                          <View style={styles.verifiedBadge}>
-                            <CheckCircle2 size={12} color={Colors.green700} />
-                            <Text style={styles.verifiedText}>Verified</Text>
-                          </View>
-                        ) : null
-                      }
-                    />
-
-                    <Text style={styles.uploadHint}>
-                      Scan your PRC nursing license to verify it. The number above fills in
-                      automatically.
-                    </Text>
-
-                    <View style={styles.actionRow}>
-                      <Button variant="outline" size="lg" onPress={handlePrcScan} style={styles.scanBtn}>
-                        <Camera size={18} color={Colors.blue600} />
-                        <Text style={styles.scanBtnText}>Camera Scan</Text>
-                      </Button>
-                      <Button variant="outline" size="lg" onPress={handlePrcUpload} style={styles.uploadBtn}>
-                        <Upload size={18} color={Colors.gray600} />
-                        <Text style={styles.uploadBtnText}>Upload File</Text>
-                      </Button>
-                    </View>
-
-                    {prcStatus === 'processing' && (
-                      <View style={styles.actionRow}>
-                        <ActivityIndicator size="small" color={Colors.blue600} />
-                        <Text style={styles.uploadHint}>Reading your license…</Text>
-                      </View>
-                    )}
-
-                    {prcStatus === 'success' && prcData && (
-                      <View style={styles.prcBox}>
-                        <View style={styles.prcBoxHeader}>
-                          <CheckCircle2 size={16} color={Colors.green700} />
-                          <Text style={styles.prcBoxTitle}>Active PRC License</Text>
-                        </View>
-                        <View style={styles.prcGrid}>
-                          <View style={styles.prcItem}>
-                            <Text style={styles.prcLabel}>License Status</Text>
-                            <Text style={styles.prcValue}>Active</Text>
-                          </View>
-                          <View style={styles.prcItem}>
-                            <Text style={styles.prcLabel}>Profession</Text>
-                            <Text style={styles.prcValue}>{prcData.profession}</Text>
-                          </View>
-                          <View style={styles.prcItem}>
-                            <Text style={styles.prcLabel}>Expiration Date</Text>
-                            <Text style={styles.prcValue}>{prcData.expiration}</Text>
-                          </View>
-                        </View>
-                      </View>
-                    )}
-
-                    <NavButtons onBack={() => setCurrentStep(4)} onContinue={() => setCurrentStep(6)} continueDisabled={prcStatus !== 'success'} />
-                  </View>
-                )}
-
-                {currentStep === 6 && (
-                  <View style={styles.stepBody}>
-                    <View style={styles.compareRow}>
-                      <View style={styles.compareBox}>
-                        <Text style={styles.compareLabel}>Selected Role</Text>
-                        <Text style={styles.compareValue}>
-                          {role === 'supervisor' ? '👨‍💼 Supervisor' : role ? '👩‍⚕️ Nurse' : '—'}
-                        </Text>
-                      </View>
-                      <View style={styles.compareBox}>
-                        <Text style={styles.compareLabel}>OCR Detected Position</Text>
-                        <Text style={styles.compareValue}>{ocrData.position || '—'}</Text>
-                      </View>
-                    </View>
-
-                    {roleMatch ? (
-                      <View style={styles.roleVerifiedBox}>
-                        <View style={styles.roleVerifiedHeader}>
-                          <View style={styles.roleVerifiedTitleRow}>
-                            <CheckCircle2 size={16} color={Colors.green700} />
-                            <Text style={styles.roleVerifiedTitle}>Role Verified</Text>
-                          </View>
-                          <View style={styles.roleMatchBadge}>
-                            <CheckCircle2 size={10} color={Colors.green700} />
-                            <Text style={styles.roleMatchBadgeText}>Role Match</Text>
-                          </View>
-                        </View>
-                        <View style={styles.roleVerifiedInner}>
-                          <Text style={styles.roleVerifiedItem}>✓ Selected: {role === 'supervisor' ? 'Supervisor' : 'Nurse'}</Text>
-                          <Text style={styles.roleVerifiedItem}>✓ OCR Detected: {ocrData.position}</Text>
-                        </View>
-                        <Text style={styles.roleAuthorized}>
-                          ✓ You are authorized to register as a {role === 'supervisor' ? 'Supervisor' : 'Nurse'}.
-                        </Text>
-                      </View>
-                    ) : (
-                      <View style={styles.roleMismatchBox}>
-                        <View style={styles.roleVerifiedHeader}>
-                          <Text style={styles.roleMismatchTitle}>Role Mismatch</Text>
-                          <View style={styles.mismatchBadge}>
-                            <Text style={styles.mismatchBadgeText}>Mismatch Detected</Text>
-                          </View>
-                        </View>
-                        <Text style={styles.roleMismatchDesc}>The selected role does not match your verified employment information.</Text>
-                        <Button variant="outline" onPress={() => setCurrentStep(4)} style={styles.changeRoleBtn}>
-                          <ChevronLeft size={16} color={Colors.red700} />
-                          <Text style={styles.changeRoleText}>Change Role Selection</Text>
-                        </Button>
-                      </View>
-                    )}
-
-                    <NavButtons
-                      onBack={() => setCurrentStep(5)}
-                      onContinue={() => {
-                        if (roleMatch) {
-                          setRoleVerified(true);
-                          setCurrentStep(7);
-                        }
-                      }}
-                      continueDisabled={!roleMatch}
-                    />
-                  </View>
-                )}
-
-                {currentStep === 7 && (
                   <View style={styles.stepBody}>
                     <View style={styles.infoBlue}>
                       <ShieldCheck size={16} color={Colors.blue600} />
@@ -1744,8 +1579,7 @@ export default function SignUpPage() {
                           done: identityVerified,
                         },
                         { label: 'Role Selected', done: roleSelected },
-                        { label: 'PRC License Verified', done: prcVerified },
-                        { label: 'Role Verified & Matched', done: roleVerified },
+                        { label: 'License Number Captured', done: Boolean(ocrData.registrationNumber) },
                         { label: 'Account Information Completed', done: credsDone },
                       ].map((item) => (
                         <View key={item.label} style={styles.checkItem}>
@@ -1758,7 +1592,7 @@ export default function SignUpPage() {
                     </View>
 
                     <View style={navStyles.row}>
-                      <Button variant="outline" onPress={() => setCurrentStep(6)} size="lg" style={navStyles.backBtn}>
+                      <Button variant="outline" onPress={() => setCurrentStep(4)} size="lg" style={navStyles.backBtn}>
                         <ChevronLeft size={18} color={Colors.gray700} />
                         <Text style={navStyles.backText}>Back</Text>
                       </Button>

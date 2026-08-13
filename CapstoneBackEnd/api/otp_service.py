@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import timedelta
 
@@ -13,6 +14,8 @@ from django.utils import timezone
 
 from .email_validation import validate_registration_email
 from .models import RegistrationOTP, RegistrationSession
+
+logger = logging.getLogger(__name__)
 
 OTP_LENGTH = 6
 OTP_TTL = timedelta(minutes=5)
@@ -43,14 +46,34 @@ def _generate_code() -> str:
 def _send_otp_email(email: str, code: str) -> None:
     backend = (getattr(settings, 'EMAIL_BACKEND', '') or '').lower()
     host = (getattr(settings, 'EMAIL_HOST', '') or '').strip()
+
     # Reject console-only delivery so registration OTP always goes through a
     # real SMTP provider configured via EMAIL_* environment variables.
-    if 'console' in backend or not host:
-        raise OtpDeliveryError(
-            'Email delivery is not configured on the server. '
-            'Set EMAIL_HOST, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, and DEFAULT_FROM_EMAIL '
-            'in the backend .env, then restart the API.'
+    #
+    # ALLOW_CONSOLE_OTP is the deliberate exception for local development,
+    # where there is often no SMTP account to hand and the alternative is
+    # being unable to exercise the OTP fallback at all. It must be switched
+    # on explicitly and prints the code to the server log, so it is only ever
+    # safe on a machine where that log is already trusted. Never enable it
+    # anywhere real: a code in a log is a code anyone with log access can use.
+    if not getattr(settings, 'ALLOW_CONSOLE_OTP', False):
+        if 'console' in backend or not host:
+            raise OtpDeliveryError(
+                'Email delivery is not configured on the server. '
+                'Set EMAIL_HOST, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, and DEFAULT_FROM_EMAIL '
+                'in the backend .env, then restart the API.'
+            )
+    elif 'console' in backend or not host:
+        logger.warning(
+            'ALLOW_CONSOLE_OTP is on — printing the code instead of emailing it. '
+            'Development only.\n'
+            '    ==============================\n'
+            '      OTP for %s: %s\n'
+            '    ==============================',
+            email,
+            code,
         )
+        return
 
     subject = 'Your Verification Code'
     message = (

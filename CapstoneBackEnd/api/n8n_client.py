@@ -206,6 +206,26 @@ def call_workflow(workflow: str, payload: dict, *, timeout: float | None = None)
     return parsed
 
 
+def as_data_uri(value: str, mime: str = 'image/jpeg') -> str:
+    """
+    Return a ``data:<mime>;base64,...`` URI, adding the prefix if absent.
+
+    The counterpart to :func:`strip_data_uri`. The two n8n actions want
+    different shapes and neither tolerates the other: the OCR service behind
+    ``extract_id`` rejects bare base64 with *"E501: Not an image or PDF —
+    Invalid base64 Data URI"*, while Rekognition behind ``verify_face``
+    rejects a prefixed string because the prefix is not valid image bytes.
+    """
+    if not isinstance(value, str):
+        return ''
+    payload = value.strip()
+    if not payload:
+        return ''
+    if payload.startswith('data:'):
+        return payload
+    return f'data:{mime};base64,{payload}'
+
+
 def strip_data_uri(value: str) -> str:
     """
     Return bare base64, dropping any ``data:image/jpeg;base64,`` prefix.

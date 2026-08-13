@@ -183,22 +183,22 @@ class VerifyIdPortraitGateTests(TestCase):
 
     @patch('api.views.call_workflow')
     @patch('api.views.check_id_has_portrait')
-    def test_id_with_photo_passes_on_the_portrait_check_alone(self, mock_portrait, mock_call):
+    def test_portrait_alone_is_not_enough_to_verify(self, mock_portrait, mock_call):
         """
-        While the n8n OCR step is disabled ("temporary not use - rai" in
-        VerifyIdView), a present portrait is the whole gate: the ID is
-        accepted and the pre-fill fields come back blank.
+        A portrait gets the card past the first gate but does not verify it.
+        This test image carries no readable text, so the required fields come
+        back empty and the scan must report needs-review rather than success —
+        the property that stops a blank card being accepted.
         """
         mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
+        mock_call.return_value = {'success': True, 'data': {}}
 
         res = self.client.post('/api/auth/verify-id/', {'idImage': _b64(_card())}, format='json')
 
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(res.data['verified'])
         self.assertTrue(res.data['hasPhoto'])
-        self.assertEqual(res.data['fullName'], '')
-        # OCR is switched off, so no workflow call is made.
-        mock_call.assert_not_called()
+        self.assertFalse(res.data['verified'])
+        self.assertTrue(res.data['missingRequired'])
 
     @patch('api.views.call_workflow')
     def test_undecodable_upload_is_400(self, mock_call):
