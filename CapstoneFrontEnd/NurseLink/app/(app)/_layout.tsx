@@ -644,7 +644,7 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
   sidebarScrim: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.25)',
     zIndex: 30,
   },
