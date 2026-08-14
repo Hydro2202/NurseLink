@@ -183,7 +183,6 @@ class VerifyIdPortraitGateTests(TestCase):
 
     @patch('api.views.call_workflow')
     @patch('api.views.check_id_has_portrait')
-<<<<<<< HEAD
     def test_id_with_photo_proceeds_to_the_ocr_workflow(self, mock_portrait, mock_call):
         """A present portrait passes the gate, and the OCR call to n8n follows."""
         mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
@@ -197,23 +196,11 @@ class VerifyIdPortraitGateTests(TestCase):
             'registrationDate': '01/15/2020',
             'validUntil': '01/15/2025',
         }
-=======
-    def test_portrait_alone_is_not_enough_to_verify(self, mock_portrait, mock_call):
-        """
-        A portrait gets the card past the first gate but does not verify it.
-        This test image carries no readable text, so the required fields come
-        back empty and the scan must report needs-review rather than success —
-        the property that stops a blank card being accepted.
-        """
-        mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
-        mock_call.return_value = {'success': True, 'data': {}}
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
         res = self.client.post('/api/auth/verify-id/', {'idImage': _b64(_card())}, format='json')
 
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.data['hasPhoto'])
-<<<<<<< HEAD
         self.assertTrue(res.data['verified'])
         self.assertEqual(res.data['fullName'], 'Sarah Johnson')
         mock_call.assert_called_once()
@@ -234,10 +221,6 @@ class VerifyIdPortraitGateTests(TestCase):
         self.assertTrue(res.data['hasPhoto'])
         self.assertFalse(res.data['verified'])
         self.assertEqual(res.data['fullName'], '')
-=======
-        self.assertFalse(res.data['verified'])
-        self.assertTrue(res.data['missingRequired'])
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
     @patch('api.views.call_workflow')
     def test_undecodable_upload_is_400(self, mock_call):

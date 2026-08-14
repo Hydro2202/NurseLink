@@ -53,6 +53,7 @@ import {
   resetFaceVerificationRequest,
   sendRegistrationOtpRequest,
   verifyIdRequest,
+  verifyPrcLicenseRequest,
   verifyRegistrationOtpRequest,
 } from '../services/api';
 
@@ -164,14 +165,10 @@ const otpStyles = StyleSheet.create({
   boxDisabled: { backgroundColor: Colors.gray100, color: Colors.gray500 },
 });
 
-type WizardStep = 1 | 2 | 3 | 4 | 5;
+type WizardStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 type ProcessStatus = 'idle' | 'processing' | 'success' | 'failed';
 
-<<<<<<< HEAD
 const STEP_LABELS = ['PRC ID', 'ID Review', 'Face Check', 'Role', 'PRC License', 'Role Check', 'Credentials'];
-=======
-const STEP_LABELS = ['Hospital ID', 'ID Review', 'Face Check', 'Role', 'Credentials'];
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
 const STEP_TITLES = [
   'PRC Identity Verification',
@@ -185,13 +182,9 @@ const STEP_DESCRIPTIONS = [
   'Scan your PRC ID to automatically extract your information.',
   'Review your extracted information. These fields are read-only.',
   'Capture a live selfie to confirm your identity.',
-<<<<<<< HEAD
   'Select the role you are registering for. It must match your verified employment information.',
   'Upload or scan your PRC Professional License to verify it.',
   'Confirming your selected role matches your PRC ID and PRC License records.',
-=======
-  'Select the role you are registering for.',
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
   'Set your login credentials to complete registration.',
 ];
 
@@ -229,15 +222,8 @@ const defaultOcrData = {
   position: '',
   hospitalName: '',
   email: '',
-  lastName: '',
-  firstName: '',
-  middleName: '',
-  registrationNumber: '',
-  registrationDate: '',
-  validUntil: '',
 };
 
-<<<<<<< HEAD
 // The backend sends registrationDate/validUntil as ISO (YYYY-MM-DD) — that's
 // the right format to store and compare, but "May 21, 2005" reads better on
 // Step 2's review screen. Display-only: ocrData itself stays ISO.
@@ -255,8 +241,6 @@ function getRoleMatch(position: string, selectedRole: UserRole | '') {
   if (selectedRole === 'staff_nurse') return matchesNurse;
   return matchesSupervisor;
 }
-=======
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
 function StepStepper({ current, completedThrough }: { current: WizardStep; completedThrough: WizardStep }) {
   return (
@@ -368,6 +352,7 @@ export default function SignUpPage() {
   const [idReviewCompleted, setIdReviewCompleted] = useState(false);
   const [faceVerificationCompleted, setFaceVerificationCompleted] = useState(false);
   const [roleSelected, setRoleSelected] = useState(false);
+  const [roleVerified, setRoleVerified] = useState(false);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -381,6 +366,10 @@ export default function SignUpPage() {
   // against the PRC card photo without a second camera capture.
   const [selfieBase64, setSelfieBase64] = useState<string | null>(null);
   const [prcFaceMatched, setPrcFaceMatched] = useState(false);
+  const [licenseNumber, setLicenseNumber] = useState('');
+  const [prcStatus, setPrcStatus] = useState<ProcessStatus>('idle');
+  const [prcVerified, setPrcVerified] = useState(false);
+  const [prcData, setPrcData] = useState<{ profession: string; expiration: string } | null>(null);
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
   const [liveCameraActive, setLiveCameraActive] = useState(false);
   const [ocrData, setOcrData] = useState(defaultOcrData);
@@ -516,6 +505,8 @@ export default function SignUpPage() {
   }, [currentStep, faceResuming, faceLocked, showOtpPanel, faceStatus, selfieUri]);
 
   const completedThrough: WizardStep = (() => {
+    if (roleVerified) return 7;
+    if (prcVerified) return 6;
     if (roleSelected) return 5;
     if (faceVerificationCompleted || otpStatus === 'verified') return 4;
     if (idReviewCompleted) return 3;
@@ -550,7 +541,6 @@ export default function SignUpPage() {
 
       setRegistrationSessionId(res.registrationSessionId);
 
-<<<<<<< HEAD
       // Every non-'verified' status is a hard block now — the backend's
       // strict field validation (last/first name, registration no., both
       // dates) is what decides this, not just "did something come back".
@@ -559,22 +549,6 @@ export default function SignUpPage() {
       // name field) — accuracy matters more than filling every box, so this
       // is never silently accepted for review.
       if (!res.verified) {
-=======
-      // A rejected document (no portrait, unreadable) has nothing to review.
-      // A partial read does — surface it instead of forcing a rescan, and let
-      // the nurse correct the flagged fields on Step 2.
-      const flagged = res.needsReview ?? [];
-      const missing = res.missingRequired ?? [];
-      setOcrReview({
-        needsReview: flagged,
-        missingRequired: missing,
-        overallConfidence: res.overallConfidence ?? 0,
-        n8nStatus: res.n8nStatus ?? '',
-        duplicateScan: Boolean(res.duplicateScan),
-      });
-
-      if (!res.verified && flagged.length === 0) {
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
         setOcrStatus('failed');
         const detail = res.errors ? Object.values(res.errors)[0] : undefined;
         setError(detail || res.message || 'Unable to extract information from the PRC ID. Please capture a clearer image.');
@@ -594,12 +568,6 @@ export default function SignUpPage() {
         department: res.department,
         position: res.position,
         email: res.email,
-        lastName: res.lastName,
-        firstName: res.firstName,
-        middleName: res.middleName,
-        registrationNumber: res.registrationNumber,
-        registrationDate: res.registrationDate,
-        validUntil: res.validUntil,
       });
       setOcrStatus('success');
       setHospitalIdCompleted(true);
@@ -930,9 +898,15 @@ export default function SignUpPage() {
     : otpStatus === 'verified'
       ? 'EMAIL_OTP'
       : null;
+  const roleMatch = getRoleMatch(ocrData.position, role);
 
+  const scanPrcLicense = async (base64: string | null) => {
+    if (!base64) {
+      setPrcStatus('failed');
+      setError('Could not read the PRC license photo. Please retake it.');
+      return;
+    }
 
-<<<<<<< HEAD
     setPrcStatus('processing');
     setPrcFaceMatched(false);
     setError('');
@@ -1013,10 +987,6 @@ export default function SignUpPage() {
 
   // Verification is driven by scanning the card, not by typing a number —
   // a typed number proves nothing, so there is no auto-verify on input.
-=======
-
-
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
   const validateCredentials = () => {
     const errors: Record<string, string> = {};
@@ -1229,7 +1199,6 @@ export default function SignUpPage() {
                     )}
 
                     {[
-<<<<<<< HEAD
                       { label: 'Last Name', value: ocrData.lastName },
                       { label: 'First Name', value: ocrData.firstName },
                       { label: 'Middle Name', value: ocrData.middleName },
@@ -1239,40 +1208,6 @@ export default function SignUpPage() {
                     ].map((field) => (
                       <Input key={field.label} label={field.label} value={field.value} editable={false} inputWrapperStyle={styles.readOnlyInput} />
                     ))}
-=======
-                      { key: 'lastName', label: 'Last name', value: ocrData.lastName },
-                      { key: 'firstName', label: 'First name', value: ocrData.firstName },
-                      { key: 'middleName', label: 'Middle Name', value: ocrData.middleName },
-                      { key: 'registrationNumber', label: 'Registration no', value: ocrData.registrationNumber },
-                      { key: 'registrationDate', label: 'Registration date', value: ocrData.registrationDate },
-                      { key: 'validUntil', label: 'Valid until', value: ocrData.validUntil },
-                    ].map((field) => {
-                      // Only a flagged field is editable. A value OCR read
-                      // cleanly stays locked, so the scan keeps its integrity
-                      // while a bad read is still fixable without a rescan.
-                      const flagged = ocrReview.needsReview.includes(field.key);
-                      return (
-                        <Input
-                          key={field.key}
-                          label={flagged ? `${field.label} — please check` : field.label}
-                          value={field.value}
-                          editable={flagged}
-                          onChangeText={
-                            flagged
-                              ? (v) => setOcrData({ ...ocrData, [field.key]: v })
-                              : undefined
-                          }
-                          placeholder={flagged ? 'Could not be read — type it from your ID' : undefined}
-                          inputWrapperStyle={flagged ? undefined : styles.readOnlyInput}
-                          error={
-                            flagged && !field.value
-                              ? 'Required — could not be read from the ID'
-                              : undefined
-                          }
-                        />
-                      );
-                    })}
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
                     <Input
                       label="Registered Email Address"
                       value={ocrData.email}
@@ -1691,7 +1626,6 @@ export default function SignUpPage() {
 
                 {currentStep === 5 && (
                   <View style={styles.stepBody}>
-<<<<<<< HEAD
                     <Input
                       label="PRC License Number *"
                       placeholder="1234567"
@@ -1841,8 +1775,6 @@ export default function SignUpPage() {
 
                 {currentStep === 7 && (
                   <View style={styles.stepBody}>
-=======
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
                     <View style={styles.infoBlue}>
                       <ShieldCheck size={16} color={Colors.blue600} />
                       <Text style={styles.infoBlueText}>

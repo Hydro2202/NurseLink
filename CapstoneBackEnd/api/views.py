@@ -1,12 +1,8 @@
 import base64
 import json
 import logging
-<<<<<<< HEAD
-from datetime import date, timedelta
-=======
 import re
-from datetime import timedelta
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
+from datetime import date, timedelta
 
 from django.conf import settings
 from django.contrib.auth import authenticate
@@ -48,18 +44,8 @@ from .n8n_client import (
 # distinct classes, so the portrait check's version is aliased rather than
 # assumed to be the same one prc_ocr raises.
 from .id_photo_check import InvalidImageError as PortraitImageError, check_id_has_portrait
-<<<<<<< HEAD
 from .id_field_validation import validate_prc_id_fields
 from .prc_ocr import InvalidImageError, PrcOcrError, scan_prc_license
-=======
-from .prc_ocr import (
-    InvalidImageError,
-    PrcOcrError,
-    scan_id_fields,
-    scan_labelled_id,
-    scan_prc_license,
-)
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 from .models import (
     ChartingNote,
     IdScanAttempt,
@@ -872,18 +858,12 @@ class VerifyIdView(APIView):
     throttle_scope = 'face_verification'
 
     # Keys the workflow may use for each field we care about, best first.
-<<<<<<< HEAD
     # lastName/firstName/middleName/registrationNumber/validUntil are what
     # Step 2 (ID Review) displays and auto-fills. employeeId/department/
     # position/hospitalName/email are kept for backward compatibility — email
     # in particular is still required internally (the Email OTP fallback
     # looks up a session by it) and position still feeds the Step 6 role
     # cross-check, so both stay wired even though Step 2 no longer shows them.
-=======
-    # -rai: the real extract_id response only fills name/licenseNumber/
-    # validityDate today — employeeId/department/position/hospitalName/email
-    # have no source yet and simply come back blank via _pick's fallback.
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
     _FIELD_ALIASES = {
         'fullName': ('fullName', 'full_name', 'name'),
         'lastName': ('lastName', 'last_name', 'surname'),
@@ -900,21 +880,13 @@ class VerifyIdView(APIView):
         'validUntil': (
             'validUntil', 'valid_until', 'validThru', 'valid_thru',
             'expirationDate', 'expiration_date', 'expiryDate', 'expiry',
+            'validityDate', 'validity_date',
         ),
         'employeeId': ('employeeId', 'employee_id', 'idNumber', 'id_number'),
         'department': ('department', 'dept', 'unit'),
         'position': ('position', 'role', 'title', 'designation'),
         'hospitalName': ('hospitalName', 'hospital_name', 'hospital', 'facility'),
         'email': ('email', 'emailAddress', 'email_address'),
-        'lastName': ('lastName', 'last_name', 'surname'),
-        'firstName': ('firstName', 'first_name', 'givenName', 'given_name'),
-        'middleName': ('middleName', 'middle_name'),
-        'registrationNumber': (
-            'registrationNumber', 'registration_number', 'registrationNo',
-            'licenseNumber', 'license_number',
-        ),
-        'registrationDate': ('registrationDate', 'registration_date'),
-        'validUntil': ('validUntil', 'valid_until', 'validityDate', 'validity_date'),
     }
 
     # Multipart upload validation (the preferred path — see post()). The
@@ -1044,7 +1016,11 @@ class VerifyIdView(APIView):
         if session is None:
             session = RegistrationSession.objects.create()
 
-<<<<<<< HEAD
+        # Opened before anything can fail, so a rejection is logged too. A log
+        # that only captures scans which got far enough to reach OCR would miss
+        # exactly the failures worth investigating.
+        early_attempt = _new_id_scan_attempt(session, data.get('documentType'))
+
         # The local portrait detector (check_id_has_portrait) only knows how
         # to read a base64/data-URI string — build one from the uploaded
         # file's bytes so that check stays unchanged either way, then rewind
@@ -1056,12 +1032,6 @@ class VerifyIdView(APIView):
             id_image_data_uri = f'data:{uploaded_file.content_type};base64,' + base64.b64encode(raw_bytes).decode()
         else:
             id_image_data_uri = legacy_base64
-=======
-        # Opened before anything can fail, so a rejection is logged too. A log
-        # that only captures scans which got far enough to reach OCR would miss
-        # exactly the failures worth investigating.
-        early_attempt = _new_id_scan_attempt(session, data.get('documentType'))
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
         # Portrait check first. An ID whose photo has been erased or cropped
         # out is not a usable identity document, and the later face match
@@ -1120,7 +1090,6 @@ class VerifyIdView(APIView):
                 }
             )
 
-<<<<<<< HEAD
         # 'verify_id' and 'face_verify' share one n8n webhook (identity-verify)
         # — 'action' must match the Route Action node's expected value
         # exactly, or neither branch fires.
@@ -1155,104 +1124,11 @@ class VerifyIdView(APIView):
                 },
                 status=exc.http_status,
             )
-=======
-        # Prefer local OCR when the card has explicit printed field labels.
-        # It keeps each value tied to its label, unlike generic OCR output
-        # where a date may be returned as the first item in a text sequence.
-        # scan_id_fields also reports per-field confidence, which is what the
-        # review screen uses to say "check this one".
-        ocr_report = {}
-        ocr_error = ''
-        try:
-            ocr_report = scan_id_fields(data['idImage'])
-        except (InvalidImageError, PrcOcrError) as exc:
-            ocr_error = str(exc)
-            logger.info('Local labelled-ID OCR unavailable: %s', exc)
-
-        labelled_fields = {
-            key: ocr_report.get(key, '')
-            for key in (
-                'lastName', 'firstName', 'middleName', 'fullName',
-                'registrationNumber', 'registrationDate', 'validUntil',
-            )
-        }
-        has_labelled_identity = bool(
-            labelled_fields.get('lastName') and labelled_fields.get('firstName')
-        )
-
-        # Reuse the row opened before the portrait check rather than opening a
-        # second one — one scan, one log entry.
-        attempt = early_attempt
-        duplicate = _find_duplicate_scan(session, labelled_fields.get('registrationNumber'))
-        if ocr_error:
-            attempt.failure_reason = 'OCR_UNAVAILABLE'
-            attempt.message = ocr_error
-
-        # -rai: identity-verify is a single combined webhook — `action` picks
-        # the extract_id branch. Restored now that the path/action mismatch
-        # (this used to call a nonexistent separate "verify-id" URL) is fixed.
-        #
-        # The whole OCR result travels with the image so the workflow can
-        # validate or enrich it rather than re-deriving everything, and so a
-        # bad read is debuggable from the n8n execution alone.
-        payload = {
-            'action': 'extract_id',
-            # extract_id's OCR service requires a data URI and rejects bare
-            # base64 with "E501: Not an image or PDF — Invalid base64 Data URI".
-            # verify_face wants the opposite; see as_data_uri/strip_data_uri.
-            'idImage': as_data_uri(data['idImage']),
-            'documentType': data.get('documentType') or 'hospital_id',
-            'expectedRole': data.get('expectedRole') or '',
-            'registrationSessionId': str(session.session_id),
-            'attemptNumber': attempt.attempt_number,
-            'isDuplicateScan': duplicate is not None,
-            'ocr': {
-                'lastName': labelled_fields['lastName'],
-                'firstName': labelled_fields['firstName'],
-                'middleName': labelled_fields['middleName'],
-                'registrationNumber': labelled_fields['registrationNumber'],
-                'registrationDate': labelled_fields['registrationDate'],
-                'validUntil': labelled_fields['validUntil'],
-                'confidence': ocr_report.get('confidence', {}),
-                'overallConfidence': ocr_report.get('overallConfidence', 0.0),
-                'needsReview': ocr_report.get('needsReview', []),
-                'missingRequired': ocr_report.get('missingRequired', []),
-                'rawText': ocr_report.get('rawText', ''),
-            },
-        }
-
-        result = {}
-        try:
-            result = call_workflow('verify_id', payload)
-            attempt.n8n_status = 'success'
-        except N8nError as exc:
-            # A workflow failure must not discard a good local read. The scan
-            # is still logged, the failure is reported, and the fields the
-            # nurse can confirm are still returned.
-            attempt.n8n_status = 'failed'
-            attempt.n8n_error = str(exc)[:500]
-            logger.warning('verify-id workflow failed: %s', exc)
-            if not has_labelled_identity:
-                _finish_id_scan_attempt(
-                    attempt, ocr_report, portrait,
-                    status_value='error', failure_reason='N8N_UNAVAILABLE',
-                    message=str(exc), duplicate=duplicate,
-                )
-                return Response(
-                    {
-                        **error_response_body(exc),
-                        'verified': False,
-                        'registrationSessionId': str(session.session_id),
-                    },
-                    status=exc.http_status,
-                )
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
         logger.info('OCR verification completed session=%s', session.session_id)
 
         if not isinstance(result, dict):
             result = {}
-<<<<<<< HEAD
         # Some workflows nest the extracted fields under a `data` key (e.g.
         # {"success": true, "data": {"last_name": ...}}) rather than
         # returning them at the top level — look in both places.
@@ -1321,76 +1197,12 @@ class VerifyIdView(APIView):
         logger.info(
             'verify-id: OCR validation result session=%s status=%s', session.session_id, verification_status
         )
-=======
-
-        # The webhook is always called above so n8n receives every scan for
-        # workflow visibility/auditing. For cards with clear labels, however,
-        # return the local label-anchored values rather than n8n's unordered
-        # text output.
-        if has_labelled_identity:
-            fields = {name: '' for name in self._FIELD_ALIASES}
-            fields.update(labelled_fields)
-            needs_review = ocr_report.get('needsReview', [])
-            complete = ocr_report.get('complete', False)
-            _finish_id_scan_attempt(
-                attempt, ocr_report, portrait,
-                status_value='success' if complete else 'needs_review',
-                duplicate=duplicate,
-            )
-            return Response(
-                {
-                    'success': True,
-                    # Never claim a clean read when a required field is blank.
-                    'verified': complete,
-                    **fields,
-                    'hasPhoto': True,
-                    'faceCount': portrait.face_count,
-                    'confidence': ocr_report.get('confidence', {}),
-                    'overallConfidence': ocr_report.get('overallConfidence', 0.0),
-                    'needsReview': needs_review,
-                    'missingRequired': ocr_report.get('missingRequired', []),
-                    'duplicateScan': duplicate is not None,
-                    'n8nStatus': attempt.n8n_status,
-                    'n8nError': attempt.n8n_error,
-                    'attemptNumber': attempt.attempt_number,
-                    'message': (
-                        'ID details extracted from labelled card fields.'
-                        if complete
-                        else 'Some fields could not be read clearly. Please check the highlighted '
-                             'fields before continuing.'
-                    ),
-                    'registrationSessionId': str(session.session_id),
-                }
-            )
-
-        # -rai: a good read answers {success: true, data: {...}}; an
-        # unreadable document answers {success: false, reason, message} with
-        # no `data` at all. Unwrap `data` so alias lookup sees the real keys.
-        ocr_ok = bool(result.get('success'))
-        ocr_data = result['data'] if isinstance(result.get('data'), dict) else {}
-
-        fields = {
-            name: self._pick(ocr_data, aliases) for name, aliases in self._FIELD_ALIASES.items()
-        }
-
-        # -rai: the workflow doesn't split PRC's "LASTNAME, FIRSTNAME
-        # MIDDLENAME" format into separate fields yet — do it here so
-        # Last/First/Middle Name are populated regardless of whether n8n
-        # ever adds those keys itself.
-        self._clean_name_fields(fields)
-
-        # Do not mark a scan successful merely because OCR mistook a date or
-        # registration number for identity data. A credible name is required
-        # before the client is allowed to display read-only extracted fields.
-        verified = ocr_ok and bool(fields['fullName'] or fields['lastName'])
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
         # Carry the email onto the session so the OTP fallback can find it later.
         if fields['email'] and not session.email:
             session.email = fields['email'].lower()
             session.save(update_fields=['email', 'updated_at'])
 
-<<<<<<< HEAD
         # Only ever store what just passed strict validation — an
         # in-progress/failed scan leaves the session's id_* fields untouched
         # rather than overwritten with something worse.
@@ -1434,50 +1246,6 @@ class VerifyIdView(APIView):
             response_body['errors'] = validation_errors
 
         return Response(response_body)
-=======
-        # n8n's values feed the log too, so an attempt is recorded whichever
-        # engine produced the read.
-        merged_report = dict(ocr_report)
-        for key in ('lastName', 'firstName', 'middleName', 'registrationNumber',
-                    'registrationDate', 'validUntil'):
-            if fields.get(key):
-                merged_report[key] = fields[key]
-        missing = [k for k in PRC_REQUIRED_FIELDS if not merged_report.get(k)]
-        merged_report['missingRequired'] = missing
-
-        _finish_id_scan_attempt(
-            attempt, merged_report, portrait,
-            status_value='success' if (verified and not missing) else 'needs_review',
-            failure_reason='' if verified else 'UNREADABLE_NAME',
-            duplicate=duplicate,
-        )
-
-        return Response(
-            {
-                'success': True,
-                'verified': verified and not missing,
-                **fields,
-                'hasPhoto': True,
-                'faceCount': portrait.face_count,
-                'roleMatch': ocr_data.get('roleMatch'),
-                'confidence': ocr_report.get('confidence', {}),
-                'overallConfidence': ocr_report.get('overallConfidence', 0.0),
-                'needsReview': sorted(set(ocr_report.get('needsReview', [])) | set(missing)),
-                'missingRequired': missing,
-                'duplicateScan': duplicate is not None,
-                'n8nStatus': attempt.n8n_status,
-                'n8nError': attempt.n8n_error,
-                'attemptNumber': attempt.attempt_number,
-                'message': result.get('message')
-                or (
-                    '' if (verified and not missing) else
-                    'The ID photo was received, but its name fields could not be read reliably. '
-                    'Retake it flat, in bright light, with the full card visible.'
-                ),
-                'registrationSessionId': str(session.session_id),
-            }
-        )
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
 
 class VerifyPrcLicenseView(APIView):

@@ -213,20 +213,12 @@ N8N_WEBHOOKS = {
     # Autocharting — raw assessment input in, structured nursing note out.
     # The only signup-unrelated workflow; everything else below is signup.
     'structure_chart': os.environ.get('N8N_STRUCTURE_CHART_PATH', 'structure-chart'),
-<<<<<<< HEAD
     # Signup steps 1-3 (PRC ID extraction + Face ID) share one consolidated
     # workflow, 'identity-verify'. Each call sends an `action` field
     # ('extract_id' or 'verify_face' — must match the workflow's Route
     # Action node exactly) so it can branch — see VerifyIdView.post and
     # _run_face_match in views.py. Both default to the same path; they are
     # still separate env vars in case they ever diverge.
-=======
-    # Persona steps 1 & 2 and Face ID share ONE n8n workflow — a single
-    # "identity-verify" webhook routed internally by an `action` field
-    # ("extract_id" / "verify_face") in the request body, not by separate
-    # URL paths. Both keys resolve to the same endpoint; the call site is
-    # what sets `action`. -rai
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
     'verify_id': os.environ.get('N8N_VERIFY_ID_PATH', 'identity-verify'),
     'face_verify': os.environ.get('N8N_FACE_VERIFY_PATH', 'identity-verify'),
 }

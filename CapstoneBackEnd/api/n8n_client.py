@@ -211,7 +211,6 @@ def call_workflow(workflow: str, payload: dict, *, timeout: float | None = None)
     return parsed
 
 
-<<<<<<< HEAD
 def call_workflow_multipart(
     workflow: str, files: dict, data: dict | None = None, *, timeout: float | None = None
 ) -> Any:
@@ -288,7 +287,8 @@ def call_workflow_multipart(
         parsed = parsed['json']
 
     return parsed
-=======
+
+
 def as_data_uri(value: str, mime: str = 'image/jpeg') -> str:
     """
     Return a ``data:<mime>;base64,...`` URI, adding the prefix if absent.
@@ -307,7 +307,6 @@ def as_data_uri(value: str, mime: str = 'image/jpeg') -> str:
     if payload.startswith('data:'):
         return payload
     return f'data:{mime};base64,{payload}'
->>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
 
 
 def strip_data_uri(value: str) -> str:
