@@ -40,6 +40,8 @@ import {
   resendRegistrationOtpRequest,
   resetFaceVerificationRequest,
   sendRegistrationOtpRequest,
+  verifyIdRequest,
+  verifyPrcLicenseRequest,
   verifyRegistrationOtpRequest,
 } from '../api/nurselink';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
@@ -80,6 +82,15 @@ function resolveMaxAttempts(res: { maxAttempts?: number }): number {
   return typeof res.maxAttempts === 'number' && res.maxAttempts > 0 ? res.maxAttempts : MAX_FACE_ATTEMPTS;
 }
 
+function maskEmail(email: string): string {
+  const at = email.indexOf('@');
+  if (at <= 0) return email;
+  const local = email.slice(0, at);
+  const domain = email.slice(at);
+  const visible = local.slice(0, Math.min(4, local.length));
+  return `${visible}${'*'.repeat(8)}${domain}`;
+}
+
 function resolveAttemptsUsed(res: { attemptsUsed?: number; attemptsRemaining?: number }): number {
   if (typeof res.attemptsUsed === 'number') return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, res.attemptsUsed));
   if (typeof res.attemptsRemaining === 'number') {
@@ -94,6 +105,15 @@ function buildDirectoryEmail(fullName: string, hospitalName: string): string {
   const last = parts[parts.length - 1] ?? '';
   const domain = hospitalName.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 24) || 'hospital';
   return `${first}${last ? `.${last}` : ''}@${domain}.com`;
+}
+
+// The backend sends registrationDate/validUntil as ISO (YYYY-MM-DD) — that's
+// the right format to store and compare, but "May 21, 2005" reads better on
+// Step 2's review screen. Display-only: ocrData itself stays ISO.
+function formatDisplayDate(iso: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  const [year, month, day] = iso.split('-');
+  return `${month}/${day}/${year}`;
 }
 
 function extractErrorMessage(err: unknown, fallback: string): string {
@@ -122,7 +142,7 @@ function extractErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-const STEP_LABELS = ['Hospital ID', 'ID Review', 'Face Check', 'Role', 'PRC License', 'Role Check', 'Credentials'];
+const STEP_LABELS = ['PRC ID', 'ID Review', 'Face Check', 'Role', 'PRC License', 'Role Check', 'Credentials'];
 const NURSE_POSITIONS = ['nurse', 'registered nurse', 'staff nurse'];
 const SUPERVISOR_POSITIONS = ['supervisor', 'head nurse', 'nursing supervisor', 'charge nurse'];
 
@@ -131,6 +151,15 @@ type SelectedRole = 'nurse' | 'supervisor' | null;
 
 type OcrData = {
   fullName: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  registrationNumber: string;
+  registrationDate: string;
+  validUntil: string;
+  // Kept for backward compatibility — email still backs the OTP fallback,
+  // position still feeds the Step 6 role cross-check, even though Step 2
+  // no longer displays these.
   employeeId: string;
   hospitalName: string;
   department: string;
@@ -281,7 +310,7 @@ function RegistrationSubmitted({
 }) {
   const completedSteps = [
     'Identity Verification Completed',
-    'Hospital ID Successfully Verified',
+    'PRC ID Successfully Verified',
     verificationMethod === 'EMAIL_OTP' ? 'Email OTP Verification Completed' : 'Face Verification Completed',
     'Registration Information Submitted',
   ];
@@ -405,7 +434,7 @@ export default function SignUpPage() {
 
   const [hospitalIdPreview, setHospitalIdPreview] = useState<string | null>(null);
   const [hospitalIdError, setHospitalIdError] = useState('');
-  const [ocrStatus, setOcrStatus] = useState<'idle' | 'processing' | 'success'>('idle');
+  const [ocrStatus, setOcrStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
   const [ocrData, setOcrData] = useState<OcrData | null>(null);
 
   const [cameraState, setCameraState] = useState<'idle' | 'requesting' | 'active' | 'denied' | 'not-supported'>('idle');
@@ -437,6 +466,10 @@ export default function SignUpPage() {
   const [prcStatus, setPrcStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
   const [prcData, setPrcData] = useState<{ profession: string; expiration: string } | null>(null);
   const [prcError, setPrcError] = useState('');
+  const [prcImagePreview, setPrcImagePreview] = useState<string | null>(null);
+  const [prcFaceMatched, setPrcFaceMatched] = useState(false);
+  const prcFileInputRef = useRef<HTMLInputElement>(null);
+  const prcCameraInputRef = useRef<HTMLInputElement>(null);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -444,7 +477,7 @@ export default function SignUpPage() {
   const [credErrors, setCredErrors] = useState<Record<string, string>>({});
 
   const stepTitles = [
-    'Hospital Identity Verification',
+    'PRC Identity Verification',
     'Extracted ID Information',
     'Mandatory Face Verification',
     'Role Selection',
@@ -454,12 +487,12 @@ export default function SignUpPage() {
   ];
 
   const stepDescriptions = [
-    'Upload or scan your official Hospital ID to begin.',
+    'Scan your PRC ID to automatically extract your information.',
     'Review your extracted information. These fields are read-only.',
     'Capture a live selfie to confirm your identity.',
     'Select the role you are registering for. It must match your verified employment information.',
-    'Enter and verify your PRC Professional License number.',
-    'Confirming your selected role matches your Hospital ID and PRC records.',
+    'Upload or scan your PRC Professional License to verify it.',
+    'Confirming your selected role matches your PRC ID and PRC License records.',
     'Set your login credentials to complete registration.',
   ];
 
@@ -555,22 +588,54 @@ export default function SignUpPage() {
     faceVerificationInFlight.current = false;
   }, []);
 
-  const simulateOcr = useCallback(() => {
-    setOcrStatus('processing');
-    window.setTimeout(() => {
-      const fullName = 'Maria Santos Dela Cruz';
-      const hospitalName = "St. Luke's Medical Center";
-      setOcrData({
-        fullName,
-        employeeId: `EMP-${Math.floor(10000 + Math.random() * 90000)}`,
-        hospitalName,
-        department: 'Intensive Care Unit',
-        position: 'Registered Nurse',
-        email: '',
-      });
-      setOcrStatus('success');
-    }, 1600);
-  }, []);
+  // Posts the ID photo to the n8n identity-verify workflow (VerifyIdView,
+  // action: 'ocr') and maps its response onto the fields Step 2 displays.
+  const runIdVerification = useCallback(
+    async (imageDataUrl: string) => {
+      setOcrStatus('processing');
+      setHospitalIdError('');
+      try {
+        const res = await verifyIdRequest(imageDataUrl, { registrationSessionId });
+        setRegistrationSessionId(res.registrationSessionId);
+
+        // Every non-'verified' status is a hard block now — the backend's
+        // strict field validation (last/first name, registration no., both
+        // dates) decides this, not just "did something come back".
+        // 'validation_error' means fields WERE extracted but at least one
+        // failed structural validation (e.g. a mis-parsed label ended up in
+        // a name field) — accuracy matters more than filling every box, so
+        // this is never silently accepted for review.
+        if (!res.verified) {
+          setOcrStatus('error');
+          const detail = res.errors ? Object.values(res.errors)[0] : undefined;
+          setHospitalIdError(
+            detail || res.message || 'Unable to extract information from the PRC ID. Please capture a clearer image.'
+          );
+          return;
+        }
+
+        setOcrData({
+          fullName: res.fullName,
+          lastName: res.lastName,
+          firstName: res.firstName,
+          middleName: res.middleName,
+          registrationNumber: res.registrationNumber,
+          registrationDate: res.registrationDate,
+          validUntil: res.validUntil,
+          employeeId: res.employeeId,
+          hospitalName: res.hospitalName,
+          department: res.department,
+          position: res.position,
+          email: res.email,
+        });
+        setOcrStatus('success');
+      } catch (err) {
+        setOcrStatus('error');
+        setHospitalIdError(extractErrorMessage(err, 'ID verification is unavailable right now. Please try again.'));
+      }
+    },
+    [registrationSessionId]
+  );
 
   const handleHospitalFile = (file: File) => {
     setHospitalIdError('');
@@ -591,8 +656,9 @@ export default function SignUpPage() {
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      setHospitalIdPreview(event.target?.result as string);
-      simulateOcr();
+      const dataUrl = event.target?.result as string;
+      setHospitalIdPreview(dataUrl);
+      void runIdVerification(dataUrl);
     };
     reader.readAsDataURL(file);
   };
@@ -789,7 +855,11 @@ export default function SignUpPage() {
     setOtpStatus('email_entry');
     setOtpError('');
     setOtpCode('');
-    setOtpEmailInput('');
+    // Display-only — pre-filled from the registered email already on file
+    // (Step 2). The OTP always goes to the backend's stored session email
+    // regardless of this value; it is never editable or sent as the
+    // destination.
+    setOtpEmailInput(ocrData?.email || '');
   };
 
   // A 429 (cooldown / resend limit) response carries the server's authoritative
@@ -807,16 +877,11 @@ export default function SignUpPage() {
   const handleSendOtp = async () => {
     if (otpSendInFlight.current) return;
     if (!registrationSessionId) return;
-    const email = otpEmailInput.trim();
-    if (!email) {
-      setOtpError('Please enter your registered email address.');
-      return;
-    }
     otpSendInFlight.current = true;
     setOtpStatus('sending');
     setOtpError('');
     try {
-      const res = await sendRegistrationOtpRequest(email, registrationSessionId);
+      const res = await sendRegistrationOtpRequest(registrationSessionId);
       setOtpStatus('awaiting');
       setOtpCode('');
       setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
@@ -832,12 +897,12 @@ export default function SignUpPage() {
 
   const handleResendOtp = async () => {
     if (otpSendInFlight.current) return;
-    if (!registrationSessionId || !otpEmailInput.trim()) return;
+    if (!registrationSessionId) return;
     otpSendInFlight.current = true;
     setOtpStatus('sending');
     setOtpError('');
     try {
-      const res = await resendRegistrationOtpRequest(otpEmailInput.trim(), registrationSessionId);
+      const res = await resendRegistrationOtpRequest(registrationSessionId);
       setOtpStatus('awaiting');
       setOtpCode('');
       setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
@@ -890,30 +955,71 @@ export default function SignUpPage() {
     : 0;
   const otpExpired = otpExpiresAt ? nowTick > otpExpiresAt && otpStatus !== 'verified' : false;
 
-  const handlePrcVerify = useCallback(() => {
-    if (!licenseNumber.trim()) {
-      setPrcError('Please enter your PRC License Number.');
+  // Verification is driven by scanning/uploading the card, not by typing a
+  // number — mirrors the mobile wizard. When the session was identity-
+  // verified via Face, the already-captured selfie is resent so the backend
+  // can confirm it matches the licence photo (see api/views.py VerifyPrcLicenseView).
+  const runPrcVerify = useCallback(
+    async (imageDataUrl: string) => {
+      setPrcError('');
+      setPrcStatus('processing');
+      try {
+        // faceStatus/otpStatus rather than the derived `verificationMethod`
+        // const, which is declared later in this component and would be in
+        // its temporal dead zone if referenced from this callback's deps.
+        const selfieToSend = faceStatus === 'success' ? (selfiePreview ?? undefined) : undefined;
+        const res = await verifyPrcLicenseRequest(imageDataUrl, registrationSessionId, selfieToSend);
+
+        if (!res.valid) {
+          setPrcStatus('error');
+          setPrcData(null);
+          setPrcError(res.message || 'Please upload a valid PRC nursing license.');
+          return;
+        }
+
+        if (res.faceMatch && !res.faceMatch.matched) {
+          setPrcStatus('error');
+          setPrcData(null);
+          setPrcError(res.faceMatch.message || 'This selfie does not match your PRC card photo. Please retake it.');
+          return;
+        }
+
+        if (res.registrationNumber) setLicenseNumber(res.registrationNumber);
+        setPrcData({ profession: res.profession, expiration: res.validUntil });
+        setPrcFaceMatched(Boolean(res.faceMatch?.matched));
+        setPrcStatus('success');
+      } catch (err) {
+        setPrcStatus('error');
+        setPrcData(null);
+        setPrcError(extractErrorMessage(err, 'Licence verification is unavailable right now. Please try again.'));
+      }
+    },
+    [registrationSessionId, selfiePreview, faceStatus]
+  );
+
+  const handlePrcFile = (file: File) => {
+    setPrcError('');
+    setPrcStatus('idle');
+    setPrcData(null);
+    setPrcFaceMatched(false);
+
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      setPrcError('Unsupported file format. Please upload JPG or PNG.');
       return;
     }
-    setPrcError('');
-    setPrcStatus('processing');
-    window.setTimeout(() => {
-      if (licenseNumber.trim().length >= 5) {
-        setPrcData({ profession: 'Registered Nurse', expiration: '2026-06-30' });
-        setPrcStatus('success');
-      } else {
-        setPrcStatus('error');
-        setPrcError('License number not found in active PRC records.');
-      }
-    }, 1400);
-  }, [licenseNumber]);
-
-  useEffect(() => {
-    if (step === 5 && licenseNumber.trim().length >= 5 && prcStatus === 'idle') {
-      const timer = window.setTimeout(handlePrcVerify, 600);
-      return () => window.clearTimeout(timer);
+    if (file.size > 5 * 1024 * 1024) {
+      setPrcError('File too large. Maximum size is 5 MB.');
+      return;
     }
-  }, [licenseNumber, step, prcStatus, handlePrcVerify]);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      setPrcImagePreview(dataUrl);
+      void runPrcVerify(dataUrl);
+    };
+    reader.readAsDataURL(file);
+  };
 
   const computeRoleMatch = useCallback(() => {
     if (!selectedRole || !ocrData) {
@@ -960,11 +1066,17 @@ export default function SignUpPage() {
 
     try {
       const fullName = ocrData?.fullName ?? `${email.split('@')[0]}`;
+      // Prefer the discrete name parts Step 2 now collects directly; fall
+      // back to splitting fullName only for a workflow that still returns
+      // just a combined name.
+      const firstName = ocrData?.firstName || ocrData?.fullName.split(' ')[0] || '';
+      const lastName = ocrData?.lastName || ocrData?.fullName.split(' ').slice(-1).join(' ') || '';
+      const middleName = ocrData?.middleName || ocrData?.fullName.split(' ').slice(1, -1).join(' ') || '';
       await signup({
         name: fullName,
-        firstName: ocrData?.fullName.split(' ')[0] ?? '',
-        middleName: ocrData?.fullName.split(' ').slice(1, -1).join(' ') ?? '',
-        lastName: ocrData?.fullName.split(' ').slice(-1).join(' ') ?? '',
+        firstName,
+        middleName,
+        lastName,
         email,
         password,
         role: selectedRole === 'supervisor' ? 'supervisor' : 'staff_nurse',
@@ -1039,7 +1151,7 @@ export default function SignUpPage() {
                           {hospitalIdPreview.startsWith('data:image') ? (
                             <img
                               src={hospitalIdPreview}
-                              alt="Hospital ID"
+                              alt="PRC ID"
                               className="mx-auto max-h-52 w-full rounded-xl object-contain"
                             />
                           ) : (
@@ -1067,7 +1179,7 @@ export default function SignUpPage() {
                             <IdCard className="h-8 w-8" />
                           </div>
                           <p className="text-sm font-semibold text-blue-700">
-                            Drag & drop or click to upload your Hospital ID
+                            Drag & drop or click to upload your PRC ID
                           </p>
                           <p className="text-xs text-slate-500">Accepted formats: JPG, PNG, PDF · Max 5 MB</p>
                         </div>
@@ -1123,7 +1235,7 @@ export default function SignUpPage() {
                     {ocrStatus === 'processing' && (
                       <div className="flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
                         <Loader2 className="h-4 w-4 animate-spin" />
-                        Scanning Hospital ID and extracting data...
+                        Scanning and extracting information...
                       </div>
                     )}
 
@@ -1131,8 +1243,8 @@ export default function SignUpPage() {
                       <div className="flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
                         <CheckCircle className="mt-0.5 h-5 w-5 shrink-0 text-green-600" />
                         <div>
-                          <p className="text-sm font-semibold text-green-800">Hospital ID scanned successfully</p>
-                          <p className="text-sm text-green-700">Employee information extracted. Proceed to review.</p>
+                          <p className="text-sm font-semibold text-green-800">PRC ID information extracted successfully</p>
+                          <p className="text-sm text-green-700">Review your information on the next step.</p>
                         </div>
                       </div>
                     )}
@@ -1153,16 +1265,18 @@ export default function SignUpPage() {
                     </div>
 
                     <p className="text-sm text-gray-500">
-                      These details were read directly from your scanned Hospital ID and cannot be edited. If
+                      These details were read directly from your scanned PRC ID and cannot be edited. If
                       information appears incorrect, go back and re-upload a clearer image.
                     </p>
 
                     <div className="grid gap-4 sm:grid-cols-2">
                       {[
-                        { label: 'Full Name', value: ocrData.fullName },
-                        { label: 'Employee ID', value: ocrData.employeeId },
-                        { label: 'Hospital', value: ocrData.hospitalName },
-                        { label: 'Department', value: ocrData.department },
+                        { label: 'Last Name', value: ocrData.lastName },
+                        { label: 'First Name', value: ocrData.firstName },
+                        { label: 'Middle Name', value: ocrData.middleName },
+                        { label: 'Registration No.', value: ocrData.registrationNumber },
+                        { label: 'Registration Date', value: formatDisplayDate(ocrData.registrationDate) },
+                        { label: 'Valid Until', value: formatDisplayDate(ocrData.validUntil) },
                       ].map((field) => (
                         <div key={field.label} className="space-y-1.5">
                           <Label className="text-xs font-medium text-gray-500">{field.label}</Label>
@@ -1180,21 +1294,6 @@ export default function SignUpPage() {
                           </div>
                         </div>
                       ))}
-                      <div className="space-y-1.5 sm:col-span-2">
-                        <Label className="text-xs font-medium text-gray-500">Position</Label>
-                        <div className="relative">
-                          <Input
-                            readOnly
-                            value={ocrData.position}
-                            aria-label="Position"
-                            className="h-12 cursor-not-allowed rounded-xl border-gray-200 bg-gray-100 pr-10 font-medium text-gray-900"
-                          />
-                          <Lock
-                            className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
-                            aria-hidden
-                          />
-                        </div>
-                      </div>
                       <div className="space-y-1.5 sm:col-span-2">
                         <Label className="text-xs font-medium text-gray-500">Registered Email Address</Label>
                         <div className="relative">
@@ -1517,7 +1616,7 @@ export default function SignUpPage() {
                           <div>
                             <p className="font-bold text-blue-900">Email Verification</p>
                             <p className="text-sm text-blue-700">
-                              Enter the email address associated with your registration.
+                              We&apos;ll send a verification code to your registered email address.
                             </p>
                           </div>
                         </div>
@@ -1525,18 +1624,15 @@ export default function SignUpPage() {
                         {(otpStatus === 'email_entry' || otpStatus === 'sending') && (
                           <div className="space-y-3">
                             <div className="space-y-1.5">
-                              <Label className="text-xs font-medium text-gray-500">Email Address</Label>
+                              <Label className="text-xs font-medium text-gray-500">Registered Email</Label>
                               <div className="relative">
                                 <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                                 <Input
-                                  type="email"
-                                  value={otpEmailInput}
-                                  onChange={(e) => {
-                                    setOtpEmailInput(e.target.value);
-                                    setOtpError('');
-                                  }}
-                                  placeholder="Enter your registered email"
-                                  disabled={otpStatus === 'sending'}
+                                  type="text"
+                                  value={otpEmailInput ? maskEmail(otpEmailInput) : ''}
+                                  placeholder="Registered email on file"
+                                  disabled
+                                  readOnly
                                   className="h-12 rounded-xl border-gray-200 pl-10 font-medium text-gray-900"
                                 />
                               </div>
@@ -1550,7 +1646,7 @@ export default function SignUpPage() {
                             <Button
                               type="button"
                               onClick={handleSendOtp}
-                              disabled={otpStatus === 'sending' || !otpEmailInput.trim()}
+                              disabled={otpStatus === 'sending'}
                               className="h-12 w-full rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white"
                             >
                               {otpStatus === 'sending' ? (
@@ -1761,38 +1857,126 @@ export default function SignUpPage() {
 
                 {step === 5 && (
                   <div className="space-y-5">
-                    <div className="space-y-2">
-                      <Label htmlFor="licenseNumber" className="flex items-center gap-2 text-sm font-medium text-slate-700">
-                        <ShieldCheck className="h-4 w-4 text-slate-400" />
-                        PRC License Number <span className="text-red-500">*</span>
-                      </Label>
-                      <div className="relative">
-                        <Input
-                          id="licenseNumber"
-                          type="text"
-                          placeholder="1234567"
-                          value={licenseNumber}
-                          onChange={(e) => {
-                            setLicenseNumber(e.target.value);
-                            setPrcStatus('idle');
-                            setPrcData(null);
-                            setPrcError('');
-                          }}
-                          className="h-11 rounded-xl pr-28"
-                        />
-                        {prcStatus === 'processing' && (
-                          <span className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1 text-xs text-blue-600">
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Verifying...
-                          </span>
-                        )}
-                        {prcStatus === 'success' && (
-                          <span className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full border border-green-300 bg-green-50 px-2.5 py-0.5 text-xs font-semibold text-green-700">
-                            <CheckCircle className="h-3.5 w-3.5" /> Verified
-                          </span>
-                        )}
-                      </div>
-                      {prcError && <p className="text-sm text-red-600">{prcError}</p>}
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => !prcImagePreview && prcFileInputRef.current?.click()}
+                      onKeyDown={(e) => e.key === 'Enter' && prcFileInputRef.current?.click()}
+                      className={`rounded-2xl border-2 border-dashed px-4 py-8 text-center transition ${
+                        prcStatus === 'success'
+                          ? 'border-green-300 bg-green-50/30'
+                          : 'border-blue-200 bg-blue-50/50 hover:border-blue-300 hover:bg-blue-50'
+                      }`}
+                    >
+                      {prcImagePreview ? (
+                        <div className="relative mx-auto max-w-lg">
+                          <img
+                            src={prcImagePreview}
+                            alt="PRC License"
+                            className="mx-auto max-h-52 w-full rounded-xl object-contain"
+                          />
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPrcImagePreview(null);
+                              setPrcStatus('idle');
+                              setPrcData(null);
+                              setPrcError('');
+                              setPrcFaceMatched(false);
+                            }}
+                            className="absolute -right-2 -top-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-600 shadow-md hover:bg-slate-100"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="mx-auto flex max-w-md flex-col items-center gap-3 py-4">
+                          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-100 text-blue-600">
+                            <ShieldCheck className="h-8 w-8" />
+                          </div>
+                          <p className="text-sm font-semibold text-blue-700">
+                            Drag & drop or click to upload your PRC License
+                          </p>
+                          <p className="text-xs text-slate-500">Accepted formats: JPG, PNG · Max 5 MB</p>
+                        </div>
+                      )}
                     </div>
+
+                    <input
+                      ref={prcFileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png"
+                      className="sr-only"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) handlePrcFile(file);
+                      }}
+                    />
+                    <input
+                      ref={prcCameraInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png"
+                      capture="environment"
+                      className="sr-only"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) handlePrcFile(file);
+                      }}
+                    />
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => prcCameraInputRef.current?.click()}
+                        className="flex h-12 items-center justify-center gap-2 rounded-full border-2 border-blue-200 bg-white text-sm font-semibold text-blue-700 transition hover:border-blue-300 hover:bg-blue-50"
+                      >
+                        <Camera className="h-5 w-5" /> Camera Scan
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => prcFileInputRef.current?.click()}
+                        className="flex h-12 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                      >
+                        <Upload className="h-5 w-5" /> Upload File
+                      </button>
+                    </div>
+
+                    {prcStatus === 'processing' && (
+                      <span className="flex items-center gap-1 text-xs text-blue-600">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Verifying license...
+                      </span>
+                    )}
+                    {prcError && <p className="text-sm text-red-600">{prcError}</p>}
+
+                    {licenseNumber && (
+                      <div className="space-y-2">
+                        <Label htmlFor="licenseNumber" className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                          <ShieldCheck className="h-4 w-4 text-slate-400" />
+                          PRC License Number
+                        </Label>
+                        <div className="relative">
+                          <Input
+                            id="licenseNumber"
+                            type="text"
+                            value={licenseNumber}
+                            onChange={(e) => {
+                              setLicenseNumber(e.target.value);
+                              setPrcStatus('idle');
+                              setPrcData(null);
+                              setPrcError('');
+                              setPrcFaceMatched(false);
+                            }}
+                            className="h-11 rounded-xl pr-28"
+                          />
+                          {prcStatus === 'success' && (
+                            <span className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full border border-green-300 bg-green-50 px-2.5 py-0.5 text-xs font-semibold text-green-700">
+                              <CheckCircle className="h-3.5 w-3.5" /> Verified
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     {prcStatus === 'success' && prcData && (
                       <div className="rounded-xl border border-green-200 bg-green-50 p-4">
@@ -1813,6 +1997,14 @@ export default function SignUpPage() {
                             <p className="text-xs text-slate-500">Expiration Date</p>
                             <p className="font-semibold text-slate-900">{prcData.expiration}</p>
                           </div>
+                          {prcFaceMatched && (
+                            <div>
+                              <p className="text-xs text-slate-500">Face Match</p>
+                              <span className="inline-flex items-center gap-1 rounded-full border border-green-300 bg-white px-2.5 py-0.5 text-xs font-semibold text-green-700">
+                                <CheckCircle className="h-3.5 w-3.5" /> Matched with PRC photo
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
@@ -1996,7 +2188,7 @@ export default function SignUpPage() {
                       </div>
                       <div className="space-y-2">
                         {[
-                          { label: 'Hospital ID Uploaded', done: idUploaded },
+                          { label: 'PRC ID Uploaded', done: idUploaded },
                           { label: 'OCR Completed', done: ocrDone },
                           {
                             label: verificationMethod === 'EMAIL_OTP' ? 'Email OTP Verified' : 'Face Verified',

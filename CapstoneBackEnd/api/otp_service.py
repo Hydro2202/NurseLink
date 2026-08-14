@@ -15,8 +15,10 @@ from .email_validation import validate_registration_email
 from .models import RegistrationOTP, RegistrationSession
 
 OTP_LENGTH = 6
-OTP_TTL = timedelta(minutes=5)
-RESEND_COOLDOWN = timedelta(seconds=60)
+# Env-configurable via OTP_EXPIRATION_MINUTES / OTP_RESEND_COOLDOWN_SECONDS
+# in settings.py, rather than literals here.
+OTP_TTL = timedelta(minutes=settings.OTP_EXPIRATION_MINUTES)
+RESEND_COOLDOWN = timedelta(seconds=settings.OTP_RESEND_COOLDOWN_SECONDS)
 MAX_VERIFY_ATTEMPTS = 5
 MAX_RESEND_ATTEMPTS = 3
 PURPOSE = 'registration'

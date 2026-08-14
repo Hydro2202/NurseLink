@@ -26,7 +26,12 @@ class FaceVerificationFlowTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.email = 'nurse.otp@gmail.com'
-        self.session = RegistrationSession.objects.create(email=self.email)
+        # Face verification now requires Step 1's ID validation to have
+        # already passed — these tests are about attempt counting/lockout
+        # specifically, so start from a session that's already cleared it.
+        self.session = RegistrationSession.objects.create(
+            email=self.email, id_verification_status='verified'
+        )
 
     def test_status_endpoint_returns_session_state(self):
         self.session.face_attempts = 2
@@ -188,4 +193,148 @@ class FaceVerificationFlowTests(TestCase):
         self.assertIsNone(code)
         self.session.refresh_from_db()
         self.assertTrue(self.session.otp_verified)
-        self.assertEqual(self.session.verification_method, 'EMAIL_OTP')
+
+    @patch('api.otp_service.validate_registration_email', side_effect=lambda email: email.lower())
+    def test_otp_send_without_email_field_still_delivers_to_registered_email(self, _validate):
+        """Session identity alone is sufficient — the email field is optional."""
+        self.session.face_locked = True
+        self.session.save(update_fields=['face_locked'])
+        res = self.client.post(
+            '/api/auth/send-registration-otp/',
+            {'registrationSessionId': str(self.session.session_id)},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['success'])
+        self.assertEqual(res.data['status'], 'otp_sent')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.email])
+
+    def test_otp_send_reports_email_not_registered_when_session_has_no_email(self):
+        session = RegistrationSession.objects.create(email='', face_locked=True)
+        res = self.client.post(
+            '/api/auth/send-registration-otp/',
+            {'registrationSessionId': str(session.session_id)},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(res.data['success'])
+        self.assertEqual(res.data['status'], 'email_not_registered')
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_otp_resend_reports_email_not_registered_when_session_has_no_email(self):
+        session = RegistrationSession.objects.create(email='', face_locked=True)
+        res = self.client.post(
+            '/api/auth/resend-registration-otp/',
+            {'registrationSessionId': str(session.session_id)},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['status'], 'email_not_registered')
+
+    @patch('api.otp_service.validate_registration_email', side_effect=lambda email: email.lower())
+    def test_otp_verify_success_response_includes_status(self, _validate):
+        self.session.face_locked = True
+        self.session.save(update_fields=['face_locked'])
+        with patch('api.otp_service._generate_code', return_value='111222'):
+            issue_otp(self.session)
+        res = self.client.post(
+            '/api/auth/verify-registration-otp/',
+            {'registrationSessionId': str(self.session.session_id), 'otp': '111222'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['verified'])
+        self.assertEqual(res.data['status'], 'email_verified')
+
+
+@override_settings(N8N_FACE_VERIFY_ENABLED=False)
+class FaceVerificationRequiresIdVerificationTests(TestCase):
+    """
+    Face verification compares the selfie against the Step-1 ID photo — that
+    comparison is meaningless, and open to abuse, if Step 1's own strict
+    field validation never actually passed. The backend must enforce this
+    itself; it cannot rely on the frontend having gated progression to Step 3.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _post(self, session_id):
+        return self.client.post(
+            '/api/auth/face-verification/',
+            {
+                'registrationSessionId': str(session_id),
+                'image': 'data:image/jpeg;base64,abc',
+                'idImage': 'data:image/jpeg;base64,def',
+            },
+            format='json',
+        )
+
+    def test_session_without_verified_id_is_rejected(self):
+        session = RegistrationSession.objects.create(email='nurse@hospital.com')
+        self.assertEqual(session.id_verification_status, '')
+
+        res = self._post(session.session_id)
+
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(res.data['success'])
+        self.assertEqual(res.data['status'], 'id_not_verified')
+        session.refresh_from_db()
+        # Rejected as a precondition failure — never touched the attempt counter.
+        self.assertEqual(session.face_attempts, 0)
+
+    def test_session_with_validation_error_status_is_also_rejected(self):
+        session = RegistrationSession.objects.create(
+            email='nurse@hospital.com', id_verification_status='validation_error'
+        )
+        res = self._post(session.session_id)
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['status'], 'id_not_verified')
+
+    @patch('api.views.verify_face_against_id')
+    def test_session_with_verified_id_proceeds_to_face_match(self, mock_verify):
+        from api.face_match import FaceVerificationOutcome
+
+        mock_verify.return_value = FaceVerificationOutcome(True, 92.0, None, None, countable=False)
+        session = RegistrationSession.objects.create(
+            email='nurse@hospital.com', id_verification_status='verified'
+        )
+
+        res = self._post(session.session_id)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['matched'])
+        mock_verify.assert_called_once()
+
+    def test_fresh_fallback_session_inherits_id_status_from_prior_session_by_email(self):
+        """
+        A locked prior session (excluded from resumption) for this email
+        already completed Step 1 — a fresh attempt cycle for face matching
+        should not be forced back through ID re-verification.
+        """
+        prior = RegistrationSession.objects.create(
+            email='nurse@hospital.com',
+            id_verification_status='verified',
+            id_last_name='Dela Cruz',
+            face_locked=True,
+            face_attempts=3,
+        )
+
+        res = self.client.post(
+            '/api/auth/face-verification/',
+            {
+                'registeredEmail': 'nurse@hospital.com',
+                'image': 'data:image/jpeg;base64,abc',
+                'idImage': 'data:image/jpeg;base64,def',
+            },
+            format='json',
+        )
+
+        # A fresh session was created (not the locked one)...
+        self.assertNotEqual(res.data.get('registrationSessionId'), str(prior.session_id))
+        # ...but it did not need to re-verify the ID from scratch.
+        self.assertNotEqual(res.data.get('status'), 'id_not_verified')
+        new_session = RegistrationSession.objects.get(session_id=res.data['registrationSessionId'])
+        self.assertEqual(new_session.id_verification_status, 'verified')
+        self.assertEqual(new_session.id_last_name, 'Dela Cruz')

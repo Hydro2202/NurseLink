@@ -4,6 +4,9 @@ django-cors-headers>=4.0
 psycopg2-binary>=2.9
 drf-spectacular>=0.28
 python-dotenv>=1.0
+# Used only for the multipart PRC ID upload to n8n (api/n8n_client.py
+# call_workflow_multipart) — every other n8n call stays on urllib/JSON.
+requests>=2.31
 opencv-contrib-python>=4.10
 numpy>=2.0
 # PRC licence OCR. The Tesseract BINARY is a separate install:

@@ -1,12 +1,13 @@
 """
 Server-side client for the NurseLink n8n workflows.
 
-Every n8n call goes through :func:`call_workflow`. Keeping it in one place
-means the workflow URLs, the shared secret, the timeout and the failure
-taxonomy are defined once rather than re-implemented per view.
-
-Deliberately built on ``urllib`` from the standard library — the backend has
-no ``requests`` dependency and this is not worth adding one for.
+Every JSON-body n8n call goes through :func:`call_workflow`, built on
+``urllib`` from the standard library — no ``requests`` dependency needed for
+that shape. File uploads (currently just the PRC ID scan) go through
+:func:`call_workflow_multipart` instead, which needs ``requests`` because
+urllib's multipart support is painful enough not to hand-roll. Both share the
+same URL resolution, shared secret, timeout and failure taxonomy — only the
+wire format differs.
 
 Failure taxonomy (all subclass :class:`N8nError`, all carry an
 ``http_status`` the views map straight onto a DRF response):
@@ -29,6 +30,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+import requests
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -99,6 +101,8 @@ def webhook_url(workflow: str) -> str:
     development and the production URL in deployment:
     ``{N8N_BASE_URL}/{N8N_WEBHOOK_PREFIX}/{path}``
     """
+    if workflow == 'verify_id' and settings.N8N_IDENTITY_VERIFY_WEBHOOK:
+        return settings.N8N_IDENTITY_VERIFY_WEBHOOK
     path = (settings.N8N_WEBHOOKS or {}).get(workflow, '')
     if not path:
         return ''
@@ -150,6 +154,7 @@ def call_workflow(workflow: str, payload: dict, *, timeout: float | None = None)
         with urllib.request.urlopen(request, timeout=seconds) as response:
             raw = response.read()
             status = response.status
+        logger.info('n8n response status: %s workflow=%s', status, workflow)
     except urllib.error.HTTPError as exc:
         raw = b''
         try:
@@ -200,6 +205,84 @@ def call_workflow(workflow: str, payload: dict, *, timeout: float | None = None)
     if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
         parsed = parsed[0]
     # "Respond to Webhook" set to "First Incoming Item" nests the real payload.
+    if isinstance(parsed, dict) and set(parsed) == {'json'} and isinstance(parsed['json'], dict):
+        parsed = parsed['json']
+
+    return parsed
+
+
+def call_workflow_multipart(
+    workflow: str, files: dict, data: dict | None = None, *, timeout: float | None = None
+) -> Any:
+    """
+    POST ``files`` (and optional ``data`` form fields) as multipart/form-data
+    to the named n8n workflow and return its parsed JSON body.
+
+    Same URL resolution, shared-secret header, timeout and failure taxonomy
+    as :func:`call_workflow` — only the wire format differs, for a workflow
+    that expects a real file upload (e.g. one feeding an OCR service that
+    wants raw bytes) rather than a base64 string in a JSON body.
+
+    ``files`` is the ``requests``-style mapping, e.g.
+    ``{'prc_id': (filename, file_obj, content_type)}``.
+    """
+    url = webhook_url(workflow)
+    if not url:
+        raise N8nNotConfigured(
+            f'No webhook path configured for "{workflow}". Set it in settings.N8N_WEBHOOKS.',
+            workflow=workflow,
+        )
+
+    headers = {}
+    if settings.N8N_WEBHOOK_TOKEN:
+        headers['X-NurseLink-Token'] = settings.N8N_WEBHOOK_TOKEN
+
+    seconds = timeout if timeout is not None else settings.N8N_TIMEOUT_SECONDS
+
+    # Log which field/filename was sent, never the file's bytes.
+    file_desc = ','.join(f'{k}={v[0]}' for k, v in files.items()) if files else ''
+    logger.info('n8n multipart call workflow=%s url=%s files=%s', workflow, url, file_desc)
+
+    try:
+        response = requests.post(url, files=files, data=data or {}, headers=headers, timeout=seconds)
+    except requests.exceptions.Timeout as exc:
+        logger.warning('n8n timeout workflow=%s after %ss', workflow, seconds)
+        raise N8nTimeout(f'"{workflow}" did not respond within {seconds:g}s.', workflow=workflow) from exc
+    except requests.exceptions.ConnectionError as exc:
+        logger.warning('n8n unreachable workflow=%s reason=%s', workflow, exc)
+        raise N8nUnavailable(f'Could not reach n8n: {exc}', workflow=workflow) from exc
+    except requests.exceptions.RequestException as exc:
+        logger.warning('n8n request failed workflow=%s reason=%s', workflow, exc)
+        raise N8nUnavailable(f'Could not reach n8n: {exc}', workflow=workflow) from exc
+
+    logger.info('n8n response status: %s workflow=%s', response.status_code, workflow)
+
+    text = response.text or ''
+    if response.status_code == 404 and _NOT_REGISTERED_HINT in text.lower():
+        raise N8nWorkflowOffline(workflow=workflow, payload=text[:500])
+    if not response.ok:
+        logger.warning('n8n HTTP %s workflow=%s body=%s', response.status_code, workflow, text[:500])
+        raise N8nHTTPError(
+            f'n8n returned HTTP {response.status_code} for "{workflow}".',
+            workflow=workflow,
+            status=response.status_code,
+            body=text[:500],
+        )
+
+    if not text.strip():
+        logger.info('n8n empty body workflow=%s status=%s', workflow, response.status_code)
+        return {}
+
+    try:
+        parsed = response.json()
+    except ValueError as exc:
+        logger.warning('n8n non-JSON workflow=%s body=%s', workflow, text[:500])
+        raise N8nInvalidResponse(
+            f'"{workflow}" returned a non-JSON body.', workflow=workflow, payload=text[:500]
+        ) from exc
+
+    if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+        parsed = parsed[0]
     if isinstance(parsed, dict) and set(parsed) == {'json'} and isinstance(parsed['json'], dict):
         parsed = parsed['json']
 

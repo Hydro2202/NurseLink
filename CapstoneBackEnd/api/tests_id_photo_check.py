@@ -183,22 +183,44 @@ class VerifyIdPortraitGateTests(TestCase):
 
     @patch('api.views.call_workflow')
     @patch('api.views.check_id_has_portrait')
-    def test_id_with_photo_passes_on_the_portrait_check_alone(self, mock_portrait, mock_call):
-        """
-        While the n8n OCR step is disabled ("temporary not use - rai" in
-        VerifyIdView), a present portrait is the whole gate: the ID is
-        accepted and the pre-fill fields come back blank.
-        """
+    def test_id_with_photo_proceeds_to_the_ocr_workflow(self, mock_portrait, mock_call):
+        """A present portrait passes the gate, and the OCR call to n8n follows."""
         mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
+        # A full, valid PRC-shaped response — strict field validation (see
+        # id_field_validation.py) is what actually decides `verified` now,
+        # so a complete set of fields is needed to reach that status here.
+        mock_call.return_value = {
+            'lastName': 'Johnson',
+            'firstName': 'Sarah',
+            'registrationNumber': '1234567',
+            'registrationDate': '01/15/2020',
+            'validUntil': '01/15/2025',
+        }
 
         res = self.client.post('/api/auth/verify-id/', {'idImage': _b64(_card())}, format='json')
 
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(res.data['verified'])
         self.assertTrue(res.data['hasPhoto'])
+        self.assertTrue(res.data['verified'])
+        self.assertEqual(res.data['fullName'], 'Sarah Johnson')
+        mock_call.assert_called_once()
+        # This webhook now also serves verify_face requests — 'action' tells
+        # the Route Action node which branch to run.
+        self.assertEqual(mock_call.call_args[0][1]['action'], 'extract_id')
+
+    @patch('api.views.call_workflow')
+    @patch('api.views.check_id_has_portrait')
+    def test_ocr_workflow_returning_nothing_is_not_verified(self, mock_portrait, mock_call):
+        """An empty workflow response is a bad read, not a free pass — retake, don't guess."""
+        mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
+        mock_call.return_value = {}
+
+        res = self.client.post('/api/auth/verify-id/', {'idImage': _b64(_card())}, format='json')
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['hasPhoto'])
+        self.assertFalse(res.data['verified'])
         self.assertEqual(res.data['fullName'], '')
-        # OCR is switched off, so no workflow call is made.
-        mock_call.assert_not_called()
 
     @patch('api.views.call_workflow')
     def test_undecodable_upload_is_400(self, mock_call):

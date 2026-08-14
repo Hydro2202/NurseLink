@@ -95,6 +95,15 @@ function resolveMaxAttempts(res: { maxAttempts?: number }): number {
   return typeof res.maxAttempts === 'number' && res.maxAttempts > 0 ? res.maxAttempts : MAX_FACE_ATTEMPTS;
 }
 
+function maskEmail(email: string): string {
+  const at = email.indexOf('@');
+  if (at <= 0) return email;
+  const local = email.slice(0, at);
+  const domain = email.slice(at);
+  const visible = local.slice(0, Math.min(4, local.length));
+  return `${visible}${'*'.repeat(8)}${domain}`;
+}
+
 function OtpDigitsInput({
   value,
   onChange,
@@ -159,10 +168,10 @@ const otpStyles = StyleSheet.create({
 type WizardStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 type ProcessStatus = 'idle' | 'processing' | 'success' | 'failed';
 
-const STEP_LABELS = ['Hospital ID', 'ID Review', 'Face Check', 'Role', 'PRC License', 'Role Check', 'Credentials'];
+const STEP_LABELS = ['PRC ID', 'ID Review', 'Face Check', 'Role', 'PRC License', 'Role Check', 'Credentials'];
 
 const STEP_TITLES = [
-  'Hospital Identity Verification',
+  'PRC Identity Verification',
   'Extracted ID Information',
   'Mandatory Face Verification',
   'Role Selection',
@@ -172,12 +181,12 @@ const STEP_TITLES = [
 ];
 
 const STEP_DESCRIPTIONS = [
-  'Upload or scan your official Hospital ID to begin.',
+  'Scan your PRC ID to automatically extract your information.',
   'Review your extracted information. These fields are read-only.',
   'Capture a live selfie to confirm your identity.',
   'Select the role you are registering for. It must match your verified employment information.',
-  'Enter and verify your PRC Professional License number.',
-  'Confirming your selected role matches your Hospital ID and PRC records.',
+  'Upload or scan your PRC Professional License to verify it.',
+  'Confirming your selected role matches your PRC ID and PRC License records.',
   'Set your login credentials to complete registration.',
 ];
 
@@ -201,12 +210,30 @@ const SUPERVISOR_KEYWORDS = ['supervisor', 'head nurse', 'nursing supervisor', '
 
 const defaultOcrData = {
   fullName: '',
+  lastName: '',
+  firstName: '',
+  middleName: '',
+  registrationNumber: '',
+  registrationDate: '',
+  validUntil: '',
+  // Kept for backward compatibility — email still backs the OTP fallback,
+  // position still feeds the Step 6 role cross-check, even though Step 2
+  // no longer displays these.
   employeeId: '',
   department: '',
   position: '',
   hospitalName: '',
   email: '',
 };
+
+// The backend sends registrationDate/validUntil as ISO (YYYY-MM-DD) — that's
+// the right format to store and compare, but "May 21, 2005" reads better on
+// Step 2's review screen. Display-only: ocrData itself stays ISO.
+function formatDisplayDate(iso: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  const [year, month, day] = iso.split('-');
+  return `${month}/${day}/${year}`;
+}
 
 function getRoleMatch(position: string, selectedRole: UserRole | '') {
   if (!selectedRole || !position) return false;
@@ -338,6 +365,11 @@ export default function SignUpPage() {
   const [hospitalIdUri, setHospitalIdUri] = useState<string | null>(null);
   const [hospitalIdBase64, setHospitalIdBase64] = useState<string | null>(null);
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
+  // The raw base64 payload from the Step-3 capture, kept alongside selfieUri
+  // (a file uri only) so Step 5 can resend the same selfie to compare
+  // against the PRC card photo without a second camera capture.
+  const [selfieBase64, setSelfieBase64] = useState<string | null>(null);
+  const [prcFaceMatched, setPrcFaceMatched] = useState(false);
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
   const [liveCameraActive, setLiveCameraActive] = useState(false);
   const [prcStatus, setPrcStatus] = useState<ProcessStatus>('idle');
@@ -390,6 +422,7 @@ export default function SignUpPage() {
     setFaceStatus('idle');
     setError('');
     setSelfieUri(null);
+    setSelfieBase64(null);
     setLiveCameraActive(false);
     setShowOtpPanel(false);
     setOtpCode('');
@@ -475,13 +508,12 @@ export default function SignUpPage() {
   })();
 
   /**
-   * Steps 1 & 2 — Hospital ID capture and verification.
+   * Steps 1 & 2 — PRC ID capture and verification.
    *
    * The backend checks the upload actually carries a portrait photo (OpenCV,
-   * runs locally) and rejects an ID whose photo has been erased or cropped
-   * out. OCR text extraction is skipped for now — see "temporary not use -
-   * rai" in VerifyIdView — so the returned fields come back blank and the
-   * nurse fills them in on Step 2.
+   * runs locally) before spending an OCR call, then posts the image to the
+   * n8n identity-verify workflow (VerifyIdView, action: 'ocr') and maps its
+   * response onto the fields Step 2 displays.
    */
   const runIdVerification = async (base64: string | null) => {
     if (!base64) {
@@ -496,21 +528,34 @@ export default function SignUpPage() {
     try {
       const res = await verifyIdRequest(`data:image/jpeg;base64,${base64}`, {
         registrationSessionId,
-        documentType: 'hospital_id',
+        documentType: 'prc_license',
         expectedRole: role,
       });
 
       setRegistrationSessionId(res.registrationSessionId);
 
+      // Every non-'verified' status is a hard block now — the backend's
+      // strict field validation (last/first name, registration no., both
+      // dates) is what decides this, not just "did something come back".
+      // A 'validation_error' means fields WERE extracted but at least one
+      // failed structural validation (e.g. a mis-parsed label ended up in a
+      // name field) — accuracy matters more than filling every box, so this
+      // is never silently accepted for review.
       if (!res.verified) {
         setOcrStatus('failed');
-        // Covers the no-portrait rejection as well as an unreadable document.
-        setError(res.message || 'Could not read the ID clearly. Please retake the photo.');
+        const detail = res.errors ? Object.values(res.errors)[0] : undefined;
+        setError(detail || res.message || 'Unable to extract information from the PRC ID. Please capture a clearer image.');
         return;
       }
 
       setOcrData({
         fullName: res.fullName,
+        lastName: res.lastName,
+        firstName: res.firstName,
+        middleName: res.middleName,
+        registrationNumber: res.registrationNumber,
+        registrationDate: res.registrationDate,
+        validUntil: res.validUntil,
         employeeId: res.employeeId,
         hospitalName: res.hospitalName,
         department: res.department,
@@ -580,6 +625,7 @@ export default function SignUpPage() {
       }
     }
     setSelfieUri(null);
+    setSelfieBase64(null);
     setFaceStatus('idle');
     setLiveCameraActive(true);
   };
@@ -590,7 +636,7 @@ export default function SignUpPage() {
     try {
       setError('');
       if (!hospitalIdBase64) {
-        setError('Please re-upload your Hospital ID photo in Step 1 before continuing.');
+        setError('Please re-upload your PRC ID photo in Step 1 before continuing.');
         return;
       }
       if (!cameraRef.current) {
@@ -616,6 +662,7 @@ export default function SignUpPage() {
       }
 
       setSelfieUri(photo.uri);
+      setSelfieBase64(photo.base64);
       setLiveCameraActive(false);
       setFaceStatus('processing');
 
@@ -685,6 +732,7 @@ export default function SignUpPage() {
   const removeFailedSelfie = () => {
     // Manual progression only — do not call the API / increment attempts here.
     setSelfieUri(null);
+    setSelfieBase64(null);
     setFaceStatus('idle');
     setError('');
     void openLiveCamera();
@@ -709,6 +757,7 @@ export default function SignUpPage() {
       setFaceStatus('idle');
       setError('');
       setSelfieUri(null);
+      setSelfieBase64(null);
       setFaceVerificationCompleted(false);
       resetOtpState();
       await openLiveCamera();
@@ -724,6 +773,7 @@ export default function SignUpPage() {
       setFaceStatus('idle');
       setError('');
       setSelfieUri(null);
+      setSelfieBase64(null);
       setFaceVerificationCompleted(false);
       resetOtpState();
       await openLiveCamera();
@@ -740,7 +790,11 @@ export default function SignUpPage() {
     setOtpStatus('email_entry');
     setOtpError('');
     setOtpCode('');
-    setOtpEmailInput('');
+    // Display-only — pre-filled from the registered email already on file
+    // (Step 2). The OTP always goes to the backend's stored session email
+    // regardless of this value; it is never editable or sent as the
+    // destination.
+    setOtpEmailInput(ocrData.email || '');
   };
 
   // A 429 (cooldown / resend limit) response carries the server's authoritative
@@ -758,16 +812,11 @@ export default function SignUpPage() {
   const handleSendOtp = async () => {
     if (otpSendInFlight.current) return;
     if (!registrationSessionId) return;
-    const submittedEmail = otpEmailInput.trim();
-    if (!submittedEmail) {
-      setOtpError('Please enter your registered email address.');
-      return;
-    }
     otpSendInFlight.current = true;
     setOtpStatus('sending');
     setOtpError('');
     try {
-      const res = await sendRegistrationOtpRequest(submittedEmail, registrationSessionId);
+      const res = await sendRegistrationOtpRequest(registrationSessionId);
       setOtpStatus('awaiting');
       setOtpCode('');
       setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
@@ -783,12 +832,12 @@ export default function SignUpPage() {
 
   const handleResendOtp = async () => {
     if (otpSendInFlight.current) return;
-    if (!registrationSessionId || !otpEmailInput.trim()) return;
+    if (!registrationSessionId) return;
     otpSendInFlight.current = true;
     setOtpStatus('sending');
     setOtpError('');
     try {
-      const res = await resendRegistrationOtpRequest(otpEmailInput.trim(), registrationSessionId);
+      const res = await resendRegistrationOtpRequest(registrationSessionId);
       setOtpStatus('awaiting');
       setOtpCode('');
       setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
@@ -861,12 +910,14 @@ export default function SignUpPage() {
     }
 
     setPrcStatus('processing');
+    setPrcFaceMatched(false);
     setError('');
 
     try {
       const res = await verifyPrcLicenseRequest(
         `data:image/jpeg;base64,${base64}`,
-        registrationSessionId
+        registrationSessionId,
+        verificationMethod === 'FACE' && selfieBase64 ? `data:image/jpeg;base64,${selfieBase64}` : undefined
       );
 
       if (!res.valid) {
@@ -877,9 +928,20 @@ export default function SignUpPage() {
         return;
       }
 
+      // OCR passed, but if identity was verified via Face this still needs
+      // the selfie to match the licence photo before the step counts as done.
+      if (res.faceMatch && !res.faceMatch.matched) {
+        setPrcStatus('failed');
+        setPrcVerified(false);
+        setPrcData(null);
+        setError(res.faceMatch.message || 'This selfie does not match your PRC card photo. Please retake it.');
+        return;
+      }
+
       // Pre-fill from the card, but never blank out something the nurse typed.
       if (res.registrationNumber) setLicenseNumber(res.registrationNumber);
       setPrcData({ profession: res.profession, expiration: res.validUntil });
+      setPrcFaceMatched(Boolean(res.faceMatch?.matched));
       setPrcStatus('success');
       setPrcVerified(true);
     } catch (err) {
@@ -952,11 +1014,17 @@ export default function SignUpPage() {
       return;
     }
     try {
+      // Prefer the discrete name parts Step 2 now collects directly; fall
+      // back to splitting fullName only for a workflow that still returns
+      // just a combined name.
+      const firstName = ocrData.firstName || ocrData.fullName.split(' ')[0] || '';
+      const lastName = ocrData.lastName || ocrData.fullName.split(' ').slice(-1).join(' ') || '';
+      const middleName = ocrData.middleName || ocrData.fullName.split(' ').slice(1, -1).join(' ') || '';
       await signup({
         name: ocrData.fullName,
-        firstName: ocrData.fullName.split(' ')[0] ?? '',
-        middleName: ocrData.fullName.split(' ').slice(1, -1).join(' ') ?? '',
-        lastName: ocrData.fullName.split(' ').slice(-1).join(' ') ?? '',
+        firstName,
+        middleName,
+        lastName,
         role: role as UserRole,
         email,
         password,
@@ -1057,7 +1125,7 @@ export default function SignUpPage() {
                           <View style={styles.uploadIconCircle}>
                             <CreditCard size={28} color={Colors.blue600} />
                           </View>
-                          <Text style={styles.uploadLabel}>Drag & drop or tap to upload your Hospital ID</Text>
+                          <Text style={styles.uploadLabel}>Drag & drop or tap to upload your PRC ID</Text>
                           <Text style={styles.uploadHint}>Accepted formats: JPG, PNG, PDF · Max 5 MB</Text>
                         </>
                       )}
@@ -1077,7 +1145,7 @@ export default function SignUpPage() {
                     {ocrStatus === 'processing' && (
                       <View style={styles.infoBlue}>
                         <ActivityIndicator size="small" color={Colors.blue600} />
-                        <Text style={styles.infoBlueText}>Scanning Hospital ID and extracting data...</Text>
+                        <Text style={styles.infoBlueText}>Scanning and extracting information...</Text>
                       </View>
                     )}
 
@@ -1085,8 +1153,8 @@ export default function SignUpPage() {
                       <View style={styles.successBox}>
                         <CheckCircle2 size={18} color={Colors.green600} />
                         <View style={styles.successBoxText}>
-                          <Text style={styles.successBoxTitle}>Hospital ID scanned successfully</Text>
-                          <Text style={styles.successBoxDesc}>Employee information extracted. Proceed to review.</Text>
+                          <Text style={styles.successBoxTitle}>PRC ID information extracted successfully</Text>
+                          <Text style={styles.successBoxDesc}>Review your information on the next step.</Text>
                         </View>
                       </View>
                     )}
@@ -1098,7 +1166,7 @@ export default function SignUpPage() {
                 {currentStep === 2 && (
                   <View style={styles.stepBody}>
                     <View style={styles.extractedHeader}>
-                      <Text style={styles.extractedLabel}>Automatically extracted from your Hospital ID</Text>
+                      <Text style={styles.extractedLabel}>Automatically extracted from your PRC ID</Text>
                       <View style={styles.extractedBadge}>
                         <CheckCircle2 size={12} color={Colors.green700} />
                         <Text style={styles.extractedBadgeText}>Information Successfully Extracted</Text>
@@ -1108,19 +1176,20 @@ export default function SignUpPage() {
                     <View style={styles.successBox}>
                       <CheckCircle2 size={16} color={Colors.green600} />
                       <Text style={styles.successBoxDesc}>
-                        These details were read directly from your scanned Hospital ID and cannot be edited.
+                        These details were read directly from your scanned PRC ID and cannot be edited.
                       </Text>
                     </View>
 
                     {[
-                      { label: 'Full Name', value: ocrData.fullName },
-                      { label: 'Employee ID', value: ocrData.employeeId },
-                      { label: 'Hospital Name', value: ocrData.hospitalName },
-                      { label: 'Department', value: ocrData.department },
+                      { label: 'Last Name', value: ocrData.lastName },
+                      { label: 'First Name', value: ocrData.firstName },
+                      { label: 'Middle Name', value: ocrData.middleName },
+                      { label: 'Registration No.', value: ocrData.registrationNumber },
+                      { label: 'Registration Date', value: formatDisplayDate(ocrData.registrationDate) },
+                      { label: 'Valid Until', value: formatDisplayDate(ocrData.validUntil) },
                     ].map((field) => (
                       <Input key={field.label} label={field.label} value={field.value} editable={false} inputWrapperStyle={styles.readOnlyInput} />
                     ))}
-                    <Input label="Position" value={ocrData.position} editable={false} inputWrapperStyle={styles.readOnlyInput} />
                     <Input
                       label="Registered Email Address"
                       value={ocrData.email}
@@ -1336,7 +1405,7 @@ export default function SignUpPage() {
                           <View style={{ flex: 1 }}>
                             <Text style={styles.otpPanelTitle}>Email Verification</Text>
                             <Text style={styles.otpPanelDesc}>
-                              Enter the email address associated with your registration.
+                              We'll send a verification code to your registered email address.
                             </Text>
                           </View>
                         </View>
@@ -1344,16 +1413,10 @@ export default function SignUpPage() {
                         {(otpStatus === 'email_entry' || otpStatus === 'sending') && (
                           <View style={{ gap: 12 }}>
                             <Input
-                              label="Email Address"
-                              value={otpEmailInput}
-                              onChangeText={(v) => {
-                                setOtpEmailInput(v);
-                                setOtpError('');
-                              }}
-                              placeholder="Enter your registered email"
-                              autoCapitalize="none"
-                              keyboardType="email-address"
-                              editable={otpStatus !== 'sending'}
+                              label="Registered Email"
+                              value={otpEmailInput ? maskEmail(otpEmailInput) : ''}
+                              placeholder="Registered email on file"
+                              editable={false}
                             />
                             {otpError ? (
                               <View style={styles.errorBox}>
@@ -1364,7 +1427,7 @@ export default function SignUpPage() {
                             <Button
                               size="lg"
                               onPress={handleSendOtp}
-                              disabled={otpStatus === 'sending' || !otpEmailInput.trim()}
+                              disabled={otpStatus === 'sending'}
                               style={navStyles.continueFull}
                             >
                               {otpStatus === 'sending' ? (
@@ -1496,7 +1559,7 @@ export default function SignUpPage() {
                 {currentStep === 4 && (
                   <View style={styles.stepBody}>
                     <Text style={styles.bodyText}>
-                      Select the role you are registering for. Your selection will be verified against your Hospital ID and PRC license.
+                      Select the role you are registering for. Your selection will be verified against your PRC ID and PRC license.
                     </Text>
                     {ROLE_OPTIONS.map((option) => {
                       const selected = role === option.value;
@@ -1544,6 +1607,7 @@ export default function SignUpPage() {
                         setPrcStatus('idle');
                         setPrcVerified(false);
                         setPrcData(null);
+                        setPrcFaceMatched(false);
                       }}
                       error={fieldErrors.licenseNumber}
                       rightIcon={
@@ -1600,6 +1664,15 @@ export default function SignUpPage() {
                             <Text style={styles.prcLabel}>Expiration Date</Text>
                             <Text style={styles.prcValue}>{prcData.expiration}</Text>
                           </View>
+                          {prcFaceMatched && (
+                            <View style={styles.prcItem}>
+                              <Text style={styles.prcLabel}>Face Match</Text>
+                              <View style={styles.verifiedBadge}>
+                                <CheckCircle2 size={12} color={Colors.green700} />
+                                <Text style={styles.verifiedText}>Matched with PRC photo</Text>
+                              </View>
+                            </View>
+                          )}
                         </View>
                       </View>
                     )}
@@ -1724,7 +1797,7 @@ export default function SignUpPage() {
                         </View>
                       </View>
                       {[
-                        { label: 'Hospital ID Uploaded', done: idUploaded },
+                        { label: 'PRC ID Uploaded', done: idUploaded },
                         { label: 'OCR Information Extracted', done: ocrDone },
                         {
                           label: verificationMethod === 'EMAIL_OTP' ? 'Email OTP Verified' : 'Face Verification Passed',

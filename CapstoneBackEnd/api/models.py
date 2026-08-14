@@ -69,6 +69,9 @@ class NurseProfile(models.Model):
     verification_method = models.CharField(
         max_length=20, choices=VERIFICATION_METHOD_CHOICES, blank=True, default=''
     )
+    prc_verified_at = models.DateTimeField(null=True, blank=True)
+    prc_license_expiry = models.CharField(max_length=20, blank=True, default='')
+    prc_profession = models.CharField(max_length=120, blank=True, default='')
 
     class Meta:
         indexes = [
@@ -483,6 +486,29 @@ class RegistrationSession(models.Model):
     verification_method = models.CharField(
         max_length=20, choices=VERIFICATION_METHOD_CHOICES, blank=True, default=''
     )
+    # PRC nursing-licence verification. Separate from `is_verified` below —
+    # a session proves identity via face/OTP *and* a valid PRC licence via
+    # these fields; SignupSerializer checks both independently.
+    prc_verified = models.BooleanField(default=False)
+    prc_license_number = models.CharField(max_length=50, blank=True, default='')
+    prc_full_name = models.CharField(max_length=200, blank=True, default='')
+    prc_expiry = models.CharField(max_length=20, blank=True, default='')  # native MM/DD/YYYY from OCR
+    prc_profession = models.CharField(max_length=120, blank=True, default='')
+
+    # Step 1/2 (ID Review) — the PRC-ID-shaped fields the n8n identity-verify
+    # workflow extracts, kept separate from the prc_* fields above (which
+    # belong to Step 5's independently-gated, locally-OCR'd PRC licence
+    # scan). Only ever populated after id_field_validation.validate_prc_id_fields
+    # passes — see VerifyIdView.post. Real DateFields, not strings: dates
+    # reach here only once validated as real, parseable dates.
+    id_last_name = models.CharField(max_length=100, blank=True, default='')
+    id_first_name = models.CharField(max_length=100, blank=True, default='')
+    id_middle_name = models.CharField(max_length=100, blank=True, default='')
+    id_registration_no = models.CharField(max_length=50, blank=True, default='')
+    id_registration_date = models.DateField(null=True, blank=True)
+    id_valid_until = models.DateField(null=True, blank=True)
+    id_verification_status = models.CharField(max_length=20, blank=True, default='')
+
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -524,6 +550,11 @@ class FaceVerificationAttempt(models.Model):
         ('ID_NOT_IMAGE', 'Hospital ID not an image (e.g. PDF)'),
         ('INVALID_IMAGE', 'Invalid/corrupt selfie image'),
         ('ID_INVALID_IMAGE', 'Invalid/corrupt Hospital ID image'),
+        ('PRC_NO_FACE', 'No face detected (PRC card)'),
+        ('PRC_MULTIPLE_FACES', 'Multiple faces detected (PRC card)'),
+        ('PRC_BLURRY', 'PRC card photo too blurry'),
+        ('PRC_NOT_IMAGE', 'PRC card not an image (e.g. PDF)'),
+        ('PRC_INVALID_IMAGE', 'Invalid/corrupt PRC card image'),
         ('MISMATCH', 'Face did not match Hospital ID'),
     ]
 

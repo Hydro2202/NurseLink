@@ -145,6 +145,10 @@ class SignupSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 'Identity verification has not been completed. Please pass Face Verification or Email OTP first.'
             )
+        if not session.prc_verified:
+            raise serializers.ValidationError(
+                'PRC license verification has not been completed. Please scan and verify your PRC nursing license first.'
+            )
         return session
 
     def create(self, validated_data):
@@ -181,6 +185,9 @@ class SignupSerializer(serializers.Serializer):
                 middle_name=validated_data.get('middleName') or '',
                 approval_status='pending' if role == 'staff_nurse' else 'approved',
                 verification_method=session.verification_method,
+                prc_verified_at=timezone.now(),
+                prc_license_expiry=session.prc_expiry,
+                prc_profession=session.prc_profession,
             )
             session.user = user
             session.save(update_fields=['user', 'updated_at'])
@@ -255,8 +262,14 @@ class FaceVerificationStatusSerializer(serializers.Serializer):
 
 class SendOtpSerializer(serializers.Serializer):
     registrationSessionId = serializers.UUIDField()
+    # Optional — the OTP always goes to session.email (the backend/database
+    # record), never to this value. If present, it's only cross-checked as a
+    # confirmation the client is showing the nurse the right address; it is
+    # NEVER used as the send destination. Session identity alone is
+    # sufficient to send the OTP.
     email = serializers.EmailField(
-        help_text='Must match the email associated with this registration session.',
+        required=False,
+        help_text='Optional confirmation only — the OTP is always sent to the registration’s stored email.',
     )
 
     def validate(self, attrs):
@@ -269,12 +282,8 @@ class SendOtpSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {'registrationSessionId': 'Email OTP is available only after three failed face verification attempts.'}
             )
-        if not session.email:
-            raise serializers.ValidationError(
-                {'email': 'The registered email is unavailable. Please restart verification.'}
-            )
-        submitted = attrs['email'].strip().lower()
-        if submitted != session.email.strip().lower():
+        submitted = attrs.get('email')
+        if submitted and session.email and submitted.strip().lower() != session.email.strip().lower():
             raise serializers.ValidationError(
                 {
                     'email': (
@@ -1137,10 +1146,21 @@ class KardexRecordSerializer(serializers.ModelSerializer):
 
 
 class VerifyIdSerializer(serializers.Serializer):
-    """Persona steps 1 & 2 — read a Hospital ID photo via the n8n verify-id workflow."""
+    """
+    Persona steps 1 & 2 — read a PRC ID photo via the n8n identity-verify
+    workflow (extract_id branch).
+
+    Accepts the image two ways: multipart/form-data with the file under
+    `prc_id` (preferred — sends real bytes to n8n), or a JSON body with
+    `idImage` as base64 (legacy path, kept for backward compatibility).
+    Exactly one must be present; enforced in `validate()` since DRF fields
+    can't see `request.FILES` on their own.
+    """
 
     idImage = serializers.CharField(
-        help_text='Base64 (optionally data-URI prefixed) photo of the Hospital ID.',
+        required=False,
+        allow_blank=True,
+        help_text='Base64 (optionally data-URI prefixed) photo of the PRC ID. Omit when sending `prc_id` as a file.',
     )
     registrationSessionId = serializers.UUIDField(
         required=False,
@@ -1166,12 +1186,23 @@ class VerifyIdSerializer(serializers.Serializer):
 class VerifyIdResponseSerializer(serializers.Serializer):
     success = serializers.BooleanField()
     verified = serializers.BooleanField(help_text='True when the workflow could read the document.')
+    verificationStatus = serializers.ChoiceField(
+        choices=['verified', 'ocr_incomplete', 'invalid_id', 'unavailable'],
+        required=False,
+        help_text='Machine-readable outcome. Respects the workflow\'s own value if it sends one.',
+    )
     hasPhoto = serializers.BooleanField(
         required=False,
         help_text='False when no portrait was found on the ID — the upload is rejected before OCR.',
     )
     faceCount = serializers.IntegerField(required=False)
     fullName = serializers.CharField(allow_blank=True)
+    lastName = serializers.CharField(allow_blank=True)
+    firstName = serializers.CharField(allow_blank=True)
+    middleName = serializers.CharField(allow_blank=True)
+    registrationNumber = serializers.CharField(allow_blank=True, help_text='PRC registration/licence number.')
+    registrationDate = serializers.CharField(allow_blank=True, help_text='Date the licence was issued/registered.')
+    validUntil = serializers.CharField(allow_blank=True, help_text='Licence expiry date, as read from the ID.')
     employeeId = serializers.CharField(allow_blank=True)
     department = serializers.CharField(allow_blank=True)
     position = serializers.CharField(allow_blank=True)
@@ -1247,6 +1278,15 @@ class VerifyPrcSerializer(serializers.Serializer):
         required=False,
         help_text='Signup session to attach the result to. Optional.',
     )
+    selfie = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text=(
+            'Base64 (optionally data-URI prefixed) selfie captured in Step 3. When the session '
+            'was verified via Face Verification, this is compared against the licence photo and '
+            'is required for `prc_verified` to be set on the session. Omit for Email OTP sessions.'
+        ),
+    )
 
     class Meta:
         ref_name = 'VerifyPrcRequest'
@@ -1269,6 +1309,16 @@ class VerifyPrcResponseSerializer(serializers.Serializer):
     )
     validUntil = serializers.CharField(allow_blank=True, help_text='MM/DD/YYYY.')
     profession = serializers.CharField(allow_blank=True)
+    registrationSessionId = serializers.CharField(required=False, allow_blank=True)
+    faceMatch = serializers.DictField(
+        required=False,
+        allow_null=True,
+        help_text=(
+            'Present only when a selfie was compared against the licence photo: '
+            '{matched: bool, confidence: number 0-100, message: string|null}. '
+            'Null/absent when not required (Email OTP session) or not attempted (no selfie sent).'
+        ),
+    )
 
     class Meta:
         ref_name = 'VerifyPrcResponse'

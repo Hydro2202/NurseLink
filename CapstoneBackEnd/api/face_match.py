@@ -27,8 +27,12 @@ from typing import Optional
 
 import cv2
 import numpy as np
+from django.conf import settings
 
-MAX_FACE_ATTEMPTS = 3
+# Sourced from settings (env-configurable) rather than literals, so both the
+# attempt cap and the match threshold live in exactly one place — see
+# MAX_FACE_VERIFICATION_ATTEMPTS / FACE_MATCH_THRESHOLD in settings.py.
+MAX_FACE_ATTEMPTS = settings.MAX_FACE_VERIFICATION_ATTEMPTS
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB, matches the documented upload limit
 
 MODEL_DIR = Path(__file__).resolve().parent / 'ml_models'
@@ -44,7 +48,10 @@ SFACE_URL = (
     'models/face_recognition_sface/face_recognition_sface_2021dec.onnx'
 )
 
-COSINE_MATCH_THRESHOLD = 0.363  # official OpenCV Zoo SFace verification threshold
+# Official OpenCV Zoo SFace verification threshold by default (0.363) — see
+# FACE_MATCH_THRESHOLD in settings.py for why this must not be confused with
+# the separate, differently-scaled FACE_SIMILARITY_THRESHOLD (n8n/Rekognition).
+COSINE_MATCH_THRESHOLD = settings.FACE_MATCH_THRESHOLD
 BLUR_VARIANCE_THRESHOLD = 15.0  # Laplacian variance on the 112x112 aligned crop
 DETECTOR_SCORE_THRESHOLD = 0.6
 
@@ -181,7 +188,13 @@ class FaceVerificationOutcome:
     countable: bool  # whether this outcome should consume one of the 3 attempts
 
 
-def verify_face_against_id(selfie_data: str, id_data: str) -> FaceVerificationOutcome:
+def verify_face_against_id(
+    selfie_data: str,
+    id_data: str,
+    *,
+    id_label: str = 'Hospital ID photo',
+    reason_prefix: str = 'ID_',
+) -> FaceVerificationOutcome:
     """
     Full pipeline: decode both images, detect a single clear face in each,
     then compare embeddings.
@@ -190,6 +203,11 @@ def verify_face_against_id(selfie_data: str, id_data: str) -> FaceVerificationOu
     blurry, corrupt image, ID issues, or mismatch) is countable=True and
     consumes one of the three face-verification attempts. Camera permission /
     UI / network failures that never reach this function do not count.
+
+    ``id_label``/``reason_prefix`` let a caller compare the selfie against a
+    document other than the Hospital ID (e.g. a PRC licence) and get
+    correctly-worded messages and reason codes for it, without duplicating
+    this pipeline. Defaults reproduce the original Hospital-ID behaviour.
     """
     try:
         id_img = _decode_image(id_data, allow_pdf_hint=True)
@@ -198,21 +216,21 @@ def verify_face_against_id(selfie_data: str, id_data: str) -> FaceVerificationOu
             return FaceVerificationOutcome(
                 False,
                 0.0,
-                'ID_NOT_IMAGE',
-                'Face verification requires a photo (JPG or PNG) of your Hospital ID. '
-                'PDF uploads can’t be used for face matching — please re-upload your ID as an image in Step 1.',
+                f'{reason_prefix}NOT_IMAGE',
+                f'Face verification requires a photo (JPG or PNG) of your {id_label}. '
+                'PDF uploads can’t be used for face matching — please re-upload it as an image.',
                 countable=True,
             )
-        return FaceVerificationOutcome(False, 0.0, 'ID_INVALID_IMAGE', str(exc), countable=True)
+        return FaceVerificationOutcome(False, 0.0, f'{reason_prefix}INVALID_IMAGE', str(exc), countable=True)
 
     try:
         selfie_img = _decode_image(selfie_data)
     except InvalidImageError as exc:
         return FaceVerificationOutcome(False, 0.0, 'INVALID_IMAGE', str(exc), countable=True)
 
-    id_check = _detect_single_face(id_img, label='Hospital ID photo')
+    id_check = _detect_single_face(id_img, label=id_label)
     if not id_check.ok:
-        return FaceVerificationOutcome(False, 0.0, f'ID_{id_check.reason}', id_check.message, countable=True)
+        return FaceVerificationOutcome(False, 0.0, f'{reason_prefix}{id_check.reason}', id_check.message, countable=True)
 
     selfie_check = _detect_single_face(selfie_img, label='photo')
     if not selfie_check.ok:

@@ -7,7 +7,6 @@ hit nurselink.app.n8n.cloud from CI. Live reachability is a separate,
 deliberate check: ``python manage.py check_n8n``.
 """
 
-from unittest import skip
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -71,9 +70,6 @@ class VerifyIdEndpointTests(TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    @skip(
-        'temporary not use - rai: the n8n verify-id OCR call is commented out in VerifyIdView, so these assert behaviour that returns when it is restored'
-    )
     @patch('api.views.call_workflow')
     def test_posts_to_verify_id_workflow_and_maps_fields(self, mock_call):
         mock_call.return_value = {
@@ -100,15 +96,192 @@ class VerifyIdEndpointTests(TestCase):
         # Bare base64 — the data-URI prefix is stripped for the vision API.
         self.assertEqual(payload['idImage'], 'AAAA')
         self.assertEqual(payload['documentType'], 'hospital_id')
-        # And mapped the OCR fields the wizard pre-fills.
-        self.assertTrue(res.data['verified'])
+        # Field mapping still works for the legacy employee-badge shape, but
+        # a response with no PRC-style fields (no last/first name, no
+        # registration number, no dates) can no longer claim "verified" —
+        # strict field validation is the sole authority for that now,
+        # regardless of what the workflow itself asserts.
+        self.assertFalse(res.data['verified'])
         self.assertEqual(res.data['fullName'], 'Sarah Johnson')
         self.assertEqual(res.data['department'], 'ICU')
         self.assertTrue(res.data['registrationSessionId'])
 
-    @skip(
-        'temporary not use - rai: the n8n verify-id OCR call is commented out in VerifyIdView, so these assert behaviour that returns when it is restored'
-    )
+    @patch('api.views.call_workflow')
+    def test_maps_prc_style_name_and_licence_fields_for_step_2(self, mock_call):
+        """
+        Step 2 (ID Review) shows Last/First/Middle name, Registration No.,
+        Registration Date and Valid Until — a PRC-shaped OCR response, not
+        the employee-badge shape. Registration Date and Valid Until are
+        distinct fields, not aliases of each other.
+        """
+        mock_call.return_value = {
+            'lastName': 'Dela Cruz',
+            'firstName': 'Maria',
+            'middleName': 'Santos',
+            'registrationNumber': '0123456',
+            'registrationDate': '06/15/2022',
+            'validUntil': '06/30/2027',
+        }
+
+        res = self.client.post(
+            '/api/auth/verify-id/', {'idImage': 'data:image/jpeg;base64,AAAA'}, format='json'
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['verified'])
+        self.assertEqual(res.data['verificationStatus'], 'verified')
+        self.assertEqual(res.data['lastName'], 'Dela Cruz')
+        self.assertEqual(res.data['firstName'], 'Maria')
+        self.assertEqual(res.data['middleName'], 'Santos')
+        self.assertEqual(res.data['registrationNumber'], '0123456')
+        # Normalized to ISO by strict validation — not the raw OCR format.
+        self.assertEqual(res.data['registrationDate'], '2022-06-15')
+        self.assertEqual(res.data['validUntil'], '2027-06-30')
+        self.assertNotEqual(res.data['registrationDate'], res.data['validUntil'])
+        # No fullName came back from the workflow, so one is assembled from
+        # the parts for anything downstream that only reads fullName.
+        self.assertEqual(res.data['fullName'], 'Maria Santos Dela Cruz')
+
+    @patch('api.views.call_workflow')
+    def test_reads_fields_nested_under_a_data_key(self, mock_call):
+        """
+        {"success": true, "data": {"last_name": ..., ...}} — the shape a
+        workflow returns when it nests results instead of a flat object.
+        """
+        mock_call.return_value = {
+            'success': True,
+            'verification_status': 'verified',
+            'data': {
+                'last_name': 'Dela Cruz',
+                'first_name': 'Juan',
+                'middle_name': 'Santos',
+                'registration_no': '1234567',
+                'registration_date': '2022-06-15',
+                'valid_until': '2027-06-15',
+            },
+        }
+
+        res = self.client.post(
+            '/api/auth/verify-id/', {'idImage': 'data:image/jpeg;base64,AAAA'}, format='json'
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['verified'])
+        # The workflow's own verification_status is respected as-is.
+        self.assertEqual(res.data['verificationStatus'], 'verified')
+        self.assertEqual(res.data['lastName'], 'Dela Cruz')
+        self.assertEqual(res.data['registrationNumber'], '1234567')
+        self.assertEqual(res.data['registrationDate'], '2022-06-15')
+        self.assertEqual(res.data['validUntil'], '2027-06-15')
+
+    @patch('api.views.call_workflow')
+    def test_partial_extraction_is_validation_error_not_verified(self, mock_call):
+        """A name with no registration number/dates fails strict validation, not full verification."""
+        mock_call.return_value = {'lastName': 'Dela Cruz', 'firstName': 'Maria'}
+
+        res = self.client.post(
+            '/api/auth/verify-id/', {'idImage': 'data:image/jpeg;base64,AAAA'}, format='json'
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data['verified'])
+        self.assertEqual(res.data['verificationStatus'], 'validation_error')
+        self.assertEqual(res.data['status'], 'validation_error')
+        self.assertTrue(res.data['message'])
+        self.assertIn('registration_no', res.data['errors'])
+        self.assertIn('registration_date', res.data['errors'])
+        self.assertIn('valid_until', res.data['errors'])
+        # The two names that WERE present were valid, so they are not flagged.
+        self.assertNotIn('last_name', res.data['errors'])
+        self.assertNotIn('first_name', res.data['errors'])
+
+    @patch('api.views.call_workflow')
+    def test_reported_bug_end_to_end_is_rejected_and_never_persisted(self, mock_call):
+        """
+        Reproduces the exact reported failure through the full view: a
+        workflow that claims success but garbled the labels, putting
+        "REGISTRATION DATE May 21" in last_name and "2005" in first_name.
+        Even though the workflow itself says verified=True, the session must
+        come out of this with no id_* fields populated at all.
+        """
+        mock_call.return_value = {
+            'verified': True,  # the workflow itself is wrong about this
+            'lastName': 'REGISTRATION DATE May 21',
+            'firstName': '2005',
+            'middleName': '',
+            'registrationNumber': '1234567',
+            'validUntil': 'May 21, 2005',
+            # registrationDate never separately extracted by whatever
+            # produced this — matches the bug report exactly.
+        }
+        existing = RegistrationSession.objects.create()
+
+        res = self.client.post(
+            '/api/auth/verify-id/',
+            {'idImage': 'data:image/jpeg;base64,AAAA', 'registrationSessionId': str(existing.session_id)},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data['success'])
+        self.assertFalse(res.data['verified'])
+        self.assertEqual(res.data['verificationStatus'], 'validation_error')
+        self.assertIn('last_name', res.data['errors'])
+        self.assertIn('first_name', res.data['errors'])
+
+        existing.refresh_from_db()
+        self.assertEqual(existing.id_last_name, '')
+        self.assertEqual(existing.id_first_name, '')
+        self.assertIsNone(existing.id_registration_date)
+        self.assertIsNone(existing.id_valid_until)
+        self.assertEqual(existing.id_verification_status, '')
+
+    @patch('api.views.call_workflow')
+    def test_correct_extraction_end_to_end_is_persisted_to_session(self, mock_call):
+        mock_call.return_value = {
+            'lastName': 'Mangulabnan',
+            'firstName': 'Lawrence',
+            'middleName': 'Yanggao',
+            'registrationNumber': '1234567',
+            'registrationDate': 'May 21, 2005',
+            'validUntil': 'May 21, 2010',
+        }
+        existing = RegistrationSession.objects.create()
+
+        res = self.client.post(
+            '/api/auth/verify-id/',
+            {'idImage': 'data:image/jpeg;base64,AAAA', 'registrationSessionId': str(existing.session_id)},
+            format='json',
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['success'])
+        self.assertTrue(res.data['verified'])
+        self.assertEqual(res.data['verificationStatus'], 'verified')
+        self.assertEqual(res.data['registrationDate'], '2005-05-21')
+        self.assertEqual(res.data['validUntil'], '2010-05-21')
+
+        existing.refresh_from_db()
+        self.assertEqual(existing.id_last_name, 'Mangulabnan')
+        self.assertEqual(existing.id_first_name, 'Lawrence')
+        self.assertEqual(existing.id_middle_name, 'Yanggao')
+        self.assertEqual(existing.id_registration_no, '1234567')
+        self.assertEqual(existing.id_registration_date.isoformat(), '2005-05-21')
+        self.assertEqual(existing.id_valid_until.isoformat(), '2010-05-21')
+        self.assertEqual(existing.id_verification_status, 'verified')
+
+    @patch('api.views.call_workflow')
+    def test_empty_extraction_is_invalid_id(self, mock_call):
+        mock_call.return_value = {}
+
+        res = self.client.post(
+            '/api/auth/verify-id/', {'idImage': 'data:image/jpeg;base64,AAAA'}, format='json'
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data['verified'])
+        self.assertEqual(res.data['verificationStatus'], 'invalid_id')
+
     @patch('api.views.call_workflow')
     def test_creates_session_and_stores_email(self, mock_call):
         mock_call.return_value = {'verified': True, 'fullName': 'Sarah Johnson',
@@ -138,9 +311,6 @@ class VerifyIdEndpointTests(TestCase):
         self.assertEqual(res.data['registrationSessionId'], str(existing.session_id))
         self.assertEqual(RegistrationSession.objects.count(), 1)
 
-    @skip(
-        'temporary not use - rai: the n8n verify-id OCR call is commented out in VerifyIdView, so these assert behaviour that returns when it is restored'
-    )
     @patch('api.views.call_workflow')
     def test_unreadable_document_is_not_verified(self, mock_call):
         mock_call.return_value = {}
@@ -151,9 +321,6 @@ class VerifyIdEndpointTests(TestCase):
         self.assertFalse(res.data['verified'])
         self.assertIn('retake', res.data['message'].lower())
 
-    @skip(
-        'temporary not use - rai: the n8n verify-id OCR call is commented out in VerifyIdView, so these assert behaviour that returns when it is restored'
-    )
     @patch('api.views.call_workflow', side_effect=N8nWorkflowOffline(workflow='verify_id'))
     def test_offline_workflow_returns_503_not_500(self, _mock_call):
         res = self.client.post('/api/auth/verify-id/', {'idImage': 'x'}, format='json')
@@ -164,9 +331,105 @@ class VerifyIdEndpointTests(TestCase):
         self.assertIn('Execute workflow', res.data['detail'])
 
     def test_id_image_is_required(self):
+        # Neither a multipart `prc_id` file nor a legacy `idImage` string —
+        # a clean, explicit error, not a raw serializer field error.
         res = self.client.post('/api/auth/verify-id/', {}, format='json')
         self.assertEqual(res.status_code, 400)
-        self.assertIn('idImage', res.data)
+        self.assertFalse(res.data['success'])
+        self.assertEqual(res.data['message'], 'PRC ID image is required.')
+
+
+class VerifyIdMultipartUploadTests(TestCase):
+    """
+    POST /api/auth/verify-id/ with a real multipart file (field name
+    `prc_id`) — the preferred path, sending actual image bytes to n8n
+    instead of a base64 string in a JSON body.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        patcher = patch(
+            'api.views.check_id_has_portrait',
+            return_value=PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _uploaded_file(self, name='prc_id.jpg', content_type='image/jpeg', size=2048):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        return SimpleUploadedFile(name, b'\xff' * size, content_type=content_type)
+
+    @patch('api.views.call_workflow_multipart')
+    def test_sends_real_file_bytes_not_a_filename_string(self, mock_multipart):
+        mock_multipart.return_value = {
+            'success': True,
+            'verification_status': 'verified',
+            'data': {
+                'last_name': 'Dela Cruz',
+                'first_name': 'Juan',
+                'middle_name': 'Santos',
+                'registration_no': '1234567',
+                'registration_date': '2022-06-15',
+                'valid_until': '2027-06-15',
+            },
+        }
+
+        res = self.client.post(
+            '/api/auth/verify-id/', {'prc_id': self._uploaded_file()}, format='multipart'
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['verified'])
+        self.assertEqual(res.data['lastName'], 'Dela Cruz')
+        self.assertEqual(res.data['registrationDate'], '2022-06-15')
+
+        mock_multipart.assert_called_once()
+        call_kwargs = mock_multipart.call_args.kwargs
+        self.assertEqual(mock_multipart.call_args.args[0], 'verify_id')
+        sent_files = call_kwargs['files']
+        self.assertIn('prc_id', sent_files)
+        filename, file_obj, content_type = sent_files['prc_id']
+        self.assertEqual(filename, 'prc_id.jpg')
+        self.assertEqual(content_type, 'image/jpeg')
+        # The actual bytes are readable from the stream handed to n8n — not
+        # just the filename and not a data-URI string.
+        self.assertTrue(hasattr(file_obj, 'read'))
+        # form fields (action, documentType, etc.) travel as `data`, not `files`.
+        self.assertEqual(call_kwargs['data']['action'], 'extract_id')
+
+    def test_rejects_empty_upload(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        empty = SimpleUploadedFile('prc_id.jpg', b'', content_type='image/jpeg')
+        res = self.client.post('/api/auth/verify-id/', {'prc_id': empty}, format='multipart')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['message'], 'PRC ID image is required.')
+
+    def test_rejects_unsupported_file_type(self):
+        pdf = self._uploaded_file(name='prc_id.pdf', content_type='application/pdf')
+        res = self.client.post('/api/auth/verify-id/', {'prc_id': pdf}, format='multipart')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('Unsupported file format', res.data['message'])
+
+    def test_rejects_oversized_file(self):
+        oversized = self._uploaded_file(size=6 * 1024 * 1024)
+        res = self.client.post('/api/auth/verify-id/', {'prc_id': oversized}, format='multipart')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('too large', res.data['message'].lower())
+
+    @patch('api.views.call_workflow_multipart')
+    def test_n8n_error_on_multipart_path_is_handled_like_json_path(self, mock_multipart):
+        mock_multipart.side_effect = N8nWorkflowOffline(workflow='verify_id')
+
+        res = self.client.post(
+            '/api/auth/verify-id/', {'prc_id': self._uploaded_file()}, format='multipart'
+        )
+
+        self.assertEqual(res.status_code, 503)
+        self.assertFalse(res.data['success'])
+        self.assertEqual(res.data['verificationStatus'], 'unavailable')
 
 
 @override_settings(N8N_FACE_VERIFY_ENABLED=True, N8N_FACE_VERIFY_FALLBACK_LOCAL=False)
@@ -176,7 +439,12 @@ class FaceVerifyWorkflowTests(TestCase):
     def setUp(self):
         cache.clear()  # throttle history leaks in from real traffic
         self.client = APIClient()
-        self.session = RegistrationSession.objects.create(email='nurse@hospital.com')
+        # Face verification now requires Step 1's ID validation to have
+        # already passed — these tests are about the face-match logic
+        # specifically, so start from a session that's already cleared it.
+        self.session = RegistrationSession.objects.create(
+            email='nurse@hospital.com', id_verification_status='verified'
+        )
 
     def _post(self):
         return self.client.post(

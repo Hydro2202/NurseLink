@@ -192,12 +192,23 @@ N8N_WEBHOOK_PREFIX = os.environ.get('N8N_WEBHOOK_PREFIX', 'webhook-test').strip(
 
 N8N_WEBHOOKS = {
     # Autocharting — raw assessment input in, structured nursing note out.
+    # The only signup-unrelated workflow; everything else below is signup.
     'structure_chart': os.environ.get('N8N_STRUCTURE_CHART_PATH', 'structure-chart'),
-    # Persona steps 1 & 2 — Hospital ID photo in, OCR'd identity fields out.
-    'verify_id': os.environ.get('N8N_VERIFY_ID_PATH', 'verify-id'),
-    # Face ID — selfie + ID photo in, match decision out.
-    'face_verify': os.environ.get('N8N_FACE_VERIFY_PATH', 'face-verify'),
+    # Signup steps 1-3 (PRC ID extraction + Face ID) share one consolidated
+    # workflow, 'identity-verify'. Each call sends an `action` field
+    # ('extract_id' or 'verify_face' — must match the workflow's Route
+    # Action node exactly) so it can branch — see VerifyIdView.post and
+    # _run_face_match in views.py. Both default to the same path; they are
+    # still separate env vars in case they ever diverge.
+    'verify_id': os.environ.get('N8N_VERIFY_ID_PATH', 'identity-verify'),
+    'face_verify': os.environ.get('N8N_FACE_VERIFY_PATH', 'identity-verify'),
 }
+
+# Direct full-URL override for the verify_id webhook specifically, for
+# environments that want to point PRC ID extraction somewhere independent of
+# N8N_BASE_URL/N8N_WEBHOOK_PREFIX. Leave blank to use the composed URL above
+# (which already resolves to the same address when unset).
+N8N_IDENTITY_VERIFY_WEBHOOK = os.environ.get('N8N_IDENTITY_VERIFY_WEBHOOK', '').strip()
 
 # n8n workflows that call an LLM or a vision model are slow; a short timeout
 # would abort a run that was going to succeed.
@@ -217,6 +228,29 @@ N8N_FACE_VERIFY_ENABLED = env_bool('N8N_FACE_VERIFY_ENABLED', True)
 # failing the request. Off by default: a silent fallback would hide a broken
 # workflow behind results that look fine.
 N8N_FACE_VERIFY_FALLBACK_LOCAL = env_bool('N8N_FACE_VERIFY_FALLBACK_LOCAL', False)
+
+# Best-effort similarity threshold (0-100) forwarded to the n8n face-verify
+# workflow as `similarityThreshold`. Whether it does anything depends on
+# whether that workflow's AWS Rekognition CompareFaces node is wired to read
+# it — Django cannot inspect or control the deployed n8n workflow. Does NOT
+# affect the local OpenCV fallback: FACE_MATCH_THRESHOLD below is a
+# calibrated cosine-similarity value on a different 0.0-1.0 scale and must
+# not be derived from this number — the two engines are not comparable.
+FACE_SIMILARITY_THRESHOLD = int(os.environ.get('FACE_SIMILARITY_THRESHOLD', '85'))
+
+# Cosine-similarity threshold for the LOCAL OpenCV SFace matcher only (used
+# when N8N_FACE_VERIFY_ENABLED=False, or as the n8n fallback). 0.363 is the
+# official OpenCV Zoo SFace verification threshold for this exact model —
+# do not change it casually; a different value changes the real false-accept
+# / false-reject balance of the matcher, not just a display number.
+FACE_MATCH_THRESHOLD = float(os.environ.get('FACE_MATCH_THRESHOLD', '0.363'))
+
+# Face verification attempt cap before Email OTP is offered as a fallback.
+MAX_FACE_VERIFICATION_ATTEMPTS = int(os.environ.get('MAX_FACE_VERIFICATION_ATTEMPTS', '3'))
+
+# Registration OTP lifecycle (api/otp_service.py).
+OTP_EXPIRATION_MINUTES = int(os.environ.get('OTP_EXPIRATION_MINUTES', '5'))
+OTP_RESEND_COOLDOWN_SECONDS = int(os.environ.get('OTP_RESEND_COOLDOWN_SECONDS', '60'))
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'NurseLink API',
@@ -272,3 +306,23 @@ SPECTACULAR_SETTINGS = {
 # Open Scalar docs in the browser when running `python manage.py runserver`
 OPEN_API_DOCS_ON_START = DEBUG
 API_DOCS_URL = '/api/docs/'
+
+# Without this, Django's default logging config drops every logger.info()
+# call below WARNING — the n8n request/response trail (api/views.py,
+# api/n8n_client.py) would silently never appear anywhere, console included.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'api': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}

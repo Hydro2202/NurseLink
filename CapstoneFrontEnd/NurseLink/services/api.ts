@@ -182,7 +182,16 @@ export type FaceVerificationStatusResponse = {
 export type VerifyIdResponse = {
   success: boolean;
   verified: boolean;
+  verificationStatus?: 'verified' | 'validation_error' | 'invalid_id' | 'unavailable';
+  /** Present only when verificationStatus is 'validation_error' — one message per bad field. */
+  errors?: Record<string, string>;
   fullName: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  registrationNumber: string;
+  registrationDate: string;
+  validUntil: string;
   employeeId: string;
   department: string;
   position: string;
@@ -233,17 +242,26 @@ export type VerifyPrcResponse = {
   licenseNumber: string;
   validUntil: string;
   profession: string;
+  registrationSessionId?: string;
+  /**
+   * Present only when a selfie was compared against the licence photo.
+   * Null/absent when not required (Email OTP session) or not attempted
+   * (no selfie sent).
+   */
+  faceMatch?: { matched: boolean; confidence: number; message: string | null } | null;
 };
 
 export async function verifyPrcLicenseRequest(
   image: string,
-  registrationSessionId?: string | null
+  registrationSessionId?: string | null,
+  selfie?: string | null
 ): Promise<VerifyPrcResponse> {
   return apiRequest<VerifyPrcResponse>('/auth/verify-prc/', {
     method: 'POST',
     body: {
       image,
       ...(registrationSessionId ? { registrationSessionId } : {}),
+      ...(selfie ? { selfie } : {}),
     },
     auth: false,
   });
@@ -287,6 +305,7 @@ export async function faceVerificationStatusRequest(params: {
 
 export type OtpSendResponse = {
   success: boolean;
+  status?: 'otp_sent' | 'email_not_registered';
   message: string;
   expiresIn?: number;
   resendCooldown?: number;
@@ -294,24 +313,27 @@ export type OtpSendResponse = {
   retryAfter?: number;
 };
 
+// `email` is optional and, when present, is only cross-checked server-side
+// against the registration's stored address — it is never used as the send
+// destination. The session id alone identifies where the OTP goes.
 export async function sendRegistrationOtpRequest(
-  email: string,
-  registrationSessionId: string
+  registrationSessionId: string,
+  email?: string
 ): Promise<OtpSendResponse> {
   return apiRequest<OtpSendResponse>('/auth/send-registration-otp/', {
     method: 'POST',
-    body: { email, registrationSessionId },
+    body: email ? { email, registrationSessionId } : { registrationSessionId },
     auth: false,
   });
 }
 
 export async function resendRegistrationOtpRequest(
-  email: string,
-  registrationSessionId: string
+  registrationSessionId: string,
+  email?: string
 ): Promise<OtpSendResponse> {
   return apiRequest<OtpSendResponse>('/auth/resend-registration-otp/', {
     method: 'POST',
-    body: { email, registrationSessionId },
+    body: email ? { email, registrationSessionId } : { registrationSessionId },
     auth: false,
   });
 }
@@ -319,6 +341,7 @@ export async function resendRegistrationOtpRequest(
 export type OtpVerifyResponse = {
   verified: boolean;
   success: boolean;
+  status?: 'email_verified';
   method?: 'EMAIL_OTP';
   message: string;
 };
