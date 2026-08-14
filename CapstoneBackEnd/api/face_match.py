@@ -53,7 +53,11 @@ SFACE_URL = (
 # the separate, differently-scaled FACE_SIMILARITY_THRESHOLD (n8n/Rekognition).
 COSINE_MATCH_THRESHOLD = settings.FACE_MATCH_THRESHOLD
 BLUR_VARIANCE_THRESHOLD = 15.0  # Laplacian variance on the 112x112 aligned crop
-DETECTOR_SCORE_THRESHOLD = 0.6
+# ID-card portraits occupy a small part of a phone image. 0.60 was too
+# strict for otherwise clear printed portraits, causing the comparison never
+# to reach the real face matcher. YuNet still performs landmark validation,
+# so 0.45 remains conservative while admitting those smaller portraits.
+DETECTOR_SCORE_THRESHOLD = 0.45
 
 _detector: Optional[cv2.FaceDetectorYN] = None
 _recognizer: Optional[cv2.FaceRecognizerSF] = None

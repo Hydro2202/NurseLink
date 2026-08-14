@@ -197,8 +197,25 @@ export type VerifyIdResponse = {
   position: string;
   hospitalName: string;
   email: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  registrationNumber: string;
+  registrationDate: string;
+  validUntil: string;
   roleMatch?: boolean | null;
-  confidence?: number | null;
+  /** Per-field OCR confidence, 0-1, keyed by field name. */
+  confidence?: Record<string, number> | number | null;
+  overallConfidence?: number;
+  /** Field names the nurse must confirm before anything is saved. */
+  needsReview?: string[];
+  /** Required fields OCR could not read at all. */
+  missingRequired?: string[];
+  duplicateScan?: boolean;
+  n8nStatus?: '' | 'success' | 'failed' | 'skipped';
+  n8nError?: string;
+  attemptNumber?: number;
+  hasPhoto?: boolean;
   message?: string;
   registrationSessionId: string;
 };

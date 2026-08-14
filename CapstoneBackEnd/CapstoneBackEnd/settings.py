@@ -11,7 +11,20 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-load_dotenv(BASE_DIR / '.env')
+# In development the .env file is the source of truth: a developer who edits
+# it and restarts expects the new value. load_dotenv defaults to override=False
+# — it skips any variable already in the environment — and runserver's
+# auto-reloader inherits os.environ from the parent process, so values loaded
+# at first start survive every reload and edits appear to be ignored.
+#
+# In production the opposite is correct: real environment variables set by the
+# host (systemd, Docker, the PaaS) must win over a stale file on disk. DEBUG is
+# read straight from the environment here because settings has not defined it
+# yet at this point in the module.
+_DEBUG_FROM_ENV = os.environ.get('DJANGO_DEBUG', 'True').strip().lower() in (
+    '1', 'true', 'yes', 'on'
+)
+load_dotenv(BASE_DIR / '.env', override=_DEBUG_FROM_ENV)
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -167,6 +180,12 @@ EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'NurseLink <no-reply@nurselink.local>')
 # Locmem/console backends are allowed only for automated tests via EMAIL_BACKEND override.
 
+# Local-development escape hatch for the registration OTP. When True and no
+# SMTP host is configured, the code is written to the server log instead of
+# being emailed, so the OTP fallback can be exercised without an SMTP account.
+# Development only — a code in a log is readable by anyone with log access.
+ALLOW_CONSOLE_OTP = env_bool('ALLOW_CONSOLE_OTP', False)
+
 # --- PRC licence OCR ----------------------------------------------------
 # api/prc_ocr.py shells out to the Tesseract binary, which is a separate
 # install from the pytesseract Python package. Leave blank when tesseract is
@@ -194,12 +213,20 @@ N8N_WEBHOOKS = {
     # Autocharting — raw assessment input in, structured nursing note out.
     # The only signup-unrelated workflow; everything else below is signup.
     'structure_chart': os.environ.get('N8N_STRUCTURE_CHART_PATH', 'structure-chart'),
+<<<<<<< HEAD
     # Signup steps 1-3 (PRC ID extraction + Face ID) share one consolidated
     # workflow, 'identity-verify'. Each call sends an `action` field
     # ('extract_id' or 'verify_face' — must match the workflow's Route
     # Action node exactly) so it can branch — see VerifyIdView.post and
     # _run_face_match in views.py. Both default to the same path; they are
     # still separate env vars in case they ever diverge.
+=======
+    # Persona steps 1 & 2 and Face ID share ONE n8n workflow — a single
+    # "identity-verify" webhook routed internally by an `action` field
+    # ("extract_id" / "verify_face") in the request body, not by separate
+    # URL paths. Both keys resolve to the same endpoint; the call site is
+    # what sets `action`. -rai
+>>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
     'verify_id': os.environ.get('N8N_VERIFY_ID_PATH', 'identity-verify'),
     'face_verify': os.environ.get('N8N_FACE_VERIFY_PATH', 'identity-verify'),
 }
@@ -222,7 +249,7 @@ N8N_WEBHOOK_TOKEN = os.environ.get('N8N_WEBHOOK_TOKEN', '').strip()
 # False uses the bundled local OpenCV SFace comparison in api/face_match.py.
 # Attempt counting, the 3-strike lockout and audit logging stay server-side
 # either way — only the match decision moves.
-N8N_FACE_VERIFY_ENABLED = env_bool('N8N_FACE_VERIFY_ENABLED', True)
+N8N_FACE_VERIFY_ENABLED = env_bool('N8N_FACE_VERIFY_ENABLED', False)
 
 # When n8n is unreachable, fall back to the local OpenCV matcher instead of
 # failing the request. Off by default: a silent fallback would hide a broken

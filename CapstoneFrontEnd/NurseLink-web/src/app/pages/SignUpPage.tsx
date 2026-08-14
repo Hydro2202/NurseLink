@@ -41,7 +41,10 @@ import {
   resetFaceVerificationRequest,
   sendRegistrationOtpRequest,
   verifyIdRequest,
+<<<<<<< HEAD
   verifyPrcLicenseRequest,
+=======
+>>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
   verifyRegistrationOtpRequest,
 } from '../api/nurselink';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
@@ -165,6 +168,12 @@ type OcrData = {
   department: string;
   position: string;
   email: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  registrationNumber: string;
+  registrationDate: string;
+  validUntil: string;
 };
 
 const roleOptions: Array<{ value: SelectedRole; title: string; detail: string; emoji: string }> = [
@@ -434,7 +443,11 @@ export default function SignUpPage() {
 
   const [hospitalIdPreview, setHospitalIdPreview] = useState<string | null>(null);
   const [hospitalIdError, setHospitalIdError] = useState('');
+<<<<<<< HEAD
   const [ocrStatus, setOcrStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
+=======
+  const [ocrStatus, setOcrStatus] = useState<'idle' | 'processing' | 'success' | 'failed'>('idle');
+>>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
   const [ocrData, setOcrData] = useState<OcrData | null>(null);
 
   const [cameraState, setCameraState] = useState<'idle' | 'requesting' | 'active' | 'denied' | 'not-supported'>('idle');
@@ -588,6 +601,7 @@ export default function SignUpPage() {
     faceVerificationInFlight.current = false;
   }, []);
 
+<<<<<<< HEAD
   // Posts the ID photo to the n8n identity-verify workflow (VerifyIdView,
   // action: 'ocr') and maps its response onto the fields Step 2 displays.
   const runIdVerification = useCallback(
@@ -611,17 +625,43 @@ export default function SignUpPage() {
           setHospitalIdError(
             detail || res.message || 'Unable to extract information from the PRC ID. Please capture a clearer image.'
           );
+=======
+  const runIdVerification = useCallback(
+    async (dataUri: string) => {
+      setOcrStatus('processing');
+      try {
+        const res = await verifyIdRequest(dataUri, {
+          registrationSessionId,
+          documentType: 'hospital_id',
+          expectedRole: selectedRole === 'nurse' ? 'staff_nurse' : selectedRole === 'supervisor' ? 'supervisor' : '',
+        });
+
+        setRegistrationSessionId(res.registrationSessionId);
+
+        if (!res.verified) {
+          setOcrStatus('failed');
+          setHospitalIdError(res.message || 'Could not read the ID clearly. Please retake the photo.');
+>>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
           return;
         }
 
         setOcrData({
           fullName: res.fullName,
+<<<<<<< HEAD
+=======
+          employeeId: res.employeeId,
+          hospitalName: res.hospitalName,
+          department: res.department,
+          position: res.position,
+          email: res.email,
+>>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
           lastName: res.lastName,
           firstName: res.firstName,
           middleName: res.middleName,
           registrationNumber: res.registrationNumber,
           registrationDate: res.registrationDate,
           validUntil: res.validUntil,
+<<<<<<< HEAD
           employeeId: res.employeeId,
           hospitalName: res.hospitalName,
           department: res.department,
@@ -635,6 +675,16 @@ export default function SignUpPage() {
       }
     },
     [registrationSessionId]
+=======
+        });
+        setOcrStatus('success');
+      } catch (err) {
+        setOcrStatus('failed');
+        setHospitalIdError(extractErrorMessage(err, 'ID verification is unavailable right now. Please try again.'));
+      }
+    },
+    [registrationSessionId, selectedRole]
+>>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
   );
 
   const handleHospitalFile = (file: File) => {
@@ -656,9 +706,15 @@ export default function SignUpPage() {
 
     const reader = new FileReader();
     reader.onload = (event) => {
+<<<<<<< HEAD
       const dataUrl = event.target?.result as string;
       setHospitalIdPreview(dataUrl);
       void runIdVerification(dataUrl);
+=======
+      const dataUri = event.target?.result as string;
+      setHospitalIdPreview(dataUri);
+      void runIdVerification(dataUri);
+>>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
     };
     reader.readAsDataURL(file);
   };
@@ -1271,12 +1327,21 @@ export default function SignUpPage() {
 
                     <div className="grid gap-4 sm:grid-cols-2">
                       {[
+<<<<<<< HEAD
                         { label: 'Last Name', value: ocrData.lastName },
                         { label: 'First Name', value: ocrData.firstName },
                         { label: 'Middle Name', value: ocrData.middleName },
                         { label: 'Registration No.', value: ocrData.registrationNumber },
                         { label: 'Registration Date', value: formatDisplayDate(ocrData.registrationDate) },
                         { label: 'Valid Until', value: formatDisplayDate(ocrData.validUntil) },
+=======
+                        { label: 'Last name', value: ocrData.lastName },
+                        { label: 'First name', value: ocrData.firstName },
+                        { label: 'Middle Name', value: ocrData.middleName },
+                        { label: 'Registration no', value: ocrData.registrationNumber },
+                        { label: 'Registration date', value: ocrData.registrationDate },
+                        { label: 'Valid until', value: ocrData.validUntil },
+>>>>>>> 5cb8a4a92cee891b8b4b72df6f24e6df515ac886
                       ].map((field) => (
                         <div key={field.label} className="space-y-1.5">
                           <Label className="text-xs font-medium text-gray-500">{field.label}</Label>

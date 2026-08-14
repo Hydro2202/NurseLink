@@ -616,3 +616,98 @@ class RegistrationOTP(models.Model):
 
     def __str__(self):
         return f'OTP({self.email}, active={self.is_active}, verified={self.verified})'
+
+
+class IdScanAttempt(models.Model):
+    """
+    One row per ID-scan attempt — successful or not.
+
+    The failures are the point. A log that only records successes cannot
+    answer the questions that actually matter during a rollout: which ID
+    layouts the OCR keeps misreading, which field is most often flagged for
+    review, and whether n8n is dropping requests. Storing only the outcome
+    (never the image) keeps this auditable without becoming a store of
+    identity documents.
+    """
+
+    STATUS_CHOICES = [
+        ('success', 'Success'),
+        ('needs_review', 'Needs review'),
+        ('rejected', 'Rejected'),
+        ('error', 'Error'),
+    ]
+    N8N_STATUS_CHOICES = [
+        ('', 'Not attempted'),
+        ('success', 'Success'),
+        ('failed', 'Failed'),
+        ('skipped', 'Skipped'),
+    ]
+
+    session = models.ForeignKey(
+        RegistrationSession,
+        on_delete=models.CASCADE,
+        related_name='id_scan_attempts',
+        null=True,
+        blank=True,
+    )
+    attempt_number = models.PositiveSmallIntegerField(default=1)
+    document_type = models.CharField(max_length=40, blank=True, default='hospital_id')
+
+    # --- OCR outcome ---
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='error', db_index=True)
+    ocr_ran = models.BooleanField(default=False)
+    registration_number = models.CharField(max_length=50, blank=True, default='', db_index=True)
+    last_name = models.CharField(max_length=100, blank=True, default='')
+    first_name = models.CharField(max_length=100, blank=True, default='')
+    middle_name = models.CharField(max_length=100, blank=True, default='')
+    registration_date = models.CharField(max_length=30, blank=True, default='')
+    valid_until = models.CharField(max_length=30, blank=True, default='')
+    overall_confidence = models.FloatField(default=0.0)
+    #: Field names the reviewer must confirm, and which required ones were blank.
+    needs_review = models.JSONField(default=list, blank=True)
+    missing_required = models.JSONField(default=list, blank=True)
+
+    # --- portrait / face outcome ---
+    portrait_present = models.BooleanField(null=True, blank=True)
+    face_verified = models.BooleanField(null=True, blank=True)
+    face_confidence = models.FloatField(null=True, blank=True)
+
+    # --- n8n outcome ---
+    n8n_status = models.CharField(
+        max_length=20, choices=N8N_STATUS_CHOICES, blank=True, default='', db_index=True
+    )
+    n8n_action = models.CharField(max_length=40, blank=True, default='')
+    n8n_error = models.TextField(blank=True, default='')
+
+    failure_reason = models.CharField(max_length=60, blank=True, default='')
+    message = models.TextField(blank=True, default='')
+    #: Set when this scan repeats the registration number of an earlier one.
+    duplicate_of = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='duplicates'
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['session', '-created_at']),
+            models.Index(fields=['status', '-created_at']),
+            models.Index(fields=['registration_number']),
+        ]
+
+    def __str__(self):
+        who = self.registration_number or self.last_name or 'unknown'
+        return f'IdScanAttempt({who}, {self.status}, #{self.attempt_number})'
+
+    @property
+    def verified(self) -> bool:
+        """
+        Overall pass. Deliberately conservative: every required step must
+        have actually succeeded, so a partial read or a failed face check can
+        never surface as "Verified".
+        """
+        return (
+            self.status == 'success'
+            and self.portrait_present is True
+            and not self.missing_required
+        )

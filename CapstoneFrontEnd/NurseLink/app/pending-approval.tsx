@@ -2,22 +2,25 @@ import React from 'react';
 import { View, Text, StyleSheet, Image, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { CheckCircle2, ChevronLeft, Clock, Eye, ShieldCheck } from 'lucide-react-native';
+import { CheckCircle2, ChevronRight, ShieldCheck } from 'lucide-react-native';
 import { Button } from '../components/Button';
 import { Card, CardContent } from '../components/Card';
 import { Colors, Radius, Shadows } from '../constants/colors';
-
-const PENDING_STEPS = ['PRC License Verification Pending', 'Account Approval Pending'];
 
 export default function PendingApprovalPage() {
   const router = useRouter();
   const { method } = useLocalSearchParams<{ method?: string }>();
 
+  // Every step of the wizard has already succeeded by the time this screen
+  // renders — the account is created and active, so there is nothing left
+  // pending and nothing for an administrator to approve.
   const COMPLETED_STEPS = [
     'Identity Verification Completed',
     'Hospital ID Successfully Verified',
     method === 'EMAIL_OTP' ? 'Email OTP Verification Completed' : 'Face Verification Completed',
+    'License Number Captured',
     'Registration Information Submitted',
+    'Account Created and Activated',
   ];
 
   return (
@@ -37,20 +40,20 @@ export default function PendingApprovalPage() {
                 <ShieldCheck size={32} color={Colors.white} />
               </View>
               <View style={styles.clockBadge}>
-                <Clock size={14} color={Colors.orange700} />
+                <CheckCircle2 size={14} color={Colors.green700} />
               </View>
             </View>
-            <Text style={styles.headerTitle}>Registration Submitted</Text>
+            <Text style={styles.headerTitle}>Account Created</Text>
             <Text style={styles.headerSubtitle}>
-              Your registration has been received and is awaiting administrator verification.
+              Your NurseLink account is ready. Sign in with the email and password you just set.
             </Text>
           </View>
 
           <CardContent style={styles.content}>
             <View style={styles.statusBadgeWrap}>
               <View style={styles.statusBadge}>
-                <Clock size={14} color={Colors.orange700} />
-                <Text style={styles.statusBadgeText}>Status: Pending Administrator Approval</Text>
+                <CheckCircle2 size={14} color={Colors.green700} />
+                <Text style={styles.statusBadgeText}>Status: Active — Ready to Sign In</Text>
               </View>
             </View>
 
@@ -63,50 +66,23 @@ export default function PendingApprovalPage() {
                   <Text style={styles.completedText}>{label}</Text>
                 </View>
               ))}
-              {PENDING_STEPS.map((label) => (
-                <View key={label} style={styles.pendingStep}>
-                  <View style={styles.pendingLeft}>
-                    <View style={styles.pendingIcon}>
-                      <Clock size={14} color={Colors.white} />
-                    </View>
-                    <Text style={styles.pendingText}>{label}</Text>
-                  </View>
-                  <View style={styles.pendingTag}>
-                    <Text style={styles.pendingTagText}>Pending</Text>
-                  </View>
-                </View>
-              ))}
             </View>
 
             <View style={styles.infoBox}>
               <View style={styles.infoHeader}>
                 <ShieldCheck size={16} color={Colors.blue600} />
-                <Text style={styles.infoTitle}>Your account is currently under review.</Text>
+                <Text style={styles.infoTitle}>You're all set.</Text>
               </View>
               <Text style={styles.infoBody}>
-                An administrator will verify your PRC License Number and confirm your employment details before
-                activating your account.
+                Your identity was verified during registration, so your account is active
+                straight away — no waiting for approval.
               </Text>
-              <Text style={styles.infoBody}>
-                You will receive a notification once your account has been <Text style={styles.infoBold}>approved</Text> or{' '}
-                <Text style={styles.infoBold}>rejected</Text>.
-              </Text>
-              <View style={styles.infoFooter}>
-                <Clock size={14} color={Colors.blue600} />
-                <Text style={styles.infoFooterText}>
-                  Estimated verification time: <Text style={styles.infoBold}>Within 24–48 hours</Text>
-                </Text>
-              </View>
             </View>
 
             <View style={styles.actions}>
               <Button onPress={() => router.replace('/login')} size="lg" style={styles.primaryButton}>
-                <ChevronLeft size={18} color={Colors.white} />
-                <Text style={styles.primaryButtonText}>Return to Login</Text>
-              </Button>
-              <Button onPress={() => router.replace('/login')} variant="outline" size="lg" style={styles.secondaryButton}>
-                <Eye size={18} color={Colors.orange700} />
-                <Text style={styles.secondaryButtonText}>View Registration Status</Text>
+                <Text style={styles.primaryButtonText}>Proceed to Login</Text>
+                <ChevronRight size={18} color={Colors.white} />
               </Button>
             </View>
           </CardContent>

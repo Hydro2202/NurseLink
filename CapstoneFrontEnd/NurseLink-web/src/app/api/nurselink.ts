@@ -201,6 +201,51 @@ export async function faceVerificationStatusRequest(params: {
   });
 }
 
+/**
+ * Persona steps 1 & 2 — the backend forwards the ID photo to the n8n
+ * verify-id workflow and returns the fields it read.
+ */
+export type VerifyIdResponse = {
+  success: boolean;
+  verified: boolean;
+  fullName: string;
+  employeeId: string;
+  department: string;
+  position: string;
+  hospitalName: string;
+  email: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  registrationNumber: string;
+  registrationDate: string;
+  validUntil: string;
+  roleMatch?: boolean | null;
+  confidence?: number | null;
+  message?: string;
+  registrationSessionId: string;
+};
+
+export async function verifyIdRequest(
+  idImage: string,
+  options?: {
+    registrationSessionId?: string | null;
+    documentType?: 'hospital_id' | 'prc_license';
+    expectedRole?: UserRole | '';
+  }
+): Promise<VerifyIdResponse> {
+  return apiRequest<VerifyIdResponse>('/auth/verify-id/', {
+    method: 'POST',
+    body: {
+      idImage,
+      documentType: options?.documentType ?? 'hospital_id',
+      ...(options?.registrationSessionId ? { registrationSessionId: options.registrationSessionId } : {}),
+      ...(options?.expectedRole ? { expectedRole: options.expectedRole } : {}),
+    },
+    auth: false,
+  });
+}
+
 export type OtpSendResponse = {
   success: boolean;
   status?: 'otp_sent' | 'email_not_registered';
