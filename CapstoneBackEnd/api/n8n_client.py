@@ -183,7 +183,10 @@ def call_workflow(workflow: str, payload: dict, *, timeout: float | None = None)
                 f'"{workflow}" did not respond within {seconds:g}s.', workflow=workflow
             ) from exc
         logger.warning('n8n unreachable workflow=%s reason=%s', workflow, exc.reason)
-        raise N8nUnavailable(f'Could not reach n8n: {exc.reason}', workflow=workflow) from exc
+        # The raw socket/DNS error goes to the log only — never into the
+        # client-facing message, which could otherwise echo internal
+        # networking details back to whoever triggered the request.
+        raise N8nUnavailable(workflow=workflow) from exc
 
     if not raw.strip():
         # A workflow ending in a node with no "Respond to Webhook" returns 200
@@ -250,10 +253,12 @@ def call_workflow_multipart(
         raise N8nTimeout(f'"{workflow}" did not respond within {seconds:g}s.', workflow=workflow) from exc
     except requests.exceptions.ConnectionError as exc:
         logger.warning('n8n unreachable workflow=%s reason=%s', workflow, exc)
-        raise N8nUnavailable(f'Could not reach n8n: {exc}', workflow=workflow) from exc
+        # Same rule as call_workflow: the raw exception is logged, never
+        # echoed back to the client.
+        raise N8nUnavailable(workflow=workflow) from exc
     except requests.exceptions.RequestException as exc:
         logger.warning('n8n request failed workflow=%s reason=%s', workflow, exc)
-        raise N8nUnavailable(f'Could not reach n8n: {exc}', workflow=workflow) from exc
+        raise N8nUnavailable(workflow=workflow) from exc
 
     logger.info('n8n response status: %s workflow=%s', response.status_code, workflow)
 

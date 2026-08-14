@@ -207,7 +207,10 @@ def _run_tesseract(image: np.ndarray) -> str:
                 '(Windows: https://github.com/UB-Mannheim/tesseract/wiki).'
             ) from exc
         except RuntimeError as exc:  # pragma: no cover - tesseract internal failure
-            raise PrcOcrError(f'OCR failed: {exc}') from exc
+            # Tesseract's own RuntimeError text can include local temp-file
+            # paths — log it server-side only, never in the client response.
+            logger.warning('Tesseract OCR runtime failure: %s', exc)
+            raise PrcOcrError('OCR failed. Please try again with a clearer image.') from exc
 
     return '\n'.join(chunks)
 
