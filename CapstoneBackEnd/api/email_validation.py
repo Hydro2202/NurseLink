@@ -40,6 +40,8 @@ DISPOSABLE_DOMAINS = frozenset(
 class EmailValidationError(Exception):
     """Raised with a user-facing message when an email fails validation."""
 
+    default_detail = INVALID_EMAIL_MESSAGE
+
 
 def validate_registration_email(email: str) -> str:
     """Validate syntax + deliverability, returning the normalized address or raising EmailValidationError."""

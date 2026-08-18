@@ -75,11 +75,64 @@ PROFESSION_MATCH_RATIO = 0.80
 
 
 class PrcOcrError(Exception):
-    """OCR could not run at all — distinct from "ran and the card was wrong"."""
+    """
+    OCR could not run at all — distinct from "ran and the card was wrong".
+
+    ``default_detail`` is what the API layer shows a client — a fixed class
+    attribute, never the raw message (Tesseract's own RuntimeError text can
+    include local temp-file paths).
+    """
+
+    default_detail = 'OCR is temporarily unavailable. Please try again.'
+
+
+class TesseractNotInstalledError(PrcOcrError):
+    default_detail = (
+        'Tesseract OCR is not installed on the server. Install it and set '
+        'TESSERACT_CMD in CapstoneBackEnd/.env '
+        '(Windows: https://github.com/UB-Mannheim/tesseract/wiki).'
+    )
+
+
+class TesseractRuntimeFailureError(PrcOcrError):
+    default_detail = 'OCR failed. Please try again with a clearer image.'
 
 
 class InvalidImageError(ValueError):
-    """The upload was not a decodable image."""
+    """
+    The upload was not a decodable image.
+
+    Each concrete reason below is its own subclass with a fixed
+    ``default_detail`` string, matching this class's own raise-site message
+    verbatim, so the API layer can read a safe class attribute instead of
+    the exception's own message — see api/views.py's VerifyPrcLicenseView.
+    """
+
+    default_detail = 'Could not process the uploaded image. Please try again.'
+
+
+class MissingPrcImageError(InvalidImageError):
+    default_detail = 'No image supplied.'
+
+
+class InvalidBase64PrcImageError(InvalidImageError):
+    default_detail = 'Image is not valid base64.'
+
+
+class EmptyPrcImageError(InvalidImageError):
+    default_detail = 'Image is empty.'
+
+
+class PrcImageTooLargeError(InvalidImageError):
+    default_detail = 'Image is larger than 10MB.'
+
+
+class PdfNotSupportedPrcImageError(InvalidImageError):
+    default_detail = 'PDF uploads cannot be scanned. Please upload a JPG or PNG photo.'
+
+
+class PrcImageDecodeError(InvalidImageError):
+    default_detail = 'Image could not be decoded. Please retake the photo.'
 
 
 @dataclass
@@ -133,7 +186,7 @@ class PrcScanResult:
 def _decode_image(image_data: str) -> np.ndarray:
     """Base64 (with or without a data-URI prefix) to a BGR array."""
     if not image_data:
-        raise InvalidImageError('No image supplied.')
+        raise MissingPrcImageError('No image supplied.')
 
     payload = image_data.strip()
     if payload.startswith('data:'):
@@ -142,18 +195,18 @@ def _decode_image(image_data: str) -> np.ndarray:
     try:
         raw = base64.b64decode(payload, validate=False)
     except (binascii.Error, ValueError) as exc:
-        raise InvalidImageError('Image is not valid base64.') from exc
+        raise InvalidBase64PrcImageError('Image is not valid base64.') from exc
 
     if not raw:
-        raise InvalidImageError('Image is empty.')
+        raise EmptyPrcImageError('Image is empty.')
     if len(raw) > MAX_IMAGE_BYTES:
-        raise InvalidImageError('Image is larger than 10MB.')
+        raise PrcImageTooLargeError('Image is larger than 10MB.')
     if raw[:4] == b'%PDF':
-        raise InvalidImageError('PDF uploads cannot be scanned. Please upload a JPG or PNG photo.')
+        raise PdfNotSupportedPrcImageError('PDF uploads cannot be scanned. Please upload a JPG or PNG photo.')
 
     image = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
     if image is None:
-        raise InvalidImageError('Image could not be decoded. Please retake the photo.')
+        raise PrcImageDecodeError('Image could not be decoded. Please retake the photo.')
     return image
 
 
@@ -201,7 +254,7 @@ def _run_tesseract(image: np.ndarray) -> str:
         try:
             chunks.append(pytesseract.image_to_string(image, config=f'--oem 3 --psm {psm}'))
         except TesseractNotFoundError as exc:
-            raise PrcOcrError(
+            raise TesseractNotInstalledError(
                 'Tesseract OCR is not installed on the server. Install it and set '
                 'TESSERACT_CMD in CapstoneBackEnd/.env '
                 '(Windows: https://github.com/UB-Mannheim/tesseract/wiki).'
@@ -210,7 +263,7 @@ def _run_tesseract(image: np.ndarray) -> str:
             # Tesseract's own RuntimeError text can include local temp-file
             # paths — log it server-side only, never in the client response.
             logger.warning('Tesseract OCR runtime failure: %s', exc)
-            raise PrcOcrError('OCR failed. Please try again with a clearer image.') from exc
+            raise TesseractRuntimeFailureError('OCR failed. Please try again with a clearer image.') from exc
 
     return '\n'.join(chunks)
 

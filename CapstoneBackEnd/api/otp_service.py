@@ -34,11 +34,24 @@ class OtpCooldownError(Exception):
 
 
 class OtpDeliveryError(Exception):
-    pass
+    """
+    ``default_detail`` is what the API layer shows a client — a fixed class
+    attribute, matching this class's own raise-site message verbatim.
+    """
+
+    default_detail = "We couldn't send the verification code. Please try again."
+
+
+class OtpNotConfiguredError(OtpDeliveryError):
+    default_detail = (
+        'Email delivery is not configured on the server. '
+        'Set EMAIL_HOST, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, and DEFAULT_FROM_EMAIL '
+        'in the backend .env, then restart the API.'
+    )
 
 
 class OtpResendLimitError(Exception):
-    pass
+    default_detail = 'Maximum resend attempts reached. Please restart face verification.'
 
 
 def _generate_code() -> str:
@@ -60,7 +73,7 @@ def _send_otp_email(email: str, code: str) -> None:
     # anywhere real: a code in a log is a code anyone with log access can use.
     if not getattr(settings, 'ALLOW_CONSOLE_OTP', False):
         if 'console' in backend or not host:
-            raise OtpDeliveryError(
+            raise OtpNotConfiguredError(
                 'Email delivery is not configured on the server. '
                 'Set EMAIL_HOST, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, and DEFAULT_FROM_EMAIL '
                 'in the backend .env, then restart the API.'

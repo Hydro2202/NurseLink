@@ -2097,7 +2097,7 @@ const styles = StyleSheet.create({
   selfieWrap: { borderRadius: Radius.lg, overflow: 'hidden', position: 'relative' },
   selfieImage: { width: '100%', height: 220, backgroundColor: Colors.gray900 },
   selfieOverlay: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.5)',
     alignItems: 'center',
     justifyContent: 'center',

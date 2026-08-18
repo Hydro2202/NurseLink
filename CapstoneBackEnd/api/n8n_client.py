@@ -93,6 +93,22 @@ class N8nInvalidResponse(N8nError):
     default_detail = 'The n8n workflow returned a response that was not valid JSON.'
 
 
+class N8nNoFaceVerdict(N8nInvalidResponse):
+    """
+    The face-verify workflow answered 2xx but without a usable {matched,
+    confidence} verdict — most often a Webhook node left on "Respond:
+    Immediately" instead of "Using Respond to Webhook Node". Its own class
+    (rather than a raise-time message) so this configuration hint is a fixed
+    string on the class, not something callers reconstruct from exc.
+    """
+
+    default_detail = (
+        'The face-verify workflow returned no match result. Set its Webhook node to '
+        'respond "Using Respond to Webhook Node" and return {"matched": true|false, '
+        '"confidence": 0-1}.'
+    )
+
+
 def webhook_url(workflow: str) -> str:
     """
     Full URL for a workflow key, or '' when it is not configured.
@@ -334,10 +350,19 @@ def strip_data_uri(value: str) -> str:
 
 
 def error_response_body(exc: N8nError) -> dict:
-    """Uniform JSON body for a failed n8n call, shared by all three integrations."""
+    """
+    Uniform JSON body for a failed n8n call, shared by all three integrations.
+
+    ``detail`` is deliberately the exception *class's* fixed ``default_detail``
+    rather than ``str(exc)``. Some subclasses build their instance message
+    with details like the raw HTTP status or a truncated n8n response body
+    (see call_workflow) — useful in logs, not something to hand back to a
+    client. default_detail is a plain string literal on the class itself, so
+    this never carries anything computed from a request or from n8n's reply.
+    """
     return {
         'success': False,
-        'detail': str(exc),
+        'detail': exc.default_detail,
         'source': 'n8n',
         'workflow': exc.workflow,
         'workflowUrl': webhook_url(exc.workflow) if exc.workflow else '',

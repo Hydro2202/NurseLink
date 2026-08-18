@@ -64,11 +64,56 @@ _recognizer: Optional[cv2.FaceRecognizerSF] = None
 
 
 class FaceModelError(Exception):
-    """Raised when the ONNX model files can't be loaded or downloaded."""
+    """
+    Raised when the ONNX model files can't be loaded or downloaded.
+
+    ``default_detail`` is what the API layer shows a client — a fixed class
+    attribute, never the raw message (which can include a local file path).
+    """
+
+    default_detail = 'Face verification service is temporarily unavailable. Please try again later.'
 
 
 class InvalidImageError(ValueError):
-    pass
+    """
+    Base class for a request whose image payload couldn't be used.
+
+    Each concrete reason below is its own subclass with a fixed
+    ``default_detail`` string, so the API layer can hand a client a safe,
+    specific reason (PDF vs. too large vs. undecodable, etc.) without ever
+    reading the exception's own message/args — see api/views.py's
+    PortraitImageError handling.
+    """
+
+    default_detail = 'Could not process the uploaded image. Please try again.'
+
+
+class MissingImageError(InvalidImageError):
+    default_detail = 'No image data provided.'
+
+
+class UnsupportedImageFormatError(InvalidImageError):
+    default_detail = 'Unsupported image format.'
+
+
+class PdfNotSupportedImageError(InvalidImageError):
+    default_detail = 'PDF uploads are not supported. Please upload a JPG or PNG photo.'
+
+
+class InvalidBase64ImageError(InvalidImageError):
+    default_detail = 'Image data is not valid base64.'
+
+
+class ImageTooSmallError(InvalidImageError):
+    default_detail = 'Image data is too small to be a valid photo.'
+
+
+class ImageTooLargeError(InvalidImageError):
+    default_detail = 'Image is too large. Maximum file size is 10 MB.'
+
+
+class ImageDecodeError(InvalidImageError):
+    default_detail = 'Could not decode image. Please upload a valid JPG or PNG.'
 
 
 def _ensure_model(path: Path, url: str) -> None:
@@ -108,33 +153,36 @@ def _get_recognizer() -> cv2.FaceRecognizerSF:
 def _decode_image(image_data: str, *, allow_pdf_hint: bool = False) -> np.ndarray:
     """Decode a base64 / data-URI image into a BGR OpenCV image."""
     if not image_data or not isinstance(image_data, str):
-        raise InvalidImageError('No image data provided.')
+        raise MissingImageError('No image data provided.')
 
     payload = image_data.strip()
     if payload.startswith('data:'):
         header, _, rest = payload.partition(',')
+        # verify_face_against_id special-cases this exact message to give a
+        # PDF-specific hint — keep the literal 'PDF' text so that check
+        # (`str(exc) == 'PDF'`) keeps working unchanged.
         if allow_pdf_hint and 'application/pdf' in header:
-            raise InvalidImageError('PDF')
+            raise PdfNotSupportedImageError('PDF')
         if 'image/' not in header:
-            raise InvalidImageError('Unsupported image format.')
+            raise UnsupportedImageFormatError('Unsupported image format.')
         payload = rest
     if not payload:
-        raise InvalidImageError('No image data provided.')
+        raise MissingImageError('No image data provided.')
 
     try:
         raw = base64.b64decode(payload, validate=True)
     except (binascii.Error, ValueError) as exc:
-        raise InvalidImageError('Image data is not valid base64.') from exc
+        raise InvalidBase64ImageError('Image data is not valid base64.') from exc
 
     if len(raw) < 500:
-        raise InvalidImageError('Image data is too small to be a valid photo.')
+        raise ImageTooSmallError('Image data is too small to be a valid photo.')
     if len(raw) > MAX_IMAGE_BYTES:
-        raise InvalidImageError('Image is too large. Maximum file size is 10 MB.')
+        raise ImageTooLargeError('Image is too large. Maximum file size is 10 MB.')
 
     array = np.frombuffer(raw, dtype=np.uint8)
     img = cv2.imdecode(array, cv2.IMREAD_COLOR)
     if img is None:
-        raise InvalidImageError('Could not decode image. Please upload a valid JPG or PNG.')
+        raise ImageDecodeError('Could not decode image. Please upload a valid JPG or PNG.')
     return img
 
 

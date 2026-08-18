@@ -33,6 +33,7 @@ from .face_match import (
 from .n8n_client import (
     N8nError,
     N8nInvalidResponse,
+    N8nNoFaceVerdict,
     call_workflow,
     call_workflow_multipart,
     configured_workflows,
@@ -453,13 +454,7 @@ def _run_face_match(
         # check *and* consume one of three attempts — locking a nurse out over
         # a workflow misconfiguration. Absence of a verdict is not a verdict.
         if not _has_face_verdict(result):
-            raise N8nInvalidResponse(
-                'The face-verify workflow returned no match result. Set its Webhook node to '
-                'respond "Using Respond to Webhook Node" and return {"matched": true|false, '
-                '"confidence": 0-1}.',
-                workflow='face_verify',
-                payload=result,
-            )
+            raise N8nNoFaceVerdict(workflow='face_verify', payload=result)
         return _face_outcome_from_n8n(result)
     except N8nError as exc:
         if settings.N8N_FACE_VERIFY_FALLBACK_LOCAL:
@@ -672,7 +667,7 @@ class FaceVerificationView(APIView):
             return Response(
                 {
                     **error_response_body(exc),
-                    'message': str(exc),
+                    'message': exc.default_detail,
                     'countable': False,
                     **_face_session_payload(session, matched=False, confidence=0),
                 },
@@ -680,10 +675,11 @@ class FaceVerificationView(APIView):
             )
         except FaceModelError as exc:
             # Model/service failure is not a completed validation attempt.
+            logger.error('Face verification model unavailable: %s', exc)
             return Response(
                 {
                     'success': False,
-                    'message': str(exc),
+                    'message': exc.default_detail,
                     'countable': False,
                     **_face_session_payload(session, matched=False, confidence=0),
                 },
@@ -1050,7 +1046,7 @@ class VerifyIdView(APIView):
                     'verified': False,
                     'verificationStatus': 'invalid_id',
                     'hasPhoto': False,
-                    'message': str(exc),
+                    'message': exc.default_detail,
                     'registrationSessionId': str(session.session_id),
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1067,7 +1063,7 @@ class VerifyIdView(APIView):
                     'success': False,
                     'verified': False,
                     'verificationStatus': 'unavailable',
-                    'message': str(exc),
+                    'message': exc.default_detail,
                     'registrationSessionId': str(session.session_id),
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1304,14 +1300,14 @@ class VerifyPrcLicenseView(APIView):
             result = scan_prc_license(data['image'])
         except InvalidImageError as exc:
             return Response(
-                {'valid': False, 'message': str(exc)},
+                {'valid': False, 'message': exc.default_detail},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except PrcOcrError as exc:
             # Server-side capability problem — do not report it as a bad upload.
             logger.error('PRC OCR unavailable: %s', exc)
             return Response(
-                {'valid': False, 'message': str(exc)},
+                {'valid': False, 'message': exc.default_detail},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
@@ -1354,7 +1350,7 @@ class VerifyPrcLicenseView(APIView):
                 payload['faceMatch'] = {
                     'matched': False,
                     'confidence': 0,
-                    'message': str(exc) or 'Face comparison is temporarily unavailable. Please try again.',
+                    'message': exc.default_detail,
                 }
                 return Response(payload)
 
@@ -1432,14 +1428,18 @@ class SendRegistrationOtpView(APIView):
         try:
             issue_otp(session)
         except EmailValidationError as exc:
-            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'success': False, 'message': exc.default_detail}, status=status.HTTP_400_BAD_REQUEST)
         except OtpCooldownError as exc:
             return Response(
-                {'success': False, 'message': str(exc), 'retryAfter': exc.retry_after},
+                {
+                    'success': False,
+                    'message': f'Please wait {exc.retry_after}s before requesting another code.',
+                    'retryAfter': exc.retry_after,
+                },
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
         except OtpDeliveryError as exc:
-            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+            return Response({'success': False, 'message': exc.default_detail}, status=status.HTTP_502_BAD_GATEWAY)
 
         return Response(
             {
@@ -1486,16 +1486,22 @@ class ResendRegistrationOtpView(APIView):
         try:
             issue_otp(session, is_resend=True)
         except EmailValidationError as exc:
-            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'success': False, 'message': exc.default_detail}, status=status.HTTP_400_BAD_REQUEST)
         except OtpCooldownError as exc:
             return Response(
-                {'success': False, 'message': str(exc), 'retryAfter': exc.retry_after},
+                {
+                    'success': False,
+                    'message': f'Please wait {exc.retry_after}s before requesting another code.',
+                    'retryAfter': exc.retry_after,
+                },
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
         except OtpResendLimitError as exc:
-            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            return Response(
+                {'success': False, 'message': exc.default_detail}, status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
         except OtpDeliveryError as exc:
-            return Response({'success': False, 'message': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+            return Response({'success': False, 'message': exc.default_detail}, status=status.HTTP_502_BAD_GATEWAY)
 
         return Response(
             {
