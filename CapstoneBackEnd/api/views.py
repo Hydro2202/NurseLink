@@ -105,6 +105,7 @@ from .serializers import (
     NotificationSerializer,
     PatientAssignmentSerializer,
     PatientSerializer,
+    RegistrationEmailSerializer,
     ResendOtpSerializer,
     SendOtpSerializer,
     SignupSerializer,
@@ -515,6 +516,42 @@ class FaceVerificationStatusView(APIView):
             )
 
         return Response(_face_session_payload(session, success=True))
+
+
+class RegistrationEmailView(APIView):
+    """
+    Persists the registered email collected on Step 2 (ID Review) to
+    RegistrationSession.email — the single source SendRegistrationOtpView and
+    VerifyRegistrationOtpView read from. Without this call session.email
+    never gets set for a normal PRC-ID signup (OCR has no email field to
+    extract), so the OTP fallback would have nothing to send to.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'registration_otp_send'
+
+    @extend_schema(
+        request=RegistrationEmailSerializer,
+        tags=['Auth'],
+        summary='Save the registered email for a registration session (Step 2)',
+        auth=None,
+    )
+    def post(self, request):
+        serializer = RegistrationEmailSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        session = RegistrationSession.objects.filter(session_id=data['registrationSessionId']).first()
+        if session is None:
+            return Response(
+                {'success': False, 'message': 'Registration session not found. Please restart verification.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        session.email = data['email'].lower().strip()
+        session.save(update_fields=['email', 'updated_at'])
+        return Response({'success': True, 'registrationSessionId': str(session.session_id)})
 
 
 class FaceVerificationView(APIView):

@@ -51,9 +51,9 @@ import {
   faceVerificationStatusRequest,
   resendRegistrationOtpRequest,
   resetFaceVerificationRequest,
+  saveRegistrationEmailRequest,
   sendRegistrationOtpRequest,
   verifyIdRequest,
-  verifyPrcLicenseRequest,
   verifyRegistrationOtpRequest,
 } from '../services/api';
 
@@ -165,10 +165,10 @@ const otpStyles = StyleSheet.create({
   boxDisabled: { backgroundColor: Colors.gray100, color: Colors.gray500 },
 });
 
-type WizardStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type WizardStep = 1 | 2 | 3 | 4 | 5;
 type ProcessStatus = 'idle' | 'processing' | 'success' | 'failed';
 
-const STEP_LABELS = ['PRC ID', 'ID Review', 'Face Check', 'Role', 'PRC License', 'Role Check', 'Credentials'];
+const STEP_LABELS = ['PRC ID', 'ID Review', 'Face Check', 'Role', 'Credentials'];
 
 const STEP_TITLES = [
   'PRC Identity Verification',
@@ -182,9 +182,7 @@ const STEP_DESCRIPTIONS = [
   'Scan your PRC ID to automatically extract your information.',
   'Review your extracted information. These fields are read-only.',
   'Capture a live selfie to confirm your identity.',
-  'Select the role you are registering for. It must match your verified employment information.',
-  'Upload or scan your PRC Professional License to verify it.',
-  'Confirming your selected role matches your PRC ID and PRC License records.',
+  'Select the role you are registering for.',
   'Set your login credentials to complete registration.',
 ];
 
@@ -203,8 +201,6 @@ const ROLE_OPTIONS: Array<{ label: string; value: UserRole; emoji: string; detai
   },
 ];
 
-const NURSE_KEYWORDS = ['nurse', 'registered nurse', 'staff nurse'];
-const SUPERVISOR_KEYWORDS = ['supervisor', 'head nurse', 'nursing supervisor', 'charge nurse'];
 
 const defaultOcrData = {
   fullName: '',
@@ -231,15 +227,6 @@ function formatDisplayDate(iso: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
   const [year, month, day] = iso.split('-');
   return `${month}/${day}/${year}`;
-}
-
-function getRoleMatch(position: string, selectedRole: UserRole | '') {
-  if (!selectedRole || !position) return false;
-  const normalized = position.toLowerCase();
-  const matchesNurse = NURSE_KEYWORDS.some((k) => normalized.includes(k));
-  const matchesSupervisor = SUPERVISOR_KEYWORDS.some((k) => normalized.includes(k));
-  if (selectedRole === 'staff_nurse') return matchesNurse;
-  return matchesSupervisor;
 }
 
 function StepStepper({ current, completedThrough }: { current: WizardStep; completedThrough: WizardStep }) {
@@ -350,9 +337,9 @@ export default function SignUpPage() {
   const [currentStep, setCurrentStep] = useState<WizardStep>(1);
   const [hospitalIdCompleted, setHospitalIdCompleted] = useState(false);
   const [idReviewCompleted, setIdReviewCompleted] = useState(false);
+  const [idReviewSaving, setIdReviewSaving] = useState(false);
   const [faceVerificationCompleted, setFaceVerificationCompleted] = useState(false);
   const [roleSelected, setRoleSelected] = useState(false);
-  const [roleVerified, setRoleVerified] = useState(false);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -361,15 +348,6 @@ export default function SignUpPage() {
   const [hospitalIdUri, setHospitalIdUri] = useState<string | null>(null);
   const [hospitalIdBase64, setHospitalIdBase64] = useState<string | null>(null);
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
-  // The raw base64 payload from the Step-3 capture, kept alongside selfieUri
-  // (a file uri only) so Step 5 can resend the same selfie to compare
-  // against the PRC card photo without a second camera capture.
-  const [selfieBase64, setSelfieBase64] = useState<string | null>(null);
-  const [prcFaceMatched, setPrcFaceMatched] = useState(false);
-  const [licenseNumber, setLicenseNumber] = useState('');
-  const [prcStatus, setPrcStatus] = useState<ProcessStatus>('idle');
-  const [prcVerified, setPrcVerified] = useState(false);
-  const [prcData, setPrcData] = useState<{ profession: string; expiration: string } | null>(null);
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
   const [liveCameraActive, setLiveCameraActive] = useState(false);
   const [ocrData, setOcrData] = useState(defaultOcrData);
@@ -420,16 +398,17 @@ export default function SignUpPage() {
       JSON.stringify({ id, attempts: Math.min(MAX_FACE_ATTEMPTS, Math.max(0, attempts)), locked })
     );
 
-  const clearFaceCycleLocal = async () => {
-    await AsyncStorage.removeItem(FACE_SESSION_KEY).catch(() => undefined);
-    setRegistrationSessionId(null);
+  // Resets the face-verification UI (attempts shown, selfie, OTP panel) for a
+  // fresh cycle without touching registrationSessionId — used when entering
+  // Face Verification right after Step 1/2 just established that session, so
+  // the ID-verified session is carried forward rather than discarded.
+  const resetFaceCycleUI = () => {
     setFaceAttemptsUsed(0);
     setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
     setFaceLocked(false);
     setFaceStatus('idle');
     setError('');
     setSelfieUri(null);
-    setSelfieBase64(null);
     setLiveCameraActive(false);
     setShowOtpPanel(false);
     setOtpCode('');
@@ -439,6 +418,15 @@ export default function SignUpPage() {
     setOtpExpiresAt(null);
     setOtpResendAvailableAt(null);
     faceVerificationInFlight.current = false;
+  };
+
+  // Full reset used when there is no session worth keeping — a brand new ID
+  // scan superseding any prior attempt, or nothing persisted to resume on
+  // mount. Also drops registrationSessionId and the persisted session id.
+  const clearFaceCycleLocal = async () => {
+    await AsyncStorage.removeItem(FACE_SESSION_KEY).catch(() => undefined);
+    setRegistrationSessionId(null);
+    resetFaceCycleUI();
   };
 
   // Resume face/OTP verification state from the backend on mount, so closing
@@ -505,8 +493,6 @@ export default function SignUpPage() {
   }, [currentStep, faceResuming, faceLocked, showOtpPanel, faceStatus, selfieUri]);
 
   const completedThrough: WizardStep = (() => {
-    if (roleVerified) return 7;
-    if (prcVerified) return 6;
     if (roleSelected) return 5;
     if (faceVerificationCompleted || otpStatus === 'verified') return 4;
     if (idReviewCompleted) return 3;
@@ -540,6 +526,14 @@ export default function SignUpPage() {
       });
 
       setRegistrationSessionId(res.registrationSessionId);
+      // Persist immediately — not just after a face attempt — so a remount
+      // between finishing ID verification and starting Face Verification
+      // (backgrounding the app, a dev reload, navigating back) can still
+      // recover this exact session instead of silently starting a new,
+      // unverified one keyed by email.
+      if (res.registrationSessionId) {
+        void persistFaceSession(res.registrationSessionId, 0, false);
+      }
 
       // Every non-'verified' status is a hard block now — the backend's
       // strict field validation (last/first name, registration no., both
@@ -630,7 +624,6 @@ export default function SignUpPage() {
       }
     }
     setSelfieUri(null);
-    setSelfieBase64(null);
     setFaceStatus('idle');
     setLiveCameraActive(true);
   };
@@ -667,7 +660,6 @@ export default function SignUpPage() {
       }
 
       setSelfieUri(photo.uri);
-      setSelfieBase64(photo.base64);
       setLiveCameraActive(false);
       setFaceStatus('processing');
 
@@ -735,7 +727,6 @@ export default function SignUpPage() {
   const removeFailedSelfie = () => {
     // Manual progression only — do not call the API / increment attempts here.
     setSelfieUri(null);
-    setSelfieBase64(null);
     setFaceStatus('idle');
     setError('');
     void openLiveCamera();
@@ -760,7 +751,6 @@ export default function SignUpPage() {
       setFaceStatus('idle');
       setError('');
       setSelfieUri(null);
-      setSelfieBase64(null);
       setFaceVerificationCompleted(false);
       resetOtpState();
       await openLiveCamera();
@@ -776,7 +766,6 @@ export default function SignUpPage() {
       setFaceStatus('idle');
       setError('');
       setSelfieUri(null);
-      setSelfieBase64(null);
       setFaceVerificationCompleted(false);
       resetOtpState();
       await openLiveCamera();
@@ -898,96 +887,6 @@ export default function SignUpPage() {
     : otpStatus === 'verified'
       ? 'EMAIL_OTP'
       : null;
-  const roleMatch = getRoleMatch(ocrData.position, role);
-
-  const scanPrcLicense = async (base64: string | null) => {
-    if (!base64) {
-      setPrcStatus('failed');
-      setError('Could not read the PRC license photo. Please retake it.');
-      return;
-    }
-
-    setPrcStatus('processing');
-    setPrcFaceMatched(false);
-    setError('');
-
-    try {
-      const res = await verifyPrcLicenseRequest(
-        `data:image/jpeg;base64,${base64}`,
-        registrationSessionId,
-        verificationMethod === 'FACE' && selfieBase64 ? `data:image/jpeg;base64,${selfieBase64}` : undefined
-      );
-
-      if (!res.valid) {
-        setPrcStatus('failed');
-        setPrcVerified(false);
-        setPrcData(null);
-        setError(res.message || 'Please upload a valid PRC nursing license.');
-        return;
-      }
-
-      // OCR passed, but if identity was verified via Face this still needs
-      // the selfie to match the licence photo before the step counts as done.
-      if (res.faceMatch && !res.faceMatch.matched) {
-        setPrcStatus('failed');
-        setPrcVerified(false);
-        setPrcData(null);
-        setError(res.faceMatch.message || 'This selfie does not match your PRC card photo. Please retake it.');
-        return;
-      }
-
-      // Pre-fill from the card, but never blank out something the nurse typed.
-      if (res.registrationNumber) setLicenseNumber(res.registrationNumber);
-      setPrcData({ profession: res.profession, expiration: res.validUntil });
-      setPrcFaceMatched(Boolean(res.faceMatch?.matched));
-      setPrcStatus('success');
-      setPrcVerified(true);
-    } catch (err) {
-      setPrcStatus('failed');
-      setPrcVerified(false);
-      setPrcData(null);
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : 'Licence verification is unavailable right now. Please try again.'
-      );
-    }
-  };
-
-  const handlePrcUpload = async () => {
-    setError('');
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      setError('Camera roll access is required to upload your PRC licence.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.9,
-      allowsEditing: true,
-      base64: true,
-    });
-    if (!result.canceled) void scanPrcLicense(result.assets[0].base64 ?? null);
-  };
-
-  const handlePrcScan = async () => {
-    setError('');
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      setError('Camera access is required to scan the PRC licence.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      quality: 0.9,
-      allowsEditing: true,
-      base64: true,
-    });
-    if (!result.canceled) void scanPrcLicense(result.assets[0].base64 ?? null);
-  };
-
-  // Verification is driven by scanning the card, not by typing a number —
-  // a typed number proves nothing, so there is no auto-verify on input.
-
   const validateCredentials = () => {
     const errors: Record<string, string> = {};
     if (!email.trim()) errors.email = 'Email is required';
@@ -1084,7 +983,7 @@ export default function SignUpPage() {
                 <View style={styles.headerIcon}>{stepIcon()}</View>
                 <View style={styles.headerText}>
                   <Text style={styles.headerTitle}>
-                    Step {currentStep} of 5 — {STEP_TITLES[currentStep - 1]}
+                    Step {currentStep} of {STEP_LABELS.length} — {STEP_TITLES[currentStep - 1]}
                   </Text>
                   <Text style={styles.headerDesc}>{STEP_DESCRIPTIONS[currentStep - 1]}</Text>
                 </View>
@@ -1223,7 +1122,7 @@ export default function SignUpPage() {
 
                     <NavButtons
                       onBack={() => setCurrentStep(1)}
-                      onContinue={() => {
+                      onContinue={async () => {
                         // Nothing proceeds until every required field actually
                         // has a value — a blank one must never be saved as read.
                         const stillMissing = ocrReview.missingRequired.filter(
@@ -1239,10 +1138,25 @@ export default function SignUpPage() {
                           setError('Please enter the registered email address before continuing.');
                           return;
                         }
+                        if (!registrationSessionId) {
+                          setError('Identity verification session was lost. Please redo Step 1.');
+                          return;
+                        }
                         setError('');
+                        setIdReviewSaving(true);
+                        try {
+                          await saveRegistrationEmailRequest(registrationSessionId, ocrData.email);
+                        } catch (err) {
+                          setIdReviewSaving(false);
+                          setError(extractErrorMessage(err, "We couldn't save your registered email. Please try again."));
+                          return;
+                        }
+                        setIdReviewSaving(false);
                         setIdReviewCompleted(true);
-                        void clearFaceCycleLocal().then(() => setCurrentStep(3));
+                        resetFaceCycleUI();
+                        setCurrentStep(3);
                       }}
+                      continueDisabled={idReviewSaving}
                     />
                   </View>
                 )}
@@ -1355,7 +1269,9 @@ export default function SignUpPage() {
                               <XCircle size={18} color={Colors.red600} />
                               <View style={{ flex: 1 }}>
                                 <Text style={styles.faceFailureTitle}>Face Verification Failed</Text>
-                                <Text style={styles.faceFailureMessage}>We couldn&apos;t verify your face.</Text>
+                                <Text style={styles.faceFailureMessage}>
+                                  {error || "We couldn't verify your face."}
+                                </Text>
                                 <Text style={[styles.faceFailureMessage, { marginTop: 4, fontWeight: '700' }]}>
                                   Attempts remaining: {Math.max(0, faceMaxAttempts - faceAttemptsUsed)}
                                 </Text>
@@ -1588,7 +1504,7 @@ export default function SignUpPage() {
                 {currentStep === 4 && (
                   <View style={styles.stepBody}>
                     <Text style={styles.bodyText}>
-                      Select the role you are registering for. Your selection will be verified against your PRC ID and PRC license.
+                      Select the role you are registering for. Your selection will be verified against your PRC ID.
                     </Text>
                     {ROLE_OPTIONS.map((option) => {
                       const selected = role === option.value;
@@ -1625,155 +1541,6 @@ export default function SignUpPage() {
                 )}
 
                 {currentStep === 5 && (
-                  <View style={styles.stepBody}>
-                    <Input
-                      label="PRC License Number *"
-                      placeholder="1234567"
-                      value={licenseNumber}
-                      onChangeText={(value) => {
-                        setLicenseNumber(value);
-                        setPrcStatus('idle');
-                        setPrcVerified(false);
-                        setPrcData(null);
-                        setPrcFaceMatched(false);
-                      }}
-                      error={fieldErrors.licenseNumber}
-                      rightIcon={
-                        prcStatus === 'processing' ? (
-                          <ActivityIndicator size="small" color={Colors.blue600} />
-                        ) : prcStatus === 'success' ? (
-                          <View style={styles.verifiedBadge}>
-                            <CheckCircle2 size={12} color={Colors.green700} />
-                            <Text style={styles.verifiedText}>Verified</Text>
-                          </View>
-                        ) : null
-                      }
-                    />
-
-                    <Text style={styles.uploadHint}>
-                      Scan your PRC nursing license to verify it. The number above fills in
-                      automatically.
-                    </Text>
-
-                    <View style={styles.actionRow}>
-                      <Button variant="outline" size="lg" onPress={handlePrcScan} style={styles.scanBtn}>
-                        <Camera size={18} color={Colors.blue600} />
-                        <Text style={styles.scanBtnText}>Camera Scan</Text>
-                      </Button>
-                      <Button variant="outline" size="lg" onPress={handlePrcUpload} style={styles.uploadBtn}>
-                        <Upload size={18} color={Colors.gray600} />
-                        <Text style={styles.uploadBtnText}>Upload File</Text>
-                      </Button>
-                    </View>
-
-                    {prcStatus === 'processing' && (
-                      <View style={styles.actionRow}>
-                        <ActivityIndicator size="small" color={Colors.blue600} />
-                        <Text style={styles.uploadHint}>Reading your license…</Text>
-                      </View>
-                    )}
-
-                    {prcStatus === 'success' && prcData && (
-                      <View style={styles.prcBox}>
-                        <View style={styles.prcBoxHeader}>
-                          <CheckCircle2 size={16} color={Colors.green700} />
-                          <Text style={styles.prcBoxTitle}>Active PRC License</Text>
-                        </View>
-                        <View style={styles.prcGrid}>
-                          <View style={styles.prcItem}>
-                            <Text style={styles.prcLabel}>License Status</Text>
-                            <Text style={styles.prcValue}>Active</Text>
-                          </View>
-                          <View style={styles.prcItem}>
-                            <Text style={styles.prcLabel}>Profession</Text>
-                            <Text style={styles.prcValue}>{prcData.profession}</Text>
-                          </View>
-                          <View style={styles.prcItem}>
-                            <Text style={styles.prcLabel}>Expiration Date</Text>
-                            <Text style={styles.prcValue}>{prcData.expiration}</Text>
-                          </View>
-                          {prcFaceMatched && (
-                            <View style={styles.prcItem}>
-                              <Text style={styles.prcLabel}>Face Match</Text>
-                              <View style={styles.verifiedBadge}>
-                                <CheckCircle2 size={12} color={Colors.green700} />
-                                <Text style={styles.verifiedText}>Matched with PRC photo</Text>
-                              </View>
-                            </View>
-                          )}
-                        </View>
-                      </View>
-                    )}
-
-                    <NavButtons onBack={() => setCurrentStep(4)} onContinue={() => setCurrentStep(6)} continueDisabled={prcStatus !== 'success'} />
-                  </View>
-                )}
-
-                {currentStep === 6 && (
-                  <View style={styles.stepBody}>
-                    <View style={styles.compareRow}>
-                      <View style={styles.compareBox}>
-                        <Text style={styles.compareLabel}>Selected Role</Text>
-                        <Text style={styles.compareValue}>
-                          {role === 'supervisor' ? '👨‍💼 Supervisor' : role ? '👩‍⚕️ Nurse' : '—'}
-                        </Text>
-                      </View>
-                      <View style={styles.compareBox}>
-                        <Text style={styles.compareLabel}>OCR Detected Position</Text>
-                        <Text style={styles.compareValue}>{ocrData.position || '—'}</Text>
-                      </View>
-                    </View>
-
-                    {roleMatch ? (
-                      <View style={styles.roleVerifiedBox}>
-                        <View style={styles.roleVerifiedHeader}>
-                          <View style={styles.roleVerifiedTitleRow}>
-                            <CheckCircle2 size={16} color={Colors.green700} />
-                            <Text style={styles.roleVerifiedTitle}>Role Verified</Text>
-                          </View>
-                          <View style={styles.roleMatchBadge}>
-                            <CheckCircle2 size={10} color={Colors.green700} />
-                            <Text style={styles.roleMatchBadgeText}>Role Match</Text>
-                          </View>
-                        </View>
-                        <View style={styles.roleVerifiedInner}>
-                          <Text style={styles.roleVerifiedItem}>✓ Selected: {role === 'supervisor' ? 'Supervisor' : 'Nurse'}</Text>
-                          <Text style={styles.roleVerifiedItem}>✓ OCR Detected: {ocrData.position}</Text>
-                        </View>
-                        <Text style={styles.roleAuthorized}>
-                          ✓ You are authorized to register as a {role === 'supervisor' ? 'Supervisor' : 'Nurse'}.
-                        </Text>
-                      </View>
-                    ) : (
-                      <View style={styles.roleMismatchBox}>
-                        <View style={styles.roleVerifiedHeader}>
-                          <Text style={styles.roleMismatchTitle}>Role Mismatch</Text>
-                          <View style={styles.mismatchBadge}>
-                            <Text style={styles.mismatchBadgeText}>Mismatch Detected</Text>
-                          </View>
-                        </View>
-                        <Text style={styles.roleMismatchDesc}>The selected role does not match your verified employment information.</Text>
-                        <Button variant="outline" onPress={() => setCurrentStep(4)} style={styles.changeRoleBtn}>
-                          <ChevronLeft size={16} color={Colors.red700} />
-                          <Text style={styles.changeRoleText}>Change Role Selection</Text>
-                        </Button>
-                      </View>
-                    )}
-
-                    <NavButtons
-                      onBack={() => setCurrentStep(5)}
-                      onContinue={() => {
-                        if (roleMatch) {
-                          setRoleVerified(true);
-                          setCurrentStep(7);
-                        }
-                      }}
-                      continueDisabled={!roleMatch}
-                    />
-                  </View>
-                )}
-
-                {currentStep === 7 && (
                   <View style={styles.stepBody}>
                     <View style={styles.infoBlue}>
                       <ShieldCheck size={16} color={Colors.blue600} />

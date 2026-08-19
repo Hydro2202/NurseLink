@@ -9,6 +9,7 @@ about Tesseract or OpenCV themselves (see tests_prc_ocr.py and
 tests_face_verification.py for those).
 """
 
+from datetime import date
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -169,7 +170,10 @@ class SignupRequiresPrcVerificationTests(TestCase):
             'registrationSessionId': str(session.session_id),
         }
 
-    def test_signup_blocked_when_prc_not_verified(self):
+    def test_signup_blocked_when_id_not_verified(self):
+        # Face/OTP passed, but Step 1's PRC ID OCR never reached
+        # id_verification_status='verified' — the sole PRC-verification gate
+        # now that Step 5's separate scan has been removed from the wizard.
         session = RegistrationSession.objects.create(email='nurse.new@example.com')
         session.face_verified = True
         session.verification_method = 'FACE'
@@ -180,20 +184,18 @@ class SignupRequiresPrcVerificationTests(TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertIn('registrationSessionId', res.data)
 
-    def test_signup_succeeds_once_prc_verified_and_persists_fields(self):
+    def test_signup_succeeds_once_id_verified_and_persists_fields(self):
         session = RegistrationSession.objects.create(email='nurse.new@example.com')
         session.face_verified = True
         session.verification_method = 'FACE'
-        session.prc_verified = True
-        session.prc_expiry = '06/30/2027'
-        session.prc_profession = 'Registered Nurse'
+        session.id_verification_status = 'verified'
+        session.id_valid_until = date(2027, 6, 30)
         session.save(
             update_fields=[
                 'face_verified',
                 'verification_method',
-                'prc_verified',
-                'prc_expiry',
-                'prc_profession',
+                'id_verification_status',
+                'id_valid_until',
             ]
         )
 
@@ -202,5 +204,4 @@ class SignupRequiresPrcVerificationTests(TestCase):
         self.assertEqual(res.status_code, 201)
         profile = NurseProfile.objects.get(user__email='nurse.new@example.com')
         self.assertEqual(profile.prc_license_expiry, '06/30/2027')
-        self.assertEqual(profile.prc_profession, 'Registered Nurse')
         self.assertIsNotNone(profile.prc_verified_at)

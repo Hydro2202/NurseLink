@@ -145,9 +145,9 @@ class SignupSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 'Identity verification has not been completed. Please pass Face Verification or Email OTP first.'
             )
-        if not session.prc_verified:
+        if session.id_verification_status != 'verified':
             raise serializers.ValidationError(
-                'PRC license verification has not been completed. Please scan and verify your PRC nursing license first.'
+                'PRC ID verification has not been completed. Please scan your PRC nursing license first.'
             )
         return session
 
@@ -192,8 +192,9 @@ class SignupSerializer(serializers.Serializer):
                 approval_status='approved',
                 verification_method=session.verification_method,
                 prc_verified_at=timezone.now(),
-                prc_license_expiry=session.prc_expiry,
-                prc_profession=session.prc_profession,
+                prc_license_expiry=(
+                    session.id_valid_until.strftime('%m/%d/%Y') if session.id_valid_until else ''
+                ),
             )
             session.user = user
             session.save(update_fields=['user', 'updated_at'])
@@ -264,6 +265,19 @@ class FaceVerificationStatusSerializer(serializers.Serializer):
                 {'registrationSessionId': 'Provide registrationSessionId or registeredEmail.'}
             )
         return attrs
+
+
+class RegistrationEmailSerializer(serializers.Serializer):
+    """
+    Step 2 (ID Review) collects the registered email — this is the only place
+    it gets persisted to RegistrationSession.email, the address every later
+    step (OTP fallback, account creation) reads back. OCR never yields an
+    email from a PRC card, so without this call session.email stays blank
+    forever and SendRegistrationOtpView has nothing to send to.
+    """
+
+    registrationSessionId = serializers.UUIDField()
+    email = serializers.EmailField()
 
 
 class SendOtpSerializer(serializers.Serializer):

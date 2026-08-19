@@ -42,7 +42,15 @@ type RequestOptions = {
   method?: string;
   body?: unknown;
   auth?: boolean;
+  timeoutMs?: number;
 };
+
+// verify-id / verify-prc / face-verification route through the backend's n8n
+// call (or local OCR/face-match), which is allowed up to N8N_TIMEOUT_SECONDS
+// (60s, see CapstoneBackEnd/.env) before the backend itself gives up. A
+// shorter client timeout than that fires "Is the backend running?" while the
+// backend is still legitimately working, so those calls get their own budget.
+const IDENTITY_VERIFICATION_TIMEOUT_MS = 65000;
 
 function extractDetail(data: unknown, status: number): string {
   if (typeof data === 'object' && data) {
@@ -56,7 +64,7 @@ function extractDetail(data: unknown, status: number): string {
 
 export async function apiRequest<T>(
   path: string,
-  { method = 'GET', body, auth = true }: RequestOptions = {}
+  { method = 'GET', body, auth = true, timeoutMs = 15000 }: RequestOptions = {}
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -70,7 +78,7 @@ export async function apiRequest<T>(
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   let response: Response;
   try {
@@ -233,6 +241,24 @@ export async function verifyIdRequest(
       ...(options?.expectedRole ? { expectedRole: options.expectedRole } : {}),
     },
     auth: false,
+    timeoutMs: IDENTITY_VERIFICATION_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Persists the registered email collected on Step 2 (ID Review) to the
+ * session server-side — the only place it happens. OCR never yields an
+ * email from a PRC card, so without this call the backend has no address
+ * to send the Email OTP fallback to.
+ */
+export async function saveRegistrationEmailRequest(
+  registrationSessionId: string,
+  email: string
+): Promise<{ success: boolean; registrationSessionId: string }> {
+  return apiRequest('/auth/registration-email/', {
+    method: 'POST',
+    body: { registrationSessionId, email },
+    auth: false,
   });
 }
 
@@ -275,6 +301,7 @@ export async function verifyPrcLicenseRequest(
       ...(selfie ? { selfie } : {}),
     },
     auth: false,
+    timeoutMs: IDENTITY_VERIFICATION_TIMEOUT_MS,
   });
 }
 
@@ -288,6 +315,7 @@ export async function faceVerificationRequest(
     method: 'POST',
     body: registrationSessionId ? { image, idImage, registrationSessionId } : { image, idImage, registeredEmail },
     auth: false,
+    timeoutMs: IDENTITY_VERIFICATION_TIMEOUT_MS,
   });
 }
 

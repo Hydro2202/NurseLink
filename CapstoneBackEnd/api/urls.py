@@ -23,6 +23,7 @@ urlpatterns = [
         views.FaceVerificationStatusView.as_view(),
         name='face-verification-status',
     ),
+    path('auth/registration-email/', views.RegistrationEmailView.as_view(), name='registration-email'),
     path('auth/send-registration-otp/', views.SendRegistrationOtpView.as_view(), name='send-registration-otp'),
     path(
         'auth/verify-registration-otp/',
