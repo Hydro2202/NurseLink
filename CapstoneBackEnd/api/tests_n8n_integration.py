@@ -30,6 +30,11 @@ class WebhookUrlTests(TestCase):
         N8N_BASE_URL='https://nurselink.app.n8n.cloud',
         N8N_WEBHOOK_PREFIX='webhook-test',
         N8N_WEBHOOKS={'face_verify': 'face-verify'},
+        # verify_id and face_verify both prefer N8N_IDENTITY_VERIFY_WEBHOOK when
+        # set (they share one consolidated workflow) — clear it here so this
+        # test exercises the composed-URL fallback instead of whatever real
+        # override happens to be in .env.
+        N8N_IDENTITY_VERIFY_WEBHOOK='',
     )
     def test_builds_test_mode_url(self):
         self.assertEqual(
@@ -41,6 +46,7 @@ class WebhookUrlTests(TestCase):
         N8N_BASE_URL='https://nurselink.app.n8n.cloud',
         N8N_WEBHOOK_PREFIX='webhook',
         N8N_WEBHOOKS={'verify_id': 'verify-id'},
+        N8N_IDENTITY_VERIFY_WEBHOOK='',
     )
     def test_prefix_switches_to_production(self):
         self.assertEqual(
@@ -51,6 +57,16 @@ class WebhookUrlTests(TestCase):
     @override_settings(N8N_WEBHOOKS={'structure_chart': ''})
     def test_unconfigured_workflow_has_no_url(self):
         self.assertEqual(webhook_url('structure_chart'), '')
+
+    @override_settings(N8N_IDENTITY_VERIFY_WEBHOOK='https://nurselink.app.n8n.cloud/webhook/identity-verify')
+    def test_identity_verify_override_applies_to_both_actions(self):
+        # verify_id and face_verify are one consolidated n8n workflow — a
+        # configured override must route both actions to the same URL.
+        self.assertEqual(webhook_url('verify_id'), webhook_url('face_verify'))
+        self.assertEqual(
+            webhook_url('face_verify'),
+            'https://nurselink.app.n8n.cloud/webhook/identity-verify',
+        )
 
 
 class VerifyIdEndpointTests(TestCase):

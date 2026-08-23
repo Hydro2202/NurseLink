@@ -117,7 +117,7 @@ def webhook_url(workflow: str) -> str:
     development and the production URL in deployment:
     ``{N8N_BASE_URL}/{N8N_WEBHOOK_PREFIX}/{path}``
     """
-    if workflow == 'verify_id' and settings.N8N_IDENTITY_VERIFY_WEBHOOK:
+    if workflow in ('verify_id', 'face_verify') and settings.N8N_IDENTITY_VERIFY_WEBHOOK:
         return settings.N8N_IDENTITY_VERIFY_WEBHOOK
     path = (settings.N8N_WEBHOOKS or {}).get(workflow, '')
     if not path:

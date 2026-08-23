@@ -36,11 +36,13 @@ PROBES = {
         'probe': True,
     },
     'verify_id': {
+        'action': 'extract_id',
         'idImage': '',
         'documentType': 'hospital_id',
         'probe': True,
     },
     'face_verify': {
+        'action': 'verify_face',
         'image': '',
         'idImage': '',
         'probe': True,
