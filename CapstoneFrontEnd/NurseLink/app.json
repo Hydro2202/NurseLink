@@ -37,6 +37,14 @@
         }
       ],
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow NurseLink to access your photos so you can upload a picture of your PRC ID.",
+          "cameraPermission": "Allow NurseLink to use your camera to photograph your PRC ID for licence verification.",
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",

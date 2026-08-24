@@ -34,7 +34,7 @@ export default function PendingApprovalPage() {
         />
 
         <Card style={styles.card}>
-          <View style={styles.orangeHeader}>
+          <View style={styles.successHeader}>
             <View style={styles.headerIconWrap}>
               <View style={styles.shieldCircle}>
                 <ShieldCheck size={32} color={Colors.white} />
@@ -97,8 +97,10 @@ const styles = StyleSheet.create({
   scroll: { flexGrow: 1, padding: 20, alignItems: 'center', justifyContent: 'center' },
   logo: { width: 200, height: 80, marginBottom: 20 },
   card: { width: '100%', maxWidth: 520, borderWidth: 0, overflow: 'hidden', ...Shadows.lg },
-  orangeHeader: {
-    backgroundColor: Colors.orange600,
+  successHeader: {
+    // green700, a shade deeper than the green600 tick circles below, so the
+    // header anchors the card and the checklist reads as lighter accents.
+    backgroundColor: Colors.green700,
     paddingHorizontal: 24,
     paddingVertical: 28,
     alignItems: 'center',
@@ -119,7 +121,7 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: Colors.yellow200,
+    backgroundColor: Colors.white,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -132,13 +134,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     borderWidth: 1,
-    borderColor: Colors.orange100,
-    backgroundColor: Colors.orange50,
+    borderColor: Colors.green200,
+    backgroundColor: Colors.green50,
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: Radius.full,
   },
-  statusBadgeText: { fontSize: 13, fontWeight: '700', color: Colors.orange700 },
+  statusBadgeText: { fontSize: 13, fontWeight: '700', color: Colors.green700 },
   stepsList: { gap: 8 },
   completedStep: {
     flexDirection: 'row',
@@ -176,18 +178,18 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: Colors.orange600,
+    backgroundColor: Colors.green600,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  pendingText: { flex: 1, fontSize: 13, fontWeight: '600', color: Colors.orange700 },
+  pendingText: { flex: 1, fontSize: 13, fontWeight: '600', color: Colors.green700 },
   pendingTag: {
-    backgroundColor: Colors.orange100,
+    backgroundColor: Colors.green100,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: Radius.full,
   },
-  pendingTagText: { fontSize: 11, fontWeight: '600', color: Colors.orange700 },
+  pendingTagText: { fontSize: 11, fontWeight: '600', color: Colors.green700 },
   infoBox: {
     borderRadius: Radius.lg,
     borderWidth: 1,
@@ -213,6 +215,6 @@ const styles = StyleSheet.create({
   actions: { gap: 12, marginTop: 4 },
   primaryButton: { backgroundColor: Colors.blue600, minHeight: 48, borderRadius: Radius.full },
   primaryButtonText: { color: Colors.white, fontSize: 15, fontWeight: '700' },
-  secondaryButton: { minHeight: 48, borderRadius: Radius.full, borderColor: Colors.orange300 },
-  secondaryButtonText: { color: Colors.orange700, fontSize: 15, fontWeight: '700' },
+  secondaryButton: { minHeight: 48, borderRadius: Radius.full, borderColor: Colors.green200 },
+  secondaryButtonText: { color: Colors.green700, fontSize: 15, fontWeight: '700' },
 });

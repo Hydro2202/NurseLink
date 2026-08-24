@@ -753,9 +753,20 @@ class FaceVerificationView(APIView):
                 countable=result.countable and not result.matched,
             )
 
+            # One completed comparison = one attempt, whatever the verdict.
+            # Previously a match reset the counter to zero and a mismatch was
+            # the only thing that incremented it, so the number a nurse saw
+            # jumped around: scan a matching face and "3 attempts remaining"
+            # came back even though three photos had been taken. A technical
+            # failure (workflow down, model unavailable) still does not count,
+            # because no comparison actually happened.
+            comparison_completed = result.matched or result.countable
+            if comparison_completed:
+                session.face_attempts = min(MAX_FACE_ATTEMPTS, session.face_attempts + 1)
+
             if result.matched:
                 session.face_verified = True
-                session.face_attempts = 0
+                # Never lock an identity that has just been proven.
                 session.face_locked = False
                 session.verification_method = 'FACE'
                 session.save(
@@ -781,8 +792,8 @@ class FaceVerificationView(APIView):
                     )
                 )
 
-            if result.countable:
-                session.face_attempts = min(MAX_FACE_ATTEMPTS, session.face_attempts + 1)
+            # The counter was already advanced above; this only decides lockout.
+            if comparison_completed:
                 session.face_locked = session.face_attempts >= MAX_FACE_ATTEMPTS
                 session.save(update_fields=['face_attempts', 'face_locked', 'updated_at'])
 

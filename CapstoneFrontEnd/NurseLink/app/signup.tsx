@@ -44,6 +44,7 @@ import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { Card, CardContent } from '../components/Card';
 import { Alert, AlertDescription } from '../components/Alert';
+import { CameraPermissionModal, type CameraPurpose } from '../components/CameraPermissionModal';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import {
   ApiError,
@@ -83,12 +84,23 @@ function extractErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-function resolveAttemptsUsed(res: { attemptsUsed?: number; attemptsRemaining?: number }): number {
+/**
+ * Read the attempt count out of a server response.
+ *
+ * `fallback` is what to keep when the response carries no counter at all —
+ * an error body, a proxy page, anything unparsed. Defaulting to 0 there was
+ * a real bug: a failed request silently redisplayed "3 attempts remaining"
+ * and handed back tries the server had already spent.
+ */
+function resolveAttemptsUsed(
+  res: { attemptsUsed?: number; attemptsRemaining?: number },
+  fallback = 0,
+): number {
   if (typeof res.attemptsUsed === 'number') return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, res.attemptsUsed));
   if (typeof res.attemptsRemaining === 'number') {
     return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, MAX_FACE_ATTEMPTS - res.attemptsRemaining));
   }
-  return 0;
+  return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, fallback));
 }
 
 function resolveMaxAttempts(res: { maxAttempts?: number }): number {
@@ -334,6 +346,55 @@ export default function SignUpPage() {
   const cameraRef = useRef<CameraView>(null);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
+  // Which camera feature is waiting on permission, and what to run once it
+  // is granted. Held as state rather than called inline so the explainer can
+  // be shown *before* the OS prompt, and the original action resumed after.
+  const [permissionPrompt, setPermissionPrompt] = useState<CameraPurpose | null>(null);
+  const [permissionBlocked, setPermissionBlocked] = useState(false);
+  const pendingCameraAction = useRef<null | (() => void | Promise<void>)>(null);
+
+  /**
+   * Gate any camera action behind an explained permission request.
+   *
+   * Runs `action` immediately when access is already granted, so a nurse who
+   * has used the camera before is never asked twice.
+   */
+  const withCameraPermission = (purpose: CameraPurpose, action: () => void | Promise<void>) => {
+    if (cameraPermission?.granted) {
+      void action();
+      return;
+    }
+    pendingCameraAction.current = action;
+    setPermissionBlocked(cameraPermission?.canAskAgain === false);
+    setPermissionPrompt(purpose);
+  };
+
+  const handleAllowCamera = async () => {
+    const result = await requestCameraPermission();
+    if (result.granted) {
+      setPermissionPrompt(null);
+      const action = pendingCameraAction.current;
+      pendingCameraAction.current = null;
+      void action?.();
+      return;
+    }
+    // Denied. If the OS will no longer prompt, the modal switches to
+    // Settings guidance rather than offering a button that does nothing.
+    if (!result.canAskAgain) {
+      setPermissionBlocked(true);
+      return;
+    }
+    setPermissionPrompt(null);
+    pendingCameraAction.current = null;
+    setError('Camera access is needed for this step. You can allow it when you are ready.');
+  };
+
+  const handleCancelCamera = () => {
+    setPermissionPrompt(null);
+    setPermissionBlocked(false);
+    pendingCameraAction.current = null;
+  };
+
   const [currentStep, setCurrentStep] = useState<WizardStep>(1);
   const [hospitalIdCompleted, setHospitalIdCompleted] = useState(false);
   const [idReviewCompleted, setIdReviewCompleted] = useState(false);
@@ -454,7 +515,7 @@ export default function SignUpPage() {
         if (cancelled) return;
         setRegistrationSessionId(res.registrationSessionId ?? persistedId ?? null);
         setFaceMaxAttempts(resolveMaxAttempts(res));
-        setFaceAttemptsUsed(resolveAttemptsUsed(res));
+        setFaceAttemptsUsed(resolveAttemptsUsed(res, faceAttemptsUsed));
         setFaceLocked(Boolean(res.locked));
         if (res.faceVerified) {
           setFaceStatus('success');
@@ -602,30 +663,29 @@ export default function SignUpPage() {
     if (!result.canceled) handleIdImage(result.assets[0].uri, result.assets[0].base64 ?? null);
   };
 
-  const handleScanId = async () => {
+  const handleScanId = () => {
     setError('');
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      setError('Camera access is required to scan the hospital ID.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.9, allowsEditing: true, base64: true });
-    if (!result.canceled) handleIdImage(result.assets[0].uri, result.assets[0].base64 ?? null);
+    // Same explained gate as the face step. ImagePicker would otherwise raise
+    // its own bare prompt with no context attached.
+    withCameraPermission('id', async () => {
+      const result = await ImagePicker.launchCameraAsync({
+        quality: 0.9,
+        allowsEditing: true,
+        base64: true,
+      });
+      if (!result.canceled) handleIdImage(result.assets[0].uri, result.assets[0].base64 ?? null);
+    });
   };
 
-  const openLiveCamera = async () => {
+  const openLiveCamera = () => {
     setError('');
-    if (!cameraPermission?.granted) {
-      const permission = await requestCameraPermission();
-      if (!permission.granted) {
-        setError('Camera access is required for face verification.');
-        setLiveCameraActive(false);
-        return;
-      }
-    }
-    setSelfieUri(null);
-    setFaceStatus('idle');
-    setLiveCameraActive(true);
+    // The camera is only mounted after permission is granted — asking first
+    // is both an OS requirement and the reason the request is understood.
+    withCameraPermission('face', () => {
+      setSelfieUri(null);
+      setFaceStatus('idle');
+      setLiveCameraActive(true);
+    });
   };
 
   const handleFaceVerification = async () => {
@@ -673,7 +733,7 @@ export default function SignUpPage() {
         setRegistrationSessionId(res.registrationSessionId);
         const maxAttempts = resolveMaxAttempts(res);
         setFaceMaxAttempts(maxAttempts);
-        const attempts = resolveAttemptsUsed(res);
+        const attempts = resolveAttemptsUsed(res, faceAttemptsUsed);
         setFaceAttemptsUsed(attempts);
         void persistFaceSession(res.registrationSessionId, attempts, Boolean(res.locked));
         if (res.matched || res.faceVerified) {
@@ -701,7 +761,7 @@ export default function SignUpPage() {
           if (data?.registrationSessionId) {
             setRegistrationSessionId(data.registrationSessionId);
             const maxAttempts = resolveMaxAttempts(data);
-            const attempts = resolveAttemptsUsed(data);
+            const attempts = resolveAttemptsUsed(data, faceAttemptsUsed);
             const locked = Boolean(data.locked) && attempts >= maxAttempts;
             setFaceMaxAttempts(maxAttempts);
             setFaceAttemptsUsed(Math.min(maxAttempts, Math.max(0, attempts)));
@@ -963,6 +1023,15 @@ export default function SignUpPage() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+      {/* Explains the request before the OS prompt appears, and never mounts
+          a camera until access has actually been granted. */}
+      <CameraPermissionModal
+        visible={permissionPrompt !== null}
+        purpose={permissionPrompt ?? 'face'}
+        blocked={permissionBlocked}
+        onAllow={handleAllowCamera}
+        onCancel={handleCancelCamera}
+      />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <Animated.View style={[styles.inner, { opacity: fadeAnim }]}>
