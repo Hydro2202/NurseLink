@@ -1634,7 +1634,7 @@ class LoginView(APIView):
             OpenApiExample(
                 'Supervisor login',
                 value={
-                    'email': 'headnurse@hospital.com',
+                    'email': 'supervisor@hospital.com',
                     'password': 'password123',
                     'role': 'supervisor',
                 },
@@ -1739,7 +1739,7 @@ class OAuthTokenView(APIView):
             OpenApiExample(
                 'Supervisor credentials',
                 value={
-                    'username': 'headnurse@hospital.com',
+                    'username': 'supervisor@hospital.com',
                     'password': 'password123',
                     'grant_type': 'password',
                 },

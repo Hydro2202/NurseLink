@@ -38,7 +38,7 @@ TEST_ACCOUNTS = [
         'specialization': 'ICU',
     },
     {
-        'email': 'headnurse@hospital.com',
+        'email': 'supervisor@hospital.com',
         'password': 'password123',
         'first_name': 'Maria',
         'last_name': 'Santos',
@@ -51,8 +51,11 @@ TEST_ACCOUNTS = [
     },
 ]
 
-# Legacy supervisor email renamed in production phase
-LEGACY_SUPERVISOR_EMAIL = 'head@hospital.com'
+# Supervisor email renamed across two production phases: head@hospital.com ->
+# headnurse@hospital.com -> supervisor@hospital.com. Both are migrated
+# in order so an install on either old email lands on the current one.
+LEGACY_SUPERVISOR_EMAILS = ['head@hospital.com', 'headnurse@hospital.com']
+CANONICAL_SUPERVISOR_EMAIL = 'supervisor@hospital.com'
 
 
 class Command(BaseCommand):
@@ -77,26 +80,27 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS('Production seed complete (empty clinical DB).'))
         self.stdout.write('Test accounts:')
         self.stdout.write('  nurse@hospital.com / password123       (staff_nurse)')
-        self.stdout.write('  headnurse@hospital.com / password123  (supervisor)')
+        self.stdout.write('  supervisor@hospital.com / password123  (supervisor)')
 
     def _migrate_legacy_supervisor(self):
-        """Rename head@hospital.com → headnurse@hospital.com if needed."""
-        try:
-            legacy = User.objects.get(email__iexact=LEGACY_SUPERVISOR_EMAIL)
-        except User.DoesNotExist:
-            return
+        """Rename head@hospital.com or headnurse@hospital.com -> supervisor@hospital.com if needed."""
+        for legacy_email in LEGACY_SUPERVISOR_EMAILS:
+            try:
+                legacy = User.objects.get(email__iexact=legacy_email)
+            except User.DoesNotExist:
+                continue
 
-        if User.objects.filter(email__iexact='headnurse@hospital.com').exists():
-            # New account already exists — drop legacy
-            Token.objects.filter(user=legacy).delete()
-            legacy.delete()
-            self.stdout.write('Removed legacy account head@hospital.com')
-            return
+            if User.objects.filter(email__iexact=CANONICAL_SUPERVISOR_EMAIL).exists():
+                # Canonical account already exists — drop the legacy duplicate.
+                Token.objects.filter(user=legacy).delete()
+                legacy.delete()
+                self.stdout.write(f'Removed legacy account {legacy_email}')
+                continue
 
-        legacy.username = 'headnurse@hospital.com'
-        legacy.email = 'headnurse@hospital.com'
-        legacy.save(update_fields=['username', 'email'])
-        self.stdout.write('Renamed head@hospital.com -> headnurse@hospital.com')
+            legacy.username = CANONICAL_SUPERVISOR_EMAIL
+            legacy.email = CANONICAL_SUPERVISOR_EMAIL
+            legacy.save(update_fields=['username', 'email'])
+            self.stdout.write(f'Renamed {legacy_email} -> {CANONICAL_SUPERVISOR_EMAIL}')
 
     def _ensure_accounts(self):
         users_by_email = {}

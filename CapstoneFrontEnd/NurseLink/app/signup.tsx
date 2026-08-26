@@ -161,9 +161,10 @@ function OtpDigitsInput({
 }
 
 const otpStyles = StyleSheet.create({
-  row: { flexDirection: 'row', gap: 8 },
+  row: { flexDirection: 'row', gap: 8, width: '100%' },
   box: {
-    width: 44,
+    flex: 1,
+    maxWidth: 44,
     height: 48,
     borderRadius: Radius.md,
     borderWidth: 1,

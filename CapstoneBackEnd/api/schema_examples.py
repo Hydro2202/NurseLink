@@ -46,7 +46,7 @@ SIGNUP_EXAMPLES = [
     _example(
         'Supervisor',
         {
-            'email': 'headnurse@hospital.com',
+            'email': 'supervisor@hospital.com',
             'password': 'password123',
             'firstName': 'Maria',
             'lastName': 'Santos',

@@ -284,7 +284,7 @@ SPECTACULAR_SETTINGS = {
         'copy the returned `token`, then paste it into **bearerAuth**.\n\n'
         '### Test accounts\n'
         '- Nurse: `nurse@hospital.com` / `password123`\n'
-        '- Supervisor: `headnurse@hospital.com` / `password123`\n'
+        '- Supervisor: `supervisor@hospital.com` / `password123`\n'
     ),
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
