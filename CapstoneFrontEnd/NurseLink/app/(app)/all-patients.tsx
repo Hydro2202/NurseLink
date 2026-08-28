@@ -32,14 +32,33 @@ import { PatientKardexModal } from '../../components/PatientKardexModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Colors, Radius } from '../../constants/colors';
 import { useToast } from '../../contexts/ToastContext';
+import { useAuth } from '../../contexts/AuthContext';
 
 function getAttendingPhysician(patient: Patient) {
   return patient.attendingPhysician || 'Not Assigned';
 }
 
+/**
+ * "Ana Cruz (assigned by Mharon Reyes)" — the roster is shared, so a nurse
+ * reading this list is usually looking at someone else's patient. Naming both
+ * the assigned nurse and whoever assigned them is what makes that legible.
+ */
+function getAssignmentLabel(patient: Patient) {
+  const nurse = patient.assignedNurseName?.trim();
+  const by = patient.assignedBy?.trim();
+  if (!nurse) return 'Unassigned';
+  return by && by !== nurse ? `${nurse} · assigned by ${by}` : nurse;
+}
+
 export default function AllPatientsPage() {
   const router = useRouter();
   const toast = useToast();
+  const { user } = useAuth();
+  const isSupervisor = user?.role === 'supervisor';
+  // Mirrors the API: supervisors edit/delete anyone, a staff nurse only the
+  // patients assigned to them. Showing buttons that 403 is worse than hiding.
+  const canManage = (patient: Patient) =>
+    isSupervisor || (!!user?.id && patient.assignedNurseId === user.id);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -110,17 +129,19 @@ export default function AllPatientsPage() {
               {loading ? ' (loading...)' : ''}
             </Text>
           </View>
-          <Button
-            size="sm"
-            onPress={() => {
-              setFormMode('add');
-              setEditingPatient(null);
-              setFormOpen(true);
-            }}
-          >
-            <UserPlus size={16} color={Colors.white} />
-            <Text style={{ color: Colors.white, fontWeight: '600' }}>Add Patient</Text>
-          </Button>
+          {isSupervisor ? (
+            <Button
+              size="sm"
+              onPress={() => {
+                setFormMode('add');
+                setEditingPatient(null);
+                setFormOpen(true);
+              }}
+            >
+              <UserPlus size={16} color={Colors.white} />
+              <Text style={{ color: Colors.white, fontWeight: '600' }}>Add Patient</Text>
+            </Button>
+          ) : null}
         </View>
 
         <Input
@@ -244,6 +265,10 @@ export default function AllPatientsPage() {
                       {getAttendingPhysician(patient)}
                     </Text>
                   </View>
+                  <View style={styles.physicianRow}>
+                    <User size={14} color={Colors.mutedForeground} />
+                    <Text style={styles.assignment}>{getAssignmentLabel(patient)}</Text>
+                  </View>
                 </View>
 
                 <View style={styles.vitalsGrid}>
@@ -277,31 +302,35 @@ export default function AllPatientsPage() {
                 ) : null}
 
                 <View style={styles.actions}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    style={styles.actionBtn}
-                    onPress={() => {
-                      setFormMode('edit');
-                      setEditingPatient(patient);
-                      setFormOpen(true);
-                    }}
-                  >
-                    <Edit2 size={14} color={Colors.blue700} />
-                    <Text style={styles.outlineBtnText}>Edit</Text>
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    style={styles.actionBtn}
-                    onPress={() => {
-                      setToDelete(patient);
-                      setDeleteOpen(true);
-                    }}
-                  >
-                    <Trash2 size={14} color={Colors.red600} />
-                    <Text style={[styles.outlineBtnText, { color: Colors.red600 }]}>Delete</Text>
-                  </Button>
+                  {canManage(patient) ? (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        style={styles.actionBtn}
+                        onPress={() => {
+                          setFormMode('edit');
+                          setEditingPatient(patient);
+                          setFormOpen(true);
+                        }}
+                      >
+                        <Edit2 size={14} color={Colors.blue700} />
+                        <Text style={styles.outlineBtnText}>Edit</Text>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        style={styles.actionBtn}
+                        onPress={() => {
+                          setToDelete(patient);
+                          setDeleteOpen(true);
+                        }}
+                      >
+                        <Trash2 size={14} color={Colors.red600} />
+                        <Text style={[styles.outlineBtnText, { color: Colors.red600 }]}>Delete</Text>
+                      </Button>
+                    </>
+                  ) : null}
                   <Button
                     size="sm"
                     style={styles.actionBtn}
@@ -397,6 +426,11 @@ const styles = StyleSheet.create({
   diagnosisText: { fontSize: 13, color: Colors.foreground, lineHeight: 18 },
   bold: { fontWeight: '700' },
   physicianRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  assignment: {
+    fontSize: 12,
+    color: Colors.mutedForeground,
+    flexShrink: 1,
+  },
   physician: { fontSize: 12, color: Colors.blue700, fontWeight: '600' },
   vitalsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   vitalBox: {

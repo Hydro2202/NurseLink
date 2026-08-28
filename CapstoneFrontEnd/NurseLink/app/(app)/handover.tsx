@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -36,7 +36,10 @@ import { Alert, AlertDescription } from '../../components/Alert';
 import { HandoverModal } from '../../components/HandoverModal';
 import { DeleteConfirmDialog } from '../../components/ConfirmDialog';
 import { useAuth } from '../../contexts/AuthContext';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useToast } from '../../contexts/ToastContext';
+import { useNotifications } from '../../contexts/NotificationsContext';
+import { useLive, useLiveRefresh } from '../../contexts/LiveContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 
 type SortBy = 'newest' | 'oldest' | 'patient' | 'status';
@@ -66,7 +69,13 @@ function statusBadgeVariant(
 
 export default function HandoverPage() {
   const { user } = useAuth();
+  const router = useRouter();
+  // Set when a notification or popup sends the nurse straight to one handover.
+  const params = useLocalSearchParams<{ highlightId?: string }>();
+  const highlightId = typeof params.highlightId === 'string' ? params.highlightId : null;
   const toast = useToast();
+  const { refresh: refreshNotifications } = useNotifications();
+  const { poll: pollLive } = useLive();
   const [handovers, setHandovers] = useState<HandoverWithMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('incoming');
@@ -80,28 +89,33 @@ export default function HandoverPage() {
 
   const currentUserName = user?.name || 'You';
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchHandovers();
-        if (!cancelled) {
-          setHandovers(data.map((h) => ({ ...h, createdAt: h.date })));
-        }
-      } catch (error) {
-        if (!cancelled) {
-          toast.error('Failed to load handovers', {
-            description: error instanceof ApiError ? error.message : 'Please try again.',
-          });
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
+  const loadHandovers = useCallback(async (options?: { quiet?: boolean }) => {
+    try {
+      const data = await fetchHandovers();
+      setHandovers(data.map((h) => ({ ...h, createdAt: h.date })));
+    } catch (error) {
+      // A background refresh that fails should not interrupt the nurse; the
+      // next live tick will try again.
+      if (!options?.quiet) {
+        toast.error('Failed to load handovers', {
+          description: error instanceof ApiError ? error.message : 'Please try again.',
+        });
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    void loadHandovers();
+  }, [loadHandovers]);
+
+  // Handovers are written on other nurses' devices, and acknowledged there too,
+  // so this list follows the shared live revision instead of only what this
+  // screen has done itself.
+  useLiveRefresh('handovers', () => {
+    void loadHandovers({ quiet: true });
+  });
 
   const handleCreateHandover = () => {
     setHandoverModalOpen(true);
@@ -116,6 +130,10 @@ export default function HandoverPage() {
         date: new Date().toISOString().slice(0, 10),
         nurseFrom: currentUserName,
         nurseTo: handoverData.nurseTo || '',
+        // The account behind nurseTo. Several nurses on this ward share a
+        // display name, so without this the server cannot tell which inbox to
+        // notify and deliberately notifies nobody.
+        nurseToId: handoverData.nurseToId || '',
         sbar: handoverData.sbar || {
           situation: '',
           background: '',
@@ -127,6 +145,9 @@ export default function HandoverPage() {
         status: 'pending',
       });
       setHandovers((prev) => [{ ...newHandover, createdAt: newHandover.date }, ...prev]);
+      // Writing a handover also puts its work on this nurse's task list and
+      // notifies the receiving nurse — let the rest of the app catch up now.
+      void pollLive();
       toast.success('Handover submitted successfully!', {
         description: `Handover note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
       });
@@ -145,9 +166,32 @@ export default function HandoverPage() {
       setHandovers((prev) =>
         prev.map((h) => (h.id === handoverId ? { ...updated, createdAt: updated.date } : h))
       );
+      // Say what actually happened: acknowledging moves the outgoing nurse's
+      // unfinished work onto this nurse's list, and they should not have to
+      // discover that by wandering over to the Tasks screen.
+      const moved = updated.adoptedTasks?.length ?? 0;
       toast.success('Handover acknowledged!', {
-        description: `You've acknowledged the handover for ${updated.patientName}.`,
+        description:
+          moved > 0
+            ? `${moved} unfinished task${moved > 1 ? 's' : ''} added to your tasks for ${updated.patientName}.`
+            : `You've acknowledged the handover for ${updated.patientName}.`,
       });
+      // We just changed state other nurses are watching. Poll immediately so
+      // this device is consistent at once, rather than briefly showing a list
+      // that disagrees with the action just taken.
+      void pollLive();
+      void refreshNotifications();
+
+      // Take the nurse to the work they just accepted. Acknowledging is the
+      // point at which the patient becomes theirs, so landing on the task that
+      // came with it is more useful than staying on a handover now marked done.
+      const firstTask = updated.adoptedTasks?.[0];
+      if (firstTask) {
+        router.push({
+          pathname: '/(app)/tasks' as any,
+          params: { highlightId: firstTask },
+        });
+      }
     } catch (error) {
       toast.error('Failed to acknowledge handover', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
@@ -243,7 +287,16 @@ export default function HandoverPage() {
   );
 
   const renderHandoverCard = (handover: HandoverWithMeta, type: 'incoming' | 'outgoing') => (
-    <Card key={handover.id} style={styles.handoverCard}>
+    <Card
+      key={handover.id}
+      // Card takes a single ViewStyle, so merge rather than pass an array.
+      // Arrived here from a notification or the handover popup: make the one
+      // they were sent to look at obvious among the rest.
+      style={{
+        ...styles.handoverCard,
+        ...(highlightId === handover.id ? styles.handoverCardHighlighted : null),
+      }}
+    >
       <CardHeader style={styles.cardHeader}>
         <View style={styles.cardHeaderRow}>
           <View style={styles.flex1}>
@@ -517,6 +570,10 @@ const styles = StyleSheet.create({
   emptyText: {
     color: Colors.gray500,
     fontSize: 14,
+  },
+  handoverCardHighlighted: {
+    borderWidth: 2,
+    borderColor: Colors.blue600,
   },
   handoverCard: {
     borderWidth: 2,

@@ -54,9 +54,27 @@ class WebhookUrlTests(TestCase):
             'https://nurselink.app.n8n.cloud/webhook/verify-id',
         )
 
-    @override_settings(N8N_WEBHOOKS={'structure_chart': ''})
+    @override_settings(N8N_WEBHOOKS={'structure_chart': ''}, N8N_AUTO_CHARTING_WEBHOOK_URL='')
     def test_unconfigured_workflow_has_no_url(self):
         self.assertEqual(webhook_url('structure_chart'), '')
+
+    @override_settings(
+        N8N_BASE_URL='https://old.example.com',
+        N8N_WEBHOOK_PREFIX='webhook',
+        N8N_WEBHOOKS={'structure_chart': 'structure-chart'},
+        N8N_AUTO_CHARTING_WEBHOOK_URL='https://nurselinkk.app.n8n.cloud/webhook/structure-chart',
+    )
+    def test_auto_charting_override_wins_over_composed_url(self):
+        """
+        Auto-Charting lives on a different n8n instance from identity
+        verification, so it must not inherit N8N_BASE_URL. Without the
+        override, charting traffic silently goes to whichever instance the
+        identity workflows use.
+        """
+        self.assertEqual(
+            webhook_url('structure_chart'),
+            'https://nurselinkk.app.n8n.cloud/webhook/structure-chart',
+        )
 
     @override_settings(N8N_IDENTITY_VERIFY_WEBHOOK='https://nurselink.app.n8n.cloud/webhook/identity-verify')
     def test_identity_verify_override_applies_to_both_actions(self):
@@ -112,15 +130,17 @@ class VerifyIdEndpointTests(TestCase):
         # Bare base64 — the data-URI prefix is stripped for the vision API.
         self.assertEqual(payload['idImage'], 'AAAA')
         self.assertEqual(payload['documentType'], 'hospital_id')
-        # Field mapping still works for the legacy employee-badge shape, but
-        # a response with no PRC-style fields (no last/first name, no
-        # registration number, no dates) can no longer claim "verified" —
-        # strict field validation is the sole authority for that now,
-        # regardless of what the workflow itself asserts.
+        # A response with no PRC-style fields (no last/first name, no
+        # registration number, no dates) cannot claim "verified" — strict
+        # field validation is the sole authority, whatever the workflow says.
         self.assertFalse(res.data['verified'])
         self.assertEqual(res.data['fullName'], 'Sarah Johnson')
-        self.assertEqual(res.data['department'], 'ICU')
         self.assertTrue(res.data['registrationSessionId'])
+        # Employee-badge fields are no longer read: a PRC licence carries no
+        # department, position, hospital or email, so anything OCR put in
+        # those slots was text lifted from elsewhere on the card.
+        for dropped in ('department', 'position', 'hospitalName', 'employeeId', 'email'):
+            self.assertNotIn(dropped, res.data)
 
     @patch('api.views.call_workflow')
     def test_maps_prc_style_name_and_licence_fields_for_step_2(self, mock_call):
@@ -299,7 +319,7 @@ class VerifyIdEndpointTests(TestCase):
         self.assertEqual(res.data['verificationStatus'], 'invalid_id')
 
     @patch('api.views.call_workflow')
-    def test_creates_session_and_stores_email(self, mock_call):
+    def test_ocr_no_longer_takes_the_email_off_the_card(self, mock_call):
         mock_call.return_value = {'verified': True, 'fullName': 'Sarah Johnson',
                                   'email': 'Sarah.Johnson@hospital.com'}
 
@@ -310,8 +330,12 @@ class VerifyIdEndpointTests(TestCase):
         session = RegistrationSession.objects.get(
             session_id=res.data['registrationSessionId']
         )
-        # Lower-cased so the OTP fallback can match it later.
-        self.assertEqual(session.email, 'sarah.johnson@hospital.com')
+        # A PRC licence carries no email address, so anything OCR produced for
+        # one was text taken from elsewhere on the card — and writing that to
+        # the session would send the OTP to an address the nurse never gave.
+        # Step 2 (RegistrationEmailView) collects it directly instead.
+        self.assertEqual(session.email, '')
+        self.assertNotIn('email', res.data)
 
     @patch('api.views.call_workflow')
     def test_reuses_supplied_session(self, mock_call):

@@ -14,6 +14,7 @@ router.register(r'kardex', views.KardexViewSet, basename='kardex')
 router.register(r'nurses', views.NurseViewSet, basename='nurse')
 
 urlpatterns = [
+    path('live/', views.LiveStateView.as_view(), name='live-state'),
     path('auth/signup/', views.SignupView.as_view(), name='signup'),
     path('auth/verify-id/', views.VerifyIdView.as_view(), name='verify-id'),
     path('auth/verify-prc/', views.VerifyPrcLicenseView.as_view(), name='verify-prc'),

@@ -48,6 +48,11 @@ ALLOWED_HOSTS = [
 
 
 INSTALLED_APPS = [
+    # Ahead of django.contrib.staticfiles so Channels' ASGI-capable runserver
+    # replaces the WSGI one; without this, `manage.py runserver` serves HTTP
+    # only and every WebSocket handshake fails.
+    'daphne',
+    'channels',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -90,6 +95,16 @@ TEMPLATES = [
         },
     },
 ]
+
+ASGI_APPLICATION = 'CapstoneBackEnd.asgi.application'
+
+# In-memory layer: this deployment runs a single server process, so groups
+# live in that process and need no Redis. Running more than one process
+# (gunicorn workers, multiple dynos) would need a shared layer instead,
+# because a nurse's socket lives in whichever process accepted it.
+CHANNEL_LAYERS = {
+    'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'},
+}
 
 WSGI_APPLICATION = 'CapstoneBackEnd.wsgi.application'
 
@@ -194,6 +209,12 @@ ALLOW_CONSOLE_OTP = env_bool('ALLOW_CONSOLE_OTP', False)
 # Windows build: https://github.com/UB-Mannheim/tesseract/wiki
 TESSERACT_CMD = os.environ.get('TESSERACT_CMD', '').strip()
 
+# Read the PRC ID with local Tesseract when the n8n OCR workflow returns no
+# fields (its OCR provider 503s, the workflow is paused, and so on). n8n stays
+# the primary reader; this only runs when it produced nothing, so a third-party
+# outage cannot block registration. Set False to fail loudly instead.
+ID_OCR_LOCAL_FALLBACK = env_bool('ID_OCR_LOCAL_FALLBACK', True)
+
 # --- n8n workflow webhooks ---------------------------------------------
 # Three n8n workflows back AI/verification features. Each is called
 # server-side by api/n8n_client.py — never from the mobile client, so the
@@ -228,6 +249,12 @@ N8N_WEBHOOKS = {
 # N8N_BASE_URL/N8N_WEBHOOK_PREFIX. Leave blank to use the composed URL above
 # (which already resolves to the same address when unset).
 N8N_IDENTITY_VERIFY_WEBHOOK = os.environ.get('N8N_IDENTITY_VERIFY_WEBHOOK', '').strip()
+
+# Full-URL override for the Auto-Charting workflow. Kept separate from
+# N8N_BASE_URL/N8N_WEBHOOK_PREFIX because the workflows live on different n8n
+# instances — composing one base URL for all of them silently sends charting
+# traffic to whichever instance identity verification happens to use.
+N8N_AUTO_CHARTING_WEBHOOK_URL = os.environ.get('N8N_AUTO_CHARTING_WEBHOOK_URL', '').strip()
 
 # n8n workflows that call an LLM or a vision model are slow; a short timeout
 # would abort a run that was going to succeed.

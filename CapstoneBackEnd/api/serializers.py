@@ -15,6 +15,9 @@ from .models import (
     RegistrationSession,
     Task,
 )
+from .avatar import AvatarError, normalize_avatar
+from .handover_tasks import create_handover_tasks
+from .notifications import notify_handover_created, notify_task_assigned, resolve_nurse
 from .utils import next_code
 
 
@@ -363,12 +366,20 @@ class UpdateMeSerializer(serializers.Serializer):
     lastName = serializers.CharField(required=False, allow_blank=True, max_length=150)
     department = serializers.CharField(required=False, allow_blank=True, max_length=120)
     licenseNumber = serializers.CharField(required=False, allow_blank=True, max_length=50)
-    avatar = serializers.URLField(required=False, allow_blank=True)
+    # Not a URLField any more: this now also carries an uploaded photo as a
+    # data: URI, which URLValidator rejects. validate_avatar re-encodes it.
+    avatar = serializers.CharField(required=False, allow_blank=True, trim_whitespace=False)
     shift = serializers.ChoiceField(
         choices=['morning', 'afternoon', 'night'], required=False, allow_blank=True
     )
     clinicalRole = serializers.CharField(required=False, allow_blank=True, max_length=40)
     specialization = serializers.CharField(required=False, allow_blank=True, max_length=120)
+
+    def validate_avatar(self, value):
+        try:
+            return normalize_avatar(value)
+        except AvatarError as exc:
+            raise serializers.ValidationError(str(exc))
 
     def update(self, instance, validated_data):
         if 'firstName' in validated_data:
@@ -394,6 +405,11 @@ class UpdateMeSerializer(serializers.Serializer):
                 changed = True
         if changed:
             profile.save()
+        # get_or_create hands back a different Python object than the one already
+        # cached on instance.nurse_profile by authentication, so without this the
+        # caller serializes the pre-edit profile and the change looks like it
+        # silently reverted — even though it is safely in the database.
+        instance.nurse_profile = profile
         return instance
 
 
@@ -409,6 +425,7 @@ class PatientSerializer(serializers.ModelSerializer):
     vitalSigns = serializers.DictField(required=False)
     assignedNurseId = serializers.SerializerMethodField(read_only=True)
     assignedNurseName = serializers.SerializerMethodField(read_only=True)
+    assignedBy = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Patient
@@ -428,6 +445,7 @@ class PatientSerializer(serializers.ModelSerializer):
             'alerts',
             'assignedNurseId',
             'assignedNurseName',
+            'assignedBy',
         ]
 
     def get_assignedNurseId(self, obj):
@@ -437,6 +455,30 @@ class PatientSerializer(serializers.ModelSerializer):
         if not obj.assigned_nurse:
             return None
         return obj.assigned_nurse.get_full_name().strip() or obj.assigned_nurse.username
+
+    def get_assignedBy(self, obj):
+        """
+        Who put this patient on the current nurse's list.
+
+        Now that the roster is shared, every nurse sees patients they are not
+        responsible for — so the row has to say who assigned them, not just
+        who they are assigned to. Read from the active PatientAssignment,
+        which is where that decision is actually recorded.
+        """
+        prefetched = getattr(obj, 'active_assignments', None)
+        if prefetched is not None:
+            assignment = prefetched[0] if prefetched else None
+        else:
+            assignment = (
+                obj.assignments.filter(status='active')
+                .select_related('assigned_by')
+                .order_by('-assigned_at')
+                .first()
+            )
+        if assignment is None or assignment.assigned_by is None:
+            return None
+        user = assignment.assigned_by
+        return user.get_full_name().strip() or user.username
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -587,7 +629,9 @@ class TaskSerializer(serializers.ModelSerializer):
                 )
         if assigned_nurse:
             validated_data['assigned_nurse'] = assigned_nurse
-        return Task.objects.create(**validated_data)
+        task = Task.objects.create(**validated_data)
+        notify_task_assigned(task, actor=request.user if request else None)
+        return task
 
     def update(self, instance, validated_data):
         patient_id = validated_data.pop('patientId', serializers.empty)
@@ -616,6 +660,10 @@ class HandoverSerializer(serializers.ModelSerializer):
     patientName = serializers.CharField(source='patient_name', required=False, allow_blank=True)
     nurseFrom = serializers.CharField(source='nurse_from')
     nurseTo = serializers.CharField(source='nurse_to')
+    # The account behind nurseTo. The handover form picks a nurse from a list,
+    # so it already knows this; sending it means notifications reach exactly one
+    # inbox instead of guessing from a display name several nurses share.
+    nurseToId = serializers.CharField(required=False, allow_blank=True, write_only=True)
     sbar = serializers.DictField(required=False)
     unfinishedTasks = serializers.ListField(
         child=serializers.CharField(), source='unfinished_tasks', required=False
@@ -634,6 +682,7 @@ class HandoverSerializer(serializers.ModelSerializer):
             'date',
             'nurseFrom',
             'nurseTo',
+            'nurseToId',
             'sbar',
             'unfinishedTasks',
             'photos',
@@ -681,7 +730,31 @@ class HandoverSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             validated_data['created_by'] = request.user
-        return HandoverNote.objects.create(**validated_data)
+        self._resolve_recipient(validated_data)
+        handover = HandoverNote.objects.create(**validated_data)
+        # The work is the sender's until somebody accepts it, so it goes on
+        # their task list now rather than existing only as text on a card.
+        create_handover_tasks(handover)
+        notify_handover_created(handover)
+        return handover
+
+    def _resolve_recipient(self, validated_data):
+        """Attach the receiving nurse's account, by id when given, else by name."""
+        nurse_to_id = (validated_data.pop('nurseToId', '') or '').strip()
+        if nurse_to_id:
+            recipient = User.objects.filter(pk=nurse_to_id).first()
+            if recipient is None:
+                raise serializers.ValidationError({'nurseToId': 'Nurse not found.'})
+            validated_data['nurse_to_user'] = recipient
+            validated_data.setdefault(
+                'nurse_to', recipient.get_full_name().strip() or recipient.username
+            )
+            return
+        # Older clients and the API docs send only a name; fall back to matching
+        # on it, which resolves to nobody when the name is ambiguous.
+        name = validated_data.get('nurse_to')
+        if name:
+            validated_data['nurse_to_user'] = resolve_nurse(name)
 
     def update(self, instance, validated_data):
         patient_id = validated_data.pop('patientId', serializers.empty)
@@ -689,6 +762,8 @@ class HandoverSerializer(serializers.ModelSerializer):
             self._resolve_patient(validated_data, patient_id)
         self._apply_sbar(validated_data)
         validated_data.pop('handover_code', None)
+        if 'nurseToId' in validated_data or 'nurse_to' in validated_data:
+            self._resolve_recipient(validated_data)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
@@ -794,20 +869,45 @@ class NotificationSerializer(serializers.ModelSerializer):
     time = serializers.SerializerMethodField()
     isRead = serializers.BooleanField(source='is_read')
     action = serializers.SerializerMethodField()
+    # What happened, as opposed to how severe it looks. The app raises a popup
+    # for a patient handover and only a bell entry for everything else.
+    event = serializers.CharField(read_only=True)
+    patientId = serializers.SerializerMethodField()
+    handoverId = serializers.SerializerMethodField()
+    senderName = serializers.SerializerMethodField()
+    # Exact timestamp alongside the human 'time' string, so a popup can show a
+    # clock time rather than "3 mins ago".
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
 
     class Meta:
         model = Notification
         fields = [
             'id',
             'type',
+            'event',
             'title',
             'message',
             'patient',
+            'patientId',
+            'handoverId',
+            'senderName',
             'time',
+            'createdAt',
             'isRead',
             'action',
         ]
         read_only_fields = fields
+
+    def get_patientId(self, obj):
+        return obj.patient.patient_code if obj.patient_id else None
+
+    def get_handoverId(self, obj):
+        return obj.handover.handover_code if obj.handover_id else None
+
+    def get_senderName(self, obj):
+        if not obj.sender_id:
+            return None
+        return obj.sender.get_full_name().strip() or obj.sender.username
 
     def get_id(self, obj):
         return str(obj.pk)

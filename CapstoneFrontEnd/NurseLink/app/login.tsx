@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Link, useRouter } from 'expo-router';
@@ -18,8 +19,11 @@ import { Input } from '../components/Input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/Card';
 import { Alert, AlertDescription } from '../components/Alert';
 import { Colors, Shadows, Radius } from '../constants/colors';
+import { isDesktopBrowser } from '../utils/isDesktopBrowser';
 
 export default function LoginPage() {
+  const { width } = useWindowDimensions();
+  const hideSignUp = isDesktopBrowser(width);
   const { login, isLoading } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState('');
@@ -164,13 +168,23 @@ export default function LoginPage() {
                   {isLoading ? 'Signing In...' : 'Sign In'}
                 </Button>
 
+                {/* Registration needs a live camera for the PRC ID scan and
+                    face match, which desktops handle poorly or not at all —
+                    so desktop users are pointed at a phone instead. */}
                 <View style={styles.footer}>
-                  <Text style={styles.footerText}>
-                    Don't have an account?{' '}
-                    <Link href="/signup" style={styles.link}>
-                      Sign Up
-                    </Link>
-                  </Text>
+                  {hideSignUp ? (
+                    <Text style={styles.footerText}>
+                      New here? Registration is done in the NurseLink mobile app, which
+                      can scan your PRC ID and verify your face.
+                    </Text>
+                  ) : (
+                    <Text style={styles.footerText}>
+                      Don't have an account?{' '}
+                      <Link href="/signup" style={styles.link}>
+                        Sign Up
+                      </Link>
+                    </Text>
+                  )}
                 </View>
               </CardContent>
             </Card>

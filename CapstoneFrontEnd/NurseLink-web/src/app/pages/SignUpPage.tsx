@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import IdCameraCaptureModal from '../components/IdCameraCaptureModal';
 import { Link, useNavigate } from 'react-router';
 import {
   AlertCircle,
@@ -419,6 +420,11 @@ export default function SignUpPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+
+  // Which ID-capture camera modal is open, if any. A hidden file input with
+  // capture="environment" cannot open a camera in a desktop browser, so the
+  // web flow uses a real getUserMedia preview with an alignment guide.
+  const [idCameraFor, setIdCameraFor] = useState<null | 'hospital' | 'prc'>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const cameraRequestInFlight = useRef(false);
   const faceVerificationInFlight = useRef(false);
@@ -440,6 +446,12 @@ export default function SignUpPage() {
   const [cameraState, setCameraState] = useState<'idle' | 'requesting' | 'active' | 'denied' | 'not-supported'>('idle');
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const [selfiePreview, setSelfiePreview] = useState<string | null>(null);
+  // True while a captured frame is on screen awaiting the nurse's decision.
+  // Capture and verification used to be one action, so the shutter fired the
+  // moment the camera opened and a badly framed shot immediately burned one
+  // of the three attempts. Holding the frame here separates "took a photo"
+  // from "submitted a photo" — only the latter can fail.
+  const [awaitingSelfieConfirm, setAwaitingSelfieConfirm] = useState(false);
   const [faceStatus, setFaceStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
   const [faceError, setFaceError] = useState('');
 
@@ -723,25 +735,52 @@ export default function SignUpPage() {
     void openCamera();
   }, [step, faceResuming, faceLocked, showOtpPanel, faceStatus, selfiePreview]);
 
-  const captureSelfie = () => {
-    if (faceVerificationInFlight.current) return;
-    if (!videoRef.current || !canvasRef.current || !hospitalIdPreview) return;
+  /**
+   * Grab one frame and stop the camera. Nothing is sent anywhere.
+   *
+   * Deliberately does NOT set faceVerificationInFlight — that guard belongs
+   * to the network call. Taking a photo is free and repeatable.
+   */
+  const capturePhoto = () => {
+    if (!videoRef.current || !canvasRef.current) return;
     if (faceStatus === 'processing') return;
 
-    faceVerificationInFlight.current = true;
     const video = videoRef.current;
     const canvas = canvasRef.current;
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      faceVerificationInFlight.current = false;
-      return;
-    }
+    if (!ctx) return;
+
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const image = canvas.toDataURL('image/jpeg', 0.9);
-    setSelfiePreview(image);
+    setSelfiePreview(canvas.toDataURL('image/jpeg', 0.9));
+    setAwaitingSelfieConfirm(true);
+    setFaceError('');
+    // Release the camera while the nurse decides; retake reopens it.
     clearMedia();
+  };
+
+  /** Discard the frame and go back to a live preview. Costs no attempt. */
+  const retakePhoto = () => {
+    setSelfiePreview(null);
+    setAwaitingSelfieConfirm(false);
+    setFaceError('');
+    setFaceStatus('idle');
+    void openCamera();
+  };
+
+  /**
+   * Send the confirmed photo for verification. This is the only path that
+   * can consume one of the three attempts.
+   */
+  const confirmSelfie = () => {
+    if (faceVerificationInFlight.current) return;
+    if (!selfiePreview || !hospitalIdPreview) return;
+    if (faceStatus === 'processing') return;
+
+    faceVerificationInFlight.current = true;
+    const image = selfiePreview;
+    setAwaitingSelfieConfirm(false);
     setFaceStatus('processing');
     setFaceError('');
 
@@ -1107,6 +1146,26 @@ export default function SignUpPage() {
   const canSubmitCredentials = roleVerified && prcDone && identityVerified && ocrDone && idUploaded && roleSelected;
 
   return (
+    <>
+      <IdCameraCaptureModal
+        open={idCameraFor !== null}
+        onClose={() => setIdCameraFor(null)}
+        title={idCameraFor === 'prc' ? 'Scan your PRC ID' : 'Scan your Hospital ID'}
+        onCapture={(dataUrl) => {
+          // Same path the file picker uses, so OCR and validation are unchanged.
+          if (idCameraFor === 'prc') {
+            setPrcError('');
+            setPrcStatus('idle');
+            setPrcData(null);
+            setPrcFaceMatched(false);
+            setPrcImagePreview(dataUrl);
+            void runPrcVerify(dataUrl);
+          } else {
+            setHospitalIdPreview(dataUrl);
+            void runIdVerification(dataUrl);
+          }
+        }}
+      />
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
       <div className="mx-auto flex w-full max-w-[900px] flex-col gap-6">
         <div className="flex flex-col items-center gap-2 text-center">
@@ -1211,7 +1270,7 @@ export default function SignUpPage() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <button
                         type="button"
-                        onClick={() => cameraInputRef.current?.click()}
+                        onClick={() => setIdCameraFor('hospital')}
                         className="flex h-12 items-center justify-center gap-2 rounded-full border-2 border-blue-200 bg-white text-sm font-semibold text-blue-700 transition hover:border-blue-300 hover:bg-blue-50"
                       >
                         <Camera className="h-5 w-5" /> Camera Scan
@@ -1409,6 +1468,30 @@ export default function SignUpPage() {
                                 </div>
                               )}
                             </div>
+                            {awaitingSelfieConfirm && (
+                              <>
+                                <p className="text-center text-sm text-gray-600">
+                                  Is your face clearly visible? Use this photo, or retake it.
+                                </p>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={retakePhoto}
+                                    className="h-12 rounded-full"
+                                  >
+                                    <Camera className="mr-2 h-4 w-4" /> Retake
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    onClick={confirmSelfie}
+                                    className="h-12 rounded-full bg-blue-600 text-white hover:bg-blue-700"
+                                  >
+                                    <CheckCircle2 className="mr-2 h-4 w-4" /> Use This Photo
+                                  </Button>
+                                </div>
+                              </>
+                            )}
                             {faceStatus === 'error' && !faceLocked && (
                               <div className="space-y-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                                 <p className="font-bold">Face Verification Failed</p>
@@ -1424,12 +1507,16 @@ export default function SignUpPage() {
                                 {faceError ? <p className="text-xs opacity-90">{faceError}</p> : null}
                               </div>
                             )}
-                            {!faceLocked && faceStatus !== 'processing' && (
+                            {/* Hidden while a fresh capture is awaiting confirmation — Retake
+                                already covers that case, and two buttons doing the same thing
+                                invites the nurse to guess which one is safe. */}
+                            {!faceLocked && faceStatus !== 'processing' && !awaitingSelfieConfirm && (
                               <Button
                                 type="button"
                                 onClick={() => {
                                   // Manual progression only — do not call the API / increment attempts here.
                                   setSelfiePreview(null);
+                                  setAwaitingSelfieConfirm(false);
                                   setFaceStatus('idle');
                                   setFaceError('');
                                   faceAutoOpenDone.current = false;
@@ -1450,26 +1537,21 @@ export default function SignUpPage() {
                               </div>
                             </div>
                             <p className="text-center text-sm text-gray-600">
-                              {faceAttemptsUsed === faceMaxAttempts - 1
-                                ? 'This is your final face verification attempt.'
-                                : 'Please position your face inside the camera.'}
+                              Position your face inside the frame. Make sure it is clearly visible
+                              and centred, then take the photo when you are ready.
                             </p>
+                            {faceAttemptsUsed === faceMaxAttempts - 1 && (
+                              <p className="text-center text-sm font-semibold text-amber-700">
+                                This is your final face verification attempt.
+                              </p>
+                            )}
                             <div className="grid gap-3 sm:grid-cols-2">
                               <Button
                                 type="button"
-                                onClick={captureSelfie}
-                                disabled={faceStatus === 'processing'}
+                                onClick={capturePhoto}
                                 className="h-12 rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-70"
                               >
-                                {faceStatus === 'processing' ? (
-                                  <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying your face...
-                                  </>
-                                ) : (
-                                  <>
-                                    <Camera className="mr-2 h-4 w-4" /> Verify Face
-                                  </>
-                                )}
+                                <Camera className="mr-2 h-4 w-4" /> Capture Photo
                               </Button>
                               <Button type="button" variant="outline" onClick={clearMedia} className="h-12 rounded-full">
                                 <X className="mr-2 h-4 w-4" /> Cancel
@@ -1928,7 +2010,7 @@ export default function SignUpPage() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <button
                         type="button"
-                        onClick={() => prcCameraInputRef.current?.click()}
+                        onClick={() => setIdCameraFor('prc')}
                         className="flex h-12 items-center justify-center gap-2 rounded-full border-2 border-blue-200 bg-white text-sm font-semibold text-blue-700 transition hover:border-blue-300 hover:bg-blue-50"
                       >
                         <Camera className="h-5 w-5" /> Camera Scan
@@ -2265,5 +2347,6 @@ export default function SignUpPage() {
         )}
       </div>
     </div>
+    </>
   );
 }

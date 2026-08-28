@@ -1,0 +1,169 @@
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import { AppState, AppStateStatus } from 'react-native';
+import { fetchLiveState, type LiveState } from '../services/api';
+import { useAuth } from './AuthContext';
+import { useRealtime } from './RealtimeContext';
+
+/**
+ * The app's single source of "something changed".
+ *
+ * Handovers, tasks and notifications all originate on other nurses' devices, so
+ * nothing local can announce them — the app has to ask. Having each screen ask
+ * for its own list on a timer would mean several full responses per nurse per
+ * tick, nearly all of them identical to the last. Instead one poller asks the
+ * server for a revision string per area, and screens refetch only when their
+ * revision actually moves.
+ *
+ * The steady state is therefore one ~200-byte request every few seconds no
+ * matter how many screens are mounted, and real list queries happen only when
+ * there is genuinely something new to show.
+ *
+ * This is the safety net rather than the delivery path. RealtimeContext holds a
+ * WebSocket that pushes notifications the moment they are saved; what polling
+ * adds is recovery. A socket can be down or mid-reconnect over hospital wi-fi,
+ * and it carries notifications only — task and handover lists still need to
+ * notice edits made elsewhere. So while push is connected this backs right off,
+ * and if push is unavailable the app keeps working unchanged.
+ */
+
+/**
+ * How often the server is asked whether anything changed, with push unavailable.
+ *
+ * This then sets how long one nurse's action takes to appear on another's
+ * screen, so it is deliberately short. The request is skipped whenever the app
+ * is backgrounded or a poll is already in flight.
+ */
+const POLL_INTERVAL_MS = 4000;
+
+/**
+ * Interval used while the WebSocket is connected.
+ *
+ * Push is the real delivery path once it is up, so this drops back to a slow
+ * safety net — it catches anything a socket could miss across a reconnect, and
+ * keeps working untouched if push is unavailable entirely.
+ */
+const BACKGROUND_POLL_INTERVAL_MS = 30000;
+
+const EMPTY: LiveState = {
+  notifications: '',
+  tasks: '',
+  handovers: '',
+  patients: '',
+  unreadCount: 0,
+};
+
+interface LiveContextType {
+  /** Revision strings; compare, never parse. */
+  revisions: LiveState;
+  /** Ask the server immediately, e.g. straight after an action of your own. */
+  poll: () => Promise<void>;
+}
+
+const LiveContext = createContext<LiveContextType | undefined>(undefined);
+
+export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user } = useAuth();
+  const { connected } = useRealtime();
+  const [revisions, setRevisions] = useState<LiveState>(EMPTY);
+
+  // Guards against overlapping polls on a slow connection, where a request can
+  // still be in flight when the next tick fires.
+  const inFlight = useRef(false);
+  const mounted = useRef(true);
+
+  const poll = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    try {
+      const next = await fetchLiveState();
+      if (mounted.current) setRevisions(next);
+    } catch {
+      // A dropped poll is not worth surfacing — the next tick recovers.
+    } finally {
+      inFlight.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setRevisions(EMPTY);
+      return;
+    }
+
+    void poll();
+    const timer = setInterval(
+      () => {
+        void poll();
+      },
+      connected ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS
+    );
+
+    // Coming back to the app is when a nurse is most likely to have missed
+    // something, so check straight away rather than waiting for the next tick.
+    const onAppStateChange = (state: AppStateStatus) => {
+      if (state === 'active') void poll();
+    };
+    const subscription = AppState.addEventListener('change', onAppStateChange);
+
+    return () => {
+      clearInterval(timer);
+      subscription.remove();
+    };
+  }, [user, poll, connected]);
+
+  // A socket that just came back may have missed events while it was down, so
+  // reconcile against the server rather than trusting the gap was empty.
+  useEffect(() => {
+    if (user && connected) void poll();
+  }, [connected, user, poll]);
+
+  return <LiveContext.Provider value={{ revisions, poll }}>{children}</LiveContext.Provider>;
+};
+
+export function useLive(): LiveContextType {
+  const context = useContext(LiveContext);
+  if (!context) {
+    throw new Error('useLive must be used within a LiveProvider');
+  }
+  return context;
+}
+
+/**
+ * Run `onChange` whenever one area's revision moves.
+ *
+ * Skips the first value, because screens load their own data on mount and
+ * should not immediately fetch it a second time.
+ */
+export function useLiveRefresh(area: keyof Omit<LiveState, 'unreadCount'>, onChange: () => void) {
+  const { revisions } = useLive();
+  const revision = revisions[area];
+  const previous = useRef<string | null>(null);
+  const handler = useRef(onChange);
+  handler.current = onChange;
+
+  useEffect(() => {
+    if (!revision) return;
+    if (previous.current === null) {
+      previous.current = revision;
+      return;
+    }
+    if (previous.current !== revision) {
+      previous.current = revision;
+      handler.current();
+    }
+  }, [revision]);
+}

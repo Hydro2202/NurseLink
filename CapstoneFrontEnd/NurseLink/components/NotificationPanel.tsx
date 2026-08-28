@@ -17,47 +17,39 @@ import { Badge } from './Badge';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../constants/colors';
-import {
-  fetchNotifications,
-  markAllNotificationsRead,
-  markNotificationRead,
-  ApiError,
-} from '../services/api';
+import { ApiError } from '../services/api';
+import { useNotifications } from '../contexts/NotificationsContext';
 import type { AppNotification } from '../types/domain';
 
 interface NotificationPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  onUnreadChange?: (count: number) => void;
 }
 
 const PANEL_WIDTH = Math.min(Dimensions.get('window').width, 384);
 
+/**
+ * Turn a stored action path into a route inside the (app) group.
+ *
+ * Notifications store plain paths like "/tasks". The leading group segment is
+ * added here — and stripped first if it is already present, because a path that
+ * arrives as "/(app)/tasks" would otherwise become "/(app)/(app)/tasks" and
+ * land the nurse on Unmatched Route.
+ */
 function mapAppPath(path: string): string {
-  const clean = path.startsWith('/') ? path.slice(1) : path;
+  let clean = path.startsWith('/') ? path.slice(1) : path;
+  if (clean.startsWith('(app)/')) clean = clean.slice('(app)/'.length);
   return `/(app)/${clean}`;
 }
 
-export function NotificationPanel({ isOpen, onClose, onUnreadChange }: NotificationPanelProps) {
+export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
   const router = useRouter();
   const toast = useToast();
   const insets = useSafeAreaInsets();
   const slideAnim = useRef(new Animated.Value(PANEL_WIDTH)).current;
   const [visible, setVisible] = useState(false);
 
-  const [notifications, setNotifications] = useState<AppNotification[]>([]);
-
-  const loadNotifications = async () => {
-    try {
-      const data = await fetchNotifications();
-      setNotifications(data.results);
-      onUnreadChange?.(data.unreadCount);
-    } catch (error) {
-      toast.error('Failed to load notifications', {
-        description: error instanceof ApiError ? error.message : 'Please try again.',
-      });
-    }
-  };
+  const { notifications, unreadCount, refresh, markRead, markAllRead } = useNotifications();
 
   useEffect(() => {
     if (isOpen) {
@@ -68,7 +60,7 @@ export function NotificationPanel({ isOpen, onClose, onUnreadChange }: Notificat
         duration: 280,
         useNativeDriver: true,
       }).start();
-      loadNotifications();
+      void refresh();
       return;
     }
 
@@ -79,13 +71,14 @@ export function NotificationPanel({ isOpen, onClose, onUnreadChange }: Notificat
     }).start(({ finished }) => {
       if (finished) setVisible(false);
     });
-  }, [isOpen, slideAnim]);
+  }, [isOpen, slideAnim, refresh]);
 
-  const handleActionClick = (action: {
-    label: string;
-    path: string;
-    highlightId?: string;
-  }) => {
+  const handleActionClick = (notification: AppNotification) => {
+    const action = notification.action!;
+    // Acting on a notification is the clearest possible signal it has been
+    // seen, so drop it out of the unread count instead of leaving the badge
+    // stuck until the nurse remembers to clear the whole inbox.
+    if (!notification.isRead) void markRead(notification.id);
     onClose();
     const href = mapAppPath(action.path);
     if (action.highlightId) {
@@ -104,9 +97,7 @@ export function NotificationPanel({ isOpen, onClose, onUnreadChange }: Notificat
     }
 
     try {
-      await markAllNotificationsRead();
-      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
-      onUnreadChange?.(0);
+      await markAllRead();
       toast.success('All notifications marked as read', {
         description: `${unread} notification${unread > 1 ? 's' : ''} marked as read`,
       });
@@ -116,8 +107,6 @@ export function NotificationPanel({ isOpen, onClose, onUnreadChange }: Notificat
       });
     }
   };
-
-  const unreadCount = notifications.filter((n) => !n.isRead).length;
 
   const getIcon = (type: string) => {
     switch (type) {
@@ -259,7 +248,7 @@ export function NotificationPanel({ isOpen, onClose, onUnreadChange }: Notificat
                           <Button
                             size="sm"
                             variant="outline"
-                            onPress={() => handleActionClick(notification.action!)}
+                            onPress={() => handleActionClick(notification)}
                             style={styles.actionBtn}
                             textStyle={styles.actionBtnText}
                           >

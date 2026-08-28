@@ -15,7 +15,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from api.face_match import FaceModelError, InvalidImageError
@@ -208,10 +208,15 @@ class VerifyIdPortraitGateTests(TestCase):
         # the Route Action node which branch to run.
         self.assertEqual(mock_call.call_args[0][1]['action'], 'extract_id')
 
+    @override_settings(ID_OCR_LOCAL_FALLBACK=False)
     @patch('api.views.call_workflow')
     @patch('api.views.check_id_has_portrait')
     def test_ocr_workflow_returning_nothing_is_not_verified(self, mock_portrait, mock_call):
-        """An empty workflow response is a bad read, not a free pass — retake, don't guess."""
+        """
+        An empty workflow response is a bad read, not a free pass — retake,
+        don't guess. The local fallback is switched off here so this covers
+        the n8n path alone; the fallback has its own test below.
+        """
         mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
         mock_call.return_value = {}
 
@@ -221,6 +226,47 @@ class VerifyIdPortraitGateTests(TestCase):
         self.assertTrue(res.data['hasPhoto'])
         self.assertFalse(res.data['verified'])
         self.assertEqual(res.data['fullName'], '')
+
+    @override_settings(ID_OCR_LOCAL_FALLBACK=True)
+    @patch('api.views.scan_id_fields')
+    @patch('api.views.call_workflow')
+    @patch('api.views.check_id_has_portrait')
+    def test_local_ocr_fills_in_when_the_workflow_returns_nothing(
+        self, mock_portrait, mock_call, mock_scan
+    ):
+        """
+        The workflow's OCR node depends on a third-party service; a 503 there
+        makes n8n answer 200 with an empty body. Reading the card locally means
+        a provider outage cannot block registration — and the values are really
+        read, never invented.
+        """
+        mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
+        mock_call.return_value = {}
+        mock_scan.return_value = {
+            'lastName': 'Cortez', 'firstName': 'Raiden', 'middleName': 'Monteiro',
+            'registrationNumber': '0987654', 'registrationDate': '12/27/2025',
+            'validUntil': '06/29/2029', 'overallConfidence': 0.95,
+        }
+
+        res = self.client.post('/api/auth/verify-id/', {'idImage': _b64(_card())}, format='json')
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['verified'])
+        self.assertEqual(res.data['lastName'], 'Cortez')
+        self.assertEqual(res.data['registrationNumber'], '0987654')
+
+    @override_settings(ID_OCR_LOCAL_FALLBACK=True)
+    @patch('api.views.scan_id_fields', return_value={})
+    @patch('api.views.call_workflow', return_value={})
+    @patch('api.views.check_id_has_portrait')
+    def test_fallback_reading_nothing_still_fails_closed(self, mock_portrait, _c, _s):
+        # Neither engine read anything: that is a failed scan, not a pass.
+        mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
+
+        res = self.client.post('/api/auth/verify-id/', {'idImage': _b64(_card())}, format='json')
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data['verified'])
 
     @patch('api.views.call_workflow')
     def test_undecodable_upload_is_400(self, mock_call):

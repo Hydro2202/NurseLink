@@ -33,7 +33,8 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { NotificationPanel } from '../../components/NotificationPanel';
 import { BottomNavigation } from '../../components/BottomNavigation';
 import { Colors, Shadows, Radius } from '../../constants/colors';
-import { fetchNotifications } from '../../services/api';
+import { useNotifications } from '../../contexts/NotificationsContext';
+import { HandoverAlertModal } from '../../components/HandoverAlertModal';
 
 interface NavItem {
   name: string;
@@ -176,29 +177,15 @@ export default function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
+  // Live: the provider polls and refreshes on app focus, so the badge keeps
+  // itself current instead of only reflecting whatever was true at mount.
+  const { unreadCount } = useNotifications();
 
   useEffect(() => {
     if (!isLoading && !user) {
       router.replace('/login' as any);
     }
   }, [user, isLoading, router]);
-
-  useEffect(() => {
-    if (!user) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchNotifications();
-        if (!cancelled) setUnreadCount(data.unreadCount);
-      } catch {
-        // ignore badge errors
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user]);
 
   if (isLoading) {
     return (
@@ -255,11 +242,14 @@ export default function AppLayout() {
     />
   );
 
+  // Rendered in all three layouts (mobile staff, mobile supervisor, desktop):
+  // a patient being handed to you must interrupt wherever you are.
+  const handoverAlert = <HandoverAlertModal />;
+
   const notificationPanel = (
     <NotificationPanel
       isOpen={notificationPanelOpen}
       onClose={() => setNotificationPanelOpen(false)}
-      onUnreadChange={setUnreadCount}
     />
   );
 
@@ -305,6 +295,7 @@ export default function AppLayout() {
 
         <BottomNavigation role="staff_nurse" activePath={pathname} />
         {logoutDialog}
+        {handoverAlert}
         {notificationPanel}
         {profileMenu}
       </SafeAreaView>
@@ -345,6 +336,7 @@ export default function AppLayout() {
 
         <BottomNavigation role="supervisor" activePath={pathname} />
         {logoutDialog}
+        {handoverAlert}
         {notificationPanel}
         {profileMenu}
       </SafeAreaView>
@@ -475,6 +467,7 @@ export default function AppLayout() {
       </View>
 
       {logoutDialog}
+      {handoverAlert}
       {notificationPanel}
       {profileMenu}
     </SafeAreaView>

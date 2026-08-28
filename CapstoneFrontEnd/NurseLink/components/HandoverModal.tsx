@@ -8,7 +8,7 @@ import {
   Pressable,
   TextInput,
 } from 'react-native';
-import { Shield, User } from 'lucide-react-native';
+import { Shield, User, Plus, X } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Select } from './Select';
@@ -29,6 +29,11 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   const [nurses, setNurses] = useState<Nurse[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState('');
   const [selectedNurseId, setSelectedNurseId] = useState('');
+  // Work the outgoing nurse could not finish. On acknowledgement the API turns
+  // each line into a task on the receiving nurse's list, so this is the part of
+  // the handover that actually carries over rather than just being read.
+  const [unfinishedTasks, setUnfinishedTasks] = useState<string[]>([]);
+  const [taskDraft, setTaskDraft] = useState('');
   const [formData, setFormData] = useState({
     patientName: '',
     shift: 'morning' as 'morning' | 'afternoon' | 'night',
@@ -45,6 +50,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     if (!open) {
       setSelectedPatientId('');
       setSelectedNurseId('');
+      setUnfinishedTasks([]);
+      setTaskDraft('');
       setFormData({
         patientName: '',
         shift: 'morning',
@@ -116,6 +123,17 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     return Object.keys(newErrors).length === 0;
   };
 
+  const addUnfinishedTask = () => {
+    const entry = taskDraft.trim();
+    if (!entry) return;
+    setUnfinishedTasks((prev) => (prev.includes(entry) ? prev : [...prev, entry]));
+    setTaskDraft('');
+  };
+
+  const removeUnfinishedTask = (index: number) => {
+    setUnfinishedTasks((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleSubmit = async () => {
     if (!validateForm()) return;
     setLoading(true);
@@ -125,13 +143,16 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         patientName: formData.patientName,
         shift: formData.shift,
         nurseTo: formData.nurseTo,
+        // Sent alongside the name so the API can notify exactly this nurse —
+        // display names are not unique on this ward.
+        nurseToId: selectedNurseId,
         sbar: {
           situation: formData.situation,
           background: formData.background,
           assessment: formData.assessment,
           recommendation: formData.recommendation,
         },
-        unfinishedTasks: [],
+        unfinishedTasks,
         status: 'pending',
       });
       onOpenChange(false);
@@ -284,6 +305,51 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                       {errors.recommendation ? (
                         <Text style={styles.error}>{errors.recommendation}</Text>
                       ) : null}
+                    </View>
+
+                    <View style={styles.unfinishedBox}>
+                      <Text style={styles.label}>Unfinished Tasks</Text>
+                      <Text style={styles.unfinishedHint}>
+                        Anything still outstanding. When the receiving nurse acknowledges
+                        this handover, each line becomes a task on their list.
+                      </Text>
+
+                      <View style={styles.taskInputRow}>
+                        <TextInput
+                          style={[styles.textarea, styles.taskInput]}
+                          placeholder="e.g., Recheck IV site at 14:00"
+                          placeholderTextColor={Colors.mutedForeground}
+                          value={taskDraft}
+                          onChangeText={setTaskDraft}
+                          onSubmitEditing={addUnfinishedTask}
+                          returnKeyType="done"
+                          blurOnSubmit={false}
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onPress={addUnfinishedTask}
+                          disabled={!taskDraft.trim()}
+                          style={styles.taskAddBtn}
+                        >
+                          <Plus size={16} color={Colors.blue700} />
+                          <Text style={styles.taskAddText}>Add</Text>
+                        </Button>
+                      </View>
+
+                      {unfinishedTasks.map((task, index) => (
+                        <View key={`${task}-${index}`} style={styles.taskChip}>
+                          <Text style={styles.taskChipText}>{task}</Text>
+                          <Pressable
+                            onPress={() => removeUnfinishedTask(index)}
+                            hitSlop={8}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Remove ${task}`}
+                          >
+                            <X size={15} color={Colors.mutedForeground} />
+                          </Pressable>
+                        </View>
+                      ))}
                     </View>
                   </View>
                 )}
@@ -473,6 +539,54 @@ const styles = StyleSheet.create({
   readOnly: {
     backgroundColor: Colors.gray50,
     borderColor: Colors.gray200,
+  },
+  unfinishedBox: {
+    gap: 8,
+    paddingTop: 14,
+    marginTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  unfinishedHint: {
+    fontSize: 12,
+    color: Colors.mutedForeground,
+    lineHeight: 16,
+  },
+  taskInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  taskInput: {
+    flex: 1,
+    minHeight: 44,
+  },
+  taskAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  taskAddText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.blue700,
+  },
+  taskChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: Colors.muted,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  taskChipText: {
+    flex: 1,
+    fontSize: 13,
+    color: Colors.foreground,
   },
   recommendationBox: {
     backgroundColor: Colors.purple50,

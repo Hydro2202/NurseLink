@@ -582,6 +582,19 @@ export async function fetchAnalytics(): Promise<AnalyticsData> {
   return apiRequest<AnalyticsData>('/analytics/');
 }
 
+/** Revision stamps used to detect changes without refetching whole lists. */
+export interface LiveState {
+  notifications: string;
+  tasks: string;
+  handovers: string;
+  patients: string;
+  unreadCount: number;
+}
+
+export async function fetchLiveState(): Promise<LiveState> {
+  return apiRequest<LiveState>('/live/');
+}
+
 export async function fetchNotifications(): Promise<{
   results: AppNotification[];
   unreadCount: number;

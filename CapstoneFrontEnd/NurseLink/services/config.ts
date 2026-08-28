@@ -16,9 +16,20 @@ export const API_BASE_URL = (
   process.env.EXPO_PUBLIC_API_URL || `${DEFAULT_HOST}/api`
 ).replace(/\/$/, '');
 
+/**
+ * WebSocket endpoint for live notifications.
+ *
+ * Derived from API_BASE_URL rather than configured separately, so pointing the
+ * app at a different machine moves both together: http -> ws, https -> wss, and
+ * the trailing /api is dropped because the socket is not under it.
+ */
+export const WS_URL = API_BASE_URL.replace(/^http/, 'ws').replace(/\/api$/, '')
+  + '/ws/notifications/';
+
 export const TOKEN_KEY = 'nurselink_token';
 export const USER_KEY = 'nurselink_user';
 
 if (__DEV__) {
   console.log('[NurseLink] API_BASE_URL =', API_BASE_URL);
+  console.log('[NurseLink] WS_URL =', WS_URL);
 }

@@ -7,13 +7,15 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  useWindowDimensions,
   Animated,
   Pressable,
   ActivityIndicator,
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Link, useRouter } from 'expo-router';
+import { Link, Redirect, useRouter } from 'expo-router';
+import { isDesktopBrowser } from '../utils/isDesktopBrowser';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -60,6 +62,19 @@ import {
 
 const FACE_SESSION_KEY = 'nurselink.faceVerificationSession';
 const MAX_FACE_ATTEMPTS = 3;
+
+/**
+ * Return bare base64, dropping any `data:image/jpeg;base64,` prefix.
+ *
+ * takePictureAsync behaves differently per platform: on web there is no file
+ * system, so URIs come back as data URIs and base64 can arrive already
+ * prefixed. Re-prefixing that produces `data:image/jpeg;base64,data:image/...`,
+ * which the backend rejects as undecodable — surfacing as a bare 400.
+ */
+function bareBase64(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.replace(/^data:[^;]+;base64,/, '');
+}
 
 function extractErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
@@ -338,6 +353,14 @@ function NavButtons({
 }
 
 export default function SignUpPage() {
+  // Hiding the link is not enough — /signup is still typeable. Registration
+  // needs a live camera the desktop cannot provide, so send them to login
+  // rather than let them start a wizard that stalls at the ID scan.
+  const { width: viewportWidth } = useWindowDimensions();
+  if (isDesktopBrowser(viewportWidth)) {
+    return <Redirect href="/login" />;
+  }
+
   const router = useRouter();
   const { signup, logout } = useAuth();
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -410,6 +433,17 @@ export default function SignUpPage() {
   const [hospitalIdUri, setHospitalIdUri] = useState<string | null>(null);
   const [hospitalIdBase64, setHospitalIdBase64] = useState<string | null>(null);
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
+  // A captured frame awaiting the nurse's Retake / Use This Photo decision.
+  // Present means "photo taken but not yet submitted".
+  const [pendingSelfieBase64, setPendingSelfieBase64] = useState<string | null>(null);
+
+  // In-app camera for the PRC ID. expo-image-picker's launchCameraAsync falls
+  // back to a plain file input on web, so "Camera Scan" could only ever open
+  // the file manager there. CameraView works on web (getUserMedia) and on
+  // native, so one implementation covers both.
+  const idCameraRef = useRef<CameraView>(null);
+  const [idCameraActive, setIdCameraActive] = useState(false);
+  const [pendingIdPhoto, setPendingIdPhoto] = useState<{ uri: string; base64: string } | null>(null);
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
   const [liveCameraActive, setLiveCameraActive] = useState(false);
   const [ocrData, setOcrData] = useState(defaultOcrData);
@@ -666,16 +700,52 @@ export default function SignUpPage() {
 
   const handleScanId = () => {
     setError('');
-    // Same explained gate as the face step. ImagePicker would otherwise raise
-    // its own bare prompt with no context attached.
-    withCameraPermission('id', async () => {
-      const result = await ImagePicker.launchCameraAsync({
-        quality: 0.9,
-        allowsEditing: true,
-        base64: true,
-      });
-      if (!result.canceled) handleIdImage(result.assets[0].uri, result.assets[0].base64 ?? null);
+    // Opens the in-app camera behind the same explained permission gate as
+    // the face step, so the nurse can line the card up against a guide
+    // instead of shooting blind through the OS camera app.
+    withCameraPermission('id', () => {
+      setPendingIdPhoto(null);
+      setIdCameraActive(true);
     });
+  };
+
+  /** Take one photo of the ID and hold it for review. Sends nothing. */
+  const captureIdPhoto = async () => {
+    setError('');
+    if (!idCameraRef.current) {
+      setError('Camera is not ready. Please try again.');
+      return;
+    }
+    try {
+      const photo = await idCameraRef.current.takePictureAsync({
+        quality: 0.9,
+        base64: true,
+        skipProcessing: false,
+      });
+      if (!photo?.base64) {
+        setError('Could not read the captured photo. Please try again.');
+        return;
+      }
+      setPendingIdPhoto({ uri: photo.uri, base64: bareBase64(photo.base64) ?? '' });
+      setIdCameraActive(false);
+    } catch {
+      setError('Camera capture failed. Please try again.');
+    }
+  };
+
+  const retakeIdPhoto = () => {
+    setPendingIdPhoto(null);
+    setError('');
+    setIdCameraActive(true);
+  };
+
+  /** Confirm the held photo and run the existing OCR path. */
+  const confirmIdPhoto = () => {
+    if (!pendingIdPhoto) return;
+    const { uri, base64 } = pendingIdPhoto;
+    setPendingIdPhoto(null);
+    setIdCameraActive(false);
+    handleIdImage(uri, base64);
   };
 
   const openLiveCamera = () => {
@@ -689,6 +759,59 @@ export default function SignUpPage() {
     });
   };
 
+  /**
+   * Take one photo and stop the camera. Nothing is sent anywhere.
+   *
+   * Capture and verification used to be a single button press, so a badly
+   * framed shot went straight to the backend and consumed one of the three
+   * attempts before the nurse had seen it. Holding the frame for review
+   * separates "took a photo" from "submitted a photo" — only the latter can
+   * fail. Deliberately does not set faceVerificationInFlight: that guard
+   * belongs to the network call, and taking a photo is free and repeatable.
+   */
+  const capturePhoto = async () => {
+    setError('');
+    if (!cameraRef.current) {
+      setError('Camera is not ready. Please try again.');
+      return;
+    }
+
+    let photo;
+    try {
+      photo = await cameraRef.current.takePictureAsync({
+        quality: 0.85,
+        base64: true,
+        skipProcessing: false,
+      });
+    } catch {
+      setError('Camera capture failed. Please try again.');
+      return;
+    }
+
+    if (!photo?.base64) {
+      setError('Could not read the captured photo. Please try again.');
+      return;
+    }
+
+    setSelfieUri(photo.uri);
+    setPendingSelfieBase64(bareBase64(photo.base64));
+    setLiveCameraActive(false);
+    setFaceStatus('idle');
+  };
+
+  /** Discard the held frame and reopen the camera. Costs no attempt. */
+  const retakePhoto = () => {
+    setPendingSelfieBase64(null);
+    setSelfieUri(null);
+    setError('');
+    setFaceStatus('idle');
+    void openLiveCamera();
+  };
+
+  /**
+   * Submit the confirmed photo. This is the only path that can consume one
+   * of the three verification attempts.
+   */
   const handleFaceVerification = async () => {
     if (faceVerificationInFlight.current) return;
     faceVerificationInFlight.current = true;
@@ -698,29 +821,13 @@ export default function SignUpPage() {
         setError('Please re-upload your PRC ID photo in Step 1 before continuing.');
         return;
       }
-      if (!cameraRef.current) {
-        setError('Camera is not ready. Please try again.');
-        return;
-      }
-
-      let photo;
-      try {
-        photo = await cameraRef.current.takePictureAsync({
-          quality: 0.85,
-          base64: true,
-          skipProcessing: false,
-        });
-      } catch {
-        setError('Camera capture failed. Please try again.');
-        return;
-      }
-
+      const photo = pendingSelfieBase64 ? { base64: pendingSelfieBase64 } : null;
       if (!photo?.base64) {
-        setError('Could not read the captured photo. Please try again.');
+        setError('Please capture a photo first.');
         return;
       }
 
-      setSelfieUri(photo.uri);
+      setPendingSelfieBase64(null);
       setLiveCameraActive(false);
       setFaceStatus('processing');
 
@@ -1068,6 +1175,60 @@ export default function SignUpPage() {
 
                 {currentStep === 1 && (
                   <View style={styles.stepBody}>
+                    {idCameraActive && cameraPermission?.granted ? (
+                      <View style={styles.liveCameraWrap}>
+                        <View style={styles.liveCameraInner}>
+                          <CameraView
+                            ref={idCameraRef}
+                            style={styles.liveCamera}
+                            // A laptop has no rear camera: asking for one on web
+                            // yields a black frame instead of a preview.
+                            facing={Platform.OS === 'web' ? 'front' : 'back'}
+                          />
+                          {/* Card-shaped guide: framing to this keeps all four
+                              corners in shot, which is what OCR needs. */}
+                          <View style={styles.idCameraFrame} pointerEvents="none" />
+                        </View>
+                        <Text style={styles.liveCameraHint}>
+                          Place your PRC ID flat inside the frame. Make sure all four corners are
+                          visible and the text is sharp, then take the photo.
+                        </Text>
+                        <View style={navStyles.row}>
+                          <Button
+                            variant="outline"
+                            size="lg"
+                            onPress={() => setIdCameraActive(false)}
+                            style={navStyles.backBtn}
+                          >
+                            <X size={16} color={Colors.gray700} />
+                            <Text style={navStyles.backText}>Cancel</Text>
+                          </Button>
+                          <Button size="lg" onPress={captureIdPhoto} style={navStyles.continueBtn}>
+                            <Camera size={16} color={Colors.white} />
+                            <Text style={navStyles.btnText}>Capture Photo</Text>
+                          </Button>
+                        </View>
+                      </View>
+                    ) : pendingIdPhoto ? (
+                      <View style={styles.liveCameraWrap}>
+                        <View style={styles.liveCameraInner}>
+                          <Image source={{ uri: pendingIdPhoto.uri }} style={styles.liveCamera} />
+                        </View>
+                        <Text style={styles.liveCameraHint}>
+                          Can you read every line on the card? Use this photo, or retake it.
+                        </Text>
+                        <View style={navStyles.row}>
+                          <Button variant="outline" size="lg" onPress={retakeIdPhoto} style={navStyles.backBtn}>
+                            <Camera size={16} color={Colors.gray700} />
+                            <Text style={navStyles.backText}>Retake</Text>
+                          </Button>
+                          <Button size="lg" onPress={confirmIdPhoto} style={navStyles.continueBtn}>
+                            <CheckCircle2 size={16} color={Colors.white} />
+                            <Text style={navStyles.btnText}>Use This Photo</Text>
+                          </Button>
+                        </View>
+                      </View>
+                    ) : (
                     <View style={[styles.uploadBox, hospitalIdUri && ocrDone ? styles.uploadBoxSuccess : null]}>
                       {hospitalIdUri ? (
                         <View style={styles.previewWrap}>
@@ -1095,6 +1256,7 @@ export default function SignUpPage() {
                         </>
                       )}
                     </View>
+                    )}
 
                     <View style={styles.actionRow}>
                       <Button variant="outline" size="lg" onPress={handleScanId} style={styles.scanBtn}>
@@ -1303,24 +1465,17 @@ export default function SignUpPage() {
                               <View style={styles.liveCameraFrame} pointerEvents="none" />
                             </View>
                             <Text style={styles.liveCameraHint}>
-                              {faceAttemptsUsed === faceMaxAttempts - 1
-                                ? 'This is your final face verification attempt.'
-                                : 'Please position your face inside the camera.'}
+                              Position your face inside the frame. Make sure it is clearly
+                              visible and centred, then take the photo when you are ready.
                             </Text>
-                            <Button
-                              size="lg"
-                              onPress={handleFaceVerification}
-                              disabled={faceStatus === 'processing'}
-                              style={navStyles.continueFull}
-                            >
-                              {faceStatus === 'processing' ? (
-                                <ActivityIndicator color={Colors.white} />
-                              ) : (
-                                <Camera size={16} color={Colors.white} />
-                              )}
-                              <Text style={navStyles.btnText}>
-                                {faceStatus === 'processing' ? 'Verifying your face...' : 'Verify Face'}
+                            {faceAttemptsUsed === faceMaxAttempts - 1 && (
+                              <Text style={[styles.liveCameraHint, { fontWeight: '700' }]}>
+                                This is your final face verification attempt.
                               </Text>
+                            )}
+                            <Button size="lg" onPress={capturePhoto} style={navStyles.continueFull}>
+                              <Camera size={16} color={Colors.white} />
+                              <Text style={navStyles.btnText}>Capture Photo</Text>
                             </Button>
                           </View>
                         ) : (
@@ -1331,6 +1486,24 @@ export default function SignUpPage() {
                             <Text style={styles.cameraZoneTitle}>Open Live Camera</Text>
                             <Text style={styles.cameraZoneHint}>Live face scan only — image uploads are not allowed</Text>
                           </Pressable>
+                        )}
+
+                        {pendingSelfieBase64 && faceStatus !== 'processing' && (
+                          <>
+                            <Text style={styles.liveCameraHint}>
+                              Is your face clearly visible? Use this photo, or retake it.
+                            </Text>
+                            <View style={navStyles.row}>
+                              <Button variant="outline" size="lg" onPress={retakePhoto} style={navStyles.backBtn}>
+                                <Camera size={16} color={Colors.gray700} />
+                                <Text style={navStyles.backText}>Retake</Text>
+                              </Button>
+                              <Button size="lg" onPress={handleFaceVerification} style={navStyles.continueBtn}>
+                                <CheckCircle2 size={16} color={Colors.white} />
+                                <Text style={navStyles.btnText}>Use This Photo</Text>
+                              </Button>
+                            </View>
+                          </>
                         )}
 
                         {selfieUri && faceStatus === 'failed' && !faceLocked && (
@@ -1906,6 +2079,16 @@ const styles = StyleSheet.create({
   liveCamera: {
     width: '100%',
     height: 280,
+  },
+  idCameraFrame: {
+    position: 'absolute',
+    alignSelf: 'center',
+    top: '20%',
+    width: '82%',
+    height: '58%',
+    borderWidth: 3,
+    borderColor: 'rgba(255,255,255,0.75)',
+    borderRadius: Radius.lg,
   },
   liveCameraFrame: {
     position: 'absolute',

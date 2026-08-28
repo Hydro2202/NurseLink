@@ -42,7 +42,11 @@ class NurseProfile(models.Model):
     department = models.CharField(max_length=120, blank=True, default='')
     license_number = models.CharField(max_length=50, blank=True, default='')
     middle_name = models.CharField(max_length=100, blank=True, default='')
-    avatar = models.URLField(blank=True, default='')
+    # Holds either an http(s) URL or a self-contained data: URI. Profile
+    # photos are uploaded from the device and normalised to a small JPEG
+    # before they land here, so there is no media server to configure and
+    # nothing to serve separately — see api.avatar.normalize_avatar().
+    avatar = models.TextField(blank=True, default='')
     clinical_role = models.CharField(
         max_length=40, choices=CLINICAL_ROLE_CHOICES, default='RN', blank=True
     )
@@ -189,6 +193,18 @@ class Task(models.Model):
     attending_physician = models.CharField(max_length=200, blank=True, default='')
     patient_room = models.CharField(max_length=50, blank=True, default='')
     doctor_order = models.TextField(blank=True, default='')
+    # The handover this task came from, when it came from one. Writing a
+    # handover creates the task on the *sender's* list, because until someone
+    # accepts it the patient is still theirs; acknowledging moves that same task
+    # across rather than making a second copy. Keeping the link is what lets the
+    # transfer find the task later.
+    source_handover = models.ForeignKey(
+        'HandoverNote',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tasks',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -252,6 +268,28 @@ class HandoverNote(models.Model):
         null=True,
         blank=True,
         related_name='handovers_created',
+    )
+    # nurse_to is the name typed on the form, which is not enough to reach an
+    # account — several nurses in this ward share a display name. The handover
+    # form already knows which nurse was picked, so keep the account itself and
+    # let notifications land on exactly one inbox. Nullable because handovers
+    # created before this field (and any addressed to a non-user) have none.
+    nurse_to_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='handovers_received',
+    )
+    # Set the first time a handover is acknowledged, so adopting its unfinished
+    # work into the incoming nurse's task list can never happen twice.
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    acknowledged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='handovers_acknowledged',
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -328,9 +366,37 @@ class Notification(models.Model):
         related_name='notifications',
     )
     notification_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='info')
+    # What kind of event this was, as opposed to how loud it should look.
+    # notification_type carries severity for colouring; this says what happened,
+    # which is what lets the app decide a patient handover deserves a popup
+    # while a routine task assignment only needs the bell.
+    event = models.CharField(max_length=30, blank=True, default='', db_index=True)
     title = models.CharField(max_length=200)
     message = models.TextField()
     patient_label = models.CharField(max_length=100, blank=True, default='')
+    # Real references rather than the display strings above, so a notification
+    # can open the actual patient and handover it is talking about.
+    patient = models.ForeignKey(
+        'Patient',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='notifications',
+    )
+    handover = models.ForeignKey(
+        'HandoverNote',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='notifications',
+    )
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='notifications_sent',
+    )
     is_read = models.BooleanField(default=False, db_index=True)
     action_label = models.CharField(max_length=100, blank=True, default='')
     action_path = models.CharField(max_length=200, blank=True, default='')

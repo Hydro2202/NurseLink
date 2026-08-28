@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,7 +7,7 @@ import {
   Pressable,
   ActivityIndicator,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import {
   CheckCircle,
   Clock,
@@ -36,6 +36,7 @@ import { Select } from '../../components/Select';
 import { TaskModal } from '../../components/TaskModal';
 import { DeleteConfirmDialog } from '../../components/ConfirmDialog';
 import { useToast } from '../../contexts/ToastContext';
+import { useLiveRefresh } from '../../contexts/LiveContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 
@@ -49,7 +50,12 @@ const SORT_OPTIONS = [
 ];
 
 export default function TasksPage() {
-  const params = useLocalSearchParams<{ taskId?: string; patientId?: string; scrollToPatient?: string }>();
+  const params = useLocalSearchParams<{
+    taskId?: string;
+    highlightId?: string;
+    patientId?: string;
+    scrollToPatient?: string;
+  }>();
   const toast = useToast();
   const { user } = useAuth();
   const scrollRef = useRef<ScrollView>(null);
@@ -82,12 +88,31 @@ export default function TasksPage() {
     }
   };
 
-  useEffect(() => {
-    loadTasks();
-  }, []);
+  // Refetch whenever the screen comes back into view, not just on mount.
+  // expo-router keeps screens mounted, so a nurse who acknowledges a handover
+  // and then taps Tasks would otherwise be looking at a list built before the
+  // handover's work was added to it.
+  useFocusEffect(
+    useCallback(() => {
+      loadTasks();
+    }, [])
+  );
+
+  // A task can arrive from another nurse's device — handed over, or assigned by
+  // a supervisor — so the list also follows the shared live revision rather
+  // than only reloading when this screen happens to regain focus.
+  useLiveRefresh('tasks', loadTasks);
 
   useEffect(() => {
-    const taskId = typeof params.taskId === 'string' ? params.taskId : undefined;
+    // Notifications and the handover screen both point here with highlightId;
+    // older links use taskId. Accept either so a link never silently does
+    // nothing after landing on the right screen.
+    const taskId =
+      typeof params.taskId === 'string'
+        ? params.taskId
+        : typeof params.highlightId === 'string'
+          ? params.highlightId
+          : undefined;
     const patientId = typeof params.patientId === 'string' ? params.patientId : undefined;
     const scrollToPatient = params.scrollToPatient === 'true' || params.scrollToPatient === '1';
 
@@ -123,7 +148,7 @@ export default function TasksPage() {
         };
       }
     }
-  }, [params.taskId, params.patientId, params.scrollToPatient, tasks]);
+  }, [params.taskId, params.highlightId, params.patientId, params.scrollToPatient, tasks]);
 
   const handleAddTask = () => {
     setSelectedTask(null);

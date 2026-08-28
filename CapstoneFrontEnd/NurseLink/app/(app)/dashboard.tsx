@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -29,6 +29,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import type { Patient, Task, WorkloadData } from '../../types/domain';
 import { fetchPatients, fetchTasks, fetchWorkload } from '../../services/api';
+import { useLiveRefresh } from '../../contexts/LiveContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
@@ -99,28 +100,33 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [patientData, taskData, workload] = await Promise.all([
-          fetchPatients(isStaffNurse ? { mine: true } : undefined),
-          fetchTasks(isStaffNurse ? { mine: true } : undefined),
-          isStaffNurse ? Promise.resolve([]) : fetchWorkload(),
-        ]);
-        if (!cancelled) {
-          setPatients(patientData);
-          setTasks(taskData);
-          setWorkloadData(workload);
-        }
-      } catch (error) {
-        console.warn('Failed to load dashboard data:', error);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  const loadDashboard = useCallback(async () => {
+    try {
+      const [patientData, taskData, workload] = await Promise.all([
+        fetchPatients(isStaffNurse ? { mine: true } : undefined),
+        fetchTasks(isStaffNurse ? { mine: true } : undefined),
+        isStaffNurse ? Promise.resolve([]) : fetchWorkload(),
+      ]);
+      setPatients(patientData);
+      setTasks(taskData);
+      setWorkloadData(workload);
+    } catch (error) {
+      console.warn('Failed to load dashboard data:', error);
+    }
   }, [isStaffNurse]);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  // The dashboard counts tasks and patients, both of which change from other
+  // nurses' devices, so it follows the shared live revisions too.
+  useLiveRefresh('tasks', () => {
+    void loadDashboard();
+  });
+  useLiveRefresh('patients', () => {
+    void loadDashboard();
+  });
 
   const urgentTasks = tasks.filter((t) => t.priority === 'urgent' && t.status !== 'completed').length;
   const overdueTasks = tasks.filter((t) => t.status === 'overdue').length;

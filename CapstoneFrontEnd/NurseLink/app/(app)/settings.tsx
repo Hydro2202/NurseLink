@@ -107,11 +107,13 @@ export default function SettingsScreen() {
     name: string;
     email: string;
     department: string;
+    avatar: string;
   }) => {
     updateUser({
       name: data.name,
       email: data.email,
       department: data.department,
+      avatar: data.avatar,
     });
     toast.success('Profile updated successfully!', {
       description: 'Your profile information has been saved.',

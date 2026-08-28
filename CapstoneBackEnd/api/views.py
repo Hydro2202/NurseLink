@@ -1,6 +1,8 @@
 import base64
+import base64
 import json
 import logging
+import time
 import re
 from datetime import date, timedelta
 
@@ -8,7 +10,7 @@ from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Prefetch, Q
 from django.utils import timezone
 from drf_spectacular.utils import (
     OpenApiExample,
@@ -46,7 +48,7 @@ from .n8n_client import (
 # assumed to be the same one prc_ocr raises.
 from .id_photo_check import InvalidImageError as PortraitImageError, check_id_has_portrait
 from .id_field_validation import validate_prc_id_fields
-from .prc_ocr import InvalidImageError, PrcOcrError, scan_prc_license
+from .prc_ocr import InvalidImageError, PrcOcrError, scan_id_fields, scan_prc_license
 from .models import (
     ChartingNote,
     IdScanAttempt,
@@ -60,6 +62,8 @@ from .models import (
     RegistrationSession,
     Task,
 )
+from .handover_tasks import adopt_handover_tasks
+from .notifications import notify_handover_acknowledged, notify_handover_created
 from .otp_service import OtpCooldownError, OtpDeliveryError, OtpResendLimitError, issue_otp, verify_otp
 from .permissions import IsSupervisor, get_user_role
 from .schema_examples import (
@@ -819,6 +823,18 @@ class FaceVerificationView(APIView):
 
 #: Fields a registration cannot proceed without, mirrored from prc_ocr so the
 #: view and the OCR layer agree on what "complete" means.
+def _has_any_id_field(result) -> bool:
+    """True when an OCR response carried at least one identity field."""
+    if not isinstance(result, dict):
+        return False
+    pool = {**result, **(result['data'] if isinstance(result.get('data'), dict) else {})}
+    keys = (
+        'lastName', 'last_name', 'firstName', 'first_name', 'fullName', 'full_name',
+        'registrationNumber', 'registration_number', 'registration_no', 'licenseNumber',
+    )
+    return any(str(pool.get(k) or '').strip() for k in keys)
+
+
 PRC_REQUIRED_FIELDS = ('lastName', 'firstName', 'registrationNumber', 'validUntil')
 
 #: A rescan of the same licence within this window counts as a duplicate
@@ -926,12 +942,15 @@ class VerifyIdView(APIView):
             'expirationDate', 'expiration_date', 'expiryDate', 'expiry',
             'validityDate', 'validity_date',
         ),
-        'employeeId': ('employeeId', 'employee_id', 'idNumber', 'id_number'),
-        'department': ('department', 'dept', 'unit'),
-        'position': ('position', 'role', 'title', 'designation'),
-        'hospitalName': ('hospitalName', 'hospital_name', 'hospital', 'facility'),
-        'email': ('email', 'emailAddress', 'email_address'),
     }
+
+    #: employeeId, department, position, hospitalName and email were read here
+    #: back when Step 1 scanned a hospital employee badge. A PRC licence card
+    #: carries none of them, so anything OCR produced for those slots was text
+    #: lifted from somewhere else on the card — a department that is really a
+    #: line of the licence header is worse than an empty field, because it
+    #: looks authoritative. Step 2 collects the email directly instead.
+
 
     # Multipart upload validation (the preferred path — see post()). The
     # legacy base64-in-JSON path (idImage) has no file to validate this way;
@@ -1173,6 +1192,49 @@ class VerifyIdView(APIView):
 
         if not isinstance(result, dict):
             result = {}
+
+        # Local fallback. The workflow's OCR node depends on a third-party
+        # service; when that returns 503 the workflow answers 200 with an
+        # empty body, and every field arrives blank — indistinguishable to the
+        # nurse from "your card is unreadable". Tesseract runs on this machine
+        # and reads the same card, so a provider outage stops being a blocker.
+        # n8n stays the primary reader: this only runs when it returned nothing.
+        if not _has_any_id_field(result) and settings.ID_OCR_LOCAL_FALLBACK:
+            local_source = legacy_base64
+            if uploaded_file is not None:
+                try:
+                    uploaded_file.file.seek(0)
+                    local_source = base64.b64encode(uploaded_file.file.read()).decode()
+                except Exception:  # noqa: BLE001 - fallback must never mask the original failure
+                    local_source = ''
+            if local_source:
+                try:
+                    # scan_id_fields, not scan_prc_license: this stands in for
+                    # what n8n would have returned, which is fields. The strict
+                    # PRC document-type gate would reject a genuine card whose
+                    # white-on-green "NURSE" bar simply did not OCR, and the
+                    # validation below already decides what is acceptable.
+                    scan = scan_id_fields(local_source)
+                except (InvalidImageError, PrcOcrError) as exc:
+                    logger.warning('local OCR fallback unavailable: %s', exc)
+                else:
+                    extracted = {
+                        key: scan.get(key, '')
+                        for key in (
+                            'lastName', 'firstName', 'middleName',
+                            'registrationNumber', 'registrationDate', 'validUntil',
+                        )
+                    }
+                    if any(v for v in extracted.values()):
+                        logger.info(
+                            'local OCR fallback produced fields session=%s confidence=%s',
+                            session.session_id, scan.get('overallConfidence'),
+                        )
+                        result = {**extracted, 'source': 'local-tesseract'}
+                    else:
+                        logger.info(
+                            'local OCR fallback read nothing session=%s', session.session_id
+                        )
         # Some workflows nest the extracted fields under a `data` key (e.g.
         # {"success": true, "data": {"last_name": ...}}) rather than
         # returning them at the top level — look in both places.
@@ -1191,7 +1253,7 @@ class VerifyIdView(APIView):
             ).strip()
 
         has_name = bool(
-            fields['fullName'] or fields['lastName'] or fields['firstName'] or fields['employeeId']
+            fields['fullName'] or fields['lastName'] or fields['firstName']
         )
         has_any_prc_field = bool(
             fields['lastName'] or fields['firstName'] or fields['middleName']
@@ -1242,10 +1304,9 @@ class VerifyIdView(APIView):
             'verify-id: OCR validation result session=%s status=%s', session.session_id, verification_status
         )
 
-        # Carry the email onto the session so the OTP fallback can find it later.
-        if fields['email'] and not session.email:
-            session.email = fields['email'].lower()
-            session.save(update_fields=['email', 'updated_at'])
+        # The email is no longer read off the card — a PRC licence does not
+        # carry one. Step 2 (RegistrationEmailView) is where the nurse types it,
+        # and that is what the OTP fallback reads.
 
         # Only ever store what just passed strict validation — an
         # in-progress/failed scan leaves the session's id_* fields untouched
@@ -1883,15 +1944,29 @@ class PatientViewSet(viewsets.ModelViewSet):
     lookup_url_kwarg = 'patient_code'
 
     def get_queryset(self):
-        qs = Patient.objects.select_related('assigned_nurse').all()
+        # assignedBy reads the active PatientAssignment per row, so prefetch
+        # it — otherwise a full ward list costs one extra query per patient.
+        qs = Patient.objects.select_related('assigned_nurse').prefetch_related(
+            Prefetch(
+                'assignments',
+                queryset=PatientAssignment.objects.filter(status='active')
+                .select_related('assigned_by')
+                .order_by('-assigned_at'),
+                to_attr='active_assignments',
+            )
+        ).all()
         mine = self.request.query_params.get('mine')
         search = self.request.query_params.get('search')
         risk = self.request.query_params.get('riskLevel')
-        role = get_user_role(self.request.user)
-        if mine in ('1', 'true', 'True') or role == 'staff_nurse':
-            # Staff nurses only see their assigned patients unless supervisor asks for all
-            if role == 'staff_nurse' or mine in ('1', 'true', 'True'):
-                qs = qs.filter(assigned_nurse=self.request.user)
+        # The ward roster is shared: a patient added by one nurse is visible to
+        # every nurse, because handover, charting and cover shifts all depend
+        # on seeing patients you are not personally assigned to. Scoping is
+        # now opt-in via ?mine=true, which is what the "My Patients" screen
+        # sends — so that screen is unchanged while "All Patients" really does
+        # mean all. Each row still carries assignedNurseName and assignedBy,
+        # so it stays obvious whose patient it is and who assigned them.
+        if mine in ('1', 'true', 'True'):
+            qs = qs.filter(assigned_nurse=self.request.user)
         if risk:
             qs = qs.filter(risk_level=risk)
         if search:
@@ -2032,14 +2107,36 @@ class HandoverViewSet(viewsets.ModelViewSet):
         request=None,
         responses={200: HandoverSerializer},
         summary='Acknowledge a handover',
-        description='No request body — the handover is identified by the URL.',
+        description=(
+            'No request body — the handover is identified by the URL. Accepting a handover '
+            "also moves its unfinished work onto the acknowledging nurse's task list and "
+            'tells the outgoing nurse it was received. Acknowledging twice is a no-op.'
+        ),
     )
     @action(detail=True, methods=['post'])
     def acknowledge(self, request, handover_code=None):
         handover = self.get_object()
-        handover.status = 'acknowledged'
-        handover.save(update_fields=['status', 'updated_at'])
-        return Response(HandoverSerializer(handover, context={'request': request}).data)
+
+        # Acknowledging is what actually transfers responsibility, so it has to
+        # be idempotent: a double tap, a retried request on a flaky ward network
+        # or a second nurse opening the same handover must not clone the work.
+        if handover.acknowledged_at:
+            return Response(HandoverSerializer(handover, context={'request': request}).data)
+
+        with transaction.atomic():
+            handover.status = 'acknowledged'
+            handover.acknowledged_at = timezone.now()
+            handover.acknowledged_by = request.user
+            handover.save(
+                update_fields=['status', 'acknowledged_at', 'acknowledged_by', 'updated_at']
+            )
+            adopted = adopt_handover_tasks(handover, request.user)
+
+        notify_handover_acknowledged(handover, request.user, adopted)
+
+        data = HandoverSerializer(handover, context={'request': request}).data
+        data['adoptedTasks'] = [task.task_code for task in adopted]
+        return Response(data)
 
 
 @extend_schema_view(
@@ -2136,10 +2233,28 @@ class ChartingViewSet(viewsets.ModelViewSet):
             'timestamp': now.isoformat(),
         }
 
+        # Identifier + duration only. The payload carries clinical detail and
+        # the response carries the generated note, so neither is logged.
+        logger.info(
+            'autochart start patient=%s nurse=%s noteType=%s',
+            patient.patient_code, request.user.pk, payload['noteType'],
+        )
+        started = time.monotonic()
+
         try:
             result = call_workflow('structure_chart', payload)
         except N8nError as exc:
+            logger.warning(
+                'autochart n8n failed patient=%s type=%s status=%s after=%.2fs: %s',
+                patient.patient_code, type(exc).__name__, exc.http_status,
+                time.monotonic() - started, exc,
+            )
             return Response(error_response_body(exc), status=exc.http_status)
+
+        logger.info(
+            'autochart n8n ok patient=%s in %.2fs',
+            patient.patient_code, time.monotonic() - started,
+        )
 
         if not isinstance(result, dict):
             result = {}
@@ -2156,6 +2271,10 @@ class ChartingViewSet(viewsets.ModelViewSet):
             structured = {}
 
         if not note_text and not structured:
+            logger.error(
+                'autochart invalid response patient=%s keys=%s',
+                patient.patient_code, sorted(result.keys()) if result else '(empty body)',
+            )
             return Response(
                 {
                     'success': False,
@@ -2224,7 +2343,11 @@ class NotificationViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'patch', 'delete', 'post', 'head', 'options']
 
     def get_queryset(self):
-        return Notification.objects.filter(recipient=self.request.user)
+        # Strictly the signed-in nurse's own inbox: a handover names one
+        # patient and one recipient, and must never reach anyone else.
+        return Notification.objects.filter(recipient=self.request.user).select_related(
+            'patient', 'handover', 'sender'
+        )
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
@@ -2528,5 +2651,80 @@ class AnalyticsView(APIView):
                     'totalTasks': total_tasks,
                     'completedTasks': completed_tasks,
                 },
+            }
+        )
+
+
+class LiveStateView(APIView):
+    """
+    A cheap "has anything changed?" endpoint.
+
+    Keeping handovers, tasks and the notification bell current means asking the
+    server repeatedly. Having every screen poll its own full list would mean
+    several large responses per nurse per tick, most of them identical to the
+    last one, which is why the app polls this instead: one small response
+    carrying a revision string per area of the app. A screen refetches only when
+    its revision actually moves, so the steady state is a few hundred bytes and
+    no list queries at all.
+
+    A revision is "<row count>:<newest updated_at>". Between them those catch
+    everything that matters — a row added, a row deleted, or a row edited —
+    without needing a change log or database triggers.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    @staticmethod
+    def _revision(queryset, field='updated_at'):
+        summary = queryset.aggregate(count=Count('pk'), latest=Max(field))
+        latest = summary['latest']
+        return '%d:%s' % (summary['count'] or 0, latest.isoformat() if latest else '-')
+
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name='LiveState',
+                fields={
+                    'notifications': serializers.CharField(),
+                    'tasks': serializers.CharField(),
+                    'handovers': serializers.CharField(),
+                    'patients': serializers.CharField(),
+                    'unreadCount': serializers.IntegerField(),
+                },
+            )
+        },
+        tags=['Live'],
+        summary='Revision stamps for live updates',
+        description=(
+            'Poll this to find out whether anything changed. Each value is an opaque string; '
+            'compare it with the previous response and refetch only the areas that differ. '
+            'unreadCount is included so the notification badge can update without a second call.'
+        ),
+    )
+    def get(self, request):
+        user = request.user
+
+        # Notifications have no updated_at — they are created and then read —
+        # so total, unread and newest together are the whole story. One
+        # aggregate rather than three counts: this runs on every poll.
+        inbox = Notification.objects.filter(recipient=user).aggregate(
+            total=Count('pk'),
+            unread=Count('pk', filter=Q(is_read=False)),
+            latest=Max('created_at'),
+        )
+        latest = inbox['latest']
+
+        return Response(
+            {
+                'notifications': '%d:%d:%s'
+                % (
+                    inbox['total'] or 0,
+                    inbox['unread'] or 0,
+                    latest.isoformat() if latest else '-',
+                ),
+                'tasks': self._revision(Task.objects.all()),
+                'handovers': self._revision(HandoverNote.objects.all()),
+                'patients': self._revision(Patient.objects.all()),
+                'unreadCount': inbox['unread'] or 0,
             }
         )

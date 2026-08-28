@@ -17,3 +17,6 @@ pytesseract>=0.3.10
 email-validator>=2.0
 dnspython>=2.0
 requests>=2.31
+# WebSocket push for handover notifications. daphne makes
+# `manage.py runserver` serve ASGI so sockets work in development.
+channels[daphne]>=4.3,<5

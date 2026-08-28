@@ -2,6 +2,9 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { ToastProvider } from '../contexts/ToastContext';
+import { LiveProvider } from '../contexts/LiveContext';
+import { RealtimeProvider } from '../contexts/RealtimeContext';
+import { NotificationsProvider } from '../contexts/NotificationsContext';
 import SplashScreen from '../components/SplashScreen';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -56,7 +59,13 @@ export default function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <AuthProvider>
         <ToastProvider>
-          <RootNavigator />
+          <RealtimeProvider>
+            <LiveProvider>
+              <NotificationsProvider>
+                <RootNavigator />
+              </NotificationsProvider>
+            </LiveProvider>
+          </RealtimeProvider>
         </ToastProvider>
       </AuthProvider>
     </GestureHandlerRootView>

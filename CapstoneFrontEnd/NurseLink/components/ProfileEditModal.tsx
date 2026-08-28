@@ -6,7 +6,12 @@ import {
   ScrollView,
   StyleSheet,
   Pressable,
+  Image,
+  Platform,
+  ActivityIndicator,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { Camera, Trash2, User as UserIcon } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
@@ -16,7 +21,12 @@ interface ProfileEditModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   user: User | null;
-  onSave: (data: { name: string; email: string; department: string }) => Promise<void>;
+  onSave: (data: {
+    name: string;
+    email: string;
+    department: string;
+    avatar: string;
+  }) => Promise<void>;
 }
 
 export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEditModalProps) {
@@ -25,8 +35,10 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
     name: '',
     email: '',
     department: '',
+    avatar: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [photoBusy, setPhotoBusy] = useState(false);
 
   useEffect(() => {
     if (user && open) {
@@ -34,10 +46,76 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
         name: user.name,
         email: user.email,
         department: user.department || '',
+        avatar: user.avatar || '',
       });
       setErrors({});
     }
   }, [user, open]);
+
+  /**
+   * Pick a profile photo.
+   *
+   * The bytes are read straight into a data: URI rather than uploaded as a
+   * file, because the API stores the photo inline — the server re-encodes it
+   * to a small square JPEG and strips EXIF, so nothing here has to resize or
+   * worry about what the camera roll handed back.
+   *
+   * On web, expo-image-picker falls back to a file input, which needs no
+   * permission; asking for one there returns a denial on some browsers and
+   * would block the picker that would otherwise have worked.
+   */
+  const handlePickPhoto = async () => {
+    setErrors((prev) => ({ ...prev, avatar: '' }));
+
+    if (Platform.OS !== 'web') {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        setErrors((prev) => ({
+          ...prev,
+          avatar: 'Photo library access is needed to choose a profile photo.',
+        }));
+        return;
+      }
+    }
+
+    setPhotoBusy(true);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.85,
+        base64: true,
+      });
+      if (result.canceled) return;
+
+      const asset = result.assets[0];
+      if (!asset?.base64) {
+        setErrors((prev) => ({
+          ...prev,
+          avatar: 'That photo could not be read. Please try another one.',
+        }));
+        return;
+      }
+
+      // mimeType is absent on some platforms; JPEG is what quality:0.85 produces.
+      const mime = asset.mimeType || 'image/jpeg';
+      setFormData((prev) => ({ ...prev, avatar: `data:${mime};base64,${asset.base64}` }));
+    } catch (error) {
+      console.error('Error choosing profile photo:', error);
+      setErrors((prev) => ({
+        ...prev,
+        avatar: 'Could not open your photos. Please try again.',
+      }));
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
+
+  const handleRemovePhoto = () => {
+    setErrors((prev) => ({ ...prev, avatar: '' }));
+    setFormData((prev) => ({ ...prev, avatar: '' }));
+  };
 
   const validateEmail = (email: string) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -93,6 +171,54 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
 
           <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={styles.form}>
+              <View style={styles.photoSection}>
+                <Text style={styles.photoLabel}>Profile Photo</Text>
+                <View style={styles.photoRow}>
+                  {formData.avatar ? (
+                    <Image source={{ uri: formData.avatar }} style={styles.photo} />
+                  ) : (
+                    <View style={[styles.photo, styles.photoFallback]}>
+                      <UserIcon size={34} color={Colors.blue600} />
+                    </View>
+                  )}
+
+                  <View style={styles.photoActions}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onPress={handlePickPhoto}
+                      disabled={photoBusy || loading}
+                      style={styles.photoBtn}
+                    >
+                      {photoBusy ? (
+                        <ActivityIndicator size="small" color={Colors.blue700} />
+                      ) : (
+                        <Camera size={15} color={Colors.blue700} />
+                      )}
+                      <Text style={styles.photoBtnText}>
+                        {formData.avatar ? 'Change Photo' : 'Upload Photo'}
+                      </Text>
+                    </Button>
+
+                    {formData.avatar ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onPress={handleRemovePhoto}
+                        disabled={photoBusy || loading}
+                        style={styles.photoBtn}
+                      >
+                        <Trash2 size={15} color={Colors.red600} />
+                        <Text style={[styles.photoBtnText, { color: Colors.red600 }]}>Remove</Text>
+                      </Button>
+                    ) : null}
+
+                    <Text style={styles.photoHint}>JPG or PNG. Squared automatically.</Text>
+                  </View>
+                </View>
+                {errors.avatar ? <Text style={styles.photoError}>{errors.avatar}</Text> : null}
+              </View>
+
               <Input
                 label="Full Name *"
                 placeholder="e.g., Sarah Johnson"
@@ -179,6 +305,52 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   form: { gap: 16, paddingBottom: 8 },
+  photoSection: { gap: 8 },
+  photoLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.foreground,
+  },
+  photoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  photo: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    borderWidth: 2,
+    borderColor: Colors.border,
+    backgroundColor: Colors.muted,
+  },
+  photoFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoActions: {
+    flex: 1,
+    gap: 8,
+    alignItems: 'flex-start',
+  },
+  photoBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  photoBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.blue700,
+  },
+  photoHint: {
+    fontSize: 11,
+    color: Colors.mutedForeground,
+  },
+  photoError: {
+    fontSize: 12,
+    color: Colors.red600,
+  },
   roleBox: {
     padding: 14,
     backgroundColor: Colors.muted,
