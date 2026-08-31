@@ -9,7 +9,8 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { BarChart, LineChart } from 'react-native-gifted-charts';
+// Wrapper that honours the Show Charts & Graphs setting; same API.
+import { BarChart, LineChart } from '../../components/Charts';
 import {
   Activity,
   AlertTriangle,

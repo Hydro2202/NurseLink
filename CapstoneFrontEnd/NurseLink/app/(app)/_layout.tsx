@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -34,6 +34,7 @@ import { NotificationPanel } from '../../components/NotificationPanel';
 import { BottomNavigation } from '../../components/BottomNavigation';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 import { useNotifications } from '../../contexts/NotificationsContext';
+import { useTheme } from '../../contexts/ThemeContext';
 import { HandoverAlertModal } from '../../components/HandoverAlertModal';
 
 interface NavItem {
@@ -53,6 +54,19 @@ function pathMatches(pathname: string, href: string): boolean {
   return active === target || active.startsWith(target + '/');
 }
 
+
+/**
+ * The themed stylesheet for this file.
+ *
+ * Several components here share one stylesheet, so they share one hook rather
+ * than each rebuilding it. useMemo keyed on the theme means a render caused by
+ * anything else reuses the same style objects.
+ */
+function useLayoutStyles() {
+  const { colors, scale, space } = useTheme();
+  return useMemo(() => createStyles(colors, scale, space), [colors, scale, space]);
+}
+
 function ProfileMenu({
   visible,
   onClose,
@@ -70,6 +84,8 @@ function ProfileMenu({
   onSettings: () => void;
   onLogout: () => void;
 }) {
+  const styles = useLayoutStyles();
+  const { colors: c } = useTheme();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.menuBackdrop} onPress={onClose}>
@@ -90,7 +106,7 @@ function ProfileMenu({
               onSettings();
             }}
           >
-            <Settings size={16} color={Colors.blue600} />
+            <Settings size={16} color={c.blue600} />
             <Text style={styles.menuItemText}>Settings</Text>
           </Pressable>
           <Pressable
@@ -100,7 +116,7 @@ function ProfileMenu({
               onLogout();
             }}
           >
-            <LogOut size={16} color={Colors.red600} />
+            <LogOut size={16} color={c.red600} />
             <Text style={styles.menuLogoutText}>Logout</Text>
           </Pressable>
         </Pressable>
@@ -116,13 +132,15 @@ function NotificationBell({
   onPress: () => void;
   unreadCount: number;
 }) {
+  const styles = useLayoutStyles();
+  const { colors: c } = useTheme();
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
       accessibilityLabel="Open notifications"
     >
-      <Bell size={18} color={Colors.blue600} />
+      <Bell size={18} color={c.blue600} />
       {unreadCount > 0 ? (
         <View style={styles.bellBadge}>
           <Text style={styles.bellBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
@@ -141,6 +159,8 @@ function ProfileAvatar({
   size?: number;
   onPress: () => void;
 }) {
+  const styles = useLayoutStyles();
+  const { colors: c } = useTheme();
   return (
     <Pressable
       onPress={onPress}
@@ -159,7 +179,7 @@ function ProfileAvatar({
             { width: size, height: size, borderRadius: size * 0.28 },
           ]}
         >
-          <User size={size * 0.55} color={Colors.white} />
+          <User size={size * 0.55} color={c.white} />
         </View>
       )}
     </Pressable>
@@ -167,6 +187,9 @@ function ProfileAvatar({
 }
 
 export default function AppLayout() {
+  const styles = useLayoutStyles();
+  const { colors: c } = useTheme();
+
   const { user, logout, isLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
@@ -190,7 +213,7 @@ export default function AppLayout() {
   if (isLoading) {
     return (
       <View style={styles.loading}>
-        <ActivityIndicator size="large" color={Colors.blue600} />
+        <ActivityIndicator size="large" color={c.blue600} />
         <Text style={styles.loadingText}>Loading...</Text>
       </View>
     );
@@ -203,9 +226,11 @@ export default function AppLayout() {
   const isStaffNurse = user.role === 'staff_nurse';
   const isSupervisor = user.role === 'supervisor';
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setShowLogoutDialog(false);
-    logout();
+    // Awaited: only navigate once the token is actually revoked and cleared,
+    // so a reload right after logout cannot resume the session.
+    await logout();
     router.replace('/login' as any);
   };
 
@@ -367,7 +392,7 @@ export default function AppLayout() {
                   style={styles.sidebarClose}
                   accessibilityLabel="Close sidebar"
                 >
-                  <X size={20} color={Colors.blue600} />
+                  <X size={20} color={c.blue600} />
                 </Pressable>
               ) : null}
             </View>
@@ -385,7 +410,7 @@ export default function AppLayout() {
                     }}
                     style={[styles.navLink, active && styles.navLinkActive]}
                   >
-                    <Icon size={20} color={active ? Colors.white : Colors.blue700} />
+                    <Icon size={20} color={active ? c.white : c.blue700} />
                     <Text style={[styles.navLinkText, active && styles.navLinkTextActive]}>
                       {item.name}
                     </Text>
@@ -400,7 +425,7 @@ export default function AppLayout() {
                   <Image source={{ uri: user.avatar }} style={styles.sidebarAvatar} />
                 ) : (
                   <View style={styles.sidebarAvatarFallback}>
-                    <User size={22} color={Colors.white} />
+                    <User size={22} color={c.white} />
                   </View>
                 )}
                 <View style={styles.sidebarUserInfo}>
@@ -418,7 +443,7 @@ export default function AppLayout() {
                 textStyle={styles.sidebarLogoutText}
               >
                 <View style={styles.logoutInner}>
-                  <LogOut size={18} color={Colors.white} />
+                  <LogOut size={18} color={c.white} />
                   <Text style={styles.sidebarLogoutText}>Logout</Text>
                 </View>
               </Button>
@@ -439,9 +464,9 @@ export default function AppLayout() {
                   style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
                 >
                   {sidebarOpen ? (
-                    <X size={20} color={Colors.blue600} />
+                    <X size={20} color={c.blue600} />
                   ) : (
-                    <Menu size={20} color={Colors.blue600} />
+                    <Menu size={20} color={c.blue600} />
                   )}
                 </Pressable>
               ) : null}
@@ -474,42 +499,47 @@ export default function AppLayout() {
   );
 }
 
-const styles = StyleSheet.create({
+/**
+ * Built per theme rather than once at import — see ThemeContext for why a
+ * module-scope StyleSheet can never respond to a settings change.
+ */
+const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n: number) => number) =>
+  StyleSheet.create({
   loading: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Colors.gray50,
-    gap: 12,
+    backgroundColor: c.gray50,
+    gap: space(12),
   },
   loadingText: {
-    color: Colors.gray600,
-    fontSize: 14,
+    color: c.gray600,
+    fontSize: scale(14),
   },
 
   mobileRoot: {
     flex: 1,
-    backgroundColor: Colors.blue50,
+    backgroundColor: c.blue50,
   },
   mobileHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: Colors.white,
+    paddingHorizontal: space(12),
+    paddingVertical: space(8),
+    backgroundColor: c.white,
     borderBottomWidth: 2,
-    borderBottomColor: Colors.blue300,
+    borderBottomColor: c.blue300,
     zIndex: 50,
   },
   brandPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: Colors.white,
+    gap: space(8),
+    backgroundColor: c.white,
     borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: space(12),
+    paddingVertical: space(6),
     ...Shadows.sm,
   },
   brandLogoWrap: {
@@ -523,19 +553,19 @@ const styles = StyleSheet.create({
     height: 44,
   },
   brandTitle: {
-    fontSize: 14,
+    fontSize: scale(14),
     fontWeight: '900',
-    color: Colors.blue600,
+    color: c.blue600,
   },
   brandSub: {
-    fontSize: 9,
+    fontSize: scale(9),
     fontWeight: '600',
-    color: Colors.blue500,
+    color: c.blue500,
   },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: space(6),
   },
   iconBtn: {
     width: 36,
@@ -545,7 +575,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   iconBtnPressed: {
-    backgroundColor: Colors.blue100,
+    backgroundColor: c.blue100,
   },
   bellBadge: {
     position: 'absolute',
@@ -554,50 +584,50 @@ const styles = StyleSheet.create({
     minWidth: 16,
     height: 16,
     borderRadius: 8,
-    backgroundColor: Colors.blue700,
+    backgroundColor: c.blue700,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 3,
+    paddingHorizontal: space(3),
   },
   bellBadgeText: {
-    color: Colors.white,
-    fontSize: 9,
+    color: c.white,
+    fontSize: scale(9),
     fontWeight: '900',
   },
   avatarFallback: {
-    backgroundColor: Colors.blue700,
+    backgroundColor: c.blue700,
     alignItems: 'center',
     justifyContent: 'center',
   },
   mobileMain: {
     flex: 1,
-    paddingBottom: 88,
+    paddingBottom: space(88),
   },
 
   supervisorHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: Colors.white,
+    paddingHorizontal: space(16),
+    paddingVertical: space(12),
+    backgroundColor: c.white,
     borderBottomWidth: 4,
-    borderBottomColor: Colors.blue300,
+    borderBottomColor: c.blue300,
     zIndex: 50,
   },
   supervisorBrand: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: space(12),
   },
   supervisorLogoCircle: {
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: Colors.white,
+    backgroundColor: c.white,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 10,
+    padding: space(10),
     ...Shadows.sm,
   },
   supervisorLogo: {
@@ -605,19 +635,19 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   supervisorTitle: {
-    fontSize: 20,
+    fontSize: scale(20),
     fontWeight: '900',
-    color: Colors.blue800,
+    color: c.blue800,
   },
   supervisorSub: {
-    fontSize: 12,
+    fontSize: scale(12),
     fontWeight: '700',
-    color: Colors.blue600,
+    color: c.blue600,
   },
 
   desktopRoot: {
     flex: 1,
-    backgroundColor: Colors.blue50,
+    backgroundColor: c.blue50,
   },
   desktopRow: {
     flex: 1,
@@ -625,9 +655,9 @@ const styles = StyleSheet.create({
   },
   sidebar: {
     width: 256,
-    backgroundColor: Colors.white,
+    backgroundColor: c.white,
     borderRightWidth: 4,
-    borderRightColor: Colors.blue300,
+    borderRightColor: c.blue300,
     zIndex: 40,
   },
   sidebarOverlay: {
@@ -644,19 +674,19 @@ const styles = StyleSheet.create({
   sidebarLogo: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingVertical: 18,
+    gap: space(12),
+    paddingHorizontal: space(20),
+    paddingVertical: space(18),
     borderBottomWidth: 4,
-    borderBottomColor: Colors.blue300,
-    backgroundColor: Colors.blue50,
+    borderBottomColor: c.blue300,
+    backgroundColor: c.blue50,
   },
   sidebarLogoBox: {
     width: 64,
     height: 64,
     borderRadius: 16,
-    backgroundColor: Colors.white,
-    padding: 8,
+    backgroundColor: c.white,
+    padding: space(8),
     ...Shadows.md,
   },
   sidebarLogoImg: {
@@ -664,62 +694,62 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   sidebarBrand: {
-    fontSize: 20,
+    fontSize: scale(20),
     fontWeight: '900',
-    color: Colors.blue800,
+    color: c.blue800,
   },
   sidebarPortal: {
-    fontSize: 12,
+    fontSize: scale(12),
     fontWeight: '700',
-    color: Colors.blue600,
+    color: c.blue600,
   },
   sidebarClose: {
     marginLeft: 'auto',
-    padding: 4,
+    padding: space(4),
   },
   sidebarNav: {
     flex: 1,
   },
   sidebarNavContent: {
-    paddingHorizontal: 12,
-    paddingVertical: 20,
-    gap: 8,
+    paddingHorizontal: space(12),
+    paddingVertical: space(20),
+    gap: space(8),
   },
   navLink: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    gap: space(12),
+    paddingHorizontal: space(16),
+    paddingVertical: space(14),
     borderRadius: 16,
   },
   navLinkActive: {
-    backgroundColor: Colors.blue600,
+    backgroundColor: c.blue600,
     ...Shadows.md,
     transform: [{ scale: 1.02 }],
   },
   navLinkText: {
-    fontSize: 14,
+    fontSize: scale(14),
     fontWeight: '600',
-    color: Colors.blue700,
+    color: c.blue700,
   },
   navLinkTextActive: {
-    color: Colors.white,
+    color: c.white,
     fontWeight: '900',
   },
   sidebarFooter: {
     borderTopWidth: 4,
-    borderTopColor: Colors.blue300,
-    padding: 16,
-    gap: 12,
-    backgroundColor: Colors.blue50,
+    borderTopColor: c.blue300,
+    padding: space(16),
+    gap: space(12),
+    backgroundColor: c.blue50,
   },
   sidebarUser: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    padding: 12,
-    backgroundColor: Colors.blue100,
+    gap: space(12),
+    padding: space(12),
+    backgroundColor: c.blue100,
     borderRadius: 16,
   },
   sidebarAvatar: {
@@ -731,7 +761,7 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 12,
-    backgroundColor: Colors.blue700,
+    backgroundColor: c.blue700,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -740,26 +770,26 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   sidebarUserName: {
-    fontSize: 14,
+    fontSize: scale(14),
     fontWeight: '900',
-    color: Colors.gray900,
+    color: c.gray900,
   },
   sidebarUserDept: {
-    fontSize: 12,
+    fontSize: scale(12),
     fontWeight: '700',
-    color: Colors.blue600,
+    color: c.blue600,
   },
   sidebarLogout: {
-    backgroundColor: Colors.red600,
+    backgroundColor: c.red600,
     justifyContent: 'flex-start',
   },
   logoutInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: space(8),
   },
   sidebarLogoutText: {
-    color: Colors.white,
+    color: c.white,
     fontWeight: '900',
   },
   desktopMain: {
@@ -769,30 +799,30 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingVertical: 16,
-    backgroundColor: Colors.white,
+    paddingHorizontal: space(24),
+    paddingVertical: space(16),
+    backgroundColor: c.white,
     borderBottomWidth: 4,
-    borderBottomColor: Colors.blue300,
+    borderBottomColor: c.blue300,
   },
   desktopHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: space(16),
   },
   pageTitle: {
-    fontSize: 22,
+    fontSize: scale(22),
     fontWeight: '900',
-    color: Colors.blue800,
+    color: c.blue800,
   },
   welcome: {
-    fontSize: 13,
+    fontSize: scale(13),
     fontWeight: '700',
-    color: Colors.blue600,
+    color: c.blue600,
   },
   desktopContent: {
     flex: 1,
-    padding: 24,
+    padding: space(24),
   },
 
   menuBackdrop: {
@@ -800,61 +830,61 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.2)',
     justifyContent: 'flex-start',
     alignItems: 'flex-end',
-    paddingTop: 56,
+    paddingTop: space(56),
     paddingRight: 12,
   },
   menuSheet: {
     width: 256,
-    backgroundColor: Colors.white,
+    backgroundColor: c.white,
     borderRadius: Radius.lg,
     borderWidth: 2,
-    borderColor: Colors.blue200,
+    borderColor: c.blue200,
     overflow: 'hidden',
   },
   menuHeader: {
-    padding: 16,
-    gap: 6,
+    padding: space(16),
+    gap: space(6),
   },
   menuName: {
-    fontSize: 14,
+    fontSize: scale(14),
     fontWeight: '900',
-    color: Colors.gray900,
+    color: c.gray900,
   },
   menuEmail: {
-    fontSize: 12,
+    fontSize: scale(12),
     fontWeight: '600',
-    color: Colors.blue600,
+    color: c.blue600,
   },
   menuDept: {
-    fontSize: 12,
+    fontSize: scale(12),
     fontWeight: '600',
-    color: Colors.blue700,
+    color: c.blue700,
   },
   menuDivider: {
     height: 1,
-    backgroundColor: Colors.border,
+    backgroundColor: c.border,
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    gap: space(8),
+    paddingHorizontal: space(16),
+    paddingVertical: space(14),
   },
   menuItemPressed: {
-    backgroundColor: Colors.blue50,
+    backgroundColor: c.blue50,
   },
   menuItemText: {
-    fontSize: 14,
+    fontSize: scale(14),
     fontWeight: '600',
-    color: Colors.foreground,
+    color: c.foreground,
   },
   menuLogoutPressed: {
-    backgroundColor: Colors.red100,
+    backgroundColor: c.red100,
   },
   menuLogoutText: {
-    fontSize: 14,
+    fontSize: scale(14),
     fontWeight: '600',
-    color: Colors.red600,
+    color: c.red600,
   },
-});
+  });

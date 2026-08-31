@@ -12,6 +12,7 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import Count, Max, Prefetch, Q
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from drf_spectacular.utils import (
     OpenApiExample,
     extend_schema,
@@ -61,6 +62,7 @@ from .models import (
     PatientAssignment,
     RegistrationSession,
     Task,
+    UserPreferences,
 )
 from .handover_tasks import adopt_handover_tasks
 from .notifications import notify_handover_acknowledged, notify_handover_created
@@ -115,6 +117,7 @@ from .serializers import (
     SignupSerializer,
     TaskSerializer,
     UpdateMeSerializer,
+    UserPreferencesSerializer,
     UserSerializer,
     VerifyOtpSerializer,
 )
@@ -554,7 +557,36 @@ class RegistrationEmailView(APIView):
             )
 
         session.email = data['email'].lower().strip()
-        session.save(update_fields=['email', 'updated_at'])
+        updated = ['email', 'updated_at']
+
+        # The nurse reviewed the scanned fields and may have corrected an OCR
+        # misread. Their confirmed values replace what OCR guessed, having
+        # passed the same validation gate — so everything downstream (account
+        # creation, licence expiry) uses the corrected data without needing to
+        # know a correction happened. The raw scan is still on record in
+        # IdScanAttempt, so what OCR actually read remains auditable.
+        cleaned = data.get('cleanedIdFields')
+        if cleaned:
+            session.id_last_name = cleaned['last_name']
+            session.id_first_name = cleaned['first_name']
+            session.id_middle_name = cleaned['middle_name']
+            session.id_registration_no = cleaned['registration_no']
+            session.id_registration_date = parse_date(cleaned['registration_date'])
+            session.id_valid_until = parse_date(cleaned['valid_until'])
+            updated += [
+                'id_last_name',
+                'id_first_name',
+                'id_middle_name',
+                'id_registration_no',
+                'id_registration_date',
+                'id_valid_until',
+            ]
+            logger.info(
+                'Registration session %s: ID fields confirmed by the applicant.',
+                session.session_id,
+            )
+
+        session.save(update_fields=updated)
         return Response({'success': True, 'registrationSessionId': str(session.session_id)})
 
 
@@ -2728,3 +2760,47 @@ class LiveStateView(APIView):
                 'unreadCount': inbox['unread'] or 0,
             }
         )
+
+
+class PreferencesView(APIView):
+    """
+    The Settings page's own endpoint.
+
+    One row per nurse, always addressed as "mine": there is no id in the URL and
+    no way to name another user, so a nurse can only ever read or change their
+    own settings. The row is created on first access, which keeps existing
+    accounts working without a data migration.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _preferences(self, request):
+        preferences, _ = UserPreferences.objects.get_or_create(user=request.user)
+        return preferences
+
+    @extend_schema(
+        responses={200: UserPreferencesSerializer},
+        tags=['Settings'],
+        summary='Get my settings',
+        description='Appearance, notification and system preferences for the signed-in nurse.',
+    )
+    def get(self, request):
+        return Response(UserPreferencesSerializer(self._preferences(request)).data)
+
+    @extend_schema(
+        request=UserPreferencesSerializer,
+        responses={200: UserPreferencesSerializer},
+        tags=['Settings'],
+        summary='Update my settings',
+        description=(
+            'Editable request body. Partial update — the Settings page saves one section at '
+            'a time, so send only the fields in that section.'
+        ),
+    )
+    def patch(self, request):
+        serializer = UserPreferencesSerializer(
+            self._preferences(request), data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

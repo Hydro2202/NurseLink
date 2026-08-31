@@ -257,6 +257,46 @@ function formatDisplayDate(iso: string): string {
   return `${month}/${day}/${year}`;
 }
 
+/**
+ * The reverse of formatDisplayDate: MM/DD/YYYY back to ISO.
+ *
+ * Returns '' for anything that is not a real calendar date, which is what the
+ * review step's validation checks — so 13/40/2025, or a half-typed 12/, never
+ * passes as a date. Anything already ISO is returned unchanged, so a value OCR
+ * produced and the nurse did not touch survives untouched.
+ */
+function parseDisplayDate(text: string): string {
+  const value = (text || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+  const match = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/.exec(value);
+  if (!match) return '';
+
+  const [, month, day, year] = match;
+  const monthNumber = Number(month);
+  const dayNumber = Number(day);
+
+  // Round-trip through Date to reject 02/30 and friends, which pass the regex
+  // but are not days that exist. Built with Date.UTC deliberately: parsing
+  // "2025-12-04T00:00:00" treats it as local midnight, so anywhere east of UTC
+  // the date reads back a day earlier and every valid date would be rejected.
+  const parsed = new Date(Date.UTC(Number(year), monthNumber - 1, dayNumber));
+  if (Number.isNaN(parsed.getTime())) return '';
+  if (parsed.getUTCMonth() + 1 !== monthNumber || parsed.getUTCDate() !== dayNumber) return '';
+
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
+
+/** A PRC registration number is seven digits. */
+function isValidRegistrationNumber(value: string): boolean {
+  return /^\d{7}$/.test((value || '').replace(/\s|-/g, ''));
+}
+
+/** Letters, spaces, hyphens, apostrophes and full stops — matches the server. */
+function isValidPersonName(value: string): boolean {
+  return /^[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ '\-.]{0,99}$/.test((value || '').trim());
+}
+
 function StepStepper({ current, completedThrough }: { current: WizardStep; completedThrough: WizardStep }) {
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={stepperStyles.row}>
@@ -356,10 +396,13 @@ export default function SignUpPage() {
   // Hiding the link is not enough — /signup is still typeable. Registration
   // needs a live camera the desktop cannot provide, so send them to login
   // rather than let them start a wizard that stalls at the ID scan.
+  //
+  // Decided here but acted on below, after every hook has run. Returning early
+  // from this point would mean the ~50 hooks under it are skipped on desktop —
+  // and if the answer ever changed between renders (a window dragged across the
+  // breakpoint) React would abort with "rendered fewer hooks than expected".
   const { width: viewportWidth } = useWindowDimensions();
-  if (isDesktopBrowser(viewportWidth)) {
-    return <Redirect href="/login" />;
-  }
+  const redirectToLogin = isDesktopBrowser(viewportWidth);
 
   const router = useRouter();
   const { signup, logout } = useAuth();
@@ -447,6 +490,13 @@ export default function SignUpPage() {
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
   const [liveCameraActive, setLiveCameraActive] = useState(false);
   const [ocrData, setOcrData] = useState(defaultOcrData);
+  // Dates are stored in ocrData as ISO, but typed as MM/DD/YYYY. Keeping the
+  // raw text separately means a half-finished "12/0" is not thrown away on
+  // every keystroke just because it does not parse yet.
+  const [dateDrafts, setDateDrafts] = useState({ registrationDate: '', validUntil: '' });
+  // Per-field messages on the ID Review step, so a correction that fails
+  // validation points at the field that needs fixing.
+  const [idFieldErrors, setIdFieldErrors] = useState<Record<string, string>>({});
   const [ocrStatus, setOcrStatus] = useState<ProcessStatus>('idle');
   // What the backend flagged for human confirmation on Step 2. A low-confidence
   // read is never saved silently — the nurse has to look at it first.
@@ -659,6 +709,12 @@ export default function SignUpPage() {
         position: res.position,
         email: res.email,
       });
+      // Seed the date inputs with what OCR read, in the format the nurse edits.
+      setDateDrafts({
+        registrationDate: formatDisplayDate(res.registrationDate || ''),
+        validUntil: formatDisplayDate(res.validUntil || ''),
+      });
+      setIdFieldErrors({});
       setOcrStatus('success');
       setHospitalIdCompleted(true);
     } catch (err) {
@@ -1085,8 +1141,14 @@ export default function SignUpPage() {
       const firstName = ocrData.firstName || ocrData.fullName.split(' ')[0] || '';
       const lastName = ocrData.lastName || ocrData.fullName.split(' ').slice(-1).join(' ') || '';
       const middleName = ocrData.middleName || ocrData.fullName.split(' ').slice(1, -1).join(' ') || '';
+      // Rebuilt from the reviewed parts rather than reusing OCR's fullName,
+      // which would still hold the pre-correction reading of the name.
+      const fullName = [firstName, middleName, lastName]
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join(' ');
       await signup({
-        name: ocrData.fullName,
+        name: fullName || ocrData.fullName,
         firstName,
         middleName,
         lastName,
@@ -1099,12 +1161,17 @@ export default function SignUpPage() {
         registrationSessionId,
       });
       // Keep the user on the pending-approval screen; do not leave them logged in.
-      logout();
+      await logout();
       router.replace({ pathname: '/pending-approval', params: { method: verificationMethod ?? '' } });
     } catch (err) {
       setError(extractErrorMessage(err, 'Unable to create account. Please try again.'));
     }
   };
+
+  // Every hook above has now run, so leaving is safe from here on.
+  if (redirectToLogin) {
+    return <Redirect href="/login" />;
+  }
 
   const idUploaded = !!hospitalIdUri && hospitalIdCompleted;
   const ocrDone = ocrStatus === 'success';
@@ -1240,6 +1307,8 @@ export default function SignUpPage() {
                               setHospitalIdBase64(null);
                               setOcrStatus('idle');
                               setOcrData(defaultOcrData);
+                              setDateDrafts({ registrationDate: '', validUntil: '' });
+                              setIdFieldErrors({});
                               setHospitalIdCompleted(false);
                             }}
                           >
@@ -1303,7 +1372,8 @@ export default function SignUpPage() {
                     <View style={styles.successBox}>
                       <CheckCircle2 size={16} color={Colors.green600} />
                       <Text style={styles.successBoxDesc}>
-                        These details were read directly from your scanned PRC ID and cannot be edited.
+                        Your PRC ID was scanned successfully. Please review the details below and
+                        correct anything the scanner misread before continuing.
                       </Text>
                     </View>
 
@@ -1329,15 +1399,63 @@ export default function SignUpPage() {
                       </Alert>
                     )}
 
-                    {[
-                      { label: 'Last Name', value: ocrData.lastName },
-                      { label: 'First Name', value: ocrData.firstName },
-                      { label: 'Middle Name', value: ocrData.middleName },
-                      { label: 'Registration No.', value: ocrData.registrationNumber },
-                      { label: 'Registration Date', value: formatDisplayDate(ocrData.registrationDate) },
-                      { label: 'Valid Until', value: formatDisplayDate(ocrData.validUntil) },
-                    ].map((field) => (
-                      <Input key={field.label} label={field.label} value={field.value} editable={false} inputWrapperStyle={styles.readOnlyInput} />
+                    {/*
+                      Editable, because OCR misreads names and digits and the
+                      nurse is the one holding the card. The scanner still fills
+                      every field automatically — this is review and correction,
+                      not manual entry.
+                    */}
+                    {([
+                      { key: 'lastName', label: 'Last Name', autoCapitalize: 'characters' as const },
+                      { key: 'firstName', label: 'First Name', autoCapitalize: 'characters' as const },
+                      { key: 'middleName', label: 'Middle Name', autoCapitalize: 'characters' as const },
+                    ]).map((field) => (
+                      <Input
+                        key={field.key}
+                        label={field.label}
+                        value={(ocrData as Record<string, string>)[field.key] ?? ''}
+                        onChangeText={(value) => {
+                          setOcrData((prev) => ({ ...prev, [field.key]: value }));
+                          setIdFieldErrors((prev) => ({ ...prev, [field.key]: '' }));
+                        }}
+                        autoCapitalize={field.autoCapitalize}
+                        autoCorrect={false}
+                        error={idFieldErrors[field.key]}
+                      />
+                    ))}
+
+                    <Input
+                      label="Registration No."
+                      value={ocrData.registrationNumber}
+                      onChangeText={(value) => {
+                        setOcrData((prev) => ({ ...prev, registrationNumber: value }));
+                        setIdFieldErrors((prev) => ({ ...prev, registrationNumber: '' }));
+                      }}
+                      keyboardType="number-pad"
+                      placeholder="7 digits"
+                      error={idFieldErrors.registrationNumber}
+                    />
+
+                    {([
+                      { key: 'registrationDate', label: 'Registration Date' },
+                      { key: 'validUntil', label: 'Valid Until' },
+                    ] as const).map((field) => (
+                      <Input
+                        key={field.key}
+                        label={field.label}
+                        value={dateDrafts[field.key]}
+                        onChangeText={(value) => {
+                          // The typed text is kept as-is so a partly finished
+                          // date is not erased; ocrData only takes it once it
+                          // is a real date, and is cleared while it is not.
+                          setDateDrafts((prev) => ({ ...prev, [field.key]: value }));
+                          setOcrData((prev) => ({ ...prev, [field.key]: parseDisplayDate(value) }));
+                          setIdFieldErrors((prev) => ({ ...prev, [field.key]: '' }));
+                        }}
+                        keyboardType="numbers-and-punctuation"
+                        placeholder="MM/DD/YYYY"
+                        error={idFieldErrors[field.key]}
+                      />
                     ))}
                     <Input
                       label="Registered Email Address"
@@ -1355,15 +1473,42 @@ export default function SignUpPage() {
                     <NavButtons
                       onBack={() => setCurrentStep(1)}
                       onContinue={async () => {
-                        // Nothing proceeds until every required field actually
-                        // has a value — a blank one must never be saved as read.
-                        const stillMissing = ocrReview.missingRequired.filter(
-                          (key) => !String((ocrData as Record<string, string>)[key] ?? '').trim()
-                        );
-                        if (stillMissing.length > 0) {
-                          setError(
-                            `Please fill in the highlighted field${stillMissing.length === 1 ? '' : 's'} before continuing.`
-                          );
+                        // The fields are editable, so everything is checked here
+                        // rather than assumed correct because OCR produced it.
+                        // The server re-checks all of it; this is only so the
+                        // nurse sees the problem next to the field.
+                        const fieldErrors: Record<string, string> = {};
+
+                        if (!isValidPersonName(ocrData.lastName)) {
+                          fieldErrors.lastName = 'Enter the last name as printed on your PRC ID.';
+                        }
+                        if (!isValidPersonName(ocrData.firstName)) {
+                          fieldErrors.firstName = 'Enter the first name as printed on your PRC ID.';
+                        }
+                        // Middle name is genuinely optional — plenty of IDs have none.
+                        if (ocrData.middleName.trim() && !isValidPersonName(ocrData.middleName)) {
+                          fieldErrors.middleName = 'Use letters only, or leave this blank.';
+                        }
+                        if (!isValidRegistrationNumber(ocrData.registrationNumber)) {
+                          fieldErrors.registrationNumber = 'Registration number must be 7 digits.';
+                        }
+                        if (!ocrData.registrationDate) {
+                          fieldErrors.registrationDate = 'Enter a real date as MM/DD/YYYY.';
+                        }
+                        if (!ocrData.validUntil) {
+                          fieldErrors.validUntil = 'Enter a real date as MM/DD/YYYY.';
+                        }
+                        if (
+                          ocrData.registrationDate &&
+                          ocrData.validUntil &&
+                          ocrData.registrationDate >= ocrData.validUntil
+                        ) {
+                          fieldErrors.validUntil = 'Valid Until must come after the registration date.';
+                        }
+
+                        setIdFieldErrors(fieldErrors);
+                        if (Object.keys(fieldErrors).length > 0) {
+                          setError('Please correct the highlighted field(s) before continuing.');
                           return;
                         }
                         if (!ocrData.email || !ocrData.email.includes('@')) {
@@ -1377,10 +1522,34 @@ export default function SignUpPage() {
                         setError('');
                         setIdReviewSaving(true);
                         try {
-                          await saveRegistrationEmailRequest(registrationSessionId, ocrData.email);
+                          // The reviewed values go with the email, so the server
+                          // stores what the nurse confirmed rather than what the
+                          // scanner guessed.
+                          await saveRegistrationEmailRequest(registrationSessionId, ocrData.email, {
+                            lastName: ocrData.lastName.trim(),
+                            firstName: ocrData.firstName.trim(),
+                            middleName: ocrData.middleName.trim(),
+                            registrationNumber: ocrData.registrationNumber.replace(/\s|-/g, ''),
+                            registrationDate: ocrData.registrationDate,
+                            validUntil: ocrData.validUntil,
+                          });
                         } catch (err) {
                           setIdReviewSaving(false);
-                          setError(extractErrorMessage(err, "We couldn't save your registered email. Please try again."));
+                          // A field-level rejection from the server lands on the
+                          // field, not just in the banner at the top.
+                          const details =
+                            err instanceof ApiError && err.data && typeof err.data === 'object'
+                              ? (err.data as Record<string, unknown>)
+                              : null;
+                          if (details) {
+                            const mapped: Record<string, string> = {};
+                            for (const [key, value] of Object.entries(details)) {
+                              if (key === 'detail' || key === 'registrationSessionId') continue;
+                              mapped[key] = Array.isArray(value) ? String(value[0]) : String(value);
+                            }
+                            if (Object.keys(mapped).length > 0) setIdFieldErrors(mapped);
+                          }
+                          setError(extractErrorMessage(err, "We couldn't save your details. Please try again."));
                           return;
                         }
                         setIdReviewSaving(false);
@@ -1593,7 +1762,7 @@ export default function SignUpPage() {
                           <View style={{ flex: 1 }}>
                             <Text style={styles.otpPanelTitle}>Email Verification</Text>
                             <Text style={styles.otpPanelDesc}>
-                              We'll send a verification code to your registered email address.
+                              {"We'll send a verification code to your registered email address."}
                             </Text>
                           </View>
                         </View>

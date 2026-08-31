@@ -21,10 +21,11 @@ interface AuthContextType {
   signup: (
     userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
   ) => Promise<boolean>;
-  logout: () => void;
+  logout: () => Promise<void>;
   isAuthenticated: boolean;
   isLoading: boolean;
-  updateUser: (updates: Partial<User>) => void;
+  /** Resolves with the saved user; rejects if the server refused the change. */
+  updateUser: (updates: Partial<User>) => Promise<User | undefined>;
   updateActivity: () => void;
 }
 
@@ -40,6 +41,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     (async () => {
       try {
         const token = await getToken();
+        // Dark mode has been removed. This clears the key left on devices that
+        // ran an earlier build; it is inert, and the line can go once no
+        // installs from before the removal remain.
         await AsyncStorage.removeItem('nurselink_darkmode');
 
         if (!token) {
@@ -66,11 +70,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     })();
   }, []);
 
-  const logout = useCallback(() => {
-    logoutRequest();
-    setUser(null);
-    AsyncStorage.removeItem(USER_KEY);
-    lastActivity.current = Date.now();
+  /**
+   * Sign out completely.
+   *
+   * Awaitable so callers can redirect only once the token is actually gone.
+   * Previously the API call was fired and forgotten, leaving a window where the
+   * app had navigated to the login screen while a valid token was still on
+   * disk — a reload in that window would have signed the nurse straight back in.
+   *
+   * Clearing local state is in a finally block: a failed or unreachable logout
+   * request must still log the nurse out of this device.
+   */
+  const logout = useCallback(async () => {
+    try {
+      // Revokes the token server side and clears it from storage.
+      await logoutRequest();
+    } catch (error) {
+      console.warn('Logout request failed; clearing this device anyway.', error);
+    } finally {
+      setUser(null);
+      await AsyncStorage.removeItem(USER_KEY);
+      lastActivity.current = Date.now();
+    }
   }, []);
 
   const updateActivity = useCallback(() => {
@@ -138,21 +159,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const updateUser = (updates: Partial<User>) => {
-    if (!user) return;
-    const optimistic = { ...user, ...updates };
-    setUser(optimistic);
-    AsyncStorage.setItem(USER_KEY, JSON.stringify(optimistic));
+  /**
+   * Save profile changes for the signed-in nurse.
+   *
+   * Awaitable and it rethrows: the Settings dialog has to be able to tell the
+   * nurse their change failed, and previously a rejected save was swallowed —
+   * the UI showed the new name, the server kept the old one, and the next
+   * reload silently undid it.
+   *
+   * The optimistic update is rolled back on failure for the same reason: what
+   * is on screen must match what is stored.
+   */
+  const updateUser = useCallback(
+    async (updates: Partial<User>): Promise<User | undefined> => {
+      if (!user) return undefined;
 
-    updateMe(updates)
-      .then(async (saved) => {
+      const previous = user;
+      const optimistic = { ...user, ...updates };
+      setUser(optimistic);
+      await AsyncStorage.setItem(USER_KEY, JSON.stringify(optimistic));
+
+      try {
+        const saved = await updateMe(updates);
         setUser(saved);
         await AsyncStorage.setItem(USER_KEY, JSON.stringify(saved));
-      })
-      .catch((error) => {
-        console.error('Failed to update profile:', error);
-      });
-  };
+        return saved;
+      } catch (error) {
+        setUser(previous);
+        await AsyncStorage.setItem(USER_KEY, JSON.stringify(previous));
+        throw error;
+      }
+    },
+    [user]
+  );
 
   return (
     <AuthContext.Provider

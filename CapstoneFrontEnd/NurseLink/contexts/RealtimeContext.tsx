@@ -92,6 +92,10 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
+  // connect and scheduleReconnect call each other. Holding one behind a ref
+  // breaks the cycle, so neither has a stale-closure dependency on the other.
+  const scheduleReconnectRef = useRef<() => void>(() => {});
+
   const connect = useCallback(async () => {
     if (closing.current) return;
     // Never open a second socket: duplicate connections mean duplicate popups.
@@ -108,7 +112,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       ws = new WebSocket(url);
     } catch (error) {
       if (__DEV__) console.log('[Realtime] Could not open socket', error);
-      scheduleReconnect();
+      scheduleReconnectRef.current();
       return;
     }
     socket.current = ws;
@@ -166,7 +170,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return;
       }
       if (__DEV__) console.log('[Realtime] Disconnected — will retry');
-      scheduleReconnect();
+      scheduleReconnectRef.current();
     };
   }, []);
 
@@ -179,6 +183,10 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       void connect();
     }, delay);
   }, [connect]);
+
+  useEffect(() => {
+    scheduleReconnectRef.current = scheduleReconnect;
+  }, [scheduleReconnect]);
 
   useEffect(() => {
     if (!user) {

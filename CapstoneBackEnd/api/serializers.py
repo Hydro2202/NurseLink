@@ -1,6 +1,7 @@
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -14,8 +15,10 @@ from .models import (
     PatientAssignment,
     RegistrationSession,
     Task,
+    UserPreferences,
 )
 from .avatar import AvatarError, normalize_avatar
+from .id_field_validation import validate_prc_id_fields
 from .handover_tasks import create_handover_tasks
 from .notifications import notify_handover_created, notify_task_assigned, resolve_nurse
 from .utils import next_code
@@ -272,15 +275,78 @@ class FaceVerificationStatusSerializer(serializers.Serializer):
 
 class RegistrationEmailSerializer(serializers.Serializer):
     """
-    Step 2 (ID Review) collects the registered email — this is the only place
-    it gets persisted to RegistrationSession.email, the address every later
-    step (OTP fallback, account creation) reads back. OCR never yields an
-    email from a PRC card, so without this call session.email stays blank
-    forever and SendRegistrationOtpView has nothing to send to.
+    What Step 2 (ID Review) sends when the nurse presses Continue.
+
+    Two jobs, one round trip. The registered email is persisted to
+    RegistrationSession.email — the address every later step (OTP fallback,
+    account creation) reads back, and the only place it is captured, since OCR
+    never yields an email from a PRC card.
+
+    The six ID fields are optional and carry the nurse's *reviewed* values. OCR
+    misreads names and digits, so the fields are editable and whatever the nurse
+    confirms is what gets stored. They are re-validated here by exactly the same
+    gate the OCR output passed through — a corrected value earns no more trust
+    than a scanned one.
     """
 
     registrationSessionId = serializers.UUIDField()
     email = serializers.EmailField()
+
+    # Optional so older clients, and any caller that only wants to save the
+    # email, keep working unchanged.
+    lastName = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    firstName = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    middleName = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    registrationNumber = serializers.CharField(required=False, allow_blank=True, max_length=50)
+    registrationDate = serializers.CharField(required=False, allow_blank=True, max_length=40)
+    validUntil = serializers.CharField(required=False, allow_blank=True, max_length=40)
+
+    ID_FIELDS = (
+        'lastName',
+        'firstName',
+        'middleName',
+        'registrationNumber',
+        'registrationDate',
+        'validUntil',
+    )
+
+    # Field names as the validator reports them, mapped back to what the client
+    # sent, so an error lands on the input the nurse actually has to fix.
+    ERROR_FIELD_MAP = {
+        'last_name': 'lastName',
+        'first_name': 'firstName',
+        'middle_name': 'middleName',
+        'registration_no': 'registrationNumber',
+        'registration_date': 'registrationDate',
+        'valid_until': 'validUntil',
+    }
+
+    def validate(self, attrs):
+        # Nothing to check unless the client actually sent reviewed fields.
+        if not any(attrs.get(name) for name in self.ID_FIELDS):
+            return attrs
+
+        result = validate_prc_id_fields(
+            last_name=attrs.get('lastName'),
+            first_name=attrs.get('firstName'),
+            middle_name=attrs.get('middleName'),
+            registration_no=attrs.get('registrationNumber'),
+            registration_date=attrs.get('registrationDate'),
+            valid_until=attrs.get('validUntil'),
+        )
+        if not result.valid:
+            raise serializers.ValidationError(
+                {
+                    self.ERROR_FIELD_MAP.get(field, field): message
+                    for field, message in (result.errors or {}).items()
+                }
+            )
+
+        # Normalised on the way through: dates as ISO, registration number
+        # stripped to digits — so the session stores one canonical shape however
+        # the nurse typed it.
+        attrs['cleanedIdFields'] = result.cleaned
+        return attrs
 
 
 class SendOtpSerializer(serializers.Serializer):
@@ -361,6 +427,11 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 class UpdateMeSerializer(serializers.Serializer):
+    # The Settings dialog edits one "Full Name" box rather than separate first
+    # and last name fields, so accept that too and split it. Without this the
+    # server quietly ignored the name and the UI appeared to revert on save.
+    name = serializers.CharField(required=False, allow_blank=True, max_length=300)
+    email = serializers.EmailField(required=False)
     firstName = serializers.CharField(required=False, allow_blank=True, max_length=150)
     middleName = serializers.CharField(required=False, allow_blank=True, max_length=100)
     lastName = serializers.CharField(required=False, allow_blank=True, max_length=150)
@@ -381,11 +452,42 @@ class UpdateMeSerializer(serializers.Serializer):
         except AvatarError as exc:
             raise serializers.ValidationError(str(exc))
 
+    def validate_email(self, value):
+        value = (value or '').strip().lower()
+        if not value:
+            return value
+        # Email doubles as the login username, so it has to stay unique across
+        # accounts — otherwise two nurses could end up unable to sign in.
+        user = self.instance or (self.context.get('request').user if self.context.get('request') else None)
+        clash = User.objects.filter(Q(username__iexact=value) | Q(email__iexact=value))
+        if user is not None:
+            clash = clash.exclude(pk=user.pk)
+        if clash.exists():
+            raise serializers.ValidationError('Another account already uses this email address.')
+        return value
+
     def update(self, instance, validated_data):
-        if 'firstName' in validated_data:
-            instance.first_name = validated_data['firstName'] or ''
-        if 'lastName' in validated_data:
-            instance.last_name = validated_data['lastName'] or ''
+        first_name = validated_data.get('firstName')
+        last_name = validated_data.get('lastName')
+
+        # A single "Full Name" box: first word is the first name, the rest is
+        # the surname. Explicit firstName/lastName still win when both are sent.
+        if 'name' in validated_data and first_name is None and last_name is None:
+            parts = (validated_data['name'] or '').strip().split()
+            if parts:
+                first_name = parts[0]
+                last_name = ' '.join(parts[1:])
+
+        if first_name is not None:
+            instance.first_name = first_name or ''
+        if last_name is not None:
+            instance.last_name = last_name or ''
+
+        if 'email' in validated_data and validated_data['email']:
+            # Kept in step with username, which is what authentication matches on.
+            instance.email = validated_data['email']
+            instance.username = validated_data['email']
+
         instance.save()
 
         profile, _ = NurseProfile.objects.get_or_create(user=instance)
@@ -1442,3 +1544,44 @@ class VerifyPrcResponseSerializer(serializers.Serializer):
 
     class Meta:
         ref_name = 'VerifyPrcResponse'
+
+
+class UserPreferencesSerializer(serializers.ModelSerializer):
+    """
+    The Settings page, in the camelCase the app speaks.
+
+    Every field is optional: the Settings page saves one section at a time, so a
+    PATCH carries only that section and must leave the rest untouched.
+    """
+
+    fontSize = serializers.ChoiceField(
+        source='font_size', choices=['small', 'medium', 'large'], required=False
+    )
+    compactView = serializers.BooleanField(source='compact_view', required=False)
+
+    taskNotifications = serializers.BooleanField(source='task_notifications', required=False)
+    handoverNotifications = serializers.BooleanField(
+        source='handover_notifications', required=False
+    )
+    criticalAlerts = serializers.BooleanField(source='critical_alerts', required=False)
+    emailNotifications = serializers.BooleanField(source='email_notifications', required=False)
+    soundAlerts = serializers.BooleanField(source='sound_alerts', required=False)
+
+    autoRefresh = serializers.BooleanField(source='auto_refresh', required=False)
+    showCharts = serializers.BooleanField(source='show_charts', required=False)
+    backgroundSync = serializers.BooleanField(source='background_sync', required=False)
+
+    class Meta:
+        model = UserPreferences
+        fields = [
+            'fontSize',
+            'compactView',
+            'taskNotifications',
+            'handoverNotifications',
+            'criticalAlerts',
+            'emailNotifications',
+            'soundAlerts',
+            'autoRefresh',
+            'showCharts',
+            'backgroundSync',
+        ]

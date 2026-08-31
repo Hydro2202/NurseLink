@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Modal, View, Text, StyleSheet, Pressable, Animated } from 'react-native';
+import { Modal, View, Text, StyleSheet, Animated } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Bell, User, ArrowRight } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
@@ -139,7 +139,7 @@ export function HandoverAlertModal() {
             </View>
           </View>
 
-          <Text style={styles.hint}>Please review the patient's information.</Text>
+          <Text style={styles.hint}>{"Please review the patient's information."}</Text>
 
           <View style={styles.footer}>
             <Button variant="outline" onPress={dismiss} style={styles.footerBtn}>

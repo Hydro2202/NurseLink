@@ -11,6 +11,8 @@ import type { AppNotification } from '../types/domain';
 import { useAuth } from './AuthContext';
 import { useLive, useLiveRefresh } from './LiveContext';
 import { useRealtimeNotifications, type RealtimeNotification } from './RealtimeContext';
+import { usePreferences } from './PreferencesContext';
+import { playNotificationSound } from '../utils/notificationSound';
 
 /**
  * Keeps every nurse's inbox current without them having to reload anything.
@@ -75,6 +77,8 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
   const { user } = useAuth();
   const { revisions } = useLive();
   const liveUnread = revisions.unreadCount;
+  const { preferences } = usePreferences();
+  const soundAlerts = preferences.soundAlerts;
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -83,6 +87,9 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
   // still be in flight when the next tick fires.
   const inFlight = useRef(false);
   const mounted = useRef(true);
+  // Ids already delivered by push on this connection, so a replay after a
+  // reconnect cannot double-count the badge or chime twice.
+  const seenPushes = useRef<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return;
@@ -112,6 +119,7 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
   // tablet never sees the previous one's notifications.
   useEffect(() => {
     if (!user) {
+      seenPushes.current.clear();
       setNotifications([]);
       setUnreadCount(0);
       setLoading(false);
@@ -132,13 +140,22 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
   // follows it. That fetch still happens, to pick up the fields the push does
   // not carry, but nothing waits for it.
   useRealtimeNotifications((pushed: RealtimeNotification) => {
-    setNotifications((prev) => {
-      // The same notification can arrive twice — pushed, then again in a
-      // refetch, or after a socket reconnect. Keyed by id, it lands once.
-      if (prev.some((item) => item.id === pushed.id)) return prev;
-      return [toNotification(pushed), ...prev];
-    });
+    // The same notification can arrive twice — a socket reconnect can replay
+    // one, and a refetch can race the push that caused it. Decide once, here,
+    // rather than inside setState: the badge and the chime are side effects
+    // that must not fire again for something already seen.
+    if (seenPushes.current.has(pushed.id)) return;
+    seenPushes.current.add(pushed.id);
+
+    setNotifications((prev) =>
+      prev.some((item) => item.id === pushed.id) ? prev : [toNotification(pushed), ...prev]
+    );
     setUnreadCount((prev) => prev + 1);
+
+    // Only on a genuinely new pushed notification, and only if the nurse asked
+    // for sound. Nothing plays on a refetch.
+    if (soundAlerts) playNotificationSound();
+
     // Fill in anything the push left out, without blocking the popup on it.
     void refresh();
   });

@@ -251,13 +251,34 @@ export async function verifyIdRequest(
  * email from a PRC card, so without this call the backend has no address
  * to send the Email OTP fallback to.
  */
+/** The six PRC-ID fields as the nurse confirmed them on the ID Review step. */
+export interface ReviewedIdFields {
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  registrationNumber: string;
+  /** ISO (YYYY-MM-DD). */
+  registrationDate: string;
+  /** ISO (YYYY-MM-DD). */
+  validUntil: string;
+}
+
+/**
+ * Saves what the nurse confirmed on Step 2: the registered email, and the
+ * reviewed ID fields when they are supplied.
+ *
+ * The fields are optional so the call still works for email alone. The server
+ * re-validates anything sent and stores the corrected values on the session, so
+ * the rest of registration reads the reviewed data rather than the raw scan.
+ */
 export async function saveRegistrationEmailRequest(
   registrationSessionId: string,
-  email: string
+  email: string,
+  idFields?: ReviewedIdFields
 ): Promise<{ success: boolean; registrationSessionId: string }> {
   return apiRequest('/auth/registration-email/', {
     method: 'POST',
-    body: { registrationSessionId, email },
+    body: { registrationSessionId, email, ...(idFields ?? {}) },
     auth: false,
   });
 }
@@ -580,6 +601,31 @@ export async function fetchWorkload(): Promise<WorkloadData[]> {
 
 export async function fetchAnalytics(): Promise<AnalyticsData> {
   return apiRequest<AnalyticsData>('/analytics/');
+}
+
+/** The Settings page, as stored on the account. */
+export interface UserPreferences {
+  fontSize: 'small' | 'medium' | 'large';
+  compactView: boolean;
+  taskNotifications: boolean;
+  handoverNotifications: boolean;
+  criticalAlerts: boolean;
+  emailNotifications: boolean;
+  soundAlerts: boolean;
+  autoRefresh: boolean;
+  showCharts: boolean;
+  backgroundSync: boolean;
+}
+
+export async function fetchPreferences(): Promise<UserPreferences> {
+  return apiRequest<UserPreferences>('/preferences/');
+}
+
+/** Partial update: the Settings page saves one section at a time. */
+export async function updatePreferences(
+  changes: Partial<UserPreferences>
+): Promise<UserPreferences> {
+  return apiRequest<UserPreferences>('/preferences/', { method: 'PATCH', body: changes });
 }
 
 /** Revision stamps used to detect changes without refetching whole lists. */

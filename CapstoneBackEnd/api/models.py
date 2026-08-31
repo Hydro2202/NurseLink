@@ -777,3 +777,56 @@ class IdScanAttempt(models.Model):
             and self.portrait_present is True
             and not self.missing_required
         )
+
+
+class UserPreferences(models.Model):
+    """
+    One nurse's Settings page, stored server side.
+
+    These are account settings rather than device settings: a nurse who signs in
+    on the ward tablet should get the same font size and the same notification
+    choices they set on their phone. Keeping them here also means the server can
+    honour them — a nurse who turns off handover notifications is not asking the
+    app to hide them, they are asking not to be notified, and only the backend
+    can decide that before a notification is ever created.
+
+    Every field has a default matching the shipped behaviour, so a row created
+    for an existing nurse changes nothing until they touch a control.
+    """
+
+    FONT_SIZE_CHOICES = [
+        ('small', 'Small'),
+        ('medium', 'Medium'),
+        ('large', 'Large'),
+    ]
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='preferences',
+    )
+
+    # Appearance
+    font_size = models.CharField(max_length=10, choices=FONT_SIZE_CHOICES, default='medium')
+    compact_view = models.BooleanField(default=False)
+
+    # Notifications. Checked before a Notification row is created, so switching
+    # one off stops the notification happening rather than merely hiding it.
+    task_notifications = models.BooleanField(default=True)
+    handover_notifications = models.BooleanField(default=True)
+    critical_alerts = models.BooleanField(default=True)
+    email_notifications = models.BooleanField(default=False)
+    sound_alerts = models.BooleanField(default=True)
+
+    # System
+    auto_refresh = models.BooleanField(default=True)
+    show_charts = models.BooleanField(default=True)
+    background_sync = models.BooleanField(default=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = 'user preferences'
+
+    def __str__(self):
+        return 'Preferences for %s' % self.user.username

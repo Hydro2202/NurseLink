@@ -7,7 +7,8 @@ import {
   useWindowDimensions,
   ActivityIndicator,
 } from 'react-native';
-import { BarChart, LineChart } from 'react-native-gifted-charts';
+// Wrapper that honours the Show Charts & Graphs setting; same API.
+import { BarChart, LineChart } from '../../components/Charts';
 import {
   AlertTriangle,
   UserPlus,

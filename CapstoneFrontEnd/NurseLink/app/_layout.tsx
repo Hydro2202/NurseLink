@@ -4,6 +4,8 @@ import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { ToastProvider } from '../contexts/ToastContext';
 import { LiveProvider } from '../contexts/LiveContext';
 import { RealtimeProvider } from '../contexts/RealtimeContext';
+import { PreferencesProvider } from '../contexts/PreferencesContext';
+import { ThemeProvider } from '../contexts/ThemeContext';
 import { NotificationsProvider } from '../contexts/NotificationsContext';
 import SplashScreen from '../components/SplashScreen';
 import { StatusBar } from 'expo-status-bar';
@@ -59,13 +61,17 @@ export default function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <AuthProvider>
         <ToastProvider>
-          <RealtimeProvider>
-            <LiveProvider>
-              <NotificationsProvider>
-                <RootNavigator />
-              </NotificationsProvider>
-            </LiveProvider>
-          </RealtimeProvider>
+          <PreferencesProvider>
+            <ThemeProvider>
+              <RealtimeProvider>
+                <LiveProvider>
+                  <NotificationsProvider>
+                    <RootNavigator />
+                  </NotificationsProvider>
+                </LiveProvider>
+              </RealtimeProvider>
+            </ThemeProvider>
+          </PreferencesProvider>
         </ToastProvider>
       </AuthProvider>
     </GestureHandlerRootView>

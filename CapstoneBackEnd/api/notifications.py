@@ -13,7 +13,9 @@ dev server, on a phone over the LAN, and behind any WSGI host.
 
 import logging
 
+from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.mail import send_mail
 
 from .models import Notification
 from .realtime import push_notification
@@ -25,6 +27,72 @@ logger = logging.getLogger(__name__)
 HANDOVER_RECEIVED = 'handover_received'
 HANDOVER_ACKNOWLEDGED = 'handover_acknowledged'
 TASK_ASSIGNED = 'task_assigned'
+
+
+
+def wants(recipient, field) -> bool:
+    """
+    Does this nurse want this kind of notification?
+
+    Checked before a Notification row is created, so switching a preference off
+    stops the notification happening rather than creating one and hiding it —
+    which is what a nurse actually means by turning it off.
+
+    Defaults to True whenever preferences cannot be read: a missing row or a
+    database hiccup must never silently swallow a patient handover.
+    """
+    from .models import UserPreferences
+
+    if recipient is None:
+        return False
+    try:
+        preferences, _ = UserPreferences.objects.get_or_create(user=recipient)
+        return bool(getattr(preferences, field, True))
+    except Exception:
+        logger.exception('Could not read preferences for user %s; assuming enabled.', recipient.pk)
+        return True
+
+
+
+def _email_notification(notification):
+    """
+    Send a notification by email, when the nurse has asked for that.
+
+    Uses the project's existing Django mail configuration — the same one Email
+    OTP goes through — rather than a second mail path. Nothing new is
+    configured: if EMAIL_* is unset the console backend prints it, exactly as it
+    does for OTP.
+
+    Best effort and last: the notification is already saved and already pushed
+    to the nurse's socket by the time this runs, so a mail server that is slow
+    or down costs an email, never the notification.
+
+    Note that Email OTP is transactional and deliberately ignores this
+    preference — a nurse cannot opt out of the code that lets them sign in.
+    """
+    recipient = notification.recipient
+    address = (recipient.email or '').strip()
+    if not address:
+        return
+
+    body = (
+        notification.title
+        + '\n\n'
+        + notification.message
+        + '\n\n'
+        + 'You are receiving this because Email Notifications are on in your '
+          'NurseLink settings.'
+    )
+    try:
+        send_mail(
+            'NurseLink: %s' % notification.title,
+            body,
+            settings.DEFAULT_FROM_EMAIL,
+            [address],
+            fail_silently=True,
+        )
+    except Exception:
+        logger.exception('Could not email notification %s to %s', notification.pk, address)
 
 
 def resolve_nurse(name: str):
@@ -107,6 +175,11 @@ def notify(
     # Saved first, then pushed. Delivery is an optimisation on top of a row that
     # already exists, so a failed push costs latency, never the notification.
     push_notification(notification)
+
+    # And by email, if that is how this nurse wants to be reached as well.
+    if wants(recipient, 'email_notifications'):
+        _email_notification(notification)
+
     return notification
 
 
@@ -143,6 +216,13 @@ def notify_handover_created(handover):
 
     # A nurse writing a handover to themselves does not need telling.
     if handover.created_by is not None and handover.created_by.pk == recipient.pk:
+        return None
+
+    if not wants(recipient, 'handover_notifications'):
+        logger.info(
+            '[Settings] %s has handover notifications off; %s not notified.',
+            recipient.username, handover.handover_code,
+        )
         return None
 
     # One handover, one notification — even if this is somehow reached twice.
@@ -186,6 +266,9 @@ def notify_handover_acknowledged(handover, nurse, adopted_tasks):
     if recipient is None or recipient.pk == nurse.pk:
         return None
 
+    if not wants(recipient, 'handover_notifications'):
+        return None
+
     nurse_name = nurse.get_full_name().strip() or nurse.username
     count = len(adopted_tasks)
     if count == 1:
@@ -225,6 +308,16 @@ def notify_task_assigned(task, actor=None):
     if recipient is None:
         return None
     if actor is not None and actor.pk == recipient.pk:
+        return None
+
+    # Urgent work is a critical alert; everything else is a task notification.
+    # They are separate switches on the Settings page, so honour them separately.
+    preference = 'critical_alerts' if task.priority == 'urgent' else 'task_notifications'
+    if not wants(recipient, preference):
+        logger.info(
+            '[Settings] %s has %s off; task %s not notified.',
+            recipient.username, preference, task.task_code,
+        )
         return None
 
     who = ''
