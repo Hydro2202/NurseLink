@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import type { Task } from '../types/domain';
-import { fetchTasks, createTask, updateTask, deleteTask, completeTask, ApiError } from '../api/nurselink';
+import { fetchTasks, createTask, updateTask, unassignTask, completeTask, ApiError } from '../api/nurselink';
 import { Card, CardContent } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -10,7 +10,7 @@ import {
   CheckCircle,
   Clock,
   Edit,
-  Trash2,
+  UserMinus,
   Plus,
   Loader2,
   Search,
@@ -42,9 +42,9 @@ export default function NurseTasksPage() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [taskModalMode, setTaskModalMode] = useState<'add' | 'edit'>('add');
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [unassignDialogOpen, setUnassignDialogOpen] = useState(false);
+  const [taskToUnassign, setTaskToUnassign] = useState<string | null>(null);
+  const [unassignLoading, setUnassignLoading] = useState(false);
   const [completeLoading, setCompleteLoading] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'priority' | 'status'>('newest');
@@ -107,28 +107,28 @@ export default function NurseTasksPage() {
     }
   };
 
-  const handleDeleteTask = async (taskId: string) => {
-    setTaskToDelete(taskId);
-    setDeleteDialogOpen(true);
+  const handleUnassignTask = async (taskId: string) => {
+    setTaskToUnassign(taskId);
+    setUnassignDialogOpen(true);
   };
 
-  const confirmDeleteTask = async () => {
-    if (!taskToDelete) return;
+  const confirmUnassignTask = async () => {
+    if (!taskToUnassign) return;
 
-    setDeleteLoading(true);
+    setUnassignLoading(true);
     try {
-      const deletedTask = tasks.find((t) => t.id === taskToDelete);
-      await deleteTask(taskToDelete);
-      setTasks((prev) => prev.filter((task) => task.id !== taskToDelete));
-      setDeleteDialogOpen(false);
-      setTaskToDelete(null);
-      toast.success('Task deleted', {
-        description: `"${deletedTask?.title}" has been removed.`,
+      const unassigned = tasks.find((t) => t.id === taskToUnassign);
+      const updated = await unassignTask(taskToUnassign);
+      setTasks((prev) => prev.map((task) => (task.id === taskToUnassign ? updated : task)));
+      setUnassignDialogOpen(false);
+      setTaskToUnassign(null);
+      toast.success('Task unassigned', {
+        description: `"${unassigned?.title}" is back on the pending list, unassigned.`,
       });
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Failed to delete task');
+      toast.error(error instanceof ApiError ? error.message : 'Failed to unassign task');
     } finally {
-      setDeleteLoading(false);
+      setUnassignLoading(false);
     }
   };
 
@@ -376,6 +376,12 @@ export default function NurseTasksPage() {
                           </div>
                         </div>
                       )}
+
+                      {task.checklist.length > 0 && (
+                        <Badge variant="secondary" className="mt-2 text-xs">
+                          {`Checklist: ${task.checklist.filter((i) => i.done).length}/${task.checklist.length}`}
+                        </Badge>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-col gap-2">
@@ -402,14 +408,16 @@ export default function NurseTasksPage() {
                     >
                       <Edit className="w-4 h-4" />
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleDeleteTask(task.id)}
-                      className="text-red-600 border-red-600 hover:bg-red-50"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
+                    {task.assignedTo && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleUnassignTask(task.id)}
+                        className="text-red-600 border-red-600 hover:bg-red-50"
+                      >
+                        <UserMinus className="w-4 h-4" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -429,12 +437,12 @@ export default function NurseTasksPage() {
       />
 
       <DeleteConfirmDialog
-        open={deleteDialogOpen}
-        onOpenChange={setDeleteDialogOpen}
-        onConfirm={confirmDeleteTask}
-        loading={deleteLoading}
-        title="Delete Task"
-        description="Are you sure you want to delete this task? This action cannot be undone. The nurse will be notified."
+        open={unassignDialogOpen}
+        onOpenChange={setUnassignDialogOpen}
+        onConfirm={confirmUnassignTask}
+        loading={unassignLoading}
+        title="Unassign Task"
+        description="This will remove the assigned nurse and return the task to pending. The task itself is not deleted."
       />
     </div>
   );

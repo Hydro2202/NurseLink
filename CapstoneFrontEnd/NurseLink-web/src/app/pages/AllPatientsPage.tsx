@@ -363,7 +363,7 @@ export default function AllPatientsPage() {
                       className="w-full bg-blue-600 hover:bg-blue-700"
                     >
                       <UserPlus className="w-4 h-4 mr-2" />
-                      Assign Task
+                      Assign Nurse
                     </Button>
                   </div>
                 </div>

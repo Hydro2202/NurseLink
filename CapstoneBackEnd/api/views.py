@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
+from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import Count, Max, Prefetch, Q
 from django.utils import timezone
@@ -65,9 +66,15 @@ from .models import (
     UserPreferences,
 )
 from .handover_tasks import adopt_handover_tasks
-from .notifications import notify_handover_acknowledged, notify_handover_created
+from .notifications import (
+    notify,
+    notify_handover_acknowledged,
+    notify_handover_created,
+    notify_kardex_reviewed,
+    notify_nurse_reassigned,
+)
 from .otp_service import OtpCooldownError, OtpDeliveryError, OtpResendLimitError, issue_otp, verify_otp
-from .permissions import IsSupervisor, get_user_role
+from .permissions import IsAdmin, IsApprovedNurse, IsSupervisor, get_user_role
 from .schema_examples import (
     ASSIGNMENT_CREATE_EXAMPLES,
     ASSIGNMENT_UPDATE_EXAMPLES,
@@ -109,6 +116,7 @@ from .serializers import (
     KardexRecordSerializer,
     LoginSerializer,
     NotificationSerializer,
+    NurseAssignmentSerializer,
     PatientAssignmentSerializer,
     PatientSerializer,
     RegistrationEmailSerializer,
@@ -1751,6 +1759,10 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
+        # An admin account (User.is_staff, created without a NurseProfile —
+        # see AdminUserViewSet/IsAdmin) has no profile here, so every check
+        # below is skipped: an admin can log in with either the Nurse or
+        # Supervisor button selected, and always reaches the app regardless.
         profile = getattr(user, 'nurse_profile', None)
         if requested_role and profile and profile.role != requested_role:
             return Response(
@@ -1759,6 +1771,39 @@ class LoginView(APIView):
                         f'This account is registered as {profile.role.replace("_", " ")}, '
                         f'not {requested_role.replace("_", " ")}.'
                     )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Identity verification at signup proves who this person is; it does
+        # not prove an admin has actually approved the account. Checked here,
+        # not just in permissions.IsApprovedNurse, so a pending/rejected nurse
+        # gets a real explanation instead of a token that then fails on every
+        # subsequent call.
+        if profile and not profile.is_active_staff:
+            return Response(
+                {'detail': 'This account has been deactivated. Contact an administrator.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if profile and profile.approval_status == 'pending':
+            return Response(
+                {
+                    'detail': (
+                        'Your account is pending admin approval. You will be able to sign '
+                        'in once an administrator approves your registration.'
+                    ),
+                    'approvalStatus': 'pending',
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if profile and profile.approval_status == 'rejected':
+            return Response(
+                {
+                    'detail': (
+                        profile.rejection_reason
+                        or 'Your registration was rejected. Contact an administrator for details.'
+                    ),
+                    'approvalStatus': 'rejected',
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
@@ -1877,6 +1922,27 @@ class OAuthTokenView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # Same admin-approval gate as LoginView — this endpoint is a second
+        # way to obtain a token (Scalar docs) and must not bypass it.
+        if profile and not profile.is_active_staff:
+            return Response(
+                {'error': 'invalid_grant', 'error_description': 'This account has been deactivated.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if profile and profile.approval_status == 'pending':
+            return Response(
+                {'error': 'invalid_grant', 'error_description': 'Your account is pending admin approval.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if profile and profile.approval_status == 'rejected':
+            return Response(
+                {
+                    'error': 'invalid_grant',
+                    'error_description': profile.rejection_reason or 'Your registration was rejected.',
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         token, _ = Token.objects.get_or_create(user=user)
         return Response(
             {
@@ -1971,7 +2037,7 @@ class LogoutView(APIView):
 )
 class PatientViewSet(viewsets.ModelViewSet):
     serializer_class = PatientSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
     lookup_field = 'patient_code'
     lookup_url_kwarg = 'patient_code'
 
@@ -2011,12 +2077,14 @@ class PatientViewSet(viewsets.ModelViewSet):
         return qs
 
     def get_permissions(self):
-        # Supervisors: full CRUD. Staff nurses: can update/delete their own assigned patients.
+        # Supervisors: full CRUD. Staff nurses: can update/delete their own
+        # assigned patients (see update()/destroy() below for that check).
+        # Every branch must include IsApprovedNurse — this method fully
+        # replaces the class-level permission_classes, so a branch that
+        # forgot it would silently let a pending nurse through.
         if self.action == 'create':
-            return [permissions.IsAuthenticated(), IsSupervisor()]
-        if self.action in ('update', 'partial_update', 'destroy'):
-            return [permissions.IsAuthenticated()]
-        return [permissions.IsAuthenticated()]
+            return [permissions.IsAuthenticated(), IsApprovedNurse(), IsSupervisor()]
+        return [permissions.IsAuthenticated(), IsApprovedNurse()]
 
     def update(self, request, *args, **kwargs):
         patient = self.get_object()
@@ -2059,9 +2127,19 @@ class PatientViewSet(viewsets.ModelViewSet):
 )
 class TaskViewSet(viewsets.ModelViewSet):
     serializer_class = TaskSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
     lookup_field = 'task_code'
     lookup_url_kwarg = 'task_code'
+    # Task assignments are never hard-deleted through the normal API surface —
+    # a wrong assignment is corrected with `unassign` below, which keeps the
+    # task and its history instead of removing the row. Enforced here (not
+    # just hidden in the UI) so a direct DELETE call is rejected too.
+    http_method_names = ['get', 'post', 'patch', 'put', 'head', 'options']
+
+    def get_permissions(self):
+        if self.action == 'unassign':
+            return [permissions.IsAuthenticated(), IsSupervisor()]
+        return super().get_permissions()
 
     def get_queryset(self):
         qs = Task.objects.select_related('patient', 'assigned_nurse').all()
@@ -2093,15 +2171,47 @@ class TaskViewSet(viewsets.ModelViewSet):
         request=None,
         responses={200: TaskSerializer},
         summary='Mark a task complete',
-        description='No request body — the task is identified by the URL. Stamps `completedAt`.',
+        description=(
+            'No request body — the task is identified by the URL. Stamps `completedAt`. '
+            'Rejected with 400 if the task has an unfinished checklist item — an empty '
+            'checklist is not required and is never blocked.'
+        ),
     )
     @action(detail=True, methods=['post'])
     def complete(self, request, task_code=None):
         task = self.get_object()
+        unfinished = [item.get('text', 'item') for item in task.checklist if not item.get('done')]
+        if unfinished:
+            return Response(
+                {
+                    'detail': 'Complete the remaining checklist items before finishing this task.',
+                    'unfinishedChecklistItems': unfinished,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         task.status = 'completed'
         task.priority = 'completed'
         task.completed_at = timezone.now()
         task.save(update_fields=['status', 'priority', 'completed_at', 'updated_at'])
+        return Response(TaskSerializer(task, context={'request': request}).data)
+
+    @extend_schema(
+        request=None,
+        responses={200: TaskSerializer},
+        summary='Unassign a task from its nurse',
+        description=(
+            'No request body — the task is identified by the URL. Clears the assigned '
+            'nurse and returns the task to pending, without deleting it. Supervisor only.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def unassign(self, request, task_code=None):
+        task = self.get_object()
+        task.assigned_nurse = None
+        task.assigned_to = ''
+        if task.status != 'completed':
+            task.status = 'pending'
+        task.save(update_fields=['assigned_nurse', 'assigned_to', 'status', 'updated_at'])
         return Response(TaskSerializer(task, context={'request': request}).data)
 
 
@@ -2124,7 +2234,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 )
 class HandoverViewSet(viewsets.ModelViewSet):
     serializer_class = HandoverSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
     lookup_field = 'handover_code'
     lookup_url_kwarg = 'handover_code'
 
@@ -2190,7 +2300,7 @@ class HandoverViewSet(viewsets.ModelViewSet):
 )
 class ChartingViewSet(viewsets.ModelViewSet):
     serializer_class = ChartingNoteSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
     lookup_field = 'note_code'
     lookup_url_kwarg = 'note_code'
 
@@ -2371,7 +2481,7 @@ class ChartingViewSet(viewsets.ModelViewSet):
 )
 class NotificationViewSet(viewsets.ModelViewSet):
     serializer_class = NotificationSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
     http_method_names = ['get', 'patch', 'delete', 'post', 'head', 'options']
 
     def get_queryset(self):
@@ -2438,7 +2548,7 @@ class NotificationViewSet(viewsets.ModelViewSet):
 )
 class AssignmentViewSet(viewsets.ModelViewSet):
     serializer_class = PatientAssignmentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
 
     def get_queryset(self):
         qs = PatientAssignment.objects.select_related(
@@ -2467,15 +2577,82 @@ class AssignmentViewSet(viewsets.ModelViewSet):
 )
 class KardexViewSet(viewsets.ModelViewSet):
     serializer_class = KardexRecordSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
 
     def get_queryset(self):
-        return KardexRecord.objects.select_related('patient', 'saved_by').all()
+        qs = KardexRecord.objects.select_related('patient', 'saved_by', 'reviewed_by').all()
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
+
+    def get_permissions(self):
+        if self.action == 'review':
+            return [permissions.IsAuthenticated(), IsSupervisor()]
+        return super().get_permissions()
+
+    @extend_schema(
+        request=inline_serializer(
+            name='KardexReviewRequest',
+            fields={
+                'decision': serializers.ChoiceField(choices=['approved', 'returned', 'rejected']),
+                'notes': serializers.CharField(
+                    required=False, allow_blank=True,
+                    help_text='Reason for a return or rejection. Ignored for an approval.',
+                ),
+            },
+        ),
+        responses={200: KardexRecordSerializer},
+        summary='Approve, return, or reject a kardex',
+        description=(
+            'Supervisor only. A returned/rejected kardex is corrected by the nurse saving a '
+            'new kardex for the same patient — there is no edit-in-place endpoint.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def review(self, request, pk=None):
+        kardex = self.get_object()
+        decision = (request.data.get('decision') or '').strip()
+        if decision not in ('approved', 'returned', 'rejected'):
+            return Response(
+                {'detail': 'decision must be one of: approved, returned, rejected.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if kardex.status != 'submitted':
+            return Response(
+                {'detail': f'This kardex is already {kardex.status} and cannot be reviewed again.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        notes = (request.data.get('notes') or '').strip()
+        if decision in ('returned', 'rejected') and not notes:
+            return Response(
+                {'detail': 'notes is required when returning or rejecting a kardex.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        kardex.status = decision
+        kardex.reviewed_by = request.user
+        kardex.reviewed_at = timezone.now()
+        kardex.review_notes = notes
+        kardex.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'review_notes', 'updated_at'])
+
+        notify_kardex_reviewed(kardex, request.user)
+
+        return Response(KardexRecordSerializer(kardex, context={'request': request}).data)
 
 
 class NurseViewSet(viewsets.ViewSet):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+
+    def get_permissions(self):
+        # Everyone approved can see the roster (it feeds the handover/task
+        # nurse pickers); only a supervisor can move someone to a different
+        # department or shift.
+        if self.action == 'assign':
+            return [permissions.IsAuthenticated(), IsSupervisor()]
+        return [permission() for permission in self.permission_classes]
 
     def list(self, request):
         nurses = (
@@ -2531,9 +2708,173 @@ class NurseViewSet(viewsets.ViewSet):
             }
         )
 
+    @extend_schema(
+        request=NurseAssignmentSerializer,
+        responses={200: inline_serializer(
+            name='NurseAssignmentResponse',
+            fields={
+                'id': serializers.CharField(),
+                'name': serializers.CharField(),
+                'department': serializers.CharField(),
+                'shift': serializers.CharField(),
+            },
+        )},
+        tags=['Nurses'],
+        summary='Assign department/shift (supervisor only)',
+        description='Editable request body. Send department, shift, or both.',
+    )
+    @action(detail=True, methods=['patch'])
+    def assign(self, request, pk=None):
+        nurse = get_object_or_404(User, pk=pk, nurse_profile__role='staff_nurse')
+        profile = nurse.nurse_profile
+        serializer = NurseAssignmentSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        changed_department = 'department' in data and data['department'] != profile.department
+        changed_shift = 'shift' in data and data['shift'] != profile.shift
+        update_fields = []
+        if 'department' in data:
+            profile.department = data['department']
+            update_fields.append('department')
+        if 'shift' in data:
+            profile.shift = data['shift']
+            update_fields.append('shift')
+        if update_fields:
+            profile.save(update_fields=update_fields)
+
+        if changed_department or changed_shift:
+            notify_nurse_reassigned(
+                profile, request.user,
+                changed_department=changed_department, changed_shift=changed_shift,
+            )
+
+        return Response({
+            'id': str(nurse.pk),
+            'name': nurse.get_full_name().strip() or nurse.username,
+            'department': profile.department,
+            'shift': profile.shift or 'morning',
+        })
+
+
+class AdminUserViewSet(viewsets.ViewSet):
+    """
+    The in-app admin interface's user-management surface: list every nurse
+    and supervisor account regardless of role or approval status, and
+    approve/reject/deactivate/reset-password them. Admin-only (IsAdmin,
+    checked against the real User.is_staff flag — see permissions.py for
+    why this is not based on the admin@ email convention).
+
+    Deliberately never returns other admin accounts: an admin User is
+    created without a NurseProfile, so this queryset (which starts from
+    NurseProfile) can never include one — nothing here can deactivate or
+    reset another admin's password by construction, not just by choice.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def list(self, request):
+        profiles = NurseProfile.objects.select_related('user').order_by('-user__date_joined')
+        role_filter = request.query_params.get('role')
+        status_filter = request.query_params.get('status')
+        if role_filter:
+            profiles = profiles.filter(role=role_filter)
+        if status_filter:
+            profiles = profiles.filter(approval_status=status_filter)
+        return Response([_admin_user_payload(p) for p in profiles])
+
+    def retrieve(self, request, pk=None):
+        profile = get_object_or_404(NurseProfile, user_id=pk)
+        return Response(_admin_user_payload(profile))
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        profile = get_object_or_404(NurseProfile, user_id=pk)
+        profile.approval_status = 'approved'
+        profile.rejection_reason = ''
+        profile.save(update_fields=['approval_status', 'rejection_reason'])
+        notify(
+            profile.user,
+            notification_type='success',
+            event='account_approved',
+            title='Account approved',
+            message='Your NurseLink registration has been approved. You can now sign in.',
+        )
+        return Response(_admin_user_payload(profile))
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        profile = get_object_or_404(NurseProfile, user_id=pk)
+        reason = (request.data.get('reason') or '').strip()
+        if not reason:
+            return Response(
+                {'detail': 'reason is required when rejecting a registration.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        profile.approval_status = 'rejected'
+        profile.rejection_reason = reason
+        profile.save(update_fields=['approval_status', 'rejection_reason'])
+        return Response(_admin_user_payload(profile))
+
+    @action(detail=True, methods=['post'])
+    def deactivate(self, request, pk=None):
+        profile = get_object_or_404(NurseProfile, user_id=pk)
+        profile.is_active_staff = False
+        profile.save(update_fields=['is_active_staff'])
+        return Response(_admin_user_payload(profile))
+
+    @action(detail=True, methods=['post'])
+    def reactivate(self, request, pk=None):
+        profile = get_object_or_404(NurseProfile, user_id=pk)
+        profile.is_active_staff = True
+        profile.save(update_fields=['is_active_staff'])
+        return Response(_admin_user_payload(profile))
+
+    @extend_schema(
+        request=inline_serializer(
+            name='AdminSetPasswordRequest',
+            fields={'password': serializers.CharField(write_only=True, min_length=8)},
+        ),
+    )
+    @action(detail=True, methods=['post'], url_path='set-password')
+    def set_password(self, request, pk=None):
+        profile = get_object_or_404(NurseProfile, user_id=pk)
+        password = request.data.get('password') or ''
+        if len(password) < 8:
+            return Response(
+                {'detail': 'Password must be at least 8 characters.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        profile.user.set_password(password)
+        profile.user.save(update_fields=['password'])
+        # A password an admin just set from outside the account should not
+        # leave old sessions alive — force a fresh login everywhere.
+        Token.objects.filter(user=profile.user).delete()
+        return Response({'detail': 'Password updated.'})
+
+
+def _admin_user_payload(profile: NurseProfile) -> dict:
+    user = profile.user
+    return {
+        'id': str(user.pk),
+        'name': user.get_full_name().strip() or user.username,
+        'email': user.email,
+        'role': profile.role,
+        'department': profile.department,
+        'licenseNumber': profile.license_number,
+        'hospitalName': profile.hospital_name,
+        'employeeId': profile.employee_id,
+        'clinicalRole': profile.clinical_role,
+        'approvalStatus': profile.approval_status,
+        'rejectionReason': profile.rejection_reason,
+        'isActiveStaff': profile.is_active_staff,
+        'verificationMethod': profile.verification_method,
+        'dateJoined': user.date_joined.isoformat() if user.date_joined else None,
+    }
+
 
 class WorkloadView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
 
     @extend_schema(tags=['Analytics'], summary='Workload summary')
     def get(self, request):
@@ -2555,6 +2896,7 @@ class WorkloadView(APIView):
                     'nurseId': str(nurse.pk),
                     'nurseName': name,
                     'shift': profile.shift,
+                    'department': profile.department,
                     'patientCount': patients,
                     'taskCount': total,
                     'completedTasks': completed,
@@ -2566,7 +2908,7 @@ class WorkloadView(APIView):
 
 
 class AnalyticsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
 
     @extend_schema(tags=['Analytics'], summary='Analytics dashboard data')
     def get(self, request):

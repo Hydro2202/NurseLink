@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Eye, EyeOff, Loader2, User, Lock, AlertCircle } from 'lucide-react';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
+import { ApiError } from '../api/nurselink';
 
 export default function LoginPage() {
   const { login, isLoading } = useAuth();
@@ -28,12 +29,14 @@ export default function LoginPage() {
       return;
     }
 
-    const success = await login(email, password, selectedRole);
-    
-    if (success) {
-      navigate('/dashboard');
-    } else {
-      setError('Login failed. Please try again.');
+    try {
+      const loggedInUser = await login(email, password, selectedRole);
+      // An admin account has no real nurse/supervisor role — it always
+      // lands on the admin interface regardless of which button was
+      // selected above (see LoginView on the backend for why that's safe).
+      navigate(loggedInUser.isAdmin ? '/admin' : '/dashboard');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Login failed. Please try again.');
     }
   };
 

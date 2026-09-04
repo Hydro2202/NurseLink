@@ -24,6 +24,9 @@ import {
   Calendar,
   History,
   Eye,
+  CheckCircle2,
+  XCircle,
+  RotateCcw,
 } from 'lucide-react';
 import {
   Dialog,
@@ -34,10 +37,22 @@ import {
   DialogTitle,
 } from '../components/ui/dialog';
 import { toast } from 'sonner';
-import { createKardexRecord, fetchKardexRecords, ApiError } from '../api/nurselink';
-import type { KardexHistory } from '../types/domain';
+import { useAuth } from '../contexts/AuthContext';
+import { createKardexRecord, fetchKardexRecords, reviewKardexRecord, ApiError } from '../api/nurselink';
+import type { DuplicatePatientMatch, KardexHistory } from '../types/domain';
+
+const STATUS_BADGE: Record<
+  KardexHistory['status'],
+  { label: string; variant: 'info' | 'success' | 'warning' | 'destructive' }
+> = {
+  submitted: { label: 'Pending Review', variant: 'info' },
+  approved: { label: 'Approved', variant: 'success' },
+  returned: { label: 'Returned', variant: 'warning' },
+  rejected: { label: 'Rejected', variant: 'destructive' },
+};
 
 export default function KardexPage() {
+  const { user } = useAuth();
 
   // Patient Demographics
   const [lastName, setLastName] = useState('');
@@ -70,8 +85,16 @@ export default function KardexPage() {
   // History
   const [kardexHistory, setKardexHistory] = useState<KardexHistory[]>([]);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState<DuplicatePatientMatch[] | null>(null);
+  const [saveSubmitting, setSaveSubmitting] = useState(false);
   const [showHistoryDialog, setShowHistoryDialog] = useState(false);
   const [selectedHistoryEntry, setSelectedHistoryEntry] = useState<KardexHistory | null>(null);
+
+  // 'returned'/'rejected' need a reason typed in first — approved fires
+  // immediately since an approval needs no explanation.
+  const [reviewActionPending, setReviewActionPending] = useState<'returned' | 'rejected' | null>(null);
+  const [reviewNotesInput, setReviewNotesInput] = useState('');
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,6 +115,33 @@ export default function KardexPage() {
   const handleViewHistory = (entry: KardexHistory) => {
     setSelectedHistoryEntry(entry);
     setShowHistoryDialog(true);
+    setReviewActionPending(null);
+    setReviewNotesInput('');
+  };
+
+  const handleReview = async (decision: 'approved' | 'returned' | 'rejected') => {
+    if (!selectedHistoryEntry) return;
+    if (decision !== 'approved' && !reviewNotesInput.trim()) {
+      setReviewActionPending(decision);
+      return;
+    }
+
+    setReviewSubmitting(true);
+    try {
+      const updated = await reviewKardexRecord(selectedHistoryEntry.id, decision, reviewNotesInput.trim());
+      setSelectedHistoryEntry(updated);
+      setKardexHistory((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+      setReviewActionPending(null);
+      setReviewNotesInput('');
+      toast.success(
+        decision === 'approved' ? 'Kardex approved' : decision === 'returned' ? 'Kardex returned' : 'Kardex rejected',
+        { description: `${updated.patientName}'s kardex has been ${decision}.` }
+      );
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Failed to submit review');
+    } finally {
+      setReviewSubmitting(false);
+    }
   };
 
   const handleOpenHistoryList = () => {
@@ -128,10 +178,12 @@ export default function KardexPage() {
     }
 
     // Show confirmation dialog
+    setDuplicateWarning(null);
     setShowConfirmDialog(true);
   };
 
-  const handleConfirmSave = async () => {
+  const handleConfirmSave = async (confirmDuplicate = false) => {
+    setSaveSubmitting(true);
     try {
       const newEntry = await createKardexRecord({
         lastName,
@@ -154,10 +206,12 @@ export default function KardexPage() {
         bloodPressure,
         oxygenSaturation,
         specialEndorsements,
+        confirmDuplicate,
       });
 
       setKardexHistory((prev) => [newEntry, ...prev]);
       setShowConfirmDialog(false);
+      setDuplicateWarning(null);
 
       toast.success('Kardex Saved Successfully!', {
         description: `${firstName} ${lastName} was added to the patient list.`,
@@ -165,7 +219,16 @@ export default function KardexPage() {
 
       clearForm();
     } catch (error) {
+      if (error instanceof ApiError && error.status === 400) {
+        const data = error.data as { possibleDuplicates?: DuplicatePatientMatch[] } | undefined;
+        if (data?.possibleDuplicates?.length) {
+          setDuplicateWarning(data.possibleDuplicates);
+          return;
+        }
+      }
       toast.error(error instanceof ApiError ? error.message : 'Failed to save kardex');
+    } finally {
+      setSaveSubmitting(false);
     }
   };
 
@@ -539,7 +602,12 @@ export default function KardexPage() {
                   className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50 transition-colors"
                 >
                   <div className="flex-1">
-                    <h4 className="font-semibold text-gray-900">{entry.patientName}</h4>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-semibold text-gray-900">{entry.patientName}</h4>
+                      <Badge variant={STATUS_BADGE[entry.status].variant} className="text-xs">
+                        {STATUS_BADGE[entry.status].label}
+                      </Badge>
+                    </div>
                     <p className="text-sm text-gray-600">Room: {entry.room}</p>
                     <p className="text-xs text-gray-500 flex items-center gap-1 mt-1">
                       <Calendar className="w-3 h-3" />
@@ -560,27 +628,70 @@ export default function KardexPage() {
       {/* Confirmation Dialog */}
       <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Confirm Save Kardex</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to save this kardex? Please verify all information is correct before proceeding.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="bg-blue-50 p-4 rounded-lg border border-blue-200 space-y-2">
-            <p className="text-sm"><strong>Patient:</strong> {firstName} {lastName}</p>
-            <p className="text-sm"><strong>Age:</strong> {age} | <strong>Sex:</strong> {gender}</p>
-            <p className="text-sm"><strong>Room:</strong> {room}</p>
-            <p className="text-sm"><strong>Admission Date:</strong> {admissionDate}</p>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowConfirmDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleConfirmSave} className="bg-blue-600 hover:bg-blue-700">
-              <Save className="w-4 h-4 mr-2" />
-              Confirm & Save
-            </Button>
-          </DialogFooter>
+          {duplicateWarning ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>Possible Duplicate Patient</DialogTitle>
+                <DialogDescription>
+                  A patient with similar information already exists. Please verify before creating
+                  a new patient.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-2">
+                {duplicateWarning.map((match) => (
+                  <div key={match.patientId} className="bg-orange-50 border border-orange-200 rounded-lg p-3">
+                    <p className="text-sm">
+                      <strong>{match.name}</strong> ({match.patientId})
+                    </p>
+                    <p className="text-sm text-gray-700">
+                      {match.age}y • {match.gender} • Room {match.room}
+                      {match.admissionDate ? ` • Admitted ${match.admissionDate}` : ''}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDuplicateWarning(null)}>
+                  Back, Let Me Check
+                </Button>
+                <Button
+                  onClick={() => handleConfirmSave(true)}
+                  disabled={saveSubmitting}
+                  className="bg-orange-600 hover:bg-orange-700"
+                >
+                  {saveSubmitting ? 'Saving...' : 'Continue, This Is a New Patient'}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle>Confirm Save Kardex</DialogTitle>
+                <DialogDescription>
+                  Are you sure you want to save this kardex? Please verify all information is correct before proceeding.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="bg-blue-50 p-4 rounded-lg border border-blue-200 space-y-2">
+                <p className="text-sm"><strong>Patient:</strong> {firstName} {lastName}</p>
+                <p className="text-sm"><strong>Age:</strong> {age} | <strong>Sex:</strong> {gender}</p>
+                <p className="text-sm"><strong>Room:</strong> {room}</p>
+                <p className="text-sm"><strong>Admission Date:</strong> {admissionDate}</p>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowConfirmDialog(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => handleConfirmSave(false)}
+                  disabled={saveSubmitting}
+                  className="bg-blue-600 hover:bg-blue-700"
+                >
+                  <Save className="w-4 h-4 mr-2" />
+                  {saveSubmitting ? 'Saving...' : 'Confirm & Save'}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -621,6 +732,28 @@ export default function KardexPage() {
                   </div>
                 </div>
               </div>
+
+              <div className="flex items-center gap-2">
+                <Badge variant={STATUS_BADGE[selectedHistoryEntry.status].variant}>
+                  {STATUS_BADGE[selectedHistoryEntry.status].label}
+                </Badge>
+                {selectedHistoryEntry.status !== 'submitted' && selectedHistoryEntry.reviewedBy && (
+                  <p className="text-xs text-gray-500">
+                    by {selectedHistoryEntry.reviewedBy}
+                    {selectedHistoryEntry.reviewedAt &&
+                      ` · ${new Date(selectedHistoryEntry.reviewedAt).toLocaleString()}`}
+                  </p>
+                )}
+              </div>
+              {selectedHistoryEntry.reviewNotes &&
+                (selectedHistoryEntry.status === 'returned' || selectedHistoryEntry.status === 'rejected') && (
+                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
+                    <p className="text-xs font-bold text-gray-700 mb-1">
+                      {selectedHistoryEntry.status === 'returned' ? 'Correction requested:' : 'Rejection reason:'}
+                    </p>
+                    <p className="text-sm text-gray-700">{selectedHistoryEntry.reviewNotes}</p>
+                  </div>
+                )}
 
               <Separator />
 
@@ -748,13 +881,96 @@ export default function KardexPage() {
                   <AlertTriangle className="w-5 h-5 text-orange-600" />
                   Special Endorsements
                 </h3>
-                <Textarea 
-                  value={selectedHistoryEntry.specialEndorsements || 'No special endorsements recorded'} 
-                  readOnly 
-                  className="bg-gray-50" 
-                  rows={4} 
+                <Textarea
+                  value={selectedHistoryEntry.specialEndorsements || 'No special endorsements recorded'}
+                  readOnly
+                  className="bg-gray-50"
+                  rows={4}
                 />
               </div>
+
+              {user?.role === 'supervisor' && selectedHistoryEntry.status === 'submitted' && (
+                <>
+                  <Separator />
+                  <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-4">
+                    <h3 className="text-lg font-bold text-gray-900 mb-3 flex items-center gap-2">
+                      <FileText className="w-5 h-5 text-purple-600" />
+                      Supervisor Review
+                    </h3>
+                    {reviewActionPending ? (
+                      <div className="space-y-3">
+                        <p className="text-xs font-bold text-gray-700">
+                          {reviewActionPending === 'returned'
+                            ? 'What needs to be corrected?'
+                            : 'Why is this being rejected?'}
+                        </p>
+                        <Textarea
+                          value={reviewNotesInput}
+                          onChange={(e) => setReviewNotesInput(e.target.value)}
+                          placeholder="Explain what the nurse should fix..."
+                          rows={3}
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            className="flex-1"
+                            onClick={() => {
+                              setReviewActionPending(null);
+                              setReviewNotesInput('');
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            className={`flex-1 text-white ${
+                              reviewActionPending === 'rejected'
+                                ? 'bg-red-600 hover:bg-red-700'
+                                : 'bg-orange-600 hover:bg-orange-700'
+                            }`}
+                            disabled={reviewSubmitting || !reviewNotesInput.trim()}
+                            onClick={() => handleReview(reviewActionPending)}
+                          >
+                            {reviewSubmitting
+                              ? 'Submitting...'
+                              : reviewActionPending === 'returned'
+                                ? 'Confirm Return'
+                                : 'Confirm Reject'}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2">
+                        <Button
+                          className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                          disabled={reviewSubmitting}
+                          onClick={() => handleReview('approved')}
+                        >
+                          <CheckCircle2 className="w-4 h-4 mr-2" />
+                          Approve
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="flex-1 border-orange-600 text-orange-600 hover:bg-orange-50"
+                          disabled={reviewSubmitting}
+                          onClick={() => setReviewActionPending('returned')}
+                        >
+                          <RotateCcw className="w-4 h-4 mr-2" />
+                          Return
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="flex-1 border-red-600 text-red-600 hover:bg-red-50"
+                          disabled={reviewSubmitting}
+                          onClick={() => setReviewActionPending('rejected')}
+                        >
+                          <XCircle className="w-4 h-4 mr-2" />
+                          Reject
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             /* List View */
@@ -767,6 +983,9 @@ export default function KardexPage() {
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
                       <h4 className="font-bold text-gray-900 text-lg">{entry.patientName}</h4>
+                      <Badge variant={STATUS_BADGE[entry.status].variant} className="text-xs">
+                        {STATUS_BADGE[entry.status].label}
+                      </Badge>
                       <Badge variant="secondary" className="text-xs">
                         {entry.age}y • {entry.gender}
                       </Badge>

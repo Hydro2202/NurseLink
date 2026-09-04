@@ -25,6 +25,7 @@ import {
   createAssignment,
   updateAssignment,
   deleteAssignment,
+  assignNurse,
   ApiError,
 } from '../../services/api';
 import type { PatientAssignmentRecord, Task, WorkloadData } from '../../types/domain';
@@ -36,6 +37,7 @@ import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
 import { Tabs } from '../../components/Tabs';
 import { AssignPatientModal } from '../../components/AssignPatientModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { NurseAssignModal, type AssignTarget } from '../../components/NurseAssignModal';
 import type { PatientAssignment } from '../../types';
 import { Colors, Radius } from '../../constants/colors';
 import { useToast } from '../../contexts/ToastContext';
@@ -73,6 +75,8 @@ export default function WorkloadPage() {
   const [editing, setEditing] = useState<PatientAssignment | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [toDelete, setToDelete] = useState<string | null>(null);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [assignTarget, setAssignTarget] = useState<AssignTarget | null>(null);
 
   const loadData = async () => {
     try {
@@ -177,6 +181,30 @@ export default function WorkloadPage() {
     }
   };
 
+  const byDepartment = useMemo(() => {
+    const groups: Record<string, WorkloadData[]> = {};
+    workloadData.forEach((nurse) => {
+      const key = nurse.department || 'Unassigned';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(nurse);
+    });
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [workloadData]);
+
+  const handleAssignSave = async (data: { department: string; shift: string }) => {
+    if (!assignTarget) return;
+    try {
+      await assignNurse(assignTarget.id, data);
+      await loadData();
+      toast.success('Nurse assignment updated');
+    } catch (error) {
+      toast.error('Failed to update assignment', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+      throw error;
+    }
+  };
+
   const riskStyles = (risk: string) => {
     if (risk === 'high') return styles.riskHigh;
     if (risk === 'medium') return styles.riskMed;
@@ -270,6 +298,7 @@ export default function WorkloadPage() {
           onValueChange={setTab}
           tabs={[
             { value: 'overview', label: 'Overview' },
+            { value: 'team', label: 'Team' },
             { value: 'assignments', label: 'Assignments', badge: assignments.length },
             { value: 'trends', label: 'Trends' },
           ]}
@@ -321,6 +350,57 @@ export default function WorkloadPage() {
                 </CardContent>
               </Card>
             ))}
+          </View>
+        ) : null}
+
+        {tab === 'team' ? (
+          <View style={styles.gap12}>
+            {byDepartment.length === 0 ? (
+              <Card>
+                <CardContent style={styles.empty}>
+                  <Text style={styles.muted}>No nurses found</Text>
+                </CardContent>
+              </Card>
+            ) : (
+              byDepartment.map(([department, nurses]) => (
+                <Card key={department}>
+                  <CardHeader>
+                    <CardTitle>{department}</CardTitle>
+                    <CardDescription>
+                      {nurses.length} nurse{nurses.length === 1 ? '' : 's'}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent style={styles.gap12}>
+                    {nurses.map((nurse) => (
+                      <View key={nurse.nurseId} style={styles.teamRow}>
+                        <View style={styles.flex1}>
+                          <Text style={styles.nurseName}>{nurse.nurseName}</Text>
+                          <Text style={styles.nurseShift}>
+                            {nurse.shift.charAt(0).toUpperCase() + nurse.shift.slice(1)} shift
+                          </Text>
+                        </View>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onPress={() => {
+                            setAssignTarget({
+                              id: nurse.nurseId,
+                              name: nurse.nurseName,
+                              department: nurse.department,
+                              shift: nurse.shift,
+                            });
+                            setAssignOpen(true);
+                          }}
+                        >
+                          <Edit2 size={14} color={Colors.foreground} />
+                          <Text style={styles.outlineText}>Assign</Text>
+                        </Button>
+                      </View>
+                    ))}
+                  </CardContent>
+                </Card>
+              ))
+            )}
           </View>
         ) : null}
 
@@ -457,6 +537,13 @@ export default function WorkloadPage() {
         allAssignments={assignments}
       />
 
+      <NurseAssignModal
+        open={assignOpen}
+        onOpenChange={setAssignOpen}
+        nurse={assignTarget}
+        onSave={handleAssignSave}
+      />
+
       <ConfirmDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
@@ -516,6 +603,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(16, 185, 129, 0.05)',
   },
   nurseCard: { padding: 14, gap: 12 },
+  teamRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   nurseHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   nurseName: { fontSize: 15, fontWeight: '700', color: Colors.foreground },
   nurseShift: { fontSize: 12, color: Colors.mutedForeground, marginTop: 2 },

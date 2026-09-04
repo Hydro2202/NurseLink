@@ -24,7 +24,6 @@ interface ProfileEditModalProps {
   onSave: (data: {
     name: string;
     email: string;
-    department: string;
     avatar: string;
   }) => Promise<void>;
 }
@@ -34,7 +33,6 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
   const [formData, setFormData] = useState({
     name: '',
     email: '',
-    department: '',
     avatar: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -45,7 +43,6 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
       setFormData({
         name: user.name,
         email: user.email,
-        department: user.department || '',
         avatar: user.avatar || '',
       });
       setErrors({});
@@ -135,10 +132,6 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
       newErrors.email = 'Email is required';
     } else if (!validateEmail(formData.email)) {
       newErrors.email = 'Please enter a valid email address';
-    }
-
-    if (!formData.department.trim()) {
-      newErrors.department = 'Department is required';
     }
 
     setErrors(newErrors);
@@ -237,21 +230,23 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
                 error={errors.email}
               />
 
-              <Input
-                label="Department *"
-                placeholder="e.g., ICU, Emergency, General Ward"
-                value={formData.department}
-                onChangeText={(department) => setFormData({ ...formData, department })}
-                error={errors.department}
-              />
-
               <View style={styles.roleBox}>
                 <Text style={styles.roleText}>
                   <Text style={styles.roleBold}>Role: </Text>
                   {roleLabel}
                 </Text>
+                <Text style={styles.roleText}>
+                  <Text style={styles.roleBold}>Department: </Text>
+                  {user?.department || '—'}
+                </Text>
+                <Text style={styles.roleText}>
+                  <Text style={styles.roleBold}>Shift: </Text>
+                  {user?.shift
+                    ? user.shift.charAt(0).toUpperCase() + user.shift.slice(1)
+                    : '—'}
+                </Text>
                 <Text style={styles.roleHint}>
-                  Role cannot be changed. Contact your administrator for role updates.
+                  Role, department and shift are set by your supervisor. Contact them for changes.
                 </Text>
               </View>
             </View>

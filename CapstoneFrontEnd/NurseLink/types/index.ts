@@ -10,6 +10,7 @@ export interface User {
   email: string;
   role: UserRole;
   department: string;
+  shift?: string;
   licenseNumber?: string;
   avatar?: string;
   createdAt: string;

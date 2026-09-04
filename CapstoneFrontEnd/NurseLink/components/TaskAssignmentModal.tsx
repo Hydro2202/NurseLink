@@ -8,7 +8,7 @@ import {
   Pressable,
   TextInput,
 } from 'react-native';
-import { UserPlus } from 'lucide-react-native';
+import { UserPlus, ArrowLeft, CheckCircle2 } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
@@ -40,6 +40,10 @@ export function TaskAssignmentModal({
   const [attendingPhysician, setAttendingPhysician] = useState('');
   const [doctorOrder, setDoctorOrder] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Assign Nurse is a two-step flow — fill in the details, then review
+  // exactly which nurse is being put on which patient/task before it's
+  // final. Skipping straight to submit is how a wrong-nurse mistake happens.
+  const [reviewMode, setReviewMode] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -63,6 +67,13 @@ export function TaskAssignmentModal({
     }
   }, [patient]);
 
+  // Always land back on the form, never mid-review, on a fresh open —
+  // otherwise closing and reopening this modal could strand a supervisor on
+  // a review screen for a form they never actually filled in this time.
+  useEffect(() => {
+    if (open) setReviewMode(false);
+  }, [open]);
+
   const resetForm = () => {
     setTaskTitle('');
     setDescription('');
@@ -71,17 +82,24 @@ export function TaskAssignmentModal({
     setSelectedNurse('');
     setAttendingPhysician(patient?.attendingPhysician || '');
     setDoctorOrder('');
+    setReviewMode(false);
   };
 
-  const handleSubmit = async () => {
+  const selectedNurseRecord = nurses.find((n) => n.id === selectedNurse);
+
+  const handleReview = () => {
     if (!taskTitle || !selectedNurse || !dueTime || !patient) {
       toast.error('Please fill in all required fields');
       return;
     }
+    setReviewMode(true);
+  };
+
+  const handleConfirmAssign = async () => {
+    if (!patient) return;
 
     setIsSubmitting(true);
     try {
-      const nurse = nurses.find((n) => n.id === selectedNurse);
       await createTask({
         title: taskTitle,
         description,
@@ -90,22 +108,22 @@ export function TaskAssignmentModal({
         patientId: patient.id,
         patientName: patient.name,
         patientRoom: patient.room,
-        assignedTo: nurse?.name || '',
+        assignedTo: selectedNurseRecord?.name || '',
         attendingPhysician: attendingPhysician || patient.attendingPhysician,
         doctorOrder,
         status: 'pending',
         category: 'care',
       });
 
-      toast.success('Task assigned successfully!', {
-        description: `${taskTitle} has been assigned to ${nurse?.name || 'the selected nurse'}`,
+      toast.success('Nurse assigned successfully!', {
+        description: `${selectedNurseRecord?.name || 'The selected nurse'} has been assigned to ${taskTitle}.`,
       });
 
       resetForm();
       onTaskAssigned?.();
       onOpenChange(false);
     } catch (error) {
-      toast.error('Failed to assign task', {
+      toast.error('Failed to assign nurse', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
@@ -125,15 +143,62 @@ export function TaskAssignmentModal({
       <Pressable style={styles.backdrop} onPress={() => !isSubmitting && onOpenChange(false)}>
         <Pressable style={[styles.dialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
           <View style={styles.headerRow}>
-            <UserPlus size={20} color={Colors.blue600} />
-            <Text style={styles.title}>Assign Task to Nurse</Text>
+            {reviewMode ? <CheckCircle2 size={20} color={Colors.blue600} /> : <UserPlus size={20} color={Colors.blue600} />}
+            <Text style={styles.title}>{reviewMode ? 'Review Assignment' : 'Assign Nurse'}</Text>
           </View>
           <Text style={styles.description}>
-            {patient
-              ? `Assigning task for ${patient.name} (${patient.id}) - Room ${patient.room}`
-              : 'Assign a task to a nurse'}
+            {reviewMode
+              ? 'Confirm this is the right nurse for the right patient before assigning.'
+              : patient
+                ? `Assigning a nurse for ${patient.name} (${patient.id}) - Room ${patient.room}`
+                : 'Assign a nurse to a patient task'}
           </Text>
 
+          {reviewMode ? (
+            <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
+              <View style={styles.form}>
+                <View style={styles.reviewBox}>
+                  <View style={styles.reviewRow}>
+                    <Text style={styles.reviewLabel}>Patient</Text>
+                    <Text style={styles.reviewValue}>
+                      {patient?.name} ({patient?.id})
+                    </Text>
+                  </View>
+                  <View style={styles.reviewRow}>
+                    <Text style={styles.reviewLabel}>Room</Text>
+                    <Text style={styles.reviewValue}>{patient?.room}</Text>
+                  </View>
+                  <View style={styles.reviewDivider} />
+                  <View style={styles.reviewRow}>
+                    <Text style={styles.reviewLabel}>Task</Text>
+                    <Text style={styles.reviewValue}>{taskTitle}</Text>
+                  </View>
+                  <View style={styles.reviewRow}>
+                    <Text style={styles.reviewLabel}>Priority</Text>
+                    <Text style={[styles.reviewValue, { textTransform: 'capitalize' }]}>{priority}</Text>
+                  </View>
+                  <View style={styles.reviewRow}>
+                    <Text style={styles.reviewLabel}>Due Time</Text>
+                    <Text style={styles.reviewValue}>{dueTime}</Text>
+                  </View>
+                  <View style={styles.reviewDivider} />
+                  <View style={styles.reviewRowHighlight}>
+                    <Text style={styles.reviewLabel}>Assigned Nurse</Text>
+                    <Text style={styles.reviewValueBold}>
+                      {selectedNurseRecord?.name || 'Not selected'}
+                    </Text>
+                  </View>
+                  {selectedNurseRecord ? (
+                    <Text style={styles.reviewSubtext}>
+                      {selectedNurseRecord.role}
+                      {selectedNurseRecord.department ? ` • ${selectedNurseRecord.department}` : ''}
+                      {selectedNurseRecord.shift ? ` • ${selectedNurseRecord.shift} shift` : ''}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            </ScrollView>
+          ) : (
           <ScrollView style={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={styles.form}>
               {patient ? (
@@ -236,23 +301,35 @@ export function TaskAssignmentModal({
               </View>
             </View>
           </ScrollView>
+          )}
 
           <View style={styles.footer}>
             <Button
               variant="outline"
-              onPress={() => onOpenChange(false)}
+              onPress={() => (reviewMode ? setReviewMode(false) : onOpenChange(false))}
               disabled={isSubmitting}
               style={{ flex: 1 }}
             >
-              Cancel
+              {reviewMode ? (
+                <View style={styles.btnInner}>
+                  <ArrowLeft size={16} color={Colors.foreground} />
+                  <Text>Back to Edit</Text>
+                </View>
+              ) : (
+                'Cancel'
+              )}
             </Button>
             <Button
-              onPress={handleSubmit}
+              onPress={reviewMode ? handleConfirmAssign : handleReview}
               disabled={isSubmitting}
               loading={isSubmitting}
               style={{ flex: 1, backgroundColor: Colors.blue600 }}
             >
-              {isSubmitting ? 'Assigning...' : 'Assign Task'}
+              {isSubmitting
+                ? 'Assigning...'
+                : reviewMode
+                  ? 'Confirm Assignment'
+                  : 'Review Assignment'}
             </Button>
           </View>
         </Pressable>
@@ -342,4 +419,24 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: Colors.border,
   },
+  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  reviewBox: {
+    backgroundColor: Colors.blue50,
+    borderWidth: 1,
+    borderColor: Colors.blue200,
+    borderRadius: Radius.md,
+    padding: 14,
+    gap: 10,
+  },
+  reviewRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  reviewRowHighlight: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  reviewLabel: { fontSize: 13, color: Colors.mutedForeground },
+  reviewValue: { fontSize: 13, fontWeight: '600', color: Colors.foreground },
+  reviewValueBold: { fontSize: 15, fontWeight: '700', color: Colors.blue700 },
+  reviewSubtext: { fontSize: 12, color: Colors.mutedForeground, marginTop: -4 },
+  reviewDivider: { height: 1, backgroundColor: Colors.blue200 },
 });

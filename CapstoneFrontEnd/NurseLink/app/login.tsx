@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Link, useRouter } from 'expo-router';
 import { Eye, EyeOff, User, Lock } from 'lucide-react-native';
 import { useAuth, UserRole } from '../contexts/AuthContext';
+import { ApiError } from '../services/api';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/Card';
@@ -40,12 +41,11 @@ export default function LoginPage() {
       return;
     }
 
-    const success = await login(email, password, selectedRole);
-
-    if (success) {
+    try {
+      await login(email, password, selectedRole);
       router.replace('/(app)/dashboard' as any);
-    } else {
-      setError('Login failed. Please try again.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Login failed. Please try again.');
     }
   };
 

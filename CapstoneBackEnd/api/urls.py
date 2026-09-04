@@ -12,6 +12,7 @@ router.register(r'notifications', views.NotificationViewSet, basename='notificat
 router.register(r'assignments', views.AssignmentViewSet, basename='assignment')
 router.register(r'kardex', views.KardexViewSet, basename='kardex')
 router.register(r'nurses', views.NurseViewSet, basename='nurse')
+router.register(r'admin/users', views.AdminUserViewSet, basename='admin-user')
 
 urlpatterns = [
     path('preferences/', views.PreferencesView.as_view(), name='preferences'),

@@ -340,7 +340,7 @@ export default function AllPatientsPage() {
                     }}
                   >
                     <UserPlus size={14} color={Colors.white} />
-                    <Text style={styles.primaryBtnText}>Assign Task</Text>
+                    <Text style={styles.primaryBtnText}>Assign Nurse</Text>
                   </Button>
                 </View>
               </CardContent>

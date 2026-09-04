@@ -13,7 +13,7 @@ import {
   CheckCircle,
   Clock,
   Edit,
-  Trash2,
+  UserMinus,
   Plus,
   Search,
   Stethoscope,
@@ -24,7 +24,7 @@ import {
   fetchTasks,
   createTask,
   updateTask,
-  deleteTask,
+  unassignTask,
   completeTask,
   ApiError,
 } from '../../../services/api';
@@ -62,9 +62,9 @@ export default function NurseTasksPage() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [taskModalMode, setTaskModalMode] = useState<'add' | 'edit'>('add');
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [unassignDialogOpen, setUnassignDialogOpen] = useState(false);
+  const [taskToUnassign, setTaskToUnassign] = useState<string | null>(null);
+  const [unassignLoading, setUnassignLoading] = useState(false);
   const [completeLoading, setCompleteLoading] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('newest');
@@ -118,24 +118,24 @@ export default function NurseTasksPage() {
     }
   };
 
-  const confirmDeleteTask = async () => {
-    if (!taskToDelete) return;
-    setDeleteLoading(true);
+  const confirmUnassignTask = async () => {
+    if (!taskToUnassign) return;
+    setUnassignLoading(true);
     try {
-      const deleted = tasks.find((t) => t.id === taskToDelete);
-      await deleteTask(taskToDelete);
-      setTasks((prev) => prev.filter((task) => task.id !== taskToDelete));
-      setDeleteDialogOpen(false);
-      setTaskToDelete(null);
-      toast.success('Task deleted', {
-        description: `"${deleted?.title}" has been removed.`,
+      const unassigned = tasks.find((t) => t.id === taskToUnassign);
+      const updated = await unassignTask(taskToUnassign);
+      setTasks((prev) => prev.map((task) => (task.id === taskToUnassign ? updated : task)));
+      setUnassignDialogOpen(false);
+      setTaskToUnassign(null);
+      toast.success('Task unassigned', {
+        description: `"${unassigned?.title}" is back on the pending list, unassigned.`,
       });
     } catch (error) {
-      toast.error('Failed to delete task', {
+      toast.error('Failed to unassign task', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
-      setDeleteLoading(false);
+      setUnassignLoading(false);
     }
   };
 
@@ -362,6 +362,12 @@ export default function NurseTasksPage() {
                     </View>
                   ) : null}
 
+                  {task.checklist.length > 0 ? (
+                    <Badge variant="secondary" style={{ alignSelf: 'flex-start', marginTop: 6 }}>
+                      {`Checklist: ${task.checklist.filter((i) => i.done).length}/${task.checklist.length}`}
+                    </Badge>
+                  ) : null}
+
                   <View style={styles.actions}>
                     {task.status !== 'completed' ? (
                       <Button
@@ -388,16 +394,18 @@ export default function NurseTasksPage() {
                     >
                       <Edit size={16} color={Colors.blue600} />
                     </Button>
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      onPress={() => {
-                        setTaskToDelete(task.id);
-                        setDeleteDialogOpen(true);
-                      }}
-                    >
-                      <Trash2 size={16} color={Colors.red600} />
-                    </Button>
+                    {task.assignedTo ? (
+                      <Button
+                        size="icon-sm"
+                        variant="outline"
+                        onPress={() => {
+                          setTaskToUnassign(task.id);
+                          setUnassignDialogOpen(true);
+                        }}
+                      >
+                        <UserMinus size={16} color={Colors.red600} />
+                      </Button>
+                    ) : null}
                   </View>
                 </CardContent>
               </Card>
@@ -415,12 +423,12 @@ export default function NurseTasksPage() {
       />
 
       <DeleteConfirmDialog
-        open={deleteDialogOpen}
-        onOpenChange={setDeleteDialogOpen}
-        onConfirm={confirmDeleteTask}
-        loading={deleteLoading}
-        title="Delete Task"
-        description="Are you sure you want to delete this task? This action cannot be undone."
+        open={unassignDialogOpen}
+        onOpenChange={setUnassignDialogOpen}
+        onConfirm={confirmUnassignTask}
+        loading={unassignLoading}
+        title="Unassign Task"
+        description="This will remove the assigned nurse and return the task to pending. The task itself is not deleted."
       />
     </View>
   );

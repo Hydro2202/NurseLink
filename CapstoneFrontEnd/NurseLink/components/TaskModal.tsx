@@ -200,10 +200,20 @@ export function TaskModal({
                 }}
                 options={
                   patients.length
-                    ? patients.map((p) => ({
-                        label: `${p.name} (${p.id})`,
-                        value: p.id,
-                      }))
+                    ? patients.map((p) => {
+                        // Same name, different patient is exactly the mixup
+                        // Patient ID exists to prevent — spell out age/sex/
+                        // room too so picking the right one doesn't depend
+                        // on a nurse memorizing or double-checking IDs.
+                        const sameName = patients.filter(
+                          (other) => other.name.toLowerCase() === p.name.toLowerCase()
+                        );
+                        const label =
+                          sameName.length > 1
+                            ? `${p.name} (${p.id}) — ${p.age}y, ${p.gender}, Room ${p.room}`
+                            : `${p.name} (${p.id})`;
+                        return { label, value: p.id };
+                      })
                     : [{ label: 'No patients found', value: '', disabled: true }]
                 }
                 placeholder="Select patient"

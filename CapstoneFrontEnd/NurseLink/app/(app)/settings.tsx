@@ -113,7 +113,6 @@ export default function SettingsScreen() {
   const handleProfileSave = async (data: {
     name: string;
     email: string;
-    department: string;
     avatar: string;
   }) => {
     try {
@@ -122,7 +121,6 @@ export default function SettingsScreen() {
       await updateUser({
         name: data.name,
         email: data.email,
-        department: data.department,
         avatar: data.avatar,
       });
       toast.success('Profile updated successfully!', {
@@ -173,6 +171,7 @@ export default function SettingsScreen() {
         email: user.email,
         role: user.role as ProfileUser['role'],
         department: user.department,
+        shift: user.shift,
         licenseNumber: user.licenseNumber,
         avatar: user.avatar,
         createdAt: '',

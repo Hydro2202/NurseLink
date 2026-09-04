@@ -15,6 +15,7 @@ from .models import (
     RegistrationSession,
     Task,
 )
+from .notifications import notify
 
 
 class NurseProfileInline(admin.StackedInline):
@@ -25,6 +26,65 @@ class NurseProfileInline(admin.StackedInline):
 
 class UserAdmin(BaseUserAdmin):
     inlines = [NurseProfileInline]
+
+
+@admin.register(NurseProfile)
+class NurseProfileAdmin(admin.ModelAdmin):
+    """
+    The actual review screen for Problem #1 (nurse hospital verification).
+
+    Signup already runs identity verification (PRC licence + face/OTP) and
+    lands every new account here as 'pending' — this list is where an admin
+    checks the claimed hospital/department/employee ID against what they
+    actually know and either approves or rejects. Nothing else in the app
+    can do this: approval_status is enforced server-side in
+    api/permissions.py and LoginView/OAuthTokenView, not just displayed here.
+    """
+
+    list_display = (
+        'user', 'role', 'department', 'hospital_name', 'employee_id',
+        'approval_status', 'is_active_staff', 'verification_method',
+    )
+    list_display_links = ('user',)
+    list_editable = ('approval_status', 'is_active_staff')
+    list_filter = ('approval_status', 'role', 'is_active_staff', 'verification_method')
+    search_fields = (
+        'user__username', 'user__email', 'user__first_name', 'user__last_name',
+        'employee_id', 'hospital_name', 'license_number',
+    )
+    actions = ['approve_nurses', 'reject_nurses']
+
+    @admin.action(description='Approve selected nurse registrations')
+    def approve_nurses(self, request, queryset):
+        count = 0
+        for profile in queryset.exclude(approval_status='approved'):
+            profile.approval_status = 'approved'
+            profile.rejection_reason = ''
+            profile.save(update_fields=['approval_status', 'rejection_reason'])
+            notify(
+                profile.user,
+                notification_type='success',
+                event='account_approved',
+                title='Account approved',
+                message='Your NurseLink registration has been approved. You can now sign in.',
+            )
+            count += 1
+        self.message_user(request, f'{count} account(s) approved.')
+
+    @admin.action(description='Reject selected nurse registrations')
+    def reject_nurses(self, request, queryset):
+        count = 0
+        for profile in queryset.exclude(approval_status='rejected'):
+            profile.approval_status = 'rejected'
+            if not profile.rejection_reason:
+                profile.rejection_reason = 'Registration rejected by administrator.'
+            profile.save(update_fields=['approval_status', 'rejection_reason'])
+            count += 1
+        self.message_user(
+            request,
+            f'{count} account(s) rejected with a generic reason. Open a profile to set a '
+            'specific reason before the nurse tries to log in again.',
+        )
 
 
 @admin.register(Patient)
@@ -74,7 +134,8 @@ class PatientAssignmentAdmin(admin.ModelAdmin):
 
 @admin.register(KardexRecord)
 class KardexRecordAdmin(admin.ModelAdmin):
-    list_display = ('last_name', 'first_name', 'room', 'saved_by_name', 'saved_at')
+    list_display = ('last_name', 'first_name', 'room', 'status', 'saved_by_name', 'reviewed_by', 'saved_at')
+    list_filter = ('status',)
     search_fields = ('last_name', 'first_name', 'room')
 
 

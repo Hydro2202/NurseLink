@@ -41,7 +41,10 @@ export default function SettingsPage() {
   // Profile settings
   const [profileName, setProfileName] = useState(user?.name || '');
   const [profileEmail, setProfileEmail] = useState(user?.email || '');
-  const [profileDepartment, setProfileDepartment] = useState(user?.department || '');
+  // Department and shift are supervisor-assigned, not self-editable — read
+  // straight from the account rather than tracked as editable form state.
+  const profileDepartment = user?.department || '';
+  const profileShift = user?.shift || '';
   const [profilePhoto, setProfilePhoto] = useState(user?.avatar || '');
   const [showLogoutDialog, setShowLogoutDialog] = useState(false);
   
@@ -116,7 +119,6 @@ export default function SettingsPage() {
     updateUser({
       name: profileName,
       email: profileEmail,
-      department: profileDepartment,
       avatar: profilePhoto,
     });
 
@@ -232,22 +234,21 @@ export default function SettingsPage() {
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="department">Department</Label>
-              <Input
-                id="department"
-                value={profileDepartment}
-                onChange={(e) => setProfileDepartment(e.target.value)}
-                placeholder="Enter your department"
-              />
-            </div>
-
-            <div className="p-3 bg-blue-50 rounded-lg">
+            <div className="p-3 bg-blue-50 rounded-lg space-y-1">
               <p className="text-sm text-gray-700">
                 <strong>Role:</strong> {user?.role === 'staff_nurse' ? 'Nurse' : 'Supervisor'}
               </p>
+              <p className="text-sm text-gray-700">
+                <strong>Department:</strong> {profileDepartment || '—'}
+              </p>
+              <p className="text-sm text-gray-700">
+                <strong>Shift:</strong>{' '}
+                {profileShift
+                  ? profileShift.charAt(0).toUpperCase() + profileShift.slice(1)
+                  : '—'}
+              </p>
               <p className="text-xs mt-1 text-gray-600">
-                Role cannot be changed. Contact your administrator for role updates.
+                Role, department and shift are set by your supervisor. Contact them for changes.
               </p>
             </div>
 

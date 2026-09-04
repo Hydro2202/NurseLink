@@ -9,6 +9,10 @@ import {
 import { getToken, setToken } from '../api/client';
 
 export type UserRole = 'staff_nurse' | 'supervisor';
+// The account's actual role, as returned by the server — 'admin' is never a
+// login-button choice (there is no button for it), only something the
+// backend can report back once authenticated (see UserSerializer.get_role).
+export type AccountRole = UserRole | 'admin';
 
 export interface User {
   id: string;
@@ -16,11 +20,13 @@ export interface User {
   firstName?: string;
   middleName?: string;
   lastName?: string;
-  role: UserRole;
+  role: AccountRole;
   email: string;
   department: string;
+  shift?: string;
   licenseNumber?: string;
   avatar?: string;
+  isAdmin?: boolean;
   registrationDetails?: {
     licenseNumber: string;
     selectedRole: string;
@@ -33,7 +39,7 @@ export interface User {
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string, password: string, role: UserRole) => Promise<boolean>;
+  login: (email: string, password: string, role: UserRole) => Promise<User>;
   signup: (
     userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
   ) => Promise<boolean>;
@@ -112,17 +118,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [user, lastActivity]);
 
-  const login = async (email: string, password: string, role: UserRole): Promise<boolean> => {
+  // Rethrows on failure: a pending or rejected account gets a real, specific
+  // message from LoginView — that is lost if this just returns false.
+  // Returns the logged-in user (not just true) so a caller like LoginPage
+  // can route on user.isAdmin immediately, without waiting on a re-render
+  // to see this context's own state update.
+  const login = async (email: string, password: string, role: UserRole): Promise<User> => {
     setIsLoading(true);
     try {
       const { user: loggedIn } = await loginRequest(email, password, role);
       setUser(loggedIn);
       localStorage.setItem(USER_KEY, JSON.stringify(loggedIn));
       setLastActivity(Date.now());
-      return true;
-    } catch (error) {
-      console.error('Login failed:', error);
-      return false;
+      return loggedIn;
     } finally {
       setIsLoading(false);
     }

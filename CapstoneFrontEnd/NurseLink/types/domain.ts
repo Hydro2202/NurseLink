@@ -16,6 +16,12 @@ export interface Task {
   attendingPhysician?: string;
   patientRoom?: string;
   doctorOrder?: string;
+  checklist: TaskChecklistItem[];
+}
+
+export interface TaskChecklistItem {
+  text: string;
+  done: boolean;
 }
 
 export interface Patient {
@@ -96,6 +102,7 @@ export interface WorkloadData {
   nurseId: string;
   nurseName: string;
   shift: string;
+  department: string;
   patientCount: number;
   taskCount: number;
   completedTasks: number;
@@ -185,6 +192,20 @@ export interface KardexHistory {
   specialEndorsements: string;
   savedAt: string;
   savedBy: string;
+  status: 'submitted' | 'approved' | 'returned' | 'rejected';
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewNotes: string;
+}
+
+/** One possible-duplicate match returned when registering a patient collides with an existing one. */
+export interface DuplicatePatientMatch {
+  patientId: string;
+  name: string;
+  age: number;
+  gender: string;
+  room: string;
+  admissionDate: string | null;
 }
 
 export interface AnalyticsData {

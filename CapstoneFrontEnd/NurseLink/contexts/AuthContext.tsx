@@ -128,6 +128,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [user, logout, updateActivity]);
 
+  // Rethrows on failure (same reasoning as updateUser below): a pending or
+  // rejected account gets a real, specific message from LoginView — that is
+  // lost if this just returns false, leaving the caller with nothing but
+  // a generic "login failed" regardless of the actual reason.
   const login = async (email: string, password: string, role: UserRole): Promise<boolean> => {
     setIsLoading(true);
     try {
@@ -136,9 +140,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await AsyncStorage.setItem(USER_KEY, JSON.stringify(loggedIn));
       lastActivity.current = Date.now();
       return true;
-    } catch (error) {
-      console.error('Login failed:', error);
-      return false;
     } finally {
       setIsLoading(false);
     }

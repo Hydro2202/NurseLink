@@ -241,11 +241,22 @@ export function TaskModal({
                       No patients found
                     </SelectItem>
                   ) : (
-                    patients.map((patient) => (
-                      <SelectItem key={patient.id} value={patient.id}>
-                        {patient.name} ({patient.id})
-                      </SelectItem>
-                    ))
+                    patients.map((patient) => {
+                      // Same name, different patient is exactly the mixup
+                      // Patient ID exists to prevent — spell out age/sex/
+                      // room too so picking the right one doesn't depend on
+                      // a nurse memorizing or double-checking IDs.
+                      const sameName = patients.filter(
+                        (other) => other.name.toLowerCase() === patient.name.toLowerCase()
+                      );
+                      return (
+                        <SelectItem key={patient.id} value={patient.id}>
+                          {sameName.length > 1
+                            ? `${patient.name} (${patient.id}) — ${patient.age}y, ${patient.gender}, Room ${patient.room}`
+                            : `${patient.name} (${patient.id})`}
+                        </SelectItem>
+                      );
+                    })
                   )}
                 </SelectContent>
               </Select>

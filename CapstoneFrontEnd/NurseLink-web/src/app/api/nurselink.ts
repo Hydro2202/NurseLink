@@ -2,6 +2,7 @@ import { apiRequest, setToken, ApiError } from './client';
 export { ApiError };
 import type { User, UserRole } from '../contexts/AuthContext';
 import type {
+  AdminUser,
   AnalyticsData,
   AppNotification,
   ChartingNote,
@@ -338,8 +339,8 @@ export async function updateTask(taskId: string, data: Partial<Task>): Promise<T
   return apiRequest<Task>(`/tasks/${taskId}/`, { method: 'PATCH', body: data });
 }
 
-export async function deleteTask(taskId: string): Promise<void> {
-  await apiRequest(`/tasks/${taskId}/`, { method: 'DELETE' });
+export async function unassignTask(taskId: string): Promise<Task> {
+  return apiRequest<Task>(`/tasks/${taskId}/unassign/`, { method: 'POST' });
 }
 
 export async function completeTask(taskId: string): Promise<Task> {
@@ -396,6 +397,14 @@ export async function deleteChartingNote(id: string): Promise<void> {
 
 export async function fetchNurses(): Promise<Nurse[]> {
   return apiRequest<Nurse[]>('/nurses/');
+}
+
+/** Supervisor-only: change a nurse's department and/or shift. */
+export async function assignNurse(
+  nurseId: string,
+  data: { department?: string; shift?: string }
+): Promise<{ id: string; name: string; department: string; shift: string }> {
+  return apiRequest(`/nurses/${nurseId}/assign/`, { method: 'PATCH', body: data });
 }
 
 export async function fetchWorkload(): Promise<WorkloadData[]> {
@@ -467,11 +476,57 @@ export async function fetchKardexRecords(): Promise<KardexHistory[]> {
 }
 
 export async function createKardexRecord(
-  data: Partial<KardexHistory> & { patientId?: string }
+  data: Partial<KardexHistory> & { patientId?: string; confirmDuplicate?: boolean }
 ): Promise<KardexHistory> {
   return apiRequest<KardexHistory>('/kardex/', { method: 'POST', body: data });
 }
 
 export async function deleteKardexRecord(id: string): Promise<void> {
   await apiRequest(`/kardex/${id}/`, { method: 'DELETE' });
+}
+
+export async function reviewKardexRecord(
+  id: string,
+  decision: 'approved' | 'returned' | 'rejected',
+  notes?: string
+): Promise<KardexHistory> {
+  return apiRequest<KardexHistory>(`/kardex/${id}/review/`, {
+    method: 'POST',
+    body: { decision, notes: notes || '' },
+  });
+}
+
+// --- Admin interface -----------------------------------------------------
+// All of these require an is_staff account — see AdminUserViewSet/IsAdmin
+// on the backend. A non-admin token gets a 403 from every one of these.
+
+export async function fetchAdminUsers(filters?: {
+  role?: 'staff_nurse' | 'supervisor';
+  status?: 'pending' | 'approved' | 'rejected';
+}): Promise<AdminUser[]> {
+  const params = new URLSearchParams();
+  if (filters?.role) params.set('role', filters.role);
+  if (filters?.status) params.set('status', filters.status);
+  const query = params.toString() ? `?${params}` : '';
+  return apiRequest<AdminUser[]>(`/admin/users/${query}`);
+}
+
+export async function approveAdminUser(id: string): Promise<AdminUser> {
+  return apiRequest<AdminUser>(`/admin/users/${id}/approve/`, { method: 'POST' });
+}
+
+export async function rejectAdminUser(id: string, reason: string): Promise<AdminUser> {
+  return apiRequest<AdminUser>(`/admin/users/${id}/reject/`, { method: 'POST', body: { reason } });
+}
+
+export async function deactivateAdminUser(id: string): Promise<AdminUser> {
+  return apiRequest<AdminUser>(`/admin/users/${id}/deactivate/`, { method: 'POST' });
+}
+
+export async function reactivateAdminUser(id: string): Promise<AdminUser> {
+  return apiRequest<AdminUser>(`/admin/users/${id}/reactivate/`, { method: 'POST' });
+}
+
+export async function setAdminUserPassword(id: string, password: string): Promise<void> {
+  await apiRequest(`/admin/users/${id}/set-password/`, { method: 'POST', body: { password } });
 }

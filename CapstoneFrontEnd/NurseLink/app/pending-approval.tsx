@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, Image, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { CheckCircle2, ChevronRight, ShieldCheck } from 'lucide-react-native';
+import { CheckCircle2, ChevronRight, Clock, ShieldCheck } from 'lucide-react-native';
 import { Button } from '../components/Button';
 import { Card, CardContent } from '../components/Card';
 import { Colors, Radius, Shadows } from '../constants/colors';
@@ -11,9 +11,12 @@ export default function PendingApprovalPage() {
   const router = useRouter();
   const { method } = useLocalSearchParams<{ method?: string }>();
 
-  // Every step of the wizard has already succeeded by the time this screen
-  // renders — the account is created and active, so there is nothing left
-  // pending and nothing for an administrator to approve.
+  // Every verification step below has already succeeded by the time this
+  // screen renders — identity, ID and face/OTP checks are all real and done.
+  // What is still pending is the human step on top of them: an admin
+  // checking the claimed hospital/department against what they actually
+  // know, before the account can sign in. Enforced server-side (LoginView,
+  // IsApprovedNurse) — this screen is just telling the truth about that.
   const COMPLETED_STEPS = [
     'Identity Verification Completed',
     'Hospital ID Successfully Verified',
@@ -34,26 +37,28 @@ export default function PendingApprovalPage() {
         />
 
         <Card style={styles.card}>
-          <View style={styles.successHeader}>
+          <View style={[styles.successHeader, styles.pendingHeader]}>
             <View style={styles.headerIconWrap}>
               <View style={styles.shieldCircle}>
                 <ShieldCheck size={32} color={Colors.white} />
               </View>
               <View style={styles.clockBadge}>
-                <CheckCircle2 size={14} color={Colors.green700} />
+                <Clock size={14} color={Colors.orange700} />
               </View>
             </View>
-            <Text style={styles.headerTitle}>Account Created</Text>
+            <Text style={styles.headerTitle}>Registration Submitted</Text>
             <Text style={styles.headerSubtitle}>
-              Your NurseLink account is ready. Sign in with the email and password you just set.
+              Your registration has been received and is awaiting administrator verification.
             </Text>
           </View>
 
           <CardContent style={styles.content}>
             <View style={styles.statusBadgeWrap}>
-              <View style={styles.statusBadge}>
-                <CheckCircle2 size={14} color={Colors.green700} />
-                <Text style={styles.statusBadgeText}>Status: Active — Ready to Sign In</Text>
+              <View style={[styles.statusBadge, styles.pendingBadge]}>
+                <Clock size={14} color={Colors.orange700} />
+                <Text style={[styles.statusBadgeText, styles.pendingBadgeText]}>
+                  Status: Pending Administrator Approval
+                </Text>
               </View>
             </View>
 
@@ -66,22 +71,34 @@ export default function PendingApprovalPage() {
                   <Text style={styles.completedText}>{label}</Text>
                 </View>
               ))}
+              <View style={styles.pendingStep}>
+                <View style={styles.pendingLeft}>
+                  <View style={[styles.pendingIcon, styles.pendingIconOutstanding]}>
+                    <Clock size={14} color={Colors.white} />
+                  </View>
+                  <Text style={styles.pendingText}>Account Approval Pending</Text>
+                </View>
+                <View style={styles.pendingTag}>
+                  <Text style={styles.pendingTagText}>Pending</Text>
+                </View>
+              </View>
             </View>
 
             <View style={styles.infoBox}>
               <View style={styles.infoHeader}>
                 <ShieldCheck size={16} color={Colors.blue600} />
-                <Text style={styles.infoTitle}>You're all set.</Text>
+                <Text style={styles.infoTitle}>What happens next</Text>
               </View>
               <Text style={styles.infoBody}>
-                Your identity was verified during registration, so your account is active
-                straight away — no waiting for approval.
+                An administrator checks the hospital and department details from your
+                registration before your account can sign in. This is usually quick — you'll be
+                able to log in with the email and password you just set as soon as it's approved.
               </Text>
             </View>
 
             <View style={styles.actions}>
               <Button onPress={() => router.replace('/login')} size="lg" style={styles.primaryButton}>
-                <Text style={styles.primaryButtonText}>Proceed to Login</Text>
+                <Text style={styles.primaryButtonText}>Go to Login</Text>
                 <ChevronRight size={18} color={Colors.white} />
               </Button>
             </View>
@@ -105,6 +122,9 @@ const styles = StyleSheet.create({
     paddingVertical: 28,
     alignItems: 'center',
   },
+  // Overrides successHeader's green — this screen is reporting a pending
+  // review, not a completed success, and the color should say so at a glance.
+  pendingHeader: { backgroundColor: Colors.orange700 },
   headerIconWrap: { position: 'relative', marginBottom: 16 },
   shieldCircle: {
     width: 56,
@@ -141,6 +161,8 @@ const styles = StyleSheet.create({
     borderRadius: Radius.full,
   },
   statusBadgeText: { fontSize: 13, fontWeight: '700', color: Colors.green700 },
+  pendingBadge: { borderColor: Colors.orange300, backgroundColor: Colors.orange50 },
+  pendingBadgeText: { color: Colors.orange700 },
   stepsList: { gap: 8 },
   completedStep: {
     flexDirection: 'row',
@@ -178,18 +200,21 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: Colors.green600,
+    backgroundColor: Colors.orange600,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  pendingText: { flex: 1, fontSize: 13, fontWeight: '600', color: Colors.green700 },
+  // Kept separate from pendingIcon so a future step that reuses pendingIcon
+  // for something else doesn't silently inherit this one's color.
+  pendingIconOutstanding: { backgroundColor: Colors.orange600 },
+  pendingText: { flex: 1, fontSize: 13, fontWeight: '600', color: Colors.orange700 },
   pendingTag: {
-    backgroundColor: Colors.green100,
+    backgroundColor: Colors.orange100,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: Radius.full,
   },
-  pendingTagText: { fontSize: 11, fontWeight: '600', color: Colors.green700 },
+  pendingTagText: { fontSize: 11, fontWeight: '600', color: Colors.orange700 },
   infoBox: {
     borderRadius: Radius.lg,
     borderWidth: 1,

@@ -21,6 +21,9 @@ import {
   Calendar,
   History,
   Eye,
+  CheckCircle2,
+  XCircle,
+  RotateCcw,
 } from 'lucide-react-native';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/Card';
 import { Button } from '../../components/Button';
@@ -33,9 +36,20 @@ import { Colors, Radius, Shadows } from '../../constants/colors';
 import {
   createKardexRecord,
   fetchKardexRecords,
+  reviewKardexRecord,
   ApiError,
 } from '../../services/api';
-import type { KardexHistory } from '../../types/domain';
+import type { DuplicatePatientMatch, KardexHistory } from '../../types/domain';
+
+const STATUS_BADGE: Record<
+  KardexHistory['status'],
+  { label: string; variant: 'info' | 'success' | 'warning' | 'destructive' }
+> = {
+  submitted: { label: 'Pending Review', variant: 'info' },
+  approved: { label: 'Approved', variant: 'success' },
+  returned: { label: 'Returned', variant: 'warning' },
+  rejected: { label: 'Rejected', variant: 'destructive' },
+};
 
 export default function KardexScreen() {
   const { user } = useAuth();
@@ -68,8 +82,16 @@ export default function KardexScreen() {
   const [kardexHistory, setKardexHistory] = useState<KardexHistory[]>([]);
 
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState<DuplicatePatientMatch[] | null>(null);
+  const [saveSubmitting, setSaveSubmitting] = useState(false);
   const [showHistoryDialog, setShowHistoryDialog] = useState(false);
   const [selectedHistoryEntry, setSelectedHistoryEntry] = useState<KardexHistory | null>(null);
+
+  // 'returned'/'rejected' need a reason typed in first — approved fires
+  // immediately since an approval needs no explanation.
+  const [reviewActionPending, setReviewActionPending] = useState<'returned' | 'rejected' | null>(null);
+  const [reviewNotesInput, setReviewNotesInput] = useState('');
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +111,35 @@ export default function KardexScreen() {
   const handleViewHistory = (entry: KardexHistory) => {
     setSelectedHistoryEntry(entry);
     setShowHistoryDialog(true);
+    setReviewActionPending(null);
+    setReviewNotesInput('');
+  };
+
+  const handleReview = async (decision: 'approved' | 'returned' | 'rejected') => {
+    if (!selectedHistoryEntry) return;
+    if (decision !== 'approved' && !reviewNotesInput.trim()) {
+      setReviewActionPending(decision);
+      return;
+    }
+
+    setReviewSubmitting(true);
+    try {
+      const updated = await reviewKardexRecord(selectedHistoryEntry.id, decision, reviewNotesInput.trim());
+      setSelectedHistoryEntry(updated);
+      setKardexHistory((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+      setReviewActionPending(null);
+      setReviewNotesInput('');
+      toast.success(
+        decision === 'approved' ? 'Kardex approved' : decision === 'returned' ? 'Kardex returned' : 'Kardex rejected',
+        { description: `${updated.patientName}'s kardex has been ${decision}.` }
+      );
+    } catch (error) {
+      toast.error('Failed to submit review', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setReviewSubmitting(false);
+    }
   };
 
   const handleOpenHistoryList = () => {
@@ -144,10 +195,12 @@ export default function KardexScreen() {
       });
       return;
     }
+    setDuplicateWarning(null);
     setShowConfirmDialog(true);
   };
 
-  const handleConfirmSave = async () => {
+  const handleConfirmSave = async (confirmDuplicate = false) => {
+    setSaveSubmitting(true);
     try {
       const newEntry = await createKardexRecord({
         lastName,
@@ -170,10 +223,12 @@ export default function KardexScreen() {
         bloodPressure,
         oxygenSaturation,
         specialEndorsements,
+        confirmDuplicate,
       });
 
       setKardexHistory((prev) => [newEntry, ...prev]);
       setShowConfirmDialog(false);
+      setDuplicateWarning(null);
 
       toast.success('Kardex Saved Successfully!', {
         description: `${firstName} ${lastName} was added to your patient list.`,
@@ -181,9 +236,18 @@ export default function KardexScreen() {
 
       clearForm();
     } catch (error) {
+      if (error instanceof ApiError && error.status === 400) {
+        const data = error.data as { possibleDuplicates?: DuplicatePatientMatch[] } | undefined;
+        if (data?.possibleDuplicates?.length) {
+          setDuplicateWarning(data.possibleDuplicates);
+          return;
+        }
+      }
       toast.error('Failed to save kardex', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
+    } finally {
+      setSaveSubmitting(false);
     }
   };
 
@@ -597,7 +661,12 @@ ${specialEndorsements || 'None'}
                 onPress={() => handleViewHistory(entry)}
               >
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.historyName}>{entry.patientName}</Text>
+                  <View style={styles.reviewStatusRow}>
+                    <Text style={styles.historyName}>{entry.patientName}</Text>
+                    <Badge variant={STATUS_BADGE[entry.status].variant}>
+                      {STATUS_BADGE[entry.status].label}
+                    </Badge>
+                  </View>
                   <Text style={styles.historyRoom}>Room: {entry.room}</Text>
                   <View style={styles.metaRow}>
                     <Calendar size={12} color={Colors.gray500} />
@@ -631,48 +700,94 @@ ${specialEndorsements || 'None'}
             style={[styles.confirmSheet, Shadows.xl]}
             onPress={(e) => e.stopPropagation()}
           >
-            <Text style={styles.modalTitle}>Confirm Save Kardex</Text>
-            <Text style={styles.modalDesc}>
-              Are you sure you want to save this kardex? Please verify all information is correct
-              before proceeding.
-            </Text>
-            <View style={styles.confirmSummary}>
-              <Text style={styles.summaryLine}>
-                <Text style={styles.summaryBold}>Patient: </Text>
-                {firstName} {lastName}
-              </Text>
-              <Text style={styles.summaryLine}>
-                <Text style={styles.summaryBold}>Age: </Text>
-                {age} | <Text style={styles.summaryBold}>Sex: </Text>
-                {gender}
-              </Text>
-              <Text style={styles.summaryLine}>
-                <Text style={styles.summaryBold}>Room: </Text>
-                {room}
-              </Text>
-              <Text style={styles.summaryLine}>
-                <Text style={styles.summaryBold}>Admission Date: </Text>
-                {admissionDate}
-              </Text>
-            </View>
-            <View style={styles.modalFooter}>
-              <Button
-                variant="outline"
-                style={{ flex: 1 }}
-                onPress={() => setShowConfirmDialog(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                style={{ flex: 1, backgroundColor: Colors.blue600 }}
-                onPress={handleConfirmSave}
-              >
-                <View style={styles.btnInner}>
-                  <Save size={16} color={Colors.white} />
-                  <Text style={styles.btnTextWhite}>Confirm & Save</Text>
+            {duplicateWarning ? (
+              <>
+                <Text style={styles.modalTitle}>Possible Duplicate Patient</Text>
+                <Text style={styles.modalDesc}>
+                  A patient with similar information already exists. Please verify before creating
+                  a new patient.
+                </Text>
+                <View style={styles.gap3}>
+                  {duplicateWarning.map((match) => (
+                    <View key={match.patientId} style={styles.reviewNotesBox}>
+                      <Text style={styles.summaryLine}>
+                        <Text style={styles.summaryBold}>{match.name}</Text> ({match.patientId})
+                      </Text>
+                      <Text style={styles.reviewNotesText}>
+                        {match.age}y • {match.gender} • Room {match.room}
+                        {match.admissionDate ? ` • Admitted ${match.admissionDate}` : ''}
+                      </Text>
+                    </View>
+                  ))}
                 </View>
-              </Button>
-            </View>
+                <View style={styles.modalFooter}>
+                  <Button
+                    variant="outline"
+                    style={{ flex: 1 }}
+                    onPress={() => setDuplicateWarning(null)}
+                  >
+                    Back, Let Me Check
+                  </Button>
+                  <Button
+                    style={{ flex: 1, backgroundColor: Colors.orange600 }}
+                    disabled={saveSubmitting}
+                    onPress={() => handleConfirmSave(true)}
+                  >
+                    <Text style={styles.btnTextWhite}>
+                      {saveSubmitting ? 'Saving...' : 'Continue, This Is a New Patient'}
+                    </Text>
+                  </Button>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.modalTitle}>Confirm Save Kardex</Text>
+                <Text style={styles.modalDesc}>
+                  Are you sure you want to save this kardex? Please verify all information is correct
+                  before proceeding.
+                </Text>
+                <View style={styles.confirmSummary}>
+                  <Text style={styles.summaryLine}>
+                    <Text style={styles.summaryBold}>Patient: </Text>
+                    {firstName} {lastName}
+                  </Text>
+                  <Text style={styles.summaryLine}>
+                    <Text style={styles.summaryBold}>Age: </Text>
+                    {age} | <Text style={styles.summaryBold}>Sex: </Text>
+                    {gender}
+                  </Text>
+                  <Text style={styles.summaryLine}>
+                    <Text style={styles.summaryBold}>Room: </Text>
+                    {room}
+                  </Text>
+                  <Text style={styles.summaryLine}>
+                    <Text style={styles.summaryBold}>Admission Date: </Text>
+                    {admissionDate}
+                  </Text>
+                </View>
+                <View style={styles.modalFooter}>
+                  <Button
+                    variant="outline"
+                    style={{ flex: 1 }}
+                    onPress={() => setShowConfirmDialog(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    style={{ flex: 1, backgroundColor: Colors.blue600 }}
+                    disabled={saveSubmitting}
+                    onPress={() => handleConfirmSave(false)}
+                  >
+                    <View style={styles.btnInner}>
+                      <Save size={16} color={Colors.white} />
+                      <Text style={styles.btnTextWhite}>
+                        {saveSubmitting ? 'Saving...' : 'Confirm & Save'}
+                      </Text>
+                    </View>
+                  </Button>
+                </View>
+              </>
+            )}
           </Pressable>
         </Pressable>
       </Modal>
@@ -730,6 +845,29 @@ ${specialEndorsements || 'None'}
                       </View>
                     </View>
                   </View>
+
+                  <View style={styles.reviewStatusRow}>
+                    <Badge variant={STATUS_BADGE[selectedHistoryEntry.status].variant}>
+                      {STATUS_BADGE[selectedHistoryEntry.status].label}
+                    </Badge>
+                    {selectedHistoryEntry.status !== 'submitted' && selectedHistoryEntry.reviewedBy ? (
+                      <Text style={styles.reviewStatusText}>
+                        by {selectedHistoryEntry.reviewedBy}
+                        {selectedHistoryEntry.reviewedAt
+                          ? ` · ${new Date(selectedHistoryEntry.reviewedAt).toLocaleString()}`
+                          : ''}
+                      </Text>
+                    ) : null}
+                  </View>
+                  {selectedHistoryEntry.reviewNotes &&
+                  (selectedHistoryEntry.status === 'returned' || selectedHistoryEntry.status === 'rejected') ? (
+                    <View style={styles.reviewNotesBox}>
+                      <Text style={styles.reviewNotesLabel}>
+                        {selectedHistoryEntry.status === 'returned' ? 'Correction requested:' : 'Rejection reason:'}
+                      </Text>
+                      <Text style={styles.reviewNotesText}>{selectedHistoryEntry.reviewNotes}</Text>
+                    </View>
+                  ) : null}
 
                   <View style={styles.separator} />
 
@@ -894,6 +1032,102 @@ ${specialEndorsements || 'None'}
                       minHeight={100}
                     />
                   </View>
+
+                  {user?.role === 'supervisor' && selectedHistoryEntry.status === 'submitted' ? (
+                    <>
+                      <View style={styles.separator} />
+                      <View style={styles.reviewPanel}>
+                        <View style={[styles.titleRow, { marginBottom: 12 }]}>
+                          <FileText size={20} color={Colors.purple600} />
+                          <Text style={styles.sectionHeading}>Supervisor Review</Text>
+                        </View>
+                        {reviewActionPending ? (
+                          <View style={styles.gap3}>
+                            <Text style={styles.reviewNotesLabel}>
+                              {reviewActionPending === 'returned'
+                                ? 'What needs to be corrected?'
+                                : 'Why is this being rejected?'}
+                            </Text>
+                            <TextArea
+                              value={reviewNotesInput}
+                              onChangeText={setReviewNotesInput}
+                              placeholder="Explain what the nurse should fix..."
+                              minHeight={80}
+                            />
+                            <View style={styles.reviewActionsRow}>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onPress={() => {
+                                  setReviewActionPending(null);
+                                  setReviewNotesInput('');
+                                }}
+                                style={{ flex: 1 }}
+                              >
+                                <Text>Cancel</Text>
+                              </Button>
+                              <Button
+                                size="sm"
+                                onPress={() => handleReview(reviewActionPending)}
+                                disabled={reviewSubmitting || !reviewNotesInput.trim()}
+                                style={{
+                                  flex: 1,
+                                  backgroundColor:
+                                    reviewActionPending === 'rejected' ? Colors.red600 : Colors.orange600,
+                                }}
+                              >
+                                <Text style={styles.btnTextWhite}>
+                                  {reviewSubmitting
+                                    ? 'Submitting...'
+                                    : reviewActionPending === 'returned'
+                                      ? 'Confirm Return'
+                                      : 'Confirm Reject'}
+                                </Text>
+                              </Button>
+                            </View>
+                          </View>
+                        ) : (
+                          <View style={styles.reviewActionsRow}>
+                            <Button
+                              size="sm"
+                              onPress={() => handleReview('approved')}
+                              disabled={reviewSubmitting}
+                              style={{ flex: 1, backgroundColor: Colors.green600 }}
+                            >
+                              <View style={styles.btnInner}>
+                                <CheckCircle2 size={16} color={Colors.white} />
+                                <Text style={styles.btnTextWhite}>Approve</Text>
+                              </View>
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onPress={() => setReviewActionPending('returned')}
+                              disabled={reviewSubmitting}
+                              style={{ flex: 1, borderColor: Colors.orange600 }}
+                            >
+                              <View style={styles.btnInner}>
+                                <RotateCcw size={16} color={Colors.orange600} />
+                                <Text style={{ color: Colors.orange600, fontWeight: '700' }}>Return</Text>
+                              </View>
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onPress={() => setReviewActionPending('rejected')}
+                              disabled={reviewSubmitting}
+                              style={{ flex: 1, borderColor: Colors.red600 }}
+                            >
+                              <View style={styles.btnInner}>
+                                <XCircle size={16} color={Colors.red600} />
+                                <Text style={{ color: Colors.red600, fontWeight: '700' }}>Reject</Text>
+                              </View>
+                            </Button>
+                          </View>
+                        )}
+                      </View>
+                    </>
+                  ) : null}
                 </View>
               ) : (
                 <View style={styles.gap3}>
@@ -902,6 +1136,9 @@ ${specialEndorsements || 'None'}
                       <View style={{ flex: 1 }}>
                         <View style={styles.historyListTop}>
                           <Text style={styles.historyListName}>{entry.patientName}</Text>
+                          <Badge variant={STATUS_BADGE[entry.status].variant}>
+                            {STATUS_BADGE[entry.status].label}
+                          </Badge>
                           <Badge variant="secondary">
                             {`${entry.age}y • ${entry.gender}`}
                           </Badge>
@@ -1243,6 +1480,26 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.gray900,
   },
+  reviewStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  reviewStatusText: { fontSize: 12, color: Colors.gray500 },
+  reviewNotesBox: {
+    backgroundColor: Colors.orange50,
+    borderWidth: 1,
+    borderColor: Colors.orange100,
+    borderRadius: Radius.md,
+    padding: 12,
+    gap: 4,
+  },
+  reviewNotesLabel: { fontSize: 12, fontWeight: '700', color: Colors.gray700 },
+  reviewNotesText: { fontSize: 13, color: Colors.gray700, lineHeight: 18 },
+  reviewPanel: {
+    backgroundColor: Colors.purple50,
+    borderWidth: 2,
+    borderColor: Colors.purple100,
+    borderRadius: Radius.lg,
+    padding: 16,
+  },
+  reviewActionsRow: { flexDirection: 'row', gap: 8 },
   separator: {
     height: 1,
     backgroundColor: Colors.border,

@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 HANDOVER_RECEIVED = 'handover_received'
 HANDOVER_ACKNOWLEDGED = 'handover_acknowledged'
 TASK_ASSIGNED = 'task_assigned'
+KARDEX_REVIEWED = 'kardex_reviewed'
+NURSE_REASSIGNED = 'nurse_reassigned'
 
 
 
@@ -337,4 +339,85 @@ def notify_task_assigned(task, actor=None):
         action_label='Open tasks',
         action_path='/tasks',
         action_highlight_id=task.task_code,
+    )
+
+
+def notify_kardex_reviewed(kardex, reviewer):
+    """
+    Tell the nurse who saved a kardex what the supervisor decided.
+
+    Silent on approval would leave 'approved' to mean nothing more than 'not
+    complained about yet' — and a return/rejection is exactly the case where
+    the nurse needs to know *now*, not next time they happen to scroll past
+    it, since correcting it means saving a new kardex for the same patient.
+
+    No dedicated kardex preference exists yet — gated on task_notifications,
+    the closest existing switch for "something on my work list changed".
+    """
+    recipient = kardex.saved_by
+    if recipient is None or recipient.pk == reviewer.pk:
+        return None
+
+    if not wants(recipient, 'task_notifications'):
+        return None
+
+    outcomes = {
+        'approved': ('success', 'Kardex approved', 'approved your kardex for'),
+        'returned': ('warning', 'Kardex returned for correction', 'returned your kardex for correction —'),
+        'rejected': ('critical', 'Kardex rejected', 'rejected your kardex for'),
+    }
+    notification_type, title, verb = outcomes.get(kardex.status, ('info', 'Kardex reviewed', 'reviewed your kardex for'))
+
+    reviewer_name = reviewer.get_full_name().strip() or reviewer.username
+    patient_label = kardex.patient_name or 'a patient'
+    tail = f' {kardex.review_notes}' if kardex.status in ('returned', 'rejected') and kardex.review_notes else ''
+
+    return notify(
+        recipient,
+        notification_type=notification_type,
+        event=KARDEX_REVIEWED,
+        title=title,
+        message=f'{reviewer_name} {verb} {patient_label}.{tail}',
+        patient_label=kardex.patient_name or '',
+        patient=kardex.patient,
+        sender=reviewer,
+        action_label='Open Kardex',
+        action_path='/kardex',
+    )
+
+
+def notify_nurse_reassigned(profile, actor, *, changed_department, changed_shift):
+    """
+    Tell a nurse their department or shift was changed by a supervisor.
+
+    Skipped when a supervisor somehow reassigns themselves (not a real
+    workflow, but harmless to guard). Gated on task_notifications, same as
+    kardex review — the closest existing switch for "something about my
+    work assignment changed".
+    """
+    recipient = profile.user
+    if recipient is None or (actor is not None and actor.pk == recipient.pk):
+        return None
+
+    if not wants(recipient, 'task_notifications'):
+        return None
+
+    parts = []
+    if changed_department:
+        parts.append(f'department to {profile.department}')
+    if changed_shift:
+        parts.append(f'shift to {profile.shift}')
+    if not parts:
+        return None
+
+    actor_name = actor.get_full_name().strip() or actor.username if actor else 'A supervisor'
+    return notify(
+        recipient,
+        notification_type='info',
+        event=NURSE_REASSIGNED,
+        title='Assignment updated',
+        message=f'{actor_name} changed your {" and ".join(parts)}.',
+        sender=actor,
+        action_label='Open Settings',
+        action_path='/settings',
     )

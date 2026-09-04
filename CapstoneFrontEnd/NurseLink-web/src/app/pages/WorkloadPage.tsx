@@ -7,6 +7,7 @@ import {
   createAssignment,
   updateAssignment,
   deleteAssignment,
+  assignNurse,
 } from '../api/nurselink';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -40,6 +41,7 @@ import {
   AlertDialogTitle,
 } from '../components/ui/alert-dialog';
 import { toast } from 'sonner';
+import { NurseAssignModal, AssignTarget } from '../components/NurseAssignModal';
 
 function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
   return {
@@ -68,6 +70,8 @@ export default function WorkloadPage() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [assignmentToDelete, setAssignmentToDelete] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [assignModalOpen, setAssignModalOpen] = useState(false);
+  const [assignTarget, setAssignTarget] = useState<AssignTarget | null>(null);
 
   const loadData = async () => {
     try {
@@ -184,6 +188,29 @@ export default function WorkloadPage() {
       return { shift, hours: Math.round(hours * 10) / 10 };
     });
   }, [workloadData]);
+
+  const byDepartment = useMemo(() => {
+    const groups: Record<string, WorkloadData[]> = {};
+    workloadData.forEach((nurse) => {
+      const key = nurse.department || 'Unassigned';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(nurse);
+    });
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [workloadData]);
+
+  const handleAssignSave = async (data: { department: string; shift: string }) => {
+    if (!assignTarget) return;
+    try {
+      await assignNurse(assignTarget.id, data);
+      await loadData();
+      toast.success('Nurse assignment updated');
+    } catch (e) {
+      console.error(e);
+      toast.error('Failed to update assignment');
+      throw e;
+    }
+  };
 
   const patientRatioData = useMemo(
     () =>
@@ -302,12 +329,70 @@ export default function WorkloadPage() {
 
       {/* Tabs */}
       <Tabs defaultValue="assignments" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="assignments">Patient Assignments</TabsTrigger>
+          <TabsTrigger value="team">Team</TabsTrigger>
           <TabsTrigger value="current">Current Workload</TabsTrigger>
           <TabsTrigger value="trends">Trends</TabsTrigger>
           <TabsTrigger value="recommendations">Recommendations</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="team" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Nurses by Department</CardTitle>
+              <CardDescription>
+                Assign a nurse to a department or shift — they'll be notified of the change.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {byDepartment.length === 0 ? (
+                <p className="text-center py-8 text-gray-600">No nurses found.</p>
+              ) : (
+                <div className="space-y-6">
+                  {byDepartment.map(([department, nurses]) => (
+                    <div key={department}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <MapPin className="w-4 h-4 text-blue-600" />
+                        <h4 className="font-semibold text-gray-900">{department}</h4>
+                        <Badge variant="outline">{nurses.length}</Badge>
+                      </div>
+                      <div className="space-y-2">
+                        {nurses.map((nurse) => (
+                          <div
+                            key={nurse.nurseId}
+                            className="flex items-center justify-between p-3 border rounded-lg bg-white"
+                          >
+                            <div>
+                              <p className="font-medium text-gray-900">{nurse.nurseName}</p>
+                              <p className="text-sm text-gray-600 capitalize">{nurse.shift} shift</p>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setAssignTarget({
+                                  id: nurse.nurseId,
+                                  name: nurse.nurseName,
+                                  department: nurse.department,
+                                  shift: nurse.shift,
+                                });
+                                setAssignModalOpen(true);
+                              }}
+                            >
+                              <Edit2 className="w-3.5 h-3.5 mr-1" />
+                              Assign
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="assignments" className="space-y-4">
           {/* Patient Assignments List */}
@@ -721,6 +806,13 @@ export default function WorkloadPage() {
         availableNurses={availableNurses}
         allTasks={allTasks}
         allAssignments={assignments}
+      />
+
+      <NurseAssignModal
+        open={assignModalOpen}
+        onOpenChange={setAssignModalOpen}
+        nurse={assignTarget}
+        onSave={handleAssignSave}
       />
 
       {/* Delete Confirmation Dialog */}

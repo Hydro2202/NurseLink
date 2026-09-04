@@ -667,7 +667,7 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     bottom: 0,
   },
   sidebarScrim: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.25)',
     zIndex: 30,
   },

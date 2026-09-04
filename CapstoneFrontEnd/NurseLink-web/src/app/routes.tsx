@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from 'react-router';
 import LoginPage from './pages/LoginPage';
 import SignUpPage from './pages/SignUpPage';
+import AdminDashboardPage from './pages/AdminDashboardPage';
 import DashboardLayout from './layouts/DashboardLayout';
 import DashboardPage from './pages/DashboardPage';
 import TasksPage from './pages/TasksPage';
@@ -26,6 +27,10 @@ export const router = createBrowserRouter([
   {
     path: '/signup',
     element: <SignUpPage />,
+  },
+  {
+    path: '/admin',
+    element: <AdminDashboardPage />,
   },
   {
     path: '/',

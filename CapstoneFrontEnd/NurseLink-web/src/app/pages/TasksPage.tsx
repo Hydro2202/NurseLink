@@ -5,7 +5,7 @@ import {
   fetchTasks,
   createTask,
   updateTask,
-  deleteTask,
+  unassignTask,
   completeTask,
   ApiError,
 } from '../api/nurselink';
@@ -19,7 +19,7 @@ import {
   Clock,
   AlertTriangle,
   Edit,
-  Trash2,
+  UserMinus,
   Plus,
   Loader2,
   Search,
@@ -27,6 +27,10 @@ import {
   Stethoscope,
   Bed,
   ClipboardList,
+  ChevronDown,
+  ChevronUp,
+  Square,
+  CheckSquare,
 } from 'lucide-react';
 import {
   Select,
@@ -48,10 +52,12 @@ export default function TasksPage() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [taskModalMode, setTaskModalMode] = useState<'add' | 'edit'>('add');
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [unassignDialogOpen, setUnassignDialogOpen] = useState(false);
+  const [taskToUnassign, setTaskToUnassign] = useState<string | null>(null);
+  const [unassignLoading, setUnassignLoading] = useState(false);
   const [completeLoading, setCompleteLoading] = useState<string | null>(null);
+  const [expandedChecklistId, setExpandedChecklistId] = useState<string | null>(null);
+  const [checklistSaving, setChecklistSaving] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'priority' | 'status'>('newest');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
@@ -171,28 +177,28 @@ export default function TasksPage() {
     }
   };
 
-  const handleDeleteTask = async (taskId: string) => {
-    setTaskToDelete(taskId);
-    setDeleteDialogOpen(true);
+  const handleUnassignTask = async (taskId: string) => {
+    setTaskToUnassign(taskId);
+    setUnassignDialogOpen(true);
   };
 
-  const confirmDeleteTask = async () => {
-    if (!taskToDelete) return;
+  const confirmUnassignTask = async () => {
+    if (!taskToUnassign) return;
 
-    setDeleteLoading(true);
+    setUnassignLoading(true);
     try {
-      const deletedTask = tasks.find((t) => t.id === taskToDelete);
-      await deleteTask(taskToDelete);
-      setTasks((prev) => prev.filter((task) => task.id !== taskToDelete));
-      setDeleteDialogOpen(false);
-      setTaskToDelete(null);
-      toast.success('Task deleted', {
-        description: `"${deletedTask?.title}" has been removed from your task list.`,
+      const unassigned = tasks.find((t) => t.id === taskToUnassign);
+      const updated = await unassignTask(taskToUnassign);
+      setTasks((prev) => prev.map((task) => (task.id === taskToUnassign ? updated : task)));
+      setUnassignDialogOpen(false);
+      setTaskToUnassign(null);
+      toast.success('Task unassigned', {
+        description: `"${unassigned?.title}" is back on the pending list, unassigned.`,
       });
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Failed to delete task');
+      toast.error(error instanceof ApiError ? error.message : 'Failed to unassign task');
     } finally {
-      setDeleteLoading(false);
+      setUnassignLoading(false);
     }
   };
 
@@ -208,6 +214,23 @@ export default function TasksPage() {
       toast.error(error instanceof ApiError ? error.message : 'Failed to complete task');
     } finally {
       setCompleteLoading(null);
+    }
+  };
+
+  const handleToggleChecklistItem = async (task: Task, index: number) => {
+    const nextChecklist = task.checklist.map((item, i) =>
+      i === index ? { ...item, done: !item.done } : item
+    );
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, checklist: nextChecklist } : t)));
+    setChecklistSaving(task.id);
+    try {
+      const updated = await updateTask(task.id, { checklist: nextChecklist });
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
+    } catch (error) {
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? task : t)));
+      toast.error(error instanceof ApiError ? error.message : 'Failed to update checklist');
+    } finally {
+      setChecklistSaving(null);
     }
   };
 
@@ -425,6 +448,56 @@ export default function TasksPage() {
                           </div>
                         </div>
                       )}
+
+                      {/* Checklist */}
+                      {task.checklist.length > 0 && (
+                        <div className="mt-2 bg-purple-50 border border-purple-100 rounded-md p-2">
+                          <button
+                            type="button"
+                            className="w-full flex items-center gap-2 text-left"
+                            onClick={() =>
+                              setExpandedChecklistId((prev) => (prev === task.id ? null : task.id))
+                            }
+                          >
+                            <ClipboardList className="w-3.5 h-3.5 text-purple-600 flex-shrink-0" />
+                            <span className="flex-1 text-xs font-semibold text-purple-700">
+                              Checklist: {task.checklist.filter((i) => i.done).length}/
+                              {task.checklist.length} completed
+                            </span>
+                            {expandedChecklistId === task.id ? (
+                              <ChevronUp className="w-3.5 h-3.5 text-gray-500" />
+                            ) : (
+                              <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
+                            )}
+                          </button>
+                          {expandedChecklistId === task.id && (
+                            <div className="mt-2 space-y-1.5">
+                              {task.checklist.map((item, index) => (
+                                <button
+                                  type="button"
+                                  key={index}
+                                  disabled={checklistSaving === task.id}
+                                  onClick={() => handleToggleChecklistItem(task, index)}
+                                  className="w-full flex items-center gap-2 text-left"
+                                >
+                                  {item.done ? (
+                                    <CheckSquare className="w-4 h-4 text-green-600 flex-shrink-0" />
+                                  ) : (
+                                    <Square className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                                  )}
+                                  <span
+                                    className={`text-xs ${
+                                      item.done ? 'text-gray-400 line-through' : 'text-gray-700'
+                                    }`}
+                                  >
+                                    {item.text}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-col gap-2">
@@ -451,14 +524,16 @@ export default function TasksPage() {
                     >
                       <Edit className="w-4 h-4" />
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleDeleteTask(task.id)}
-                      className="text-red-600 border-red-600 hover:bg-red-50"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
+                    {user?.role === 'supervisor' && task.assignedTo && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleUnassignTask(task.id)}
+                        className="text-red-600 border-red-600 hover:bg-red-50"
+                      >
+                        <UserMinus className="w-4 h-4" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -478,12 +553,12 @@ export default function TasksPage() {
       />
 
       <DeleteConfirmDialog
-        open={deleteDialogOpen}
-        onOpenChange={setDeleteDialogOpen}
-        onConfirm={confirmDeleteTask}
-        loading={deleteLoading}
-        title="Delete Task"
-        description="Are you sure you want to delete this task? This action cannot be undone."
+        open={unassignDialogOpen}
+        onOpenChange={setUnassignDialogOpen}
+        onConfirm={confirmUnassignTask}
+        loading={unassignLoading}
+        title="Unassign Task"
+        description="This will remove the assigned nurse and return the task to pending. The task itself is not deleted."
       />
     </div>
   );

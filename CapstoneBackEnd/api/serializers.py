@@ -39,6 +39,7 @@ class UserSerializer(serializers.ModelSerializer):
     shift = serializers.SerializerMethodField()
     clinicalRole = serializers.SerializerMethodField()
     specialization = serializers.SerializerMethodField()
+    isAdmin = serializers.BooleanField(source='is_staff', read_only=True)
 
     class Meta:
         model = User
@@ -56,6 +57,7 @@ class UserSerializer(serializers.ModelSerializer):
             'shift',
             'clinicalRole',
             'specialization',
+            'isAdmin',
         ]
 
     def get_id(self, obj):
@@ -70,6 +72,8 @@ class UserSerializer(serializers.ModelSerializer):
         return profile.middle_name if profile else ''
 
     def get_role(self, obj):
+        if obj.is_staff:
+            return 'admin'
         profile = getattr(obj, 'nurse_profile', None)
         return profile.role if profile else 'staff_nurse'
 
@@ -189,13 +193,16 @@ class SignupSerializer(serializers.Serializer):
                 department=department,
                 license_number=validated_data.get('licenseNumber') or '',
                 middle_name=validated_data.get('middleName') or '',
-                # Identity is already established by the time we get here: the
+                # Identity is established by the time we get here — the
                 # Hospital ID was scanned and OCR'd, a portrait was confirmed
                 # on it, and the applicant passed either face matching against
-                # that portrait or email OTP. A further manual approval step
-                # gated an account that nothing in the codebase actually
-                # checked, so it only delayed first login. -rai
-                approval_status='approved',
+                # that portrait or email OTP. That proves *who* signed up, not
+                # that an admin has actually reviewed and approved the
+                # registration, so the account starts pending. Enforced
+                # server-side in LoginView / OAuthTokenView / IsApprovedNurse —
+                # not just left as an inert field — see api/admin.py for the
+                # approve/reject review screen.
+                approval_status='pending',
                 verification_method=session.verification_method,
                 prc_verified_at=timezone.now(),
                 prc_license_expiry=(
@@ -435,14 +442,14 @@ class UpdateMeSerializer(serializers.Serializer):
     firstName = serializers.CharField(required=False, allow_blank=True, max_length=150)
     middleName = serializers.CharField(required=False, allow_blank=True, max_length=100)
     lastName = serializers.CharField(required=False, allow_blank=True, max_length=150)
-    department = serializers.CharField(required=False, allow_blank=True, max_length=120)
     licenseNumber = serializers.CharField(required=False, allow_blank=True, max_length=50)
     # Not a URLField any more: this now also carries an uploaded photo as a
     # data: URI, which URLValidator rejects. validate_avatar re-encodes it.
     avatar = serializers.CharField(required=False, allow_blank=True, trim_whitespace=False)
-    shift = serializers.ChoiceField(
-        choices=['morning', 'afternoon', 'night'], required=False, allow_blank=True
-    )
+    # department and shift are deliberately NOT here: a nurse choosing their
+    # own department/shift would make supervisor-controlled staffing
+    # assignment (NurseViewSet.assign, supervisor-only) meaningless. Both are
+    # now set exclusively by a supervisor.
     clinicalRole = serializers.CharField(required=False, allow_blank=True, max_length=40)
     specialization = serializers.CharField(required=False, allow_blank=True, max_length=120)
 
@@ -493,10 +500,8 @@ class UpdateMeSerializer(serializers.Serializer):
         profile, _ = NurseProfile.objects.get_or_create(user=instance)
         mapping = {
             'middleName': 'middle_name',
-            'department': 'department',
             'licenseNumber': 'license_number',
             'avatar': 'avatar',
-            'shift': 'shift',
             'clinicalRole': 'clinical_role',
             'specialization': 'specialization',
         }
@@ -515,10 +520,79 @@ class UpdateMeSerializer(serializers.Serializer):
         return instance
 
 
+class NurseAssignmentSerializer(serializers.Serializer):
+    """
+    Supervisor-only: change a nurse's department and/or shift. Used by
+    NurseViewSet's `assign` action, never by a nurse editing their own
+    profile (see UpdateMeSerializer, which deliberately omits both fields).
+    """
+
+    department = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    shift = serializers.ChoiceField(
+        choices=['morning', 'afternoon', 'night'], required=False, allow_blank=True
+    )
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError('Send at least one of department or shift.')
+        return attrs
+
+    def validate_department(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError('Department cannot be blank.')
+        return value
+
+
+def find_possible_duplicate_patients(name, age, *, exclude_patient_code=None):
+    """
+    Two patients sharing a name is not a coincidence worth ignoring — it is
+    exactly the wrong-patient mixup this system exists to prevent (see
+    Patient.patient_code, the actual identifier every workflow should use
+    instead of a typed name). Matched on name + age since Patient has no
+    date-of-birth field to match on; exact age (not a range) keeps this
+    conservative, so it flags real matches rather than nagging on every
+    similarly-aged patient with a common surname.
+    """
+    name = (name or '').strip()
+    if not name:
+        return []
+    qs = Patient.objects.filter(name__iexact=name)
+    if age not in (None, ''):
+        qs = qs.filter(age=age)
+    if exclude_patient_code:
+        qs = qs.exclude(patient_code=exclude_patient_code)
+    return list(qs[:5])
+
+
+def duplicate_patient_payload(matches):
+    return {
+        'detail': (
+            'A patient with similar information already exists. Please verify before '
+            'creating a new patient.'
+        ),
+        'possibleDuplicates': [
+            {
+                'patientId': p.patient_code,
+                'name': p.name,
+                'age': p.age,
+                'gender': p.gender,
+                'room': p.room,
+                'admissionDate': p.admission_date.isoformat() if p.admission_date else None,
+            }
+            for p in matches
+        ],
+    }
+
+
 class PatientSerializer(serializers.ModelSerializer):
     """Matches CapstoneFrontEnd Patient interface."""
 
     id = serializers.CharField(source='patient_code', required=False)
+    # Write-only escape hatch: set true once the caller has shown the possible
+    # duplicates below and a human has actually confirmed this is a new
+    # patient. Never merges or overwrites automatically — see Problem #2.
+    confirmDuplicate = serializers.BooleanField(write_only=True, required=False, default=False)
     admissionDate = serializers.DateField(source='admission_date')
     riskLevel = serializers.CharField(source='risk_level')
     attendingPhysician = serializers.CharField(
@@ -548,6 +622,7 @@ class PatientSerializer(serializers.ModelSerializer):
             'assignedNurseId',
             'assignedNurseName',
             'assignedBy',
+            'confirmDuplicate',
         ]
 
     def get_assignedNurseId(self, obj):
@@ -609,6 +684,14 @@ class PatientSerializer(serializers.ModelSerializer):
                 validated_data[dest] = vitals[src]
 
     def create(self, validated_data):
+        confirm_duplicate = validated_data.pop('confirmDuplicate', False)
+        if not confirm_duplicate:
+            matches = find_possible_duplicate_patients(
+                validated_data.get('name'), validated_data.get('age')
+            )
+            if matches:
+                raise serializers.ValidationError(duplicate_patient_payload(matches))
+
         self._apply_vitals(validated_data)
         code = validated_data.pop('patient_code', None) or next_code(Patient, 'patient_code', 'P')
         validated_data['patient_code'] = code
@@ -670,6 +753,7 @@ class TaskSerializer(serializers.ModelSerializer):
     )
     patientRoom = serializers.CharField(source='patient_room', required=False, allow_blank=True)
     doctorOrder = serializers.CharField(source='doctor_order', required=False, allow_blank=True)
+    checklist = serializers.ListField(child=serializers.DictField(), required=False)
 
     class Meta:
         model = Task
@@ -689,7 +773,16 @@ class TaskSerializer(serializers.ModelSerializer):
             'attendingPhysician',
             'patientRoom',
             'doctorOrder',
+            'checklist',
         ]
+
+    def validate_checklist(self, value):
+        for item in value:
+            if 'text' not in item or 'done' not in item:
+                raise serializers.ValidationError(
+                    'Each checklist item needs "text" and "done".'
+                )
+        return value
 
     def validate_patientId(self, value):
         if not value:
@@ -824,6 +917,30 @@ class HandoverSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         patient_id = validated_data.pop('patientId', None)
         self._resolve_patient(validated_data, patient_id)
+
+        # A patient can only be mid-handover to one nurse at a time. Once the
+        # receiving nurse acknowledges it, responsibility has genuinely moved
+        # and a later handover (next shift, say) is legitimate — so this only
+        # blocks a *second* handover while the first is still unacknowledged,
+        # not every handover a patient will ever have.
+        patient = validated_data.get('patient')
+        if patient is not None:
+            existing = (
+                HandoverNote.objects.filter(patient=patient, status='pending')
+                .order_by('-created_at')
+                .first()
+            )
+            if existing is not None:
+                raise serializers.ValidationError(
+                    {
+                        'patientId': (
+                            f'{patient.name} already has a pending handover to '
+                            f'{existing.nurse_to} ({existing.handover_code}). It must be '
+                            'acknowledged before another handover can be created for this patient.'
+                        )
+                    }
+                )
+
         self._apply_sbar(validated_data)
         code = validated_data.pop('handover_code', None) or next_code(
             HandoverNote, 'handover_code', 'H'
@@ -1173,6 +1290,81 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
         return instance
 
 
+def _parse_float(value):
+    try:
+        if value is None or str(value).strip() == '':
+            return None
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_blood_pressure(value):
+    """'120/80' -> (120.0, 80.0), or (None, None) if it doesn't parse."""
+    text = (value or '').strip()
+    if '/' not in text:
+        return None, None
+    systolic_raw, _, diastolic_raw = text.partition('/')
+    return _parse_float(systolic_raw), _parse_float(diastolic_raw)
+
+
+def assess_risk_level(*, temperature=None, pulse_rate=None, respiratory_rate=None,
+                       blood_pressure=None, oxygen_saturation=None):
+    """
+    'high'/'medium'/'low' from whichever vitals were actually filled in —
+    never from ones that were left blank, so an incomplete kardex is not
+    mistaken for a stable one and a mostly-empty kardex does not get flagged
+    high risk on the strength of a single field.
+
+    Threshold-based, not a clinical judgment — a nurse's own assessment
+    always takes precedence; this exists so an obviously abnormal vital sign
+    is not silently defaulted to 'low' the way risk_level='low' used to be
+    hardcoded for every kardex-created patient regardless of their vitals.
+    """
+    severities = []
+
+    temp = _parse_float(temperature)
+    if temp is not None:
+        if temp < 35.0 or temp >= 39.0:
+            severities.append('high')
+        elif temp < 36.1 or temp >= 37.6:
+            severities.append('medium')
+
+    pulse = _parse_float(pulse_rate)
+    if pulse is not None:
+        if pulse < 50 or pulse > 130:
+            severities.append('high')
+        elif pulse < 60 or pulse > 100:
+            severities.append('medium')
+
+    resp = _parse_float(respiratory_rate)
+    if resp is not None:
+        if resp < 10 or resp > 28:
+            severities.append('high')
+        elif resp < 12 or resp > 20:
+            severities.append('medium')
+
+    spo2 = _parse_float(oxygen_saturation)
+    if spo2 is not None:
+        if spo2 < 90:
+            severities.append('high')
+        elif spo2 < 95:
+            severities.append('medium')
+
+    systolic, diastolic = _parse_blood_pressure(blood_pressure)
+    if systolic is not None and diastolic is not None:
+        if systolic >= 180 or systolic < 90 or diastolic >= 120 or diastolic < 60:
+            severities.append('high')
+        elif systolic >= 140 or diastolic >= 90:
+            severities.append('medium')
+
+    if 'high' in severities:
+        return 'high'
+    if 'medium' in severities:
+        return 'medium'
+    return 'low'
+
+
 class KardexRecordSerializer(serializers.ModelSerializer):
     id = serializers.SerializerMethodField()
     patientName = serializers.SerializerMethodField()
@@ -1203,12 +1395,21 @@ class KardexRecordSerializer(serializers.ModelSerializer):
     oxygenSaturation = serializers.CharField(
         source='oxygen_saturation', required=False, allow_blank=True
     )
+    allergies = serializers.ListField(child=serializers.CharField(), required=False)
     specialEndorsements = serializers.CharField(
         source='special_endorsements', required=False, allow_blank=True
     )
     savedAt = serializers.DateTimeField(source='saved_at', read_only=True)
     savedBy = serializers.CharField(source='saved_by_name', read_only=True)
     patientId = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    # Only meaningful when patientId is blank (this Kardex is registering a
+    # new patient rather than updating one). See PatientSerializer for the
+    # same field — never merges or overwrites automatically.
+    confirmDuplicate = serializers.BooleanField(write_only=True, required=False, default=False)
+    status = serializers.ChoiceField(choices=KardexRecord.STATUS_CHOICES, read_only=True)
+    reviewedBy = serializers.SerializerMethodField()
+    reviewedAt = serializers.DateTimeField(source='reviewed_at', read_only=True)
+    reviewNotes = serializers.CharField(source='review_notes', read_only=True)
 
     class Meta:
         model = KardexRecord
@@ -1235,9 +1436,15 @@ class KardexRecordSerializer(serializers.ModelSerializer):
             'respiratoryRate',
             'bloodPressure',
             'oxygenSaturation',
+            'allergies',
             'specialEndorsements',
             'savedAt',
             'savedBy',
+            'confirmDuplicate',
+            'status',
+            'reviewedBy',
+            'reviewedAt',
+            'reviewNotes',
         ]
 
     def get_id(self, obj):
@@ -1245,6 +1452,11 @@ class KardexRecordSerializer(serializers.ModelSerializer):
 
     def get_patientName(self, obj):
         return obj.patient_name
+
+    def get_reviewedBy(self, obj):
+        if obj.reviewed_by_id is None:
+            return None
+        return obj.reviewed_by.get_full_name().strip() or obj.reviewed_by.username
 
     def create(self, validated_data):
         """
@@ -1256,6 +1468,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
         from datetime import datetime
 
         patient_id = validated_data.pop('patientId', None)
+        confirm_duplicate = validated_data.pop('confirmDuplicate', False)
         request = self.context.get('request')
         user = request.user if request and request.user.is_authenticated else None
 
@@ -1307,6 +1520,23 @@ class KardexRecordSerializer(serializers.ModelSerializer):
             'oxygen_saturation': _num(validated_data.get('oxygen_saturation'), int, 0),
             'respiratory_rate': _num(validated_data.get('respiratory_rate'), int, 0),
         }
+        # From whatever vitals were actually filled in on this kardex — not
+        # hardcoded, and not touched for fields the nurse left blank.
+        risk_level = assess_risk_level(
+            temperature=validated_data.get('temperature'),
+            pulse_rate=validated_data.get('pulse_rate'),
+            respiratory_rate=validated_data.get('respiratory_rate'),
+            blood_pressure=validated_data.get('blood_pressure'),
+            oxygen_saturation=validated_data.get('oxygen_saturation'),
+        )
+        allergies = validated_data.get('allergies') or []
+
+        # Only a risk when this kardex is registering a brand-new patient —
+        # patientId means it is explicitly updating one that already exists.
+        if not patient_id and not confirm_duplicate:
+            matches = find_possible_duplicate_patients(full_name, age)
+            if matches:
+                raise serializers.ValidationError(duplicate_patient_payload(matches))
 
         with transaction.atomic():
             if patient_id:
@@ -1320,6 +1550,8 @@ class KardexRecordSerializer(serializers.ModelSerializer):
                 patient.diagnosis = diagnosis
                 patient.admission_date = admission_date
                 patient.attending_physician = attending
+                patient.risk_level = risk_level
+                patient.allergies = allergies
                 for k, v in vitals.items():
                     setattr(patient, k, v)
                 patient.save()
@@ -1332,9 +1564,10 @@ class KardexRecordSerializer(serializers.ModelSerializer):
                     room=room,
                     diagnosis=diagnosis,
                     admission_date=admission_date,
-                    risk_level='low',
+                    risk_level=risk_level,
                     attending_physician=attending,
                     assigned_nurse=user,
+                    allergies=allergies,
                     **vitals,
                 )
                 if user:

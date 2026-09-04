@@ -147,6 +147,26 @@ class Patient(models.Model):
         return f'{self.patient_code} — {self.name}'
 
 
+def default_task_checklist():
+    """
+    The standard steps behind any task, not a clinical judgment about this
+    one — see Task.checklist. A plain default (not AI-generated) on purpose:
+    Problem #6 is explicit that a recommendation may only assist a nurse, not
+    decide for them, so this stays a fixed, predictable checklist rather than
+    something a model invents per task. Must be a callable, not a literal
+    list, so Django gives each Task its own list instead of one shared
+    default every row would silently mutate together.
+    """
+    return [
+        {'text': 'Verify patient identity', 'done': False},
+        {'text': 'Review task/instructions', 'done': False},
+        {'text': 'Check required patient information', 'done': False},
+        {'text': 'Perform assigned task', 'done': False},
+        {'text': 'Document result', 'done': False},
+        {'text': 'Confirm completion', 'done': False},
+    ]
+
+
 class Task(models.Model):
     PRIORITY_CHOICES = [
         ('urgent', 'Urgent'),
@@ -193,6 +213,10 @@ class Task(models.Model):
     attending_physician = models.CharField(max_length=200, blank=True, default='')
     patient_room = models.CharField(max_length=50, blank=True, default='')
     doctor_order = models.TextField(blank=True, default='')
+    #: [{"text": str, "done": bool}, ...]. An empty list is the escape hatch
+    #: Problem #6 calls for ("unless the existing workflow has a valid
+    #: exception") — completing a task with no checklist is never blocked.
+    checklist = models.JSONField(default=default_task_checklist, blank=True)
     # The handover this task came from, when it came from one. Writing a
     # handover creates the task on the *sender's* list, because until someone
     # accepts it the patient is still theirs; acknowledging moves that same task
@@ -478,6 +502,19 @@ class PatientAssignment(models.Model):
 
 
 class KardexRecord(models.Model):
+    # There is no separate draft step in the current UI — "Save Kardex" is
+    # the only create action, so every record starts life already submitted
+    # for review. A nurse whose kardex is returned/rejected corrects it by
+    # saving a new one for the same patient (kardex already behaves as an
+    # append-only history per patient, ordered by -saved_at) rather than
+    # editing in place — no update endpoint exists on this model, on purpose.
+    STATUS_CHOICES = [
+        ('submitted', 'Submitted for Review'),
+        ('approved', 'Approved'),
+        ('returned', 'Returned for Correction'),
+        ('rejected', 'Rejected'),
+    ]
+
     patient = models.ForeignKey(
         Patient,
         on_delete=models.CASCADE,
@@ -504,6 +541,7 @@ class KardexRecord(models.Model):
     respiratory_rate = models.CharField(max_length=20, blank=True, default='')
     blood_pressure = models.CharField(max_length=20, blank=True, default='')
     oxygen_saturation = models.CharField(max_length=20, blank=True, default='')
+    allergies = models.JSONField(default=list, blank=True)
     special_endorsements = models.TextField(blank=True, default='')
     saved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -516,11 +554,25 @@ class KardexRecord(models.Model):
     saved_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='submitted', db_index=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='kardex_reviews',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    #: Reason for a return/rejection. Not used for an approval — an approval
+    #: needs no explanation, only a return or rejection does.
+    review_notes = models.TextField(blank=True, default='')
+
     class Meta:
         ordering = ['-saved_at']
         indexes = [
             models.Index(fields=['last_name', 'first_name']),
             models.Index(fields=['saved_at']),
+            models.Index(fields=['status', '-saved_at']),
         ]
 
     def __str__(self):

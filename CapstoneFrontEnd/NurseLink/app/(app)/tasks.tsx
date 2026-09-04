@@ -12,18 +12,22 @@ import {
   CheckCircle,
   Clock,
   Edit,
-  Trash2,
+  UserMinus,
   Plus,
   Search,
   Stethoscope,
   Bed,
   ClipboardList,
+  ChevronDown,
+  ChevronUp,
+  Square,
+  CheckSquare,
 } from 'lucide-react-native';
 import {
   fetchTasks,
   createTask,
   updateTask,
-  deleteTask,
+  unassignTask,
   completeTask,
   ApiError,
 } from '../../services/api';
@@ -67,10 +71,12 @@ export default function TasksPage() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [taskModalMode, setTaskModalMode] = useState<'add' | 'edit'>('add');
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [unassignDialogOpen, setUnassignDialogOpen] = useState(false);
+  const [taskToUnassign, setTaskToUnassign] = useState<string | null>(null);
+  const [unassignLoading, setUnassignLoading] = useState(false);
   const [completeLoading, setCompleteLoading] = useState<string | null>(null);
+  const [expandedChecklistId, setExpandedChecklistId] = useState<string | null>(null);
+  const [checklistSaving, setChecklistSaving] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('newest');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
@@ -198,30 +204,30 @@ export default function TasksPage() {
     }
   };
 
-  const handleDeleteTask = (taskId: string) => {
-    setTaskToDelete(taskId);
-    setDeleteDialogOpen(true);
+  const handleUnassignTask = (taskId: string) => {
+    setTaskToUnassign(taskId);
+    setUnassignDialogOpen(true);
   };
 
-  const confirmDeleteTask = async () => {
-    if (!taskToDelete) return;
+  const confirmUnassignTask = async () => {
+    if (!taskToUnassign) return;
 
-    setDeleteLoading(true);
+    setUnassignLoading(true);
     try {
-      const deletedTask = tasks.find((t) => t.id === taskToDelete);
-      await deleteTask(taskToDelete);
-      setTasks((prev) => prev.filter((task) => task.id !== taskToDelete));
-      setDeleteDialogOpen(false);
-      setTaskToDelete(null);
-      toast.success('Task deleted', {
-        description: `"${deletedTask?.title}" has been removed from your task list.`,
+      const unassigned = tasks.find((t) => t.id === taskToUnassign);
+      const updated = await unassignTask(taskToUnassign);
+      setTasks((prev) => prev.map((task) => (task.id === taskToUnassign ? updated : task)));
+      setUnassignDialogOpen(false);
+      setTaskToUnassign(null);
+      toast.success('Task unassigned', {
+        description: `"${unassigned?.title}" is back on the pending list, unassigned.`,
       });
     } catch (error) {
-      toast.error('Failed to delete task', {
+      toast.error('Failed to unassign task', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
-      setDeleteLoading(false);
+      setUnassignLoading(false);
     }
   };
 
@@ -239,6 +245,28 @@ export default function TasksPage() {
       });
     } finally {
       setCompleteLoading(null);
+    }
+  };
+
+  const handleToggleChecklistItem = async (task: Task, index: number) => {
+    const nextChecklist = task.checklist.map((item, i) =>
+      i === index ? { ...item, done: !item.done } : item
+    );
+    // Optimistic — checking off a step should feel instant, not wait on a
+    // round trip, and the ward network is not always fast.
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, checklist: nextChecklist } : t)));
+    setChecklistSaving(task.id);
+    try {
+      const updated = await updateTask(task.id, { checklist: nextChecklist });
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
+    } catch (error) {
+      // Roll back — the server did not actually record this check.
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? task : t)));
+      toast.error('Failed to update checklist', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setChecklistSaving(null);
     }
   };
 
@@ -493,6 +521,54 @@ export default function TasksPage() {
                               </View>
                             </View>
                           ) : null}
+
+                          {task.checklist.length > 0 ? (
+                            <View style={styles.checklistWrap}>
+                              <Pressable
+                                style={styles.checklistToggle}
+                                onPress={() =>
+                                  setExpandedChecklistId((prev) => (prev === task.id ? null : task.id))
+                                }
+                              >
+                                <ClipboardList size={13} color={Colors.purple600} />
+                                <Text style={styles.checklistToggleText}>
+                                  Checklist: {task.checklist.filter((i) => i.done).length}/
+                                  {task.checklist.length} completed
+                                </Text>
+                                {expandedChecklistId === task.id ? (
+                                  <ChevronUp size={14} color={Colors.gray500} />
+                                ) : (
+                                  <ChevronDown size={14} color={Colors.gray500} />
+                                )}
+                              </Pressable>
+                              {expandedChecklistId === task.id ? (
+                                <View style={styles.checklistItems}>
+                                  {task.checklist.map((item, index) => (
+                                    <Pressable
+                                      key={index}
+                                      style={styles.checklistItemRow}
+                                      disabled={checklistSaving === task.id}
+                                      onPress={() => handleToggleChecklistItem(task, index)}
+                                    >
+                                      {item.done ? (
+                                        <CheckSquare size={16} color={Colors.green600} />
+                                      ) : (
+                                        <Square size={16} color={Colors.gray400} />
+                                      )}
+                                      <Text
+                                        style={[
+                                          styles.checklistItemText,
+                                          item.done && styles.checklistItemTextDone,
+                                        ]}
+                                      >
+                                        {item.text}
+                                      </Text>
+                                    </Pressable>
+                                  ))}
+                                </View>
+                              ) : null}
+                            </View>
+                          ) : null}
                         </View>
                       </View>
 
@@ -520,14 +596,16 @@ export default function TasksPage() {
                         >
                           <Edit size={16} color={Colors.blue600} />
                         </Button>
-                        <Button
-                          size="icon-sm"
-                          variant="outline"
-                          onPress={() => handleDeleteTask(task.id)}
-                          style={styles.deleteBtn}
-                        >
-                          <Trash2 size={16} color={Colors.red600} />
-                        </Button>
+                        {user?.role === 'supervisor' && task.assignedTo ? (
+                          <Button
+                            size="icon-sm"
+                            variant="outline"
+                            onPress={() => handleUnassignTask(task.id)}
+                            style={styles.deleteBtn}
+                          >
+                            <UserMinus size={16} color={Colors.red600} />
+                          </Button>
+                        ) : null}
                       </View>
                     </View>
                   </CardContent>
@@ -549,12 +627,12 @@ export default function TasksPage() {
       />
 
       <DeleteConfirmDialog
-        open={deleteDialogOpen}
-        onOpenChange={setDeleteDialogOpen}
-        onConfirm={confirmDeleteTask}
-        loading={deleteLoading}
-        title="Delete Task"
-        description="Are you sure you want to delete this task? This action cannot be undone."
+        open={unassignDialogOpen}
+        onOpenChange={setUnassignDialogOpen}
+        onConfirm={confirmUnassignTask}
+        loading={unassignLoading}
+        title="Unassign Task"
+        description="This will remove the assigned nurse and return the task to pending. The task itself is not deleted."
       />
     </View>
   );
@@ -765,6 +843,43 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: Colors.blue800,
     marginTop: 2,
+  },
+  checklistWrap: {
+    marginTop: 8,
+    backgroundColor: Colors.purple50,
+    borderWidth: 1,
+    borderColor: Colors.purple100,
+    borderRadius: Radius.sm,
+    padding: 8,
+  },
+  checklistToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  checklistToggleText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.purple700,
+  },
+  checklistItems: {
+    marginTop: 8,
+    gap: 6,
+  },
+  checklistItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  checklistItemText: {
+    fontSize: 12,
+    color: Colors.gray700,
+    flex: 1,
+  },
+  checklistItemTextDone: {
+    color: Colors.gray400,
+    textDecorationLine: 'line-through',
   },
   actions: {
     gap: 8,
