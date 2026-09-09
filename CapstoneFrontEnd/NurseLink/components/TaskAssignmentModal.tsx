@@ -13,7 +13,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
-import { createTask, fetchNurses, ApiError } from '../services/api';
+import { createTask, createAssignment, fetchNurses, ApiError } from '../services/api';
 import type { Nurse, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 
@@ -115,6 +115,21 @@ export function TaskAssignmentModal({
         category: 'care',
       });
 
+      // "Assign Nurse" is understood as putting this patient on that nurse's
+      // caseload, not just handing them one task — so this also creates/updates
+      // the real PatientAssignment (which the backend uses to close out any
+      // previous nurse's active assignment and sync Patient.assigned_nurse).
+      // Without this, the patient never showed up on the new nurse's own
+      // My Patients screen even though the supervisor could see the task.
+      if (selectedNurseRecord) {
+        await createAssignment({
+          patientId: patient.id,
+          nurseId: selectedNurseRecord.id,
+          nurseName: selectedNurseRecord.name,
+          priority,
+        });
+      }
+
       toast.success('Nurse assigned successfully!', {
         description: `${selectedNurseRecord?.name || 'The selected nurse'} has been assigned to ${taskTitle}.`,
       });
@@ -132,11 +147,13 @@ export function TaskAssignmentModal({
   };
 
   const riskColor =
-    patient?.riskLevel === 'high'
+    patient?.riskLevel === 'critical'
       ? Colors.red600
-      : patient?.riskLevel === 'medium'
-        ? Colors.warning
-        : Colors.green600;
+      : patient?.riskLevel === 'high'
+        ? Colors.orange600
+        : patient?.riskLevel === 'medium'
+          ? Colors.warning
+          : Colors.green600;
 
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => onOpenChange(false)}>
@@ -275,8 +292,11 @@ export function TaskAssignmentModal({
                 options={nurses.map((nurse) => ({
                   label: `${nurse.name} — ${nurse.role} • ${nurse.shift} shift${nurse.specialization ? ` • ${nurse.specialization}` : ''}`,
                   value: nurse.id,
+                  keywords: `${nurse.email || ''} ${nurse.department || ''}`,
                 }))}
                 placeholder="Select a nurse"
+                searchable
+                searchPlaceholder="Search by name, username, or email..."
               />
 
               <Input

@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
@@ -7,14 +9,19 @@ from rest_framework import serializers
 
 from .models import (
     ChartingNote,
+    Department,
+    Doctor,
+    DutyAssignment,
     HandoverNote,
     KardexRecord,
     Notification,
     NurseProfile,
     Patient,
     PatientAssignment,
+    PatientDoctor,
     RegistrationSession,
     Task,
+    TaskDoctor,
     UserPreferences,
 )
 from .avatar import AvatarError, normalize_avatar
@@ -602,6 +609,7 @@ class PatientSerializer(serializers.ModelSerializer):
     assignedNurseId = serializers.SerializerMethodField(read_only=True)
     assignedNurseName = serializers.SerializerMethodField(read_only=True)
     assignedBy = serializers.SerializerMethodField(read_only=True)
+    assignedDoctors = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Patient
@@ -622,7 +630,31 @@ class PatientSerializer(serializers.ModelSerializer):
             'assignedNurseId',
             'assignedNurseName',
             'assignedBy',
+            'assignedDoctors',
             'confirmDuplicate',
+        ]
+
+    def get_assignedDoctors(self, obj):
+        """The patient's Kardex care team — see PatientDoctor. Reads the
+        prefetch set up in PatientViewSet.get_queryset() when present (list/
+        retrieve), so this never costs an extra query per patient card; falls
+        back to a direct query for any other path that serializes a Patient
+        without that prefetch."""
+        prefetched = getattr(obj, 'active_doctor_assignments', None)
+        if prefetched is not None:
+            assignments = prefetched
+        else:
+            assignments = obj.assigned_doctors.filter(status='active').select_related(
+                'doctor', 'doctor__department'
+            )
+        return [
+            {
+                'id': pd.doctor_id,
+                'name': pd.doctor.full_name,
+                'specialization': pd.doctor.specialization,
+                'departmentName': pd.doctor.department.name,
+            }
+            for pd in assignments
         ]
 
     def get_assignedNurseId(self, obj):
@@ -738,11 +770,47 @@ class PatientSerializer(serializers.ModelSerializer):
         return instance
 
 
+class DepartmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Department
+        fields = ['id', 'name']
+
+
+class DoctorSerializer(serializers.ModelSerializer):
+    departmentId = serializers.PrimaryKeyRelatedField(
+        source='department', queryset=Department.objects.all()
+    )
+    departmentName = serializers.CharField(source='department.name', read_only=True)
+    fullName = serializers.CharField(source='full_name')
+    licenseNumber = serializers.CharField(
+        source='license_number', required=False, allow_blank=True
+    )
+
+    class Meta:
+        model = Doctor
+        fields = [
+            'id', 'fullName', 'specialization', 'departmentId', 'departmentName',
+            'licenseNumber', 'status',
+        ]
+
+
 class TaskSerializer(serializers.ModelSerializer):
     id = serializers.CharField(source='task_code', required=False)
     patientId = serializers.CharField(required=False, allow_blank=True)
     patientName = serializers.CharField(source='patient_name', required=False, allow_blank=True)
     dueTime = serializers.CharField(source='due_time', required=False, allow_blank=True)
+    departmentId = serializers.PrimaryKeyRelatedField(
+        source='department', queryset=Department.objects.all(), required=False, allow_null=True
+    )
+    departmentName = serializers.CharField(source='department.name', read_only=True, default='')
+    # Write-only: the set of doctor accounts to attach via TaskDoctor. Kept
+    # separate from the read-only assignedDoctors below because creating a
+    # Task needs raw IDs in, while every other consumer of this serializer
+    # wants full {id, name, specialization} objects out.
+    doctorIds = serializers.ListField(
+        child=serializers.IntegerField(), required=False, write_only=True, allow_empty=True
+    )
+    assignedDoctors = serializers.SerializerMethodField()
     assignedTo = serializers.CharField(
         source='assigned_to', required=False, allow_blank=True, default=''
     )
@@ -765,6 +833,10 @@ class TaskSerializer(serializers.ModelSerializer):
             'description',
             'priority',
             'dueTime',
+            'departmentId',
+            'departmentName',
+            'doctorIds',
+            'assignedDoctors',
             'assignedTo',
             'status',
             'category',
@@ -775,6 +847,73 @@ class TaskSerializer(serializers.ModelSerializer):
             'doctorOrder',
             'checklist',
         ]
+
+    def get_assignedDoctors(self, obj):
+        return [
+            {
+                'id': td.doctor_id,
+                'name': td.doctor.full_name,
+                'specialization': td.doctor.specialization,
+            }
+            for td in obj.task_doctors.select_related('doctor').all()
+        ]
+
+    def _validate_doctor_ids(self, patient, department, doctor_ids):
+        """Never trust the frontend: re-check every doctor id against the
+        department it claims to belong to, that it's active, and — the
+        important one — that this doctor is actually on the selected
+        patient's Kardex care team. A doctor who is real, active, and in the
+        right department but assigned to a *different* patient must still be
+        rejected; task assignment is not a hospital-wide doctor picker."""
+        if not doctor_ids:
+            raise serializers.ValidationError(
+                {'doctorIds': 'Please select at least one doctor.'}
+            )
+        doctors = list(Doctor.objects.filter(pk__in=doctor_ids).select_related('department'))
+        found_ids = {d.pk for d in doctors}
+        missing = [d for d in doctor_ids if d not in found_ids]
+        if missing:
+            raise serializers.ValidationError(
+                {'doctorIds': f'Doctor(s) not found: {", ".join(str(m) for m in missing)}.'}
+            )
+        assigned_ids = set(
+            PatientDoctor.objects.filter(
+                patient=patient, doctor_id__in=doctor_ids, status='active'
+            ).values_list('doctor_id', flat=True)
+        ) if patient is not None else set()
+        for doctor in doctors:
+            if doctor.status != 'active':
+                raise serializers.ValidationError(
+                    {'doctorIds': f'{doctor.full_name} is not available and cannot be assigned.'}
+                )
+            if doctor.department_id != department.pk:
+                raise serializers.ValidationError(
+                    {
+                        'doctorIds': (
+                            f'{doctor.full_name} does not belong to the selected department.'
+                        )
+                    }
+                )
+            if patient is None or doctor.pk not in assigned_ids:
+                raise serializers.ValidationError(
+                    {'doctorIds': 'The selected doctor is not assigned to this patient.'}
+                )
+        return doctors
+
+    def _sync_doctors(self, task, doctors, actor):
+        TaskDoctor.objects.filter(task=task).exclude(
+            doctor_id__in=[d.pk for d in doctors]
+        ).delete()
+        existing_ids = set(
+            TaskDoctor.objects.filter(task=task).values_list('doctor_id', flat=True)
+        )
+        TaskDoctor.objects.bulk_create(
+            [
+                TaskDoctor(task=task, doctor=doctor, assigned_by=actor)
+                for doctor in doctors
+                if doctor.pk not in existing_ids
+            ]
+        )
 
     def validate_checklist(self, value):
         for item in value:
@@ -802,12 +941,29 @@ class TaskSerializer(serializers.ModelSerializer):
             validated_data.setdefault('patient_room', patient.room)
             validated_data.setdefault('attending_physician', patient.attending_physician)
 
+    def _pop_doctor_selection(self, validated_data, patient, department):
+        """Doctors are only validated/attached when a department was actually
+        sent — callers that don't touch department/doctors at all (e.g. the
+        nurse-assignment flow) are left exactly as before."""
+        doctor_ids = validated_data.pop('doctorIds', None)
+        if doctor_ids is None:
+            return None
+        if department is None:
+            raise serializers.ValidationError(
+                {'departmentId': 'Select a department before assigning doctors.'}
+            )
+        return self._validate_doctor_ids(patient, department, doctor_ids)
+
     def create(self, validated_data):
         patient_id = validated_data.pop('patientId', None)
         self._resolve_patient(validated_data, patient_id)
+        doctors = self._pop_doctor_selection(
+            validated_data, validated_data.get('patient'), validated_data.get('department')
+        )
         code = validated_data.pop('task_code', None) or next_code(Task, 'task_code', 'T')
         validated_data['task_code'] = code
         request = self.context.get('request')
+        actor = request.user if request and request.user.is_authenticated else None
         assigned_to = validated_data.get('assigned_to') or ''
         assigned_nurse = None
         if assigned_to:
@@ -824,7 +980,14 @@ class TaskSerializer(serializers.ModelSerializer):
                 )
         if assigned_nurse:
             validated_data['assigned_nurse'] = assigned_nurse
+        if doctors:
+            # Keep the plain-text display field (shown across patient/task
+            # cards elsewhere in the app) in sync rather than leaving it
+            # blank now that the real doctor list lives in TaskDoctor.
+            validated_data['attending_physician'] = ', '.join(d.full_name for d in doctors)
         task = Task.objects.create(**validated_data)
+        if doctors:
+            self._sync_doctors(task, doctors, actor)
         notify_task_assigned(task, actor=request.user if request else None)
         return task
 
@@ -832,6 +995,9 @@ class TaskSerializer(serializers.ModelSerializer):
         patient_id = validated_data.pop('patientId', serializers.empty)
         if patient_id is not serializers.empty:
             self._resolve_patient(validated_data, patient_id)
+        patient = validated_data.get('patient', instance.patient)
+        department = validated_data.get('department', instance.department)
+        doctors = self._pop_doctor_selection(validated_data, patient, department)
         validated_data.pop('task_code', None)
         if 'assigned_to' in validated_data:
             assigned_to = validated_data.get('assigned_to') or ''
@@ -840,12 +1006,20 @@ class TaskSerializer(serializers.ModelSerializer):
                 if full == assigned_to or user.username == assigned_to:
                     validated_data['assigned_nurse'] = user
                     break
+        if doctors is not None:
+            validated_data['attending_physician'] = (
+                ', '.join(d.full_name for d in doctors) if doctors else ''
+            )
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         if instance.status == 'completed' and not instance.completed_at:
             instance.completed_at = timezone.now()
             instance.priority = 'completed'
         instance.save()
+        if doctors is not None:
+            request = self.context.get('request')
+            actor = request.user if request and request.user.is_authenticated else None
+            self._sync_doctors(instance, doctors, actor)
         return instance
 
 
@@ -917,26 +1091,36 @@ class HandoverSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         patient_id = validated_data.pop('patientId', None)
         self._resolve_patient(validated_data, patient_id)
+        # Resolved before the duplicate check below needs to know which
+        # account is being targeted.
+        self._resolve_recipient(validated_data)
 
-        # A patient can only be mid-handover to one nurse at a time. Once the
-        # receiving nurse acknowledges it, responsibility has genuinely moved
-        # and a later handover (next shift, say) is legitimate — so this only
-        # blocks a *second* handover while the first is still unacknowledged,
-        # not every handover a patient will ever have.
+        # A given nurse can only receive one handover for a given patient —
+        # once Nurse X has been handed Patient Y, Nurse X is done with that
+        # patient's handover history and must not be offered (or accepted)
+        # for Patient Y again. This is scoped to the (patient, nurse) pair,
+        # not the patient alone, so a different nurse can still receive the
+        # same patient concurrently — see NurseViewSet.list's excludeForPatient
+        # for the matching frontend-facing query.
         patient = validated_data.get('patient')
+        recipient = validated_data.get('nurse_to_user')
         if patient is not None:
-            existing = (
-                HandoverNote.objects.filter(patient=patient, status='pending')
-                .order_by('-created_at')
-                .first()
+            existing_qs = HandoverNote.objects.filter(patient=patient)
+            existing_qs = (
+                existing_qs.filter(nurse_to_user=recipient)
+                if recipient is not None
+                # No resolved account (unrecognized/ambiguous name) — fall back
+                # to matching on the typed name so this check still does something.
+                else existing_qs.filter(nurse_to=validated_data.get('nurse_to'))
             )
+            existing = existing_qs.order_by('-created_at').first()
             if existing is not None:
                 raise serializers.ValidationError(
                     {
-                        'patientId': (
-                            f'{patient.name} already has a pending handover to '
-                            f'{existing.nurse_to} ({existing.handover_code}). It must be '
-                            'acknowledged before another handover can be created for this patient.'
+                        'nurseToId': (
+                            f'{patient.name} has already been handed over to '
+                            f'{existing.nurse_to} ({existing.handover_code}). Choose a '
+                            'different nurse for this patient.'
                         )
                     }
                 )
@@ -949,7 +1133,6 @@ class HandoverSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             validated_data['created_by'] = request.user
-        self._resolve_recipient(validated_data)
         handover = HandoverNote.objects.create(**validated_data)
         # The work is the sender's until somebody accepts it, so it goes on
         # their task list now rather than existing only as text on a card.
@@ -970,10 +1153,25 @@ class HandoverSerializer(serializers.ModelSerializer):
             )
             return
         # Older clients and the API docs send only a name; fall back to matching
-        # on it, which resolves to nobody when the name is ambiguous.
+        # on it. A handover that saves but resolves to nobody looks identical
+        # to a working one from the sender's side — it appears in their list —
+        # so the only symptom is a popup that never arrives. Reject it instead:
+        # this ward has several nurses sharing a display name, so "ambiguous"
+        # is a routine outcome here, not a rare edge case worth staying quiet
+        # about.
         name = validated_data.get('nurse_to')
         if name:
-            validated_data['nurse_to_user'] = resolve_nurse(name)
+            recipient = resolve_nurse(name)
+            if recipient is None:
+                raise serializers.ValidationError(
+                    {
+                        'nurseToId': (
+                            f'Could not determine a single account for "{name}" — no match, or '
+                            'more than one nurse has this name. Select the nurse from the list.'
+                        )
+                    }
+                )
+            validated_data['nurse_to_user'] = recipient
 
     def update(self, instance, validated_data):
         patient_id = validated_data.pop('patientId', serializers.empty)
@@ -987,6 +1185,110 @@ class HandoverSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         instance.save()
         return instance
+
+
+def content_from_structured(structured: dict) -> str:
+    """Build a readable narrative from structured sections when note text is empty."""
+    if not isinstance(structured, dict) or not structured:
+        return ''
+    lines: list[str] = []
+    name = structured.get('patientName') or ''
+    pid = structured.get('patientId') or ''
+    room = structured.get('room') or ''
+    if name or pid or room:
+        lines.append('NURSING PROGRESS NOTE')
+        if name:
+            lines.append(f'Patient Name: {name}')
+        if pid:
+            lines.append(f'Patient ID: {pid}')
+        if room:
+            lines.append(f'Room: {room}')
+        if structured.get('date'):
+            lines.append(f'Date: {structured["date"]}')
+        if structured.get('time'):
+            lines.append(f'Time: {structured["time"]}')
+        if structured.get('attendingPhysician'):
+            lines.append(f'Attending Physician: {structured["attendingPhysician"]}')
+        if structured.get('nurseName'):
+            lines.append(f'Nurse: {structured["nurseName"]}')
+        lines.append('')
+    vitals = structured.get('vitalSigns') or {}
+    if isinstance(vitals, dict) and any(str(v).strip() for v in vitals.values() if v is not None):
+        lines.append('VITAL SIGNS')
+        for key, label in (
+            ('heartRate', 'Heart Rate'),
+            ('bloodPressure', 'Blood Pressure'),
+            ('temperature', 'Temperature'),
+            ('oxygenSaturation', 'Oxygen Saturation'),
+            ('respiratoryRate', 'Respiratory Rate'),
+        ):
+            val = vitals.get(key)
+            if val is not None and str(val).strip():
+                lines.append(f'{label}: {val}')
+        lines.append('')
+    assessment = (structured.get('assessment') or '').strip()
+    if assessment:
+        lines.append('ASSESSMENT & OBSERVATIONS')
+        lines.append(assessment)
+        lines.append('')
+    for key, label in (
+        ('diagnosis', 'Current Diagnosis'),
+        ('riskLevel', 'Risk Level'),
+        ('allergies', 'Allergies'),
+        ('medications', 'Active Medications'),
+        ('alerts', 'Alerts'),
+    ):
+        val = structured.get(key)
+        if val is not None and str(val).strip():
+            lines.append(f'{label}: {val}')
+    interventions = structured.get('interventions') or []
+    if isinstance(interventions, list) and interventions:
+        lines.append('')
+        lines.append('INTERVENTIONS')
+        for item in interventions:
+            text = str(item).strip()
+            if text:
+                lines.append(f'- {text}')
+    response = (structured.get('patientResponse') or '').strip()
+    if response:
+        lines.append('')
+        lines.append('PATIENT RESPONSE')
+        lines.append(response)
+    summary = (structured.get('clinicalSummary') or '').strip()
+    if summary:
+        lines.append('')
+        lines.append('CLINICAL SUMMARY')
+        lines.append(summary)
+    plan = (structured.get('plan') or '').strip()
+    if plan:
+        lines.append('')
+        lines.append(f'Plan: {plan}')
+    return '\n'.join(lines).strip()
+
+
+def structured_has_clinical_content(structured: dict | None) -> bool:
+    if not isinstance(structured, dict) or not structured:
+        return False
+    if (structured.get('assessment') or '').strip():
+        return True
+    if (structured.get('patientResponse') or '').strip():
+        return True
+    if (structured.get('clinicalSummary') or '').strip():
+        return True
+    if (structured.get('plan') or '').strip():
+        return True
+    interventions = structured.get('interventions') or []
+    if isinstance(interventions, list) and any(str(i).strip() for i in interventions):
+        return True
+    vitals = structured.get('vitalSigns') or {}
+    if isinstance(vitals, dict) and any(
+        v is not None and str(v).strip() for v in vitals.values()
+    ):
+        return True
+    for key in ('diagnosis', 'allergies', 'medications', 'alerts'):
+        if structured.get(key) is not None and str(structured.get(key)).strip():
+            return True
+    return False
 
 
 class ChartingNoteSerializer(serializers.ModelSerializer):
@@ -1003,7 +1305,12 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
         source='attending_physician', required=False, allow_blank=True
     )
     editHistory = serializers.ListField(source='edit_history', required=False)
-    content = serializers.CharField()
+    content = serializers.CharField(allow_blank=True)
+    structured = serializers.JSONField(source='structured_data', required=False)
+    confirmed = serializers.BooleanField(required=False)
+    confirmedAt = serializers.DateTimeField(source='confirmed_at', required=False, allow_null=True, read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
 
     class Meta:
         model = ChartingNote
@@ -1016,10 +1323,15 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
             'timestamp',
             'type',
             'content',
+            'structured',
             'aiGenerated',
             'edited',
+            'confirmed',
+            'confirmedAt',
             'attendingPhysician',
             'editHistory',
+            'createdAt',
+            'updatedAt',
         ]
 
     def get_nurseId(self, obj):
@@ -1028,7 +1340,50 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data['patientId'] = instance.patient.patient_code if instance.patient_id else ''
+        data['structured'] = instance.structured_data or {}
         return data
+
+    def validate(self, attrs):
+        content = (attrs.get('content') if 'content' in attrs else None)
+        structured = attrs.get('structured_data') if 'structured_data' in attrs else None
+
+        if self.instance is None:
+            # Create: refuse empty charts that would show as successful saves.
+            content_text = (content or '').strip()
+            structured_payload = structured if isinstance(structured, dict) else {}
+            if not content_text and not structured_has_clinical_content(structured_payload):
+                raise serializers.ValidationError(
+                    {
+                        'content': (
+                            'Cannot save an empty charting note. Provide note content '
+                            'or structured chart data.'
+                        )
+                    }
+                )
+            if not content_text and structured_payload:
+                attrs['content'] = content_from_structured(structured_payload)
+            attrs.setdefault('structured_data', structured_payload)
+        else:
+            # Update: if content cleared with no structured clinical body, reject.
+            next_content = (
+                content if content is not None else (self.instance.content or '')
+            )
+            next_structured = (
+                structured
+                if structured is not None
+                else (self.instance.structured_data or {})
+            )
+            if not (next_content or '').strip() and not structured_has_clinical_content(
+                next_structured if isinstance(next_structured, dict) else {}
+            ):
+                raise serializers.ValidationError(
+                    {'content': 'Cannot clear a charting note to an empty record.'}
+                )
+            if content is not None and not (content or '').strip() and isinstance(
+                next_structured, dict
+            ):
+                attrs['content'] = content_from_structured(next_structured)
+        return attrs
 
     def _resolve_patient(self, validated_data, patient_id):
         if not patient_id:
@@ -1053,6 +1408,9 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
                 'nurse_name',
                 request.user.get_full_name().strip() or request.user.username,
             )
+        validated_data.setdefault('structured_data', {})
+        validated_data['confirmed'] = False
+        validated_data['confirmed_at'] = None
         return ChartingNote.objects.create(**validated_data)
 
     def update(self, instance, validated_data):
@@ -1061,7 +1419,14 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
             self._resolve_patient(validated_data, patient_id)
         validated_data.pop('note_code', None)
         request = self.context.get('request')
-        if 'content' in validated_data and validated_data['content'] != instance.content:
+        content_changed = (
+            'content' in validated_data and validated_data['content'] != instance.content
+        )
+        structured_changed = (
+            'structured_data' in validated_data
+            and validated_data['structured_data'] != (instance.structured_data or {})
+        )
+        if content_changed or structured_changed:
             history = list(instance.edit_history or [])
             editor = ''
             if request and request.user.is_authenticated:
@@ -1290,6 +1655,114 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
         return instance
 
 
+class DutyAssignmentSerializer(serializers.ModelSerializer):
+    """
+    A duty-roster entry. Hours are never accepted from the client — they're
+    read-only here because DutyAssignment.save() derives regular/overtime/
+    total hours from the stored times every time, which is the backend's
+    single source of truth for those numbers (see models.py).
+    """
+
+    nurseId = serializers.PrimaryKeyRelatedField(
+        source='nurse', queryset=User.objects.filter(nurse_profile__role='staff_nurse')
+    )
+    nurseName = serializers.SerializerMethodField()
+    departmentId = serializers.PrimaryKeyRelatedField(
+        source='department', queryset=Department.objects.all()
+    )
+    departmentName = serializers.CharField(source='department.name', read_only=True)
+    dutyDate = serializers.DateField(source='duty_date')
+    shift = serializers.ChoiceField(choices=DutyAssignment.SHIFT_CHOICES)
+    shiftLabel = serializers.CharField(source='get_shift_display', read_only=True)
+    startTime = serializers.TimeField(source='start_time')
+    endTime = serializers.TimeField(source='end_time')
+    regularHours = serializers.FloatField(source='regular_hours', read_only=True)
+    overtimeStart = serializers.TimeField(source='overtime_start', required=False, allow_null=True)
+    overtimeEnd = serializers.TimeField(source='overtime_end', required=False, allow_null=True)
+    overtimeHours = serializers.FloatField(source='overtime_hours', read_only=True)
+    totalHours = serializers.FloatField(source='total_hours', read_only=True)
+    status = serializers.ChoiceField(choices=DutyAssignment.STATUS_CHOICES, required=False)
+    statusLabel = serializers.CharField(source='get_status_display', read_only=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    createdBy = serializers.SerializerMethodField()
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+    # Real attendance — set only through the start/end actions below, never
+    # accepted on create/update, so a client can't fabricate a clock time.
+    actualStartTime = serializers.DateTimeField(source='actual_start_time', read_only=True)
+    actualEndTime = serializers.DateTimeField(source='actual_end_time', read_only=True)
+    actualWorkedHours = serializers.FloatField(source='actual_worked_hours', read_only=True)
+    actualOvertimeHours = serializers.FloatField(source='actual_overtime_hours', read_only=True)
+    # Present only when a supervisor closed this shift out rather than the
+    # nurse ending it themselves — see DutyAssignmentViewSet.close.
+    actualEndRecordedBy = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DutyAssignment
+        fields = [
+            'id', 'nurseId', 'nurseName', 'departmentId', 'departmentName',
+            'dutyDate', 'shift', 'shiftLabel', 'startTime', 'endTime',
+            'regularHours', 'overtimeStart', 'overtimeEnd', 'overtimeHours',
+            'totalHours', 'status', 'statusLabel', 'notes',
+            'actualStartTime', 'actualEndTime', 'actualWorkedHours', 'actualOvertimeHours',
+            'actualEndRecordedBy',
+            'createdBy', 'createdAt', 'updatedAt',
+        ]
+
+    def get_nurseName(self, obj):
+        return obj.nurse.get_full_name().strip() or obj.nurse.username
+
+    def get_actualEndRecordedBy(self, obj):
+        if not obj.actual_end_recorded_by_id:
+            return None
+        user = obj.actual_end_recorded_by
+        return user.get_full_name().strip() or user.username
+
+    def get_createdBy(self, obj):
+        if not obj.created_by:
+            return ''
+        return obj.created_by.get_full_name().strip() or obj.created_by.username
+
+    def validate(self, attrs):
+        nurse = attrs.get('nurse', getattr(self.instance, 'nurse', None))
+        duty_date = attrs.get('duty_date', getattr(self.instance, 'duty_date', None))
+        start_time = attrs.get('start_time', getattr(self.instance, 'start_time', None))
+        end_time = attrs.get('end_time', getattr(self.instance, 'end_time', None))
+        status_value = attrs.get('status', getattr(self.instance, 'status', 'scheduled'))
+
+        if nurse and duty_date and start_time and end_time and status_value != 'cancelled':
+            start_dt = datetime.combine(duty_date, start_time)
+            end_dt = datetime.combine(duty_date, end_time)
+            if end_time <= start_time:
+                end_dt += timedelta(days=1)
+
+            # A night shift crosses midnight, so a same-nurse conflict can sit
+            # on the day before or after — widen the candidate window rather
+            # than comparing duty_date to duty_date directly.
+            candidates = DutyAssignment.objects.filter(
+                nurse=nurse,
+                duty_date__range=(duty_date - timedelta(days=1), duty_date + timedelta(days=1)),
+            ).exclude(status='cancelled')
+            if self.instance is not None:
+                candidates = candidates.exclude(pk=self.instance.pk)
+
+            for other in candidates:
+                other_start = datetime.combine(other.duty_date, other.start_time)
+                other_end = datetime.combine(other.duty_date, other.end_time)
+                if other.end_time <= other.start_time:
+                    other_end += timedelta(days=1)
+                if start_dt < other_end and other_start < end_dt:
+                    raise serializers.ValidationError(
+                        'This nurse already has a conflicting duty assignment during this time.'
+                    )
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        validated_data['created_by'] = request.user if request else None
+        return super().create(validated_data)
+
+
 def _parse_float(value):
     try:
         if value is None or str(value).strip() == '':
@@ -1311,53 +1784,69 @@ def _parse_blood_pressure(value):
 def assess_risk_level(*, temperature=None, pulse_rate=None, respiratory_rate=None,
                        blood_pressure=None, oxygen_saturation=None):
     """
-    'high'/'medium'/'low' from whichever vitals were actually filled in —
-    never from ones that were left blank, so an incomplete kardex is not
-    mistaken for a stable one and a mostly-empty kardex does not get flagged
-    high risk on the strength of a single field.
+    'critical'/'high'/'medium'/'low' from whichever vitals were actually
+    filled in — never from ones that were left blank, so an incomplete
+    kardex is not mistaken for a stable one and a mostly-empty kardex does
+    not get flagged high risk on the strength of a single field.
 
     Threshold-based, not a clinical judgment — a nurse's own assessment
     always takes precedence; this exists so an obviously abnormal vital sign
     is not silently defaulted to 'low' the way risk_level='low' used to be
     hardcoded for every kardex-created patient regardless of their vitals.
+
+    'critical' is a wider band outside 'high', for vitals so far out of
+    range they warrant immediate attention rather than just closer
+    monitoring — mirrored on the frontend in utils/riskLevel.ts.
     """
     severities = []
 
     temp = _parse_float(temperature)
     if temp is not None:
-        if temp < 35.0 or temp >= 39.0:
+        if temp < 34.0 or temp >= 40.0:
+            severities.append('critical')
+        elif temp < 35.0 or temp >= 39.0:
             severities.append('high')
         elif temp < 36.1 or temp >= 37.6:
             severities.append('medium')
 
     pulse = _parse_float(pulse_rate)
     if pulse is not None:
-        if pulse < 50 or pulse > 130:
+        if pulse < 40 or pulse > 150:
+            severities.append('critical')
+        elif pulse < 50 or pulse > 130:
             severities.append('high')
         elif pulse < 60 or pulse > 100:
             severities.append('medium')
 
     resp = _parse_float(respiratory_rate)
     if resp is not None:
-        if resp < 10 or resp > 28:
+        if resp < 8 or resp > 30:
+            severities.append('critical')
+        elif resp < 10 or resp > 28:
             severities.append('high')
         elif resp < 12 or resp > 20:
             severities.append('medium')
 
     spo2 = _parse_float(oxygen_saturation)
     if spo2 is not None:
-        if spo2 < 90:
+        if spo2 < 85:
+            severities.append('critical')
+        elif spo2 < 90:
             severities.append('high')
         elif spo2 < 95:
             severities.append('medium')
 
     systolic, diastolic = _parse_blood_pressure(blood_pressure)
     if systolic is not None and diastolic is not None:
-        if systolic >= 180 or systolic < 90 or diastolic >= 120 or diastolic < 60:
+        if systolic >= 200 or systolic < 80 or diastolic >= 130 or diastolic < 50:
+            severities.append('critical')
+        elif systolic >= 180 or systolic < 90 or diastolic >= 120 or diastolic < 60:
             severities.append('high')
         elif systolic >= 140 or diastolic >= 90:
             severities.append('medium')
 
+    if 'critical' in severities:
+        return 'critical'
     if 'high' in severities:
         return 'high'
     if 'medium' in severities:
@@ -1368,6 +1857,10 @@ def assess_risk_level(*, temperature=None, pulse_rate=None, respiratory_rate=Non
 class KardexRecordSerializer(serializers.ModelSerializer):
     id = serializers.SerializerMethodField()
     patientName = serializers.SerializerMethodField()
+    # Read-only: the code of the Patient this kardex is linked to (created
+    # fresh when patientId was blank). Lets the caller act on that patient —
+    # e.g. assigning Kardex doctors — right after this submission returns.
+    patientCode = serializers.SerializerMethodField()
     lastName = serializers.CharField(source='last_name')
     firstName = serializers.CharField(source='first_name')
     middleName = serializers.CharField(source='middle_name', required=False, allow_blank=True)
@@ -1416,6 +1909,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'patientId',
+            'patientCode',
             'patientName',
             'lastName',
             'firstName',
@@ -1452,6 +1946,9 @@ class KardexRecordSerializer(serializers.ModelSerializer):
 
     def get_patientName(self, obj):
         return obj.patient_name
+
+    def get_patientCode(self, obj):
+        return obj.patient.patient_code if obj.patient_id else None
 
     def get_reviewedBy(self, obj):
         if obj.reviewed_by_id is None:

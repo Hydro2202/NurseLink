@@ -51,7 +51,13 @@ export function BarChart(props: BarChartProps) {
 export function LineChart(props: LineChartProps) {
   const visible = useChartsVisible();
   if (!visible) return <ChartsHidden />;
-  return <GiftedLineChart {...props} />;
+  // focusEnabled defaults on inside the library, wiring an onPressIn/onPressOut
+  // pair onto each data point for a tap-to-focus tooltip nobody here uses.
+  // react-native-web logs those as "Unknown event handler property" console
+  // errors on its SVG host nodes; no call site passes pointerConfig or relies
+  // on focus, so it's off by default here — pass focusEnabled explicitly to
+  // opt a specific chart back in.
+  return <GiftedLineChart focusEnabled={false} {...props} />;
 }
 
 export function PieChart(props: PieChartProps) {

@@ -264,6 +264,25 @@ N8N_TIMEOUT_SECONDS = float(os.environ.get('N8N_TIMEOUT_SECONDS', '60'))
 # workflow can reject calls that did not come from this backend.
 N8N_WEBHOOK_TOKEN = os.environ.get('N8N_WEBHOOK_TOKEN', '').strip()
 
+# How early a nurse may tap "Start Shift" before their scheduled start —
+# early enough to be realistic (arriving a bit ahead of a shift is normal),
+# not so early it stops meaning anything. Enforced in DutyAssignmentViewSet.
+DUTY_START_BUFFER_MINUTES = int(os.environ.get('DUTY_START_BUFFER_MINUTES', '15'))
+
+# How long a nurse may stay clocked in past their scheduled end before the
+# supervisor's Duty Roster flags the shift as "not clocked out" — a nurse
+# genuinely working overtime is normal; one who forgot to tap "End Shift"
+# needs a supervisor's attention, and this is what tells them apart.
+DUTY_MISSED_CLOCKOUT_MINUTES = int(os.environ.get('DUTY_MISSED_CLOCKOUT_MINUTES', '120'))
+
+# duty_date/start_time/end_time on DutyAssignment are entered and displayed
+# as the facility's local wall-clock time, not UTC — TIME_ZONE above stays
+# 'UTC' for how Django itself stores/renders timestamps everywhere else, but
+# clock-in/out needs to compare the schedule against a real, absolute
+# instant (timezone.now()), so DutyAssignment.scheduled_start_datetime() /
+# scheduled_end_datetime() localize against this instead.
+DUTY_LOCAL_TIMEZONE = os.environ.get('DUTY_LOCAL_TIMEZONE', 'Asia/Manila')
+
 # Face matching engine. True routes matching to the n8n face-verify workflow;
 # False uses the bundled local OpenCV SFace comparison in api/face_match.py.
 # Attempt counting, the 3-strike lockout and audit logging stay server-side

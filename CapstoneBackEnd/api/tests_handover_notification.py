@@ -139,16 +139,19 @@ class HandoverNotificationTests(APITestCase):
         self.assertEqual(Notification.objects.count(), 1)
 
     def test_two_handovers_produce_two_notifications(self):
-        # A second handover for the same patient/nurse pair is only allowed
-        # once the first has been acknowledged (see tests_handover_duplicate.py)
-        # — acknowledging it here is what makes the second create() legal.
-        first_code = self.create_handover()
-        self.client.force_authenticate(user=self.receiver)
-        self.client.post('/api/handovers/%s/acknowledge/' % first_code)
-        self.client.force_authenticate(user=self.sender)
-
+        # A given nurse can only receive one handover for a given patient
+        # (see tests_handover_duplicate.py) — even after acknowledging, Ben
+        # cannot receive this patient again. So the second handover here goes
+        # to a different nurse, and each recipient gets their own notification.
         self.create_handover()
-        self.assertEqual(Notification.objects.filter(recipient=self.receiver).count(), 2)
+        second_code = self.create_handover(
+            nurseTo='Cora Reyes', nurseToId=str(self.bystander.pk)
+        )
+        self.assertEqual(Notification.objects.filter(recipient=self.receiver).count(), 1)
+        self.assertEqual(Notification.objects.filter(recipient=self.bystander).count(), 1)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.bystander, handover__handover_code=second_code
+        ).exists())
 
     def test_notifying_twice_for_one_handover_is_a_no_op(self):
         from .notifications import notify_handover_created

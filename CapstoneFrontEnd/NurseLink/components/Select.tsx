@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -6,15 +6,22 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   ViewStyle,
 } from 'react-native';
-import { ChevronDown, Check } from 'lucide-react-native';
+import { ChevronDown, Check, Search } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 
 export interface SelectOption {
   label: string;
   value: string;
   disabled?: boolean;
+  /**
+   * Extra text matched by search but not shown as the option label — e.g. a
+   * nurse's username/email or a patient's ID, so search works on fields the
+   * label doesn't spell out.
+   */
+  keywords?: string;
 }
 
 interface SelectProps {
@@ -25,6 +32,11 @@ interface SelectProps {
   label?: string;
   error?: string;
   style?: ViewStyle;
+  /** Shows a search box above the option list, filtering as the user types. */
+  searchable?: boolean;
+  searchPlaceholder?: string;
+  /** Shown instead of the list when search/options produce zero results. */
+  emptyMessage?: string;
 }
 
 export function Select({
@@ -35,9 +47,28 @@ export function Select({
   label,
   error,
   style,
+  searchable = false,
+  searchPlaceholder = 'Search...',
+  emptyMessage = 'No results found.',
 }: SelectProps) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const selected = options.find((o) => o.value === value);
+
+  const visibleOptions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(
+      (o) =>
+        o.label.toLowerCase().includes(q) ||
+        (o.keywords ? o.keywords.toLowerCase().includes(q) : false)
+    );
+  }, [options, query]);
+
+  const closeModal = () => {
+    setOpen(false);
+    setQuery('');
+  };
 
   return (
     <View style={[styles.container, style]}>
@@ -56,12 +87,29 @@ export function Select({
       </Pressable>
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={closeModal}>
+        <Pressable style={styles.backdrop} onPress={closeModal}>
           <Pressable style={[styles.sheet, Shadows.lg]} onPress={(e) => e.stopPropagation()}>
             {label ? <Text style={styles.sheetTitle}>{label}</Text> : null}
+            {searchable ? (
+              <View style={styles.searchBox}>
+                <Search size={15} color={Colors.mutedForeground} />
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder={searchPlaceholder}
+                  placeholderTextColor={Colors.mutedForeground}
+                  value={query}
+                  onChangeText={setQuery}
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                />
+              </View>
+            ) : null}
+            {visibleOptions.length === 0 ? (
+              <Text style={styles.emptyText}>{emptyMessage}</Text>
+            ) : (
             <ScrollView style={styles.list} keyboardShouldPersistTaps="handled">
-              {options.map((option) => {
+              {visibleOptions.map((option) => {
                 const isSelected = option.value === value;
                 const isDisabled = !!option.disabled;
                 return (
@@ -71,7 +119,7 @@ export function Select({
                     onPress={() => {
                       if (isDisabled) return;
                       onValueChange(option.value);
-                      setOpen(false);
+                      closeModal();
                     }}
                     style={[
                       styles.option,
@@ -93,7 +141,8 @@ export function Select({
                 );
               })}
             </ScrollView>
-            <Pressable style={styles.cancelBtn} onPress={() => setOpen(false)}>
+            )}
+            <Pressable style={styles.cancelBtn} onPress={closeModal}>
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>
           </Pressable>
@@ -159,6 +208,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: 8,
+  },
+  searchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    height: 38,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.inputBackground,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: Colors.foreground,
+    padding: 0,
+  },
+  emptyText: {
+    fontSize: 13,
+    color: Colors.mutedForeground,
+    textAlign: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 32,
   },
   list: {
     maxHeight: 320,

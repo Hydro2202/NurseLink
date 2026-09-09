@@ -25,6 +25,8 @@ import {
   X,
   BookOpen,
   Users,
+  Calendar,
+  Stethoscope,
   type LucideIcon,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
@@ -238,6 +240,8 @@ export default function AppLayout() {
     { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, show: true },
     { name: 'Tasks', href: '/(app)/tasks', icon: ClipboardList, show: isStaffNurse },
     { name: 'Handover', href: '/(app)/handover', icon: FileText, show: isStaffNurse },
+    { name: 'My Duty', href: '/(app)/my-duty', icon: Stethoscope, show: isStaffNurse },
+    { name: 'Duty Roster', href: '/(app)/duty-roster', icon: Calendar, show: isSupervisor },
     { name: 'Charting', href: '/(app)/charting', icon: FileText, show: isStaffNurse },
     { name: 'Kardex', href: '/(app)/kardex', icon: BookOpen, show: isStaffNurse },
     { name: 'All Patients', href: '/(app)/all-patients', icon: Users, show: isSupervisor },

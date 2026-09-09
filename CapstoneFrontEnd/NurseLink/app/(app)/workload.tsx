@@ -17,6 +17,7 @@ import {
   Activity,
   Trash2,
   Edit2,
+  Search,
 } from 'lucide-react-native';
 import {
   fetchWorkload,
@@ -32,6 +33,7 @@ import type { PatientAssignmentRecord, Task, WorkloadData } from '../../types/do
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
+import { Input } from '../../components/Input';
 import { Progress } from '../../components/Progress';
 import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
 import { Tabs } from '../../components/Tabs';
@@ -77,6 +79,7 @@ export default function WorkloadPage() {
   const [toDelete, setToDelete] = useState<string | null>(null);
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignTarget, setAssignTarget] = useState<AssignTarget | null>(null);
+  const [nurseSearch, setNurseSearch] = useState('');
 
   const loadData = async () => {
     try {
@@ -107,6 +110,12 @@ export default function WorkloadPage() {
     name: nurse.nurseName,
     patientCount: nurse.patientCount,
   }));
+
+  const filteredWorkload = useMemo(() => {
+    const query = nurseSearch.trim().toLowerCase();
+    if (!query) return workloadData;
+    return workloadData.filter((n) => n.nurseName.toLowerCase().includes(query));
+  }, [workloadData, nurseSearch]);
 
   const overtimeData = useMemo(() => {
     const byShift: Record<string, number[]> = { morning: [], afternoon: [], night: [] };
@@ -306,7 +315,24 @@ export default function WorkloadPage() {
 
         {tab === 'overview' ? (
           <View style={styles.gap12}>
-            {workloadData.map((nurse) => (
+            <Input
+              placeholder="Search nurses by name..."
+              value={nurseSearch}
+              onChangeText={setNurseSearch}
+              autoCapitalize="none"
+              autoCorrect={false}
+              leftIcon={<Search size={16} color={Colors.mutedForeground} />}
+            />
+            {filteredWorkload.length === 0 ? (
+              <Card>
+                <CardContent style={styles.emptySearch}>
+                  <Text style={styles.emptySearchText}>
+                    No nurses match "{nurseSearch}".
+                  </Text>
+                </CardContent>
+              </Card>
+            ) : null}
+            {filteredWorkload.map((nurse) => (
               <Card key={nurse.nurseId} style={riskStyles(nurse.burnoutRisk)}>
                 <CardContent style={styles.nurseCard}>
                   <View style={styles.nurseHeader}>
@@ -323,7 +349,7 @@ export default function WorkloadPage() {
                             : 'outline'
                       }
                     >
-                      {nurse.burnoutRisk.toUpperCase()} RISK
+                      {`${nurse.burnoutRisk.toUpperCase()} RISK`}
                     </Badge>
                   </View>
                   <View style={styles.metrics}>
@@ -590,6 +616,8 @@ const styles = StyleSheet.create({
   statValue: { fontSize: 22, fontWeight: '700', color: Colors.foreground },
   statLabel: { fontSize: 11, color: Colors.mutedForeground },
   gap12: { gap: 12 },
+  emptySearch: { alignItems: 'center', paddingVertical: 24 },
+  emptySearchText: { fontSize: 13, color: Colors.mutedForeground },
   riskHigh: {
     borderColor: 'rgba(239, 68, 68, 0.3)',
     backgroundColor: 'rgba(239, 68, 68, 0.05)',

@@ -33,6 +33,7 @@ import { fetchPatients, fetchTasks, fetchWorkload } from '../../services/api';
 import { useLiveRefresh } from '../../contexts/LiveContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
+import { RiskBadge } from '../../components/RiskBadge';
 import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
 import { Progress } from '../../components/Progress';
 import { Button } from '../../components/Button';
@@ -133,7 +134,9 @@ export default function DashboardPage() {
   const overdueTasks = tasks.filter((t) => t.status === 'overdue').length;
   const completedTasks = tasks.filter((t) => t.status === 'completed').length;
   const totalTasks = tasks.length || 1;
-  const highRiskPatients = patients.filter((p) => p.riskLevel === 'high').length;
+  const highRiskPatients = patients.filter(
+    (p) => p.riskLevel === 'high' || p.riskLevel === 'critical'
+  ).length;
   const completionRate = Math.round((completedTasks / totalTasks) * 100);
   const inProgressCount = tasks.filter((t) => t.status === 'in_progress').length;
   const pendingCount = tasks.filter((t) => t.status === 'pending').length;
@@ -183,14 +186,17 @@ export default function DashboardPage() {
     }[] = [];
 
     patients
-      .filter((p) => p.riskLevel === 'high')
+      .filter((p) => p.riskLevel === 'high' || p.riskLevel === 'critical')
+      // Critical patients surface before merely high-risk ones.
+      .sort((a, b) => (a.riskLevel === b.riskLevel ? 0 : a.riskLevel === 'critical' ? -1 : 1))
       .slice(0, 5)
       .forEach((p) => {
         const vs = p.vitalSigns;
+        const label = p.riskLevel === 'critical' ? 'Critical' : 'High Risk';
         alerts.push({
           key: `patient-${p.id}`,
           variant: 'destructive',
-          title: `Critical - ${p.name} (${p.room})`,
+          title: `${label} - ${p.name} (${p.room})`,
           description: vs
             ? `Vital signs require attention. BP ${vs.bloodPressure}, HR ${vs.heartRate}, Temp ${vs.temperature}°C.`
             : `${p.diagnosis || 'High-risk patient'} — immediate assessment required.`,
@@ -224,7 +230,7 @@ export default function DashboardPage() {
       const room = (p.room || '').toUpperCase();
       const key = room.includes('ICU') ? 'ICU' : room.includes('ER') || room.includes('EMERGENCY') ? 'ER' : 'Ward';
       buckets[key].total += 1;
-      if (p.riskLevel === 'high') buckets[key].critical += 1;
+      if (p.riskLevel === 'high' || p.riskLevel === 'critical') buckets[key].critical += 1;
       else buckets[key].stable += 1;
     });
     return Object.values(buckets);
@@ -476,7 +482,8 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent style={styles.gap12}>
               {patients
-                .filter((p) => p.riskLevel === 'high')
+                .filter((p) => p.riskLevel === 'high' || p.riskLevel === 'critical')
+                .sort((a, b) => (a.riskLevel === b.riskLevel ? 0 : a.riskLevel === 'critical' ? -1 : 1))
                 .map((patient) => (
                   <View key={patient.id} style={styles.highRiskCard}>
                     <View style={styles.highRiskHeader}>
@@ -486,7 +493,7 @@ export default function DashboardPage() {
                           {patient.room}  {patient.diagnosis}
                         </Text>
                       </View>
-                      <Badge variant="destructive">HIGH RISK</Badge>
+                      <RiskBadge level={patient.riskLevel} size="sm" />
                     </View>
                     <View style={styles.vitalsGrid}>
                       <View style={styles.vitalItem}>

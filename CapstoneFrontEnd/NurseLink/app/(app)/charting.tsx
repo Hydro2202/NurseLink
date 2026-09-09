@@ -17,22 +17,33 @@ import {
   Check,
   Clock,
   Eye,
-  AlertCircle,
   Search,
   User,
   Stethoscope,
   Edit2,
   X,
+  Trash2,
+  CheckCircle2,
+  ClipboardList,
+  ChevronLeft,
 } from 'lucide-react-native';
 import {
   fetchPatients,
   fetchChartingNotes,
+  fetchChartingHistoryDates,
   createChartingNote,
   updateChartingNote,
+  confirmChartingNote,
+  deleteChartingNote,
   structureChartRequest,
   ApiError,
 } from '../../services/api';
-import type { ChartingNote, Patient } from '../../types/domain';
+import type {
+  ChartingHistoryDate,
+  ChartingNote,
+  ChartingStructuredData,
+  Patient,
+} from '../../types/domain';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
@@ -43,15 +54,37 @@ import { StructuredNursingNote } from '../../components/StructuredNursingNote';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Colors, Radius, Shadows } from '../../constants/colors';
+import {
+  contentFromStructured,
+  formatPatientVitalSigns,
+  normalizeStructuredData,
+  resolveNoteForDisplay,
+  structuredHasClinicalContent,
+} from '../../utils/chartingStructured';
 
-interface StructuredData {
-  patientName: string;
-  patientId: string;
-  room: string;
-  date: string;
-  time: string;
-  attendingPhysician: string;
-  nurseName: string;
+type StructuredData = Required<
+  Pick<
+    ChartingStructuredData,
+    | 'patientName'
+    | 'patientId'
+    | 'room'
+    | 'date'
+    | 'time'
+    | 'attendingPhysician'
+    | 'nurseName'
+    | 'assessment'
+    | 'diagnosis'
+    | 'riskLevel'
+    | 'allergies'
+    | 'medications'
+    | 'alerts'
+    | 'interventions'
+    | 'patientResponse'
+    | 'clinicalSummary'
+    | 'plan'
+    | 'timestamp'
+  >
+> & {
   vitalSigns: {
     heartRate: string;
     bloodPressure: string;
@@ -59,18 +92,7 @@ interface StructuredData {
     oxygenSaturation: string;
     respiratoryRate: string;
   };
-  assessment: string;
-  diagnosis: string;
-  riskLevel: string;
-  allergies: string;
-  medications: string;
-  alerts: string;
-  interventions: string[];
-  patientResponse: string;
-  clinicalSummary: string;
-  plan: string;
-  timestamp: string;
-}
+};
 
 export default function ChartingScreen() {
   const { user } = useAuth();
@@ -88,6 +110,22 @@ export default function ChartingScreen() {
   const [selectedNote, setSelectedNote] = useState<ChartingNote | null>(null);
   const [isEditMode, setIsEditMode] = useState(false);
   const [structuredData, setStructuredData] = useState<StructuredData | null>(null);
+  const [isApproving, setIsApproving] = useState(false);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ChartingNote | null>(null);
+  const [editTarget, setEditTarget] = useState<ChartingNote | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [editAssessment, setEditAssessment] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyDates, setHistoryDates] = useState<ChartingHistoryDate[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historySelectedDate, setHistorySelectedDate] = useState<ChartingHistoryDate | null>(
+    null
+  );
+  const [historyNotes, setHistoryNotes] = useState<ChartingNote[]>([]);
+  const [historyNotesLoading, setHistoryNotesLoading] = useState(false);
+  const [historyDateSearch, setHistoryDateSearch] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +133,7 @@ export default function ChartingScreen() {
       try {
         const [patientData, noteData] = await Promise.all([
           fetchPatients({ mine: true }),
-          fetchChartingNotes(),
+          fetchChartingNotes({ mine: true }),
         ]);
         if (!cancelled) {
           setPatients(patientData);
@@ -122,7 +160,71 @@ export default function ChartingScreen() {
   };
 
   const getAttendingPhysician = (patient?: Patient | null) => {
-    return patient?.attendingPhysician || 'Attending Physician';
+    return patient?.attendingPhysician || '';
+  };
+
+  const toPreviewStructured = (
+    structured: ChartingStructuredData,
+    patient: Patient,
+    nurseInput: string
+  ): StructuredData => {
+    const now = new Date();
+    const patientVitals = formatPatientVitalSigns(patient);
+    const workflowVitals = structured.vitalSigns ?? {};
+    // Prefer workflow vitals when present; otherwise use vitals already on the
+    // patient record (real data). Never invent values.
+    const vitalSigns = {
+      heartRate: workflowVitals.heartRate || patientVitals.heartRate || '',
+      bloodPressure: workflowVitals.bloodPressure || patientVitals.bloodPressure || '',
+      temperature: workflowVitals.temperature || patientVitals.temperature || '',
+      oxygenSaturation: workflowVitals.oxygenSaturation || patientVitals.oxygenSaturation || '',
+      respiratoryRate: workflowVitals.respiratoryRate || patientVitals.respiratoryRate || '',
+    };
+
+    return {
+      patientName: structured.patientName || patient.name,
+      patientId: structured.patientId || patient.id,
+      room: structured.room || patient.room || '',
+      date:
+        structured.date ||
+        now.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        }),
+      time:
+        structured.time ||
+        now.toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
+        }),
+      attendingPhysician: structured.attendingPhysician || getAttendingPhysician(patient),
+      nurseName: structured.nurseName || getNurseName(),
+      vitalSigns,
+      // Nurse input is authoritative when the workflow omits assessment.
+      assessment: structured.assessment || nurseInput,
+      diagnosis: structured.diagnosis || patient.diagnosis || '',
+      riskLevel:
+        structured.riskLevel ||
+        (patient.riskLevel
+          ? patient.riskLevel.charAt(0).toUpperCase() + patient.riskLevel.slice(1)
+          : ''),
+      allergies:
+        structured.allergies ||
+        (patient.allergies?.length ? patient.allergies.join(', ') : ''),
+      medications:
+        structured.medications ||
+        (patient.medications?.length ? patient.medications.join(', ') : ''),
+      alerts: structured.alerts || (patient.alerts?.length ? patient.alerts.join('; ') : ''),
+      // Only interventions returned by the workflow / nurse — never invent any.
+      interventions: structured.interventions ?? [],
+      patientResponse: structured.patientResponse || '',
+      clinicalSummary: structured.clinicalSummary || '',
+      plan: structured.plan || '',
+      timestamp: structured.timestamp || now.toISOString(),
+    };
   };
 
   /**
@@ -151,58 +253,21 @@ export default function ChartingScreen() {
         noteType: 'progress',
       });
 
-      const now = new Date();
-      const structured = (res.structured ?? {}) as Partial<StructuredData>;
+      const structured = normalizeStructuredData(res.structured);
+      const preview = toPreviewStructured(structured, patient, inputText);
 
-      setAiGeneratedNote(res.note);
+      if (!structuredHasClinicalContent(preview) && !(res.note || '').trim()) {
+        toast.error('Could not generate the note', {
+          description:
+            'The charting workflow returned no usable clinical content. Please try again.',
+        });
+        return;
+      }
 
-      // The workflow owns the clinical content; this screen fills in only the
-      // presentational fields it needs and the workflow did not send.
-      setStructuredData({
-        patientName: structured.patientName ?? patient.name,
-        patientId: structured.patientId ?? patient.id,
-        room: structured.room ?? patient.room,
-        date:
-          structured.date ??
-          now.toLocaleDateString('en-US', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-          }),
-        time:
-          structured.time ??
-          now.toLocaleTimeString('en-US', {
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: true,
-          }),
-        attendingPhysician: structured.attendingPhysician ?? getAttendingPhysician(patient),
-        nurseName: structured.nurseName ?? getNurseName(),
-        vitalSigns: structured.vitalSigns ?? {
-          heartRate: `${patient.vitalSigns.heartRate} bpm`,
-          bloodPressure: `${patient.vitalSigns.bloodPressure} mmHg`,
-          temperature: `${patient.vitalSigns.temperature}°C`,
-          oxygenSaturation: `${patient.vitalSigns.oxygenSaturation}%`,
-          respiratoryRate: `${patient.vitalSigns.respiratoryRate} breaths/min`,
-        },
-        assessment: structured.assessment ?? inputText,
-        diagnosis: structured.diagnosis ?? patient.diagnosis,
-        riskLevel:
-          structured.riskLevel ??
-          patient.riskLevel.charAt(0).toUpperCase() + patient.riskLevel.slice(1),
-        allergies:
-          structured.allergies ??
-          (patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'),
-        medications: structured.medications ?? patient.medications.join(', '),
-        alerts: structured.alerts ?? patient.alerts.join('; '),
-        interventions: structured.interventions ?? [],
-        patientResponse: structured.patientResponse ?? '',
-        clinicalSummary: structured.clinicalSummary ?? '',
-        plan: structured.plan ?? '',
-        timestamp: structured.timestamp ?? now.toISOString(),
-      });
-
+      // Prefer workflow narrative; otherwise build from structured sections so
+      // Approve always has something real to persist.
+      setAiGeneratedNote((res.note || '').trim() || contentFromStructured(preview));
+      setStructuredData(preview);
       setShowPreview(true);
     } catch (error) {
       // 503 means the n8n workflow is not listening. Surface that plainly
@@ -220,16 +285,40 @@ export default function ChartingScreen() {
 
   const handleApproveNote = async () => {
     const patient = patients.find((p) => p.id === selectedPatient);
-    const attendingPhysician = getAttendingPhysician(patient);
+    if (!patient || !selectedPatient) {
+      toast.error('Select a patient before approving the note');
+      return;
+    }
+    if (!structuredData) {
+      toast.error('No structured chart to save', {
+        description: 'Generate a note first, then approve it.',
+      });
+      return;
+    }
 
+    const content =
+      (aiGeneratedNote || '').trim() || contentFromStructured(structuredData);
+    if (!content.trim() && !structuredHasClinicalContent(structuredData)) {
+      toast.error('Cannot save an empty chart', {
+        description: 'The generated note has no clinical content to persist.',
+      });
+      return;
+    }
+
+    const attendingPhysician =
+      structuredData.attendingPhysician || getAttendingPhysician(patient);
+    const structuredPayload = normalizeStructuredData(structuredData);
+
+    setIsApproving(true);
     try {
       const newNote = await createChartingNote({
         patientId: selectedPatient,
-        patientName: patient?.name || 'Unknown Patient',
+        patientName: patient.name,
         nurseId: user?.id || 'unknown',
         nurseName: user?.name || 'Unknown Nurse',
-        content: aiGeneratedNote,
-        timestamp: new Date().toISOString(),
+        content,
+        structured: structuredPayload,
+        timestamp: structuredData.timestamp || new Date().toISOString(),
         type: 'progress',
         aiGenerated: true,
         edited: false,
@@ -237,10 +326,17 @@ export default function ChartingScreen() {
         editHistory: [],
       });
 
+      if (!newNote?.id) {
+        toast.error('Failed to save note', {
+          description: 'The server did not return a saved chart record.',
+        });
+        return;
+      }
+
       setNotes((prev) => [newNote, ...prev]);
 
       toast.success('Note approved and added to patient record', {
-        description: `Charting note for ${patient?.name} has been saved.`,
+        description: `Charting note for ${patient.name} has been saved.`,
       });
 
       setInputText('');
@@ -249,90 +345,191 @@ export default function ChartingScreen() {
       setSelectedPatient('');
       setIsEditMode(false);
       setStructuredData(null);
+      // Keep history dates fresh if the nurse already opened that panel.
+      if (historyOpen) {
+        fetchChartingHistoryDates()
+          .then(setHistoryDates)
+          .catch(() => undefined);
+      }
     } catch (error) {
       toast.error('Failed to save note', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
+    } finally {
+      setIsApproving(false);
     }
-  };
-
-  const parseNoteContent = (content: string, note: ChartingNote): StructuredData => {
-    const patientNameMatch = content.match(/Patient Name: (.+)/);
-    const patientIdMatch = content.match(/Patient ID: (.+)/);
-    const roomMatch = content.match(/Room: (.+)/);
-    const dateMatch = content.match(/Date: (.+)/);
-    const timeMatch = content.match(/Time: (.+)/);
-    const physicianMatch = content.match(/Attending Physician: (.+)/);
-    const nurseMatch = content.match(/Nurse: (.+)/);
-
-    const hrMatch = content.match(/Heart Rate: (.+)/);
-    const bpMatch = content.match(/Blood Pressure: (.+)/);
-    const tempMatch = content.match(/Temperature: (.+)/);
-    const spo2Match = content.match(/Oxygen Saturation: (.+)/);
-    const rrMatch = content.match(/Respiratory Rate: (.+)/);
-
-    const assessmentMatch = content.match(/ASSESSMENT & OBSERVATIONS\n(.+?)(?=\n\nCurrent Diagnosis:)/s);
-    const diagnosisMatch = content.match(/Current Diagnosis: (.+)/);
-    const riskMatch = content.match(/Risk Level: (.+)/);
-    const allergiesMatch = content.match(/Allergies: (.+)/);
-    const medsMatch = content.match(/Active Medications: (.+)/);
-    const alertsMatch = content.match(/Alerts: (.+)/);
-    const responseMatch = content.match(/PATIENT RESPONSE\n(.+?)(?=\n\n═|$)/s);
-    const summaryMatch = content.match(/CLINICAL SUMMARY\n(.+?)(?=\n\nPlan:|$)/s);
-    const planMatch = content.match(/Plan: (.+?)(?=\n\n═|$)/s);
-
-    return {
-      patientName: patientNameMatch?.[1]?.trim() || note.patientName,
-      patientId: patientIdMatch?.[1]?.trim() || note.patientId,
-      room: roomMatch?.[1]?.trim() || '',
-      date:
-        dateMatch?.[1]?.trim() ||
-        new Date(note.timestamp).toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-        }),
-      time:
-        timeMatch?.[1]?.trim() ||
-        new Date(note.timestamp).toLocaleTimeString('en-US', {
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-        }),
-      attendingPhysician:
-        physicianMatch?.[1]?.trim() || note.attendingPhysician || 'Not specified',
-      nurseName: nurseMatch?.[1]?.trim() || note.nurseName,
-      vitalSigns: {
-        heartRate: hrMatch?.[1]?.trim() || 'Not recorded',
-        bloodPressure: bpMatch?.[1]?.trim() || 'Not recorded',
-        temperature: tempMatch?.[1]?.trim() || 'Not recorded',
-        oxygenSaturation: spo2Match?.[1]?.trim() || 'Not recorded',
-        respiratoryRate: rrMatch?.[1]?.trim() || 'Not recorded',
-      },
-      assessment: assessmentMatch?.[1]?.trim() || 'No assessment recorded',
-      diagnosis: diagnosisMatch?.[1]?.trim() || 'Not specified',
-      riskLevel: riskMatch?.[1]?.trim() || 'Not specified',
-      allergies: allergiesMatch?.[1]?.trim() || 'None known',
-      medications: medsMatch?.[1]?.trim() || 'None recorded',
-      alerts: alertsMatch?.[1]?.trim() || 'None',
-      interventions: [
-        'Comprehensive patient assessment completed',
-        'Vital signs monitored and recorded',
-        'Medication administration as prescribed',
-        'Patient safety measures verified',
-        'Documentation updated in electronic medical record',
-      ],
-      patientResponse: responseMatch?.[1]?.trim() || '',
-      clinicalSummary: summaryMatch?.[1]?.trim() || '',
-      plan: planMatch?.[1]?.trim() || '',
-      timestamp: note.timestamp,
-    };
   };
 
   const handleViewFullNote = (note: ChartingNote) => {
     setSelectedNote(note);
     setViewNoteDialog(true);
+  };
+
+  const handleConfirmNote = async (note: ChartingNote) => {
+    if (note.confirmed) {
+      toast.success('Already confirmed', {
+        description: 'This charting note is already marked as confirmed.',
+      });
+      return;
+    }
+    setActionBusyId(note.id);
+    try {
+      const updated = await confirmChartingNote(note.id);
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      if (selectedNote?.id === updated.id) setSelectedNote(updated);
+      toast.success('Charting note confirmed');
+    } catch (error) {
+      toast.error('Could not confirm note', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
+  const handleOpenEdit = (note: ChartingNote) => {
+    const structured = normalizeStructuredData(note.structured ?? undefined);
+    setEditTarget(note);
+    setEditContent(note.content || contentFromStructured(structured));
+    setEditAssessment(structured.assessment || '');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editTarget) return;
+    const content = editContent.trim();
+    if (!content) {
+      toast.error('Cannot save an empty chart');
+      return;
+    }
+    const structured = normalizeStructuredData({
+      ...(editTarget.structured ?? {}),
+      assessment: editAssessment.trim() || undefined,
+    });
+    if (editAssessment.trim()) {
+      structured.assessment = editAssessment.trim();
+    }
+
+    setIsSavingEdit(true);
+    try {
+      const updated = await updateChartingNote(editTarget.id, {
+        content,
+        structured,
+      });
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      if (selectedNote?.id === updated.id) setSelectedNote(updated);
+      if (historySelectedDate) {
+        setHistoryNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      }
+      setEditTarget(null);
+      toast.success('Charting note updated');
+    } catch (error) {
+      toast.error('Could not save edits', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const handleDeleteConfirmed = async () => {
+    if (!deleteTarget) return;
+    const id = deleteTarget.id;
+    setActionBusyId(id);
+    try {
+      await deleteChartingNote(id);
+      setNotes((prev) => prev.filter((n) => n.id !== id));
+      setHistoryNotes((prev) => prev.filter((n) => n.id !== id));
+      if (selectedNote?.id === id) {
+        setSelectedNote(null);
+        setViewNoteDialog(false);
+      }
+      setDeleteTarget(null);
+      toast.success('Charting note deleted');
+      if (historyOpen) {
+        const dates = await fetchChartingHistoryDates();
+        setHistoryDates(dates);
+        if (historySelectedDate) {
+          const still = dates.find((d) => d.date === historySelectedDate.date);
+          if (!still) {
+            setHistorySelectedDate(null);
+            setHistoryNotes([]);
+          } else {
+            setHistorySelectedDate(still);
+          }
+        }
+      }
+    } catch (error) {
+      toast.error('Could not delete note', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
+  const openHistory = async () => {
+    setHistoryOpen(true);
+    setHistorySelectedDate(null);
+    setHistoryNotes([]);
+    setHistoryDateSearch('');
+    setHistoryLoading(true);
+    try {
+      const dates = await fetchChartingHistoryDates();
+      setHistoryDates(dates);
+    } catch (error) {
+      toast.error('Could not load charting history', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const selectHistoryDate = async (entry: ChartingHistoryDate) => {
+    setHistorySelectedDate(entry);
+    setHistoryNotesLoading(true);
+    try {
+      const dayNotes = await fetchChartingNotes({ mine: true, date: entry.date });
+      setHistoryNotes(dayNotes);
+    } catch (error) {
+      toast.error('Could not load notes for that date', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+      setHistoryNotes([]);
+    } finally {
+      setHistoryNotesLoading(false);
+    }
+  };
+
+  const formatHistoryDateLabel = (isoDate: string) => {
+    const [y, m, d] = isoDate.split('-').map(Number);
+    if (!y || !m || !d) return isoDate;
+    const dt = new Date(y, m - 1, d);
+    return dt.toLocaleDateString('en-US', {
+      month: '2-digit',
+      day: '2-digit',
+      year: 'numeric',
+    });
+  };
+
+  const filteredHistoryDates = historyDates.filter((entry) => {
+    const q = historyDateSearch.trim().toLowerCase();
+    if (!q) return true;
+    const label = formatHistoryDateLabel(entry.date).toLowerCase();
+    const iso = entry.date.toLowerCase();
+    const todayMatch = entry.isToday && 'today'.includes(q);
+    return label.includes(q) || iso.includes(q) || todayMatch || q.includes(iso);
+  });
+
+  const notePreviewText = (note: ChartingNote) => {
+    const raw =
+      (note.content || '').trim() ||
+      contentFromStructured(normalizeStructuredData(note.structured ?? undefined));
+    return raw
+      .replace(/═+/g, '')
+      .replace(/={3,}/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .substring(0, 200);
   };
 
   const handleCopyNote = async (content: string) => {
@@ -354,10 +551,10 @@ export default function ChartingScreen() {
   const patientOptions = patients.map((patient) => ({
     label: `${patient.name} • ${patient.room}`,
     value: patient.id,
+    keywords: `${patient.id} ${patient.room} ${patient.diagnosis}`,
   }));
 
   const selectedPatientRecord = patients.find((p) => p.id === selectedPatient);
-  const selectedPatientDiagnosis = selectedPatientRecord?.diagnosis || '';
 
   return (
     <ScrollView
@@ -398,6 +595,8 @@ export default function ChartingScreen() {
             onValueChange={setSelectedPatient}
             options={patientOptions}
             placeholder="Choose a patient"
+            searchable
+            searchPlaceholder="Search by name, ID, or room..."
           />
 
           <View style={styles.nurseBox}>
@@ -538,10 +737,17 @@ export default function ChartingScreen() {
               <Button
                 style={{ flex: 1, backgroundColor: Colors.green600 }}
                 onPress={handleApproveNote}
+                disabled={isApproving || !structuredData}
               >
                 <View style={styles.btnInner}>
-                  <Check size={16} color={Colors.white} />
-                  <Text style={styles.btnTextWhite}>Approve & Submit</Text>
+                  {isApproving ? (
+                    <ActivityIndicator size="small" color={Colors.white} />
+                  ) : (
+                    <Check size={16} color={Colors.white} />
+                  )}
+                  <Text style={styles.btnTextWhite}>
+                    {isApproving ? 'Saving...' : 'Approve & Submit'}
+                  </Text>
                 </View>
               </Button>
             </View>
@@ -557,6 +763,32 @@ export default function ChartingScreen() {
           </CardContent>
         </Card>
       ) : null}
+
+      {/* My Charting History — view-only archive by date */}
+      <Card>
+        <CardHeader>
+          <View style={styles.titleRow}>
+            <ClipboardList size={20} color={Colors.blue600} />
+            <CardTitle>My Charting History</CardTitle>
+          </View>
+          <CardDescription>
+            Review your past charting notes by date (view only)
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Pressable
+            onPress={openHistory}
+            style={styles.historyLaunch}
+            accessibilityRole="button"
+          >
+            <View style={styles.titleRow}>
+              <ClipboardList size={18} color={Colors.blue700} />
+              <Text style={styles.historyLaunchText}>My Charting History</Text>
+            </View>
+            <Text style={styles.historyLaunchHint}>Tap to browse dates</Text>
+          </Pressable>
+        </CardContent>
+      </Card>
 
       {/* Recent Notes */}
       <Card>
@@ -598,6 +830,23 @@ export default function ChartingScreen() {
                     </View>
                   </View>
                   <View style={styles.badgeCol}>
+                    {note.confirmed ? (
+                      <Badge
+                        variant="outline"
+                        style={{
+                          backgroundColor: Colors.green100,
+                          borderColor: Colors.green200,
+                        }}
+                        textStyle={{ color: Colors.green700 }}
+                      >
+                        <View style={styles.badgeInner}>
+                          <CheckCircle2 size={12} color={Colors.green700} />
+                          <Text style={[styles.badgeText, { color: Colors.green700 }]}>
+                            Confirmed
+                          </Text>
+                        </View>
+                      </Badge>
+                    ) : null}
                     {note.aiGenerated ? (
                       <Badge
                         variant="outline"
@@ -628,24 +877,64 @@ export default function ChartingScreen() {
 
                 <View style={styles.previewBox}>
                   <Text style={styles.previewMono}>
-                    {note.content
-                      .replace(/═+/g, '')
-                      .replace(/={3,}/g, '')
-                      .replace(/\n{3,}/g, '\n\n')
-                      .substring(0, 200)}
+                    {notePreviewText(note)}
                     ...
                   </Text>
                 </View>
 
                 <View style={styles.noteFooter}>
                   <Text style={styles.authored}>Authored by: {note.nurseName}</Text>
+                </View>
+
+                <View style={styles.actionRow}>
+                  <Pressable
+                    onPress={() => handleConfirmNote(note)}
+                    style={[
+                      styles.actionBtn,
+                      note.confirmed ? styles.actionBtnDisabled : null,
+                    ]}
+                    disabled={actionBusyId === note.id || Boolean(note.confirmed)}
+                    hitSlop={6}
+                  >
+                    {actionBusyId === note.id ? (
+                      <ActivityIndicator size="small" color={Colors.green600} />
+                    ) : (
+                      <Check size={16} color={note.confirmed ? Colors.gray500 : Colors.green600} />
+                    )}
+                    <Text
+                      style={[
+                        styles.actionBtnText,
+                        { color: note.confirmed ? Colors.gray500 : Colors.green600 },
+                      ]}
+                    >
+                      Confirm
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => handleOpenEdit(note)}
+                    style={styles.actionBtn}
+                    disabled={actionBusyId === note.id}
+                    hitSlop={6}
+                  >
+                    <Edit2 size={16} color={Colors.blue600} />
+                    <Text style={[styles.actionBtnText, { color: Colors.blue600 }]}>Edit</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setDeleteTarget(note)}
+                    style={styles.actionBtn}
+                    disabled={actionBusyId === note.id}
+                    hitSlop={6}
+                  >
+                    <Trash2 size={16} color={Colors.red600} />
+                    <Text style={[styles.actionBtnText, { color: Colors.red600 }]}>Delete</Text>
+                  </Pressable>
                   <Pressable
                     onPress={() => handleViewFullNote(note)}
-                    style={styles.viewBtn}
-                    hitSlop={8}
+                    style={styles.actionBtn}
+                    hitSlop={6}
                   >
                     <Eye size={16} color={Colors.blue600} />
-                    <Text style={styles.viewBtnText}>View Full Note</Text>
+                    <Text style={[styles.actionBtnText, { color: Colors.blue600 }]}>View</Text>
                   </Pressable>
                 </View>
               </View>
@@ -686,6 +975,23 @@ export default function ChartingScreen() {
               {selectedNote ? (
                 <View style={styles.gap4}>
                   <View style={styles.badgeRow}>
+                    {selectedNote.confirmed ? (
+                      <Badge
+                        variant="outline"
+                        style={{
+                          backgroundColor: Colors.green100,
+                          borderColor: Colors.green200,
+                        }}
+                        textStyle={{ color: Colors.green700 }}
+                      >
+                        <View style={styles.badgeInner}>
+                          <CheckCircle2 size={12} color={Colors.green700} />
+                          <Text style={[styles.badgeText, { color: Colors.green700 }]}>
+                            Confirmed
+                          </Text>
+                        </View>
+                      </Badge>
+                    ) : null}
                     {selectedNote.aiGenerated ? (
                       <Badge
                         variant="outline"
@@ -713,9 +1019,7 @@ export default function ChartingScreen() {
                     ) : null}
                   </View>
 
-                  <StructuredNursingNote
-                    {...parseNoteContent(selectedNote.content, selectedNote)}
-                  />
+                  <StructuredNursingNote {...resolveNoteForDisplay(selectedNote)} />
                 </View>
               ) : null}
             </ScrollView>
@@ -725,7 +1029,14 @@ export default function ChartingScreen() {
                 <Button
                   variant="outline"
                   style={{ flex: 1 }}
-                  onPress={() => handleCopyNote(selectedNote.content)}
+                  onPress={() =>
+                    handleCopyNote(
+                      (selectedNote.content || '').trim() ||
+                        contentFromStructured(
+                          normalizeStructuredData(selectedNote.structured ?? undefined)
+                        )
+                    )
+                  }
                 >
                   Copy Note
                 </Button>
@@ -738,6 +1049,272 @@ export default function ChartingScreen() {
                 </Button>
               </View>
             ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete confirmation */}
+      <Modal
+        visible={Boolean(deleteTarget)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeleteTarget(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.confirmSheet, Shadows.xl]}>
+            <Text style={styles.confirmTitle}>Delete charting record?</Text>
+            <Text style={styles.confirmBody}>
+              Are you sure you want to delete this charting record
+              {deleteTarget ? ` for ${deleteTarget.patientName}` : ''}? This cannot be undone.
+            </Text>
+            <View style={styles.actionsRow}>
+              <Button
+                variant="outline"
+                style={{ flex: 1 }}
+                onPress={() => setDeleteTarget(null)}
+                disabled={actionBusyId === deleteTarget?.id}
+              >
+                Cancel
+              </Button>
+              <Button
+                style={{ flex: 1, backgroundColor: Colors.red600 }}
+                onPress={handleDeleteConfirmed}
+                disabled={actionBusyId === deleteTarget?.id}
+              >
+                <View style={styles.btnInner}>
+                  {actionBusyId === deleteTarget?.id ? (
+                    <ActivityIndicator size="small" color={Colors.white} />
+                  ) : (
+                    <Trash2 size={16} color={Colors.white} />
+                  )}
+                  <Text style={styles.btnTextWhite}>Delete</Text>
+                </View>
+              </Button>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Edit existing note */}
+      <Modal
+        visible={Boolean(editTarget)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditTarget(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalSheet, Shadows.xl]}>
+            <View style={styles.modalHeader}>
+              <View style={[styles.titleRow, { flex: 1 }]}>
+                <Edit2 size={20} color={Colors.blue600} />
+                <Text style={styles.modalTitle}>Edit Charting Note</Text>
+              </View>
+              <Pressable onPress={() => setEditTarget(null)} hitSlop={8}>
+                <X size={20} color={Colors.mutedForeground} />
+              </Pressable>
+            </View>
+            {editTarget ? (
+              <Text style={styles.modalDesc}>
+                {editTarget.patientName} • {new Date(editTarget.timestamp).toLocaleString()}
+              </Text>
+            ) : null}
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={styles.gap4}>
+                <View style={styles.field}>
+                  <Text style={styles.label}>Assessment</Text>
+                  <TextInput
+                    style={styles.textarea}
+                    value={editAssessment}
+                    onChangeText={setEditAssessment}
+                    multiline
+                    textAlignVertical="top"
+                    placeholder="Assessment & observations from the saved record"
+                    placeholderTextColor={Colors.mutedForeground}
+                  />
+                </View>
+                <View style={styles.field}>
+                  <Text style={styles.label}>Full note content</Text>
+                  <TextInput
+                    style={[styles.textarea, { minHeight: 220 }]}
+                    value={editContent}
+                    onChangeText={setEditContent}
+                    multiline
+                    textAlignVertical="top"
+                    placeholder="Saved charting content"
+                    placeholderTextColor={Colors.mutedForeground}
+                  />
+                </View>
+              </View>
+            </ScrollView>
+            <View style={styles.modalFooter}>
+              <Button
+                variant="outline"
+                style={{ flex: 1 }}
+                onPress={() => setEditTarget(null)}
+                disabled={isSavingEdit}
+              >
+                Cancel
+              </Button>
+              <Button
+                style={{ flex: 1, backgroundColor: Colors.blue600 }}
+                onPress={handleSaveEdit}
+                disabled={isSavingEdit}
+              >
+                <View style={styles.btnInner}>
+                  {isSavingEdit ? (
+                    <ActivityIndicator size="small" color={Colors.white} />
+                  ) : (
+                    <Check size={16} color={Colors.white} />
+                  )}
+                  <Text style={styles.btnTextWhite}>
+                    {isSavingEdit ? 'Saving...' : 'Save Changes'}
+                  </Text>
+                </View>
+              </Button>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* My Charting History browser */}
+      <Modal
+        visible={historyOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setHistoryOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalSheet, Shadows.xl]}>
+            <View style={styles.modalHeader}>
+              <View style={[styles.titleRow, { flex: 1 }]}>
+                {historySelectedDate ? (
+                  <Pressable
+                    onPress={() => {
+                      setHistorySelectedDate(null);
+                      setHistoryNotes([]);
+                    }}
+                    hitSlop={8}
+                    style={styles.titleRow}
+                  >
+                    <ChevronLeft size={20} color={Colors.blue600} />
+                    <Text style={styles.modalTitle}>
+                      {historySelectedDate.isToday
+                        ? 'Today'
+                        : formatHistoryDateLabel(historySelectedDate.date)}
+                    </Text>
+                  </Pressable>
+                ) : (
+                  <>
+                    <ClipboardList size={20} color={Colors.blue600} />
+                    <Text style={styles.modalTitle}>My Charting History</Text>
+                  </>
+                )}
+              </View>
+              <Pressable onPress={() => setHistoryOpen(false)} hitSlop={8}>
+                <X size={20} color={Colors.mutedForeground} />
+              </Pressable>
+            </View>
+            <Text style={styles.modalDesc}>
+              {historySelectedDate
+                ? `${formatHistoryDateLabel(historySelectedDate.date)} • view only`
+                : 'Select a date to view your saved notes'}
+            </Text>
+
+            {!historySelectedDate ? (
+              <View style={styles.historySearchWrap}>
+                <Input
+                  placeholder="Search date (e.g. 09/08/2026 or Today)..."
+                  value={historyDateSearch}
+                  onChangeText={setHistoryDateSearch}
+                  leftIcon={<Search size={16} color={Colors.gray500} />}
+                />
+              </View>
+            ) : null}
+
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {historyLoading || historyNotesLoading ? (
+                <View style={styles.emptyState}>
+                  <ActivityIndicator color={Colors.blue600} />
+                </View>
+              ) : historySelectedDate ? (
+                historyNotes.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyText}>No charting notes for this date</Text>
+                  </View>
+                ) : (
+                  <View style={styles.gap3}>
+                    {historyNotes.map((note) => (
+                      <View key={note.id} style={styles.noteCard}>
+                        <Text style={styles.notePatient}>{note.patientName}</Text>
+                        <View style={styles.metaRow}>
+                          <Clock size={12} color={Colors.mutedForeground} />
+                          <Text style={styles.metaText}>
+                            {new Date(note.timestamp).toLocaleTimeString('en-US', {
+                              hour: 'numeric',
+                              minute: '2-digit',
+                              hour12: true,
+                            })}
+                          </Text>
+                        </View>
+                        <View style={styles.previewBox}>
+                          <Text style={styles.previewMono}>
+                            {notePreviewText(note)}
+                            ...
+                          </Text>
+                        </View>
+                        <View style={styles.noteFooter}>
+                          <Text style={styles.authored}>Authored by: {note.nurseName}</Text>
+                          <Pressable
+                            onPress={() => handleViewFullNote(note)}
+                            style={styles.viewBtn}
+                            hitSlop={8}
+                          >
+                            <Eye size={16} color={Colors.blue600} />
+                            <Text style={styles.viewBtnText}>View</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )
+              ) : historyDates.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyText}>No charting history yet</Text>
+                </View>
+              ) : filteredHistoryDates.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyText}>No dates match your search</Text>
+                </View>
+              ) : (
+                <View style={styles.gap3}>
+                  {filteredHistoryDates.map((entry) => (
+                    <Pressable
+                      key={entry.date}
+                      onPress={() => selectHistoryDate(entry)}
+                      style={styles.historyDateCard}
+                    >
+                      {entry.isToday ? (
+                        <Text style={styles.historyTodayLabel}>Today</Text>
+                      ) : null}
+                      <Text style={styles.historyDateText}>
+                        {formatHistoryDateLabel(entry.date)}
+                      </Text>
+                      <Text style={styles.historyCountText}>
+                        {entry.count} charting record{entry.count === 1 ? '' : 's'}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1008,6 +1585,92 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Colors.blue600,
     fontWeight: '600',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingTop: 4,
+  },
+  actionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.white,
+  },
+  actionBtnDisabled: {
+    opacity: 0.55,
+  },
+  actionBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  historyLaunch: {
+    borderWidth: 1,
+    borderColor: Colors.blue200,
+    backgroundColor: Colors.blue50,
+    borderRadius: Radius.lg,
+    padding: 16,
+    gap: 4,
+  },
+  historyLaunchText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.blue800,
+  },
+  historyLaunchHint: {
+    fontSize: 12,
+    color: Colors.blue700,
+    marginLeft: 26,
+  },
+  historySearchWrap: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  historyDateCard: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.lg,
+    padding: 16,
+    backgroundColor: Colors.white,
+    gap: 4,
+  },
+  historyTodayLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.blue700,
+  },
+  historyDateText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.foreground,
+  },
+  historyCountText: {
+    fontSize: 12,
+    color: Colors.mutedForeground,
+  },
+  confirmSheet: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    width: '100%',
+    maxWidth: 420,
+    padding: 20,
+    gap: 12,
+  },
+  confirmTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: Colors.foreground,
+  },
+  confirmBody: {
+    fontSize: 14,
+    color: Colors.mutedForeground,
+    lineHeight: 20,
   },
   modalBackdrop: {
     flex: 1,

@@ -10,7 +10,26 @@ import { NotificationsProvider } from '../contexts/NotificationsContext';
 import SplashScreen from '../components/SplashScreen';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, Platform } from 'react-native';
+
+// react-native-gifted-charts (still on its latest release, 1.4.78) forwards
+// native-only Pressable handlers straight onto react-native-svg's web nodes
+// for its interactive chart points — react-native-web logs that as a
+// console.error on every chart render. Harmless on native (LogBox never even
+// sees it) and doesn't affect chart interactivity on web; only the dev
+// overlay is muted, and only for this exact upstream warning.
+if (Platform.OS === 'web') {
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    const joined = args
+      .map((a) => (a instanceof Error ? a.message : typeof a === 'string' ? a : ''))
+      .join(' ');
+    if (joined.includes('Unknown event handler property')) {
+      return;
+    }
+    originalConsoleError(...args);
+  };
+}
 
 function RootNavigator() {
   const [showSplash, setShowSplash] = useState(true);

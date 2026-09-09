@@ -744,6 +744,29 @@ class StructureChartEndpointTests(TestCase):
         self.assertTrue(note.ai_generated)
         self.assertEqual(note.patient, self.patient)
         self.assertEqual(note.nurse, self.user)
+        self.assertEqual(note.content, 'NURSING PROGRESS NOTE\nPatient stable.')
+
+    @patch('api.views.call_workflow')
+    def test_save_persists_structured_sections(self, mock_call):
+        mock_call.return_value = {
+            'note': '',
+            'structured': {
+                'assessment': 'Ambulated to chair, tolerated well.',
+                'interventions': ['Assisted ambulation'],
+                'patientResponse': 'No complaints of pain.',
+            },
+        }
+
+        res = self._post(save=True)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['saved'])
+        note = ChartingNote.objects.get(note_code=res.data['noteId'])
+        self.assertEqual(note.structured_data.get('assessment'), 'Ambulated to chair, tolerated well.')
+        self.assertEqual(note.structured_data.get('interventions'), ['Assisted ambulation'])
+        self.assertIn('Ambulated to chair', note.content)
+        # Must not invent clinical interventions beyond what was returned.
+        self.assertNotIn('Medication administration as prescribed', note.content)
 
     @patch('api.views.call_workflow')
     def test_without_save_nothing_is_persisted(self, mock_call):
@@ -762,10 +785,13 @@ class StructureChartEndpointTests(TestCase):
 
         structured = res.data['structured']
         self.assertEqual(structured['assessment'], 'Stable.')
-        # The workflow need not repeat what the server already knows.
+        # Server forces authoritative patient context onto the structured payload.
         self.assertEqual(structured['patientName'], 'Ramon Dela Cruz')
         self.assertEqual(structured['room'], 'ICU-04')
         self.assertEqual(structured['nurseName'], 'Sarah Johnson')
+        self.assertEqual(structured['sourceAssessment'], 'Alert and oriented x3.')
+        self.assertEqual(structured['vitalSigns']['heartRate'], 96)
+        self.assertEqual(structured['diagnosis'], 'Community-acquired pneumonia')
 
     @patch('api.views.call_workflow')
     def test_empty_workflow_output_is_reported_not_silently_saved(self, mock_call):

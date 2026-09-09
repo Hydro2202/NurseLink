@@ -8,18 +8,36 @@ import {
   Pressable,
   TextInput,
 } from 'react-native';
-import { Save, X } from 'lucide-react-native';
+import {
+  Save,
+  X,
+  Stethoscope,
+  User,
+  UserRound,
+  FileText,
+  HeartPulse,
+  AlertTriangle,
+  MapPin,
+  BedDouble,
+  Plus,
+} from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
+import { PatientCareTeam } from './PatientCareTeam';
+import { VitalSignsGrid } from './VitalSignsGrid';
 import {
   createKardexRecord,
   updatePatient,
+  fetchPatientAssignedDoctors,
+  setPatientAssignedDoctors,
   ApiError,
 } from '../services/api';
-import type { Patient } from '../types/domain';
+import type { Doctor, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
+import { assessRiskLevel } from '../utils/riskLevel';
+import { RiskBadge } from './RiskBadge';
 
 export type PatientKardexForm = {
   lastName: string;
@@ -36,6 +54,7 @@ export type PatientKardexForm = {
   admittingDiagnosis: string;
   finalDiagnosis: string;
   diet: string;
+  allergies: string[];
   temperature: string;
   pulseRate: string;
   respiratoryRate: string;
@@ -59,6 +78,7 @@ const emptyForm = (): PatientKardexForm => ({
   admittingDiagnosis: '',
   finalDiagnosis: '',
   diet: '',
+  allergies: [],
   temperature: '',
   pulseRate: '',
   respiratoryRate: '',
@@ -66,6 +86,7 @@ const emptyForm = (): PatientKardexForm => ({
   oxygenSaturation: '',
   specialEndorsements: '',
 });
+
 
 function patientToForm(patient: Patient): PatientKardexForm {
   const parts = patient.name.trim().split(/\s+/);
@@ -80,6 +101,7 @@ function patientToForm(patient: Patient): PatientKardexForm {
     admissionDate: patient.admissionDate || '',
     attendingPhysician: patient.attendingPhysician || '',
     admittingDiagnosis: patient.diagnosis || '',
+    allergies: patient.allergies || [],
     temperature: patient.vitalSigns?.temperature != null ? String(patient.vitalSigns.temperature) : '',
     pulseRate: patient.vitalSigns?.heartRate != null ? String(patient.vitalSigns.heartRate) : '',
     respiratoryRate:
@@ -110,15 +132,64 @@ export function PatientKardexModal({
   const toast = useToast();
   const [form, setForm] = useState<PatientKardexForm>(emptyForm());
   const [saving, setSaving] = useState(false);
+  const [doctorIds, setDoctorIds] = useState<number[]>([]);
+  const [initialAssignedDoctors, setInitialAssignedDoctors] = useState<Doctor[]>([]);
+  const [careTeamValid, setCareTeamValid] = useState(true);
+  const [allergyDraft, setAllergyDraft] = useState('');
+
+  const riskLevel = assessRiskLevel({
+    temperature: form.temperature,
+    pulseRate: form.pulseRate,
+    respiratoryRate: form.respiratoryRate,
+    bloodPressure: form.bloodPressure,
+    oxygenSaturation: form.oxygenSaturation,
+  });
+
+  const addAllergy = () => {
+    const entry = allergyDraft.trim();
+    if (!entry) return;
+    setForm((prev) =>
+      prev.allergies.some((a) => a.toLowerCase() === entry.toLowerCase())
+        ? prev
+        : { ...prev, allergies: [...prev.allergies, entry] }
+    );
+    setAllergyDraft('');
+  };
+
+  const removeAllergy = (index: number) => {
+    setForm((prev) => ({ ...prev, allergies: prev.allergies.filter((_, i) => i !== index) }));
+  };
 
   useEffect(() => {
     if (!open) return;
     if (mode === 'edit' && patient) {
       setForm(patientToForm(patient));
-    } else {
-      setForm(emptyForm());
+      let cancelled = false;
+      fetchPatientAssignedDoctors(patient.id)
+        .then((doctors) => {
+          if (!cancelled) {
+            setDoctorIds(doctors.map((d) => d.id));
+            setInitialAssignedDoctors(doctors);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setDoctorIds([]);
+            setInitialAssignedDoctors([]);
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
     }
+    setForm(emptyForm());
+    setDoctorIds([]);
+    setInitialAssignedDoctors([]);
   }, [open, mode, patient]);
+
+  useEffect(() => {
+    if (!open) setAllergyDraft('');
+  }, [open]);
 
   const setField = <K extends keyof PatientKardexForm>(key: K, value: PatientKardexForm[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -143,10 +214,19 @@ export function PatientKardexModal({
       });
       return;
     }
+    if (!careTeamValid) {
+      toast.error('Incomplete Care Team', {
+        description: 'Please assign at least one doctor to each selected department.',
+      });
+      return;
+    }
     setSaving(true);
     try {
       if (mode === 'add') {
-        await createKardexRecord({ ...form });
+        const created = await createKardexRecord({ ...form });
+        if (created.patientCode && doctorIds.length > 0) {
+          await setPatientAssignedDoctors(created.patientCode, doctorIds);
+        }
         toast.success('Patient added', {
           description: 'Patient created from Kardex and added to the patient list.',
         });
@@ -170,6 +250,7 @@ export function PatientKardexModal({
         });
         // Also store a fresh kardex snapshot linked to this patient
         await createKardexRecord({ ...form, patientId: patient.id });
+        await setPatientAssignedDoctors(patient.id, doctorIds);
         toast.success('Patient updated');
       }
       onOpenChange(false);
@@ -194,32 +275,101 @@ export function PatientKardexModal({
             </Pressable>
           </View>
           <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-            <Text style={styles.section}>Patient Demographics</Text>
-            <Input label="Last Name *" value={form.lastName} onChangeText={(v) => setField('lastName', v)} />
-            <Input label="First Name *" value={form.firstName} onChangeText={(v) => setField('firstName', v)} />
-            <Input label="Middle Name" value={form.middleName} onChangeText={(v) => setField('middleName', v)} />
-            <Input label="Age *" value={form.age} onChangeText={(v) => setField('age', v)} keyboardType="numeric" />
-            <Select
-              label="Sex/Gender *"
-              value={form.gender}
-              onValueChange={(v) => setField('gender', v)}
-              options={[
-                { label: 'Male', value: 'Male' },
-                { label: 'Female', value: 'Female' },
-              ]}
-              placeholder="Select"
-            />
-            <Input label="Religion" value={form.religion} onChangeText={(v) => setField('religion', v)} />
-            <Input
-              label="Admission Date *"
-              value={form.admissionDate}
-              onChangeText={(v) => setField('admissionDate', v)}
-              placeholder="YYYY-MM-DD"
-            />
-            <Input label="Room *" value={form.room} onChangeText={(v) => setField('room', v)} />
-            <Input label="Bed Number" value={form.bedNumber} onChangeText={(v) => setField('bedNumber', v)} />
+            {/* Patient quick summary — live preview of what's been entered */}
+            <View style={styles.summaryCard}>
+              <View style={styles.summaryHeaderRow}>
+                <UserRound size={16} color={Colors.blue700} />
+                <Text style={styles.summaryEyebrow}>PATIENT</Text>
+              </View>
+              <View style={styles.summaryNameRow}>
+                <Text style={styles.summaryName} numberOfLines={1}>
+                  {[form.firstName, form.middleName, form.lastName].filter(Boolean).join(' ') ||
+                    'New patient'}
+                </Text>
+                <RiskBadge level={riskLevel} size="sm" />
+              </View>
+              <Text style={styles.riskHint}>Based on the latest vital signs entered below</Text>
+              <View style={styles.summaryFactsRow}>
+                <Text style={styles.summaryFact}>{form.age ? `${form.age} yrs` : 'Age —'}</Text>
+                <Text style={styles.summaryDivider}>•</Text>
+                <Text style={styles.summaryFact}>{form.gender || 'Sex —'}</Text>
+                <Text style={styles.summaryDivider}>•</Text>
+                <View style={styles.summaryFactIconRow}>
+                  <MapPin size={12} color={Colors.mutedForeground} />
+                  <Text style={styles.summaryFact}>{form.room ? `Room ${form.room}` : 'Room —'}</Text>
+                </View>
+                {form.bedNumber ? (
+                  <>
+                    <Text style={styles.summaryDivider}>•</Text>
+                    <View style={styles.summaryFactIconRow}>
+                      <BedDouble size={12} color={Colors.mutedForeground} />
+                      <Text style={styles.summaryFact}>Bed {form.bedNumber}</Text>
+                    </View>
+                  </>
+                ) : null}
+              </View>
+            </View>
 
-            <Text style={styles.section}>Medical Information</Text>
+            <View style={styles.labelRow}>
+              <User size={16} color={Colors.blue600} />
+              <Text style={styles.section}>Patient Demographics</Text>
+            </View>
+            <Text style={styles.groupHeading}>Personal Information</Text>
+            <View style={styles.rowWrap}>
+              <View style={[styles.field, styles.colThird]}>
+                <Input label="Last Name *" value={form.lastName} onChangeText={(v) => setField('lastName', v)} />
+              </View>
+              <View style={[styles.field, styles.colThird]}>
+                <Input label="First Name *" value={form.firstName} onChangeText={(v) => setField('firstName', v)} />
+              </View>
+              <View style={[styles.field, styles.colThird]}>
+                <Input label="Middle Name" value={form.middleName} onChangeText={(v) => setField('middleName', v)} />
+              </View>
+            </View>
+            <View style={styles.rowWrap}>
+              <View style={[styles.field, styles.colThird]}>
+                <Input label="Age *" value={form.age} onChangeText={(v) => setField('age', v)} keyboardType="numeric" />
+              </View>
+              <View style={[styles.field, styles.colThird]}>
+                <Select
+                  label="Sex/Gender *"
+                  value={form.gender}
+                  onValueChange={(v) => setField('gender', v)}
+                  options={[
+                    { label: 'Male', value: 'Male' },
+                    { label: 'Female', value: 'Female' },
+                  ]}
+                  placeholder="Select"
+                />
+              </View>
+              <View style={[styles.field, styles.colThird]}>
+                <Input label="Religion" value={form.religion} onChangeText={(v) => setField('religion', v)} />
+              </View>
+            </View>
+
+            <View style={styles.groupDivider} />
+            <Text style={styles.groupHeading}>Admission Information</Text>
+            <View style={styles.rowWrap}>
+              <View style={[styles.field, styles.colThird]}>
+                <Input
+                  label="Admission Date *"
+                  value={form.admissionDate}
+                  onChangeText={(v) => setField('admissionDate', v)}
+                  placeholder="YYYY-MM-DD"
+                />
+              </View>
+              <View style={[styles.field, styles.colThird]}>
+                <Input label="Room *" value={form.room} onChangeText={(v) => setField('room', v)} />
+              </View>
+              <View style={[styles.field, styles.colThird]}>
+                <Input label="Bed Number" value={form.bedNumber} onChangeText={(v) => setField('bedNumber', v)} />
+              </View>
+            </View>
+
+            <View style={[styles.labelRow, styles.sectionSpacing]}>
+              <FileText size={16} color={Colors.green600} />
+              <Text style={styles.section}>Medical Information</Text>
+            </View>
             <Input
               label="Attending Physician"
               value={form.attendingPhysician}
@@ -249,43 +399,105 @@ export function PatientKardexModal({
             />
             <Input label="Diet" value={form.diet} onChangeText={(v) => setField('diet', v)} />
 
-            <Text style={styles.section}>Vital Signs</Text>
-            <Input label="Temperature" value={form.temperature} onChangeText={(v) => setField('temperature', v)} />
-            <Input label="Pulse Rate" value={form.pulseRate} onChangeText={(v) => setField('pulseRate', v)} />
-            <Input
-              label="Respiratory Rate"
-              value={form.respiratoryRate}
-              onChangeText={(v) => setField('respiratoryRate', v)}
-            />
-            <Input
-              label="Blood Pressure"
-              value={form.bloodPressure}
-              onChangeText={(v) => setField('bloodPressure', v)}
-            />
-            <Input
-              label="Oxygen Saturation"
-              value={form.oxygenSaturation}
-              onChangeText={(v) => setField('oxygenSaturation', v)}
+            <Text style={styles.label}>Allergies</Text>
+            <View style={styles.allergyInputRow}>
+              <View style={{ flex: 1 }}>
+                <Input
+                  value={allergyDraft}
+                  onChangeText={setAllergyDraft}
+                  placeholder="e.g., Penicillin, Latex, Shellfish"
+                  onSubmitEditing={addAllergy}
+                  returnKeyType="done"
+                />
+              </View>
+              <Pressable
+                onPress={addAllergy}
+                disabled={!allergyDraft.trim()}
+                style={[styles.allergyAddBtn, !allergyDraft.trim() && styles.allergyAddBtnDisabled]}
+              >
+                <Plus size={16} color={Colors.white} />
+              </Pressable>
+            </View>
+            {form.allergies.length > 0 ? (
+              <View style={styles.allergyChipsRow}>
+                {form.allergies.map((allergy, index) => (
+                  <View key={`${allergy}-${index}`} style={styles.allergyChip}>
+                    <AlertTriangle size={12} color={Colors.orange700} />
+                    <Text style={styles.allergyChipText}>{allergy}</Text>
+                    <Pressable onPress={() => removeAllergy(index)} hitSlop={6}>
+                      <X size={13} color={Colors.orange700} />
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text style={styles.hint}>No known allergies recorded.</Text>
+            )}
+
+            <View style={[styles.labelRow, styles.sectionSpacing]}>
+              <Stethoscope size={16} color={Colors.blue600} />
+              <Text style={styles.section}>Patient Care Team</Text>
+            </View>
+            <Text style={styles.hint}>
+              Assign the departments and doctors responsible for this patient's care. Add New
+              Task can only assign tasks to doctors selected here.
+            </Text>
+            <PatientCareTeam
+              key={open ? `${mode}-${patient?.id || 'new'}` : 'closed'}
+              initialAssignedDoctors={initialAssignedDoctors}
+              doctorIds={doctorIds}
+              onChange={setDoctorIds}
+              onValidityChange={setCareTeamValid}
             />
 
-            <Text style={styles.section}>Special Endorsements</Text>
+            <View style={[styles.labelRow, styles.sectionSpacing]}>
+              <HeartPulse size={16} color={Colors.red600} />
+              <Text style={styles.section}>Latest Vital Signs</Text>
+            </View>
+            <VitalSignsGrid
+              temperature={form.temperature}
+              onTemperatureChange={(v) => setField('temperature', v)}
+              pulseRate={form.pulseRate}
+              onPulseRateChange={(v) => setField('pulseRate', v)}
+              respiratoryRate={form.respiratoryRate}
+              onRespiratoryRateChange={(v) => setField('respiratoryRate', v)}
+              bloodPressure={form.bloodPressure}
+              onBloodPressureChange={(v) => setField('bloodPressure', v)}
+              oxygenSaturation={form.oxygenSaturation}
+              onOxygenSaturationChange={(v) => setField('oxygenSaturation', v)}
+            />
+
+            <View style={[styles.labelRow, styles.sectionSpacing]}>
+              <AlertTriangle size={16} color={Colors.orange600} />
+              <Text style={styles.section}>Special Endorsements</Text>
+            </View>
+            <Text style={styles.hint}>
+              Important instructions, precautions, and patient-specific notes.
+            </Text>
             <TextInput
-              style={[styles.textarea, { minHeight: 90 }]}
+              style={[styles.textarea, styles.endorsementsTextarea, { minHeight: 90 }]}
               value={form.specialEndorsements}
               onChangeText={(v) => setField('specialEndorsements', v)}
+              placeholder="Enter any special instructions, precautions, or important notes..."
+              placeholderTextColor={Colors.gray400}
               multiline
             />
           </ScrollView>
           <View style={styles.footer}>
-            <Button variant="outline" onPress={() => onOpenChange(false)} style={{ flex: 1 }}>
-              <Text>Cancel</Text>
-            </Button>
-            <Button onPress={handleSave} loading={saving} style={{ flex: 1 }}>
-              <Save size={16} color={Colors.white} />
-              <Text style={{ color: Colors.white, fontWeight: '600' }}>
-                {mode === 'add' ? 'Save Patient' : 'Update'}
-              </Text>
-            </Button>
+            <View style={styles.footerButtons}>
+              <Button variant="outline" onPress={() => onOpenChange(false)} style={{ flex: 1 }}>
+                <Text>Cancel</Text>
+              </Button>
+              <Button onPress={handleSave} loading={saving} style={{ flex: 1.4 }}>
+                <Save size={16} color={Colors.white} />
+                <Text style={{ color: Colors.white, fontWeight: '600' }}>
+                  {mode === 'add' ? 'Save Patient' : 'Update'}
+                </Text>
+              </Button>
+            </View>
+            <Text style={styles.requiredHint}>
+              <Text style={styles.required}>*</Text> Required fields must be completed
+            </Text>
           </View>
         </View>
       </View>
@@ -318,13 +530,15 @@ const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: '700', color: Colors.foreground },
   content: { padding: 16, gap: 10, paddingBottom: 24 },
   section: {
-    marginTop: 8,
     marginBottom: 2,
     fontSize: 14,
     fontWeight: '700',
     color: Colors.blue700,
   },
+  sectionSpacing: { marginTop: 10 },
   label: { fontSize: 13, fontWeight: '600', color: Colors.gray700 },
+  labelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  hint: { fontSize: 11, color: Colors.gray500, marginTop: -6 },
   textarea: {
     borderWidth: 1,
     borderColor: Colors.border,
@@ -335,11 +549,142 @@ const styles = StyleSheet.create({
     color: Colors.foreground,
     backgroundColor: Colors.inputBackground,
   },
-  footer: {
+  endorsementsTextarea: {
+    borderColor: Colors.orange100,
+    backgroundColor: Colors.orange50,
+  },
+  allergyInputRow: {
     flexDirection: 'row',
-    gap: 10,
+    alignItems: 'center',
+    gap: 8,
+  },
+  allergyAddBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.blue600,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  allergyAddBtnDisabled: {
+    opacity: 0.5,
+  },
+  allergyChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  allergyChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: Colors.orange50,
+    borderWidth: 1,
+    borderColor: Colors.orange100,
+  },
+  allergyChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.orange700,
+  },
+  footer: {
+    gap: 8,
     padding: 16,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
+  },
+  footerButtons: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  requiredHint: {
+    fontSize: 11,
+    color: Colors.gray500,
+    textAlign: 'center',
+  },
+  required: {
+    color: Colors.red600,
+  },
+  field: { gap: 6 },
+  rowWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  colThird: {
+    flexGrow: 1,
+    flexBasis: '28%',
+    minWidth: 130,
+  },
+  groupHeading: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.blue700,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  groupDivider: {
+    height: 1,
+    backgroundColor: Colors.border,
+    marginVertical: 2,
+  },
+  summaryCard: {
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Colors.blue200,
+    borderRadius: Radius.lg,
+    padding: 14,
+    gap: 6,
+  },
+  summaryHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  summaryEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.blue700,
+    letterSpacing: 0.5,
+  },
+  summaryNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  summaryName: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '700',
+    color: Colors.gray900,
+  },
+  riskHint: {
+    fontSize: 10,
+    color: Colors.gray500,
+    marginTop: -2,
+  },
+  summaryFactsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  summaryFactIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  summaryFact: {
+    fontSize: 13,
+    color: Colors.foreground,
+    fontWeight: '500',
+  },
+  summaryDivider: {
+    fontSize: 12,
+    color: Colors.gray400,
   },
 });

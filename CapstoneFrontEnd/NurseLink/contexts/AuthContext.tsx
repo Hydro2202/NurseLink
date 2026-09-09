@@ -9,7 +9,9 @@ import {
   updateMe,
   getToken,
   setToken,
+  setUnauthorizedHandler,
 } from '../services/api';
+import * as authStorage from '../services/authStorage';
 import { USER_KEY } from '../services/config';
 import type { User, UserRole } from '../types/user';
 
@@ -37,6 +39,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
   const lastActivity = useRef(Date.now());
 
+  // Shared by the boot-time check below and by the global 401 handler
+  // registered further down — both cases mean the same thing: the token on
+  // this device no longer works, so drop it and the cached user together.
+  const clearSession = useCallback(async () => {
+    await setToken(null);
+    await authStorage.removeItem(USER_KEY);
+    setUser(null);
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
@@ -47,20 +58,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await AsyncStorage.removeItem('nurselink_darkmode');
 
         if (!token) {
-          await AsyncStorage.removeItem(USER_KEY);
+          await authStorage.removeItem(USER_KEY);
           return;
         }
 
         try {
           const me = await fetchMe();
           setUser(me);
-          await AsyncStorage.setItem(USER_KEY, JSON.stringify(me));
+          await authStorage.setItem(USER_KEY, JSON.stringify(me));
         } catch {
           // Token is invalid/expired — clear the session instead of
           // keeping a stale user that causes protected API calls to fail.
-          await setToken(null);
-          await AsyncStorage.removeItem(USER_KEY);
-          setUser(null);
+          await clearSession();
         }
       } catch (e) {
         console.error('Error loading session:', e);
@@ -68,7 +77,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsLoading(false);
       }
     })();
-  }, []);
+  }, [clearSession]);
+
+  // Any screen's API call can discover the token has gone bad mid-session
+  // (rotated by a password change elsewhere, account removed, etc.) — not
+  // just the boot-time check above. Without this, the app was stuck showing
+  // stale/empty screens with every request failing the same way until the
+  // nurse manually logged out.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      clearSession();
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [clearSession]);
 
   /**
    * Sign out completely.
@@ -89,7 +110,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn('Logout request failed; clearing this device anyway.', error);
     } finally {
       setUser(null);
-      await AsyncStorage.removeItem(USER_KEY);
+      await authStorage.removeItem(USER_KEY);
       lastActivity.current = Date.now();
     }
   }, []);
@@ -137,7 +158,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const { user: loggedIn } = await loginRequest(email, password, role);
       setUser(loggedIn);
-      await AsyncStorage.setItem(USER_KEY, JSON.stringify(loggedIn));
+      await authStorage.setItem(USER_KEY, JSON.stringify(loggedIn));
       lastActivity.current = Date.now();
       return true;
     } finally {
@@ -152,7 +173,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const { user: created } = await signupRequest(userData);
       setUser(created);
-      await AsyncStorage.setItem(USER_KEY, JSON.stringify(created));
+      await authStorage.setItem(USER_KEY, JSON.stringify(created));
       lastActivity.current = Date.now();
       return true;
     } finally {
@@ -178,16 +199,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const previous = user;
       const optimistic = { ...user, ...updates };
       setUser(optimistic);
-      await AsyncStorage.setItem(USER_KEY, JSON.stringify(optimistic));
+      await authStorage.setItem(USER_KEY, JSON.stringify(optimistic));
 
       try {
         const saved = await updateMe(updates);
         setUser(saved);
-        await AsyncStorage.setItem(USER_KEY, JSON.stringify(saved));
+        await authStorage.setItem(USER_KEY, JSON.stringify(saved));
         return saved;
       } catch (error) {
         setUser(previous);
-        await AsyncStorage.setItem(USER_KEY, JSON.stringify(previous));
+        await authStorage.setItem(USER_KEY, JSON.stringify(previous));
         throw error;
       }
     },

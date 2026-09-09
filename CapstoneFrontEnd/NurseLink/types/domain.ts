@@ -17,11 +17,44 @@ export interface Task {
   patientRoom?: string;
   doctorOrder?: string;
   checklist: TaskChecklistItem[];
+  /** Numeric Department id — kept a string here since every other id in this
+   * app's frontend is a string; the API accepts/returns it as a number. */
+  departmentId?: string;
+  departmentName?: string;
+  /** Read-only, populated by the backend from TaskDoctor. To change who's
+   * assigned, submit `doctorIds` instead — see createTask/updateTask. */
+  assignedDoctors?: TaskDoctorAssignment[];
+  /** Write-only on create/update: the full set of doctor ids for this task. */
+  doctorIds?: number[];
 }
 
 export interface TaskChecklistItem {
   text: string;
   done: boolean;
+}
+
+export interface TaskDoctorAssignment {
+  id: number;
+  name: string;
+  specialization: string;
+  /** Only present on Patient.assignedDoctors — a task's doctors are already
+   * scoped to one department, so TaskSerializer omits it there. */
+  departmentName?: string;
+}
+
+export interface Department {
+  id: number;
+  name: string;
+}
+
+export interface Doctor {
+  id: number;
+  fullName: string;
+  specialization: string;
+  departmentId: number;
+  departmentName: string;
+  licenseNumber: string;
+  status: 'active' | 'inactive';
 }
 
 export interface Patient {
@@ -32,7 +65,7 @@ export interface Patient {
   room: string;
   diagnosis: string;
   admissionDate: string;
-  riskLevel: 'low' | 'medium' | 'high';
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
   vitalSigns: {
     heartRate: number;
     bloodPressure: string;
@@ -48,6 +81,8 @@ export interface Patient {
   assignedNurseName?: string | null;
   /** Nurse who assigned assignedNurseName to this patient (usually whoever added them via Kardex). */
   assignedBy?: string | null;
+  /** This patient's Kardex-assigned doctors, across every department — see PatientDoctor. */
+  assignedDoctors?: TaskDoctorAssignment[];
 }
 
 export interface HandoverNote {
@@ -79,6 +114,37 @@ export interface HandoverNote {
   adoptedTasks?: string[];
 }
 
+export interface ChartingVitalSigns {
+  heartRate?: string;
+  bloodPressure?: string;
+  temperature?: string;
+  oxygenSaturation?: string;
+  respiratoryRate?: string;
+}
+
+/** Section-by-section Auto Charting payload persisted with the note. */
+export interface ChartingStructuredData {
+  patientName?: string;
+  patientId?: string;
+  room?: string;
+  date?: string;
+  time?: string;
+  attendingPhysician?: string;
+  nurseName?: string;
+  vitalSigns?: ChartingVitalSigns;
+  assessment?: string;
+  diagnosis?: string;
+  riskLevel?: string;
+  allergies?: string;
+  medications?: string;
+  alerts?: string;
+  interventions?: string[];
+  patientResponse?: string;
+  clinicalSummary?: string;
+  plan?: string;
+  timestamp?: string;
+}
+
 export interface ChartingNote {
   id: string;
   patientId: string;
@@ -88,14 +154,26 @@ export interface ChartingNote {
   timestamp: string;
   type: 'progress' | 'assessment' | 'medication' | 'vital_signs';
   content: string;
+  /** Persisted Auto Charting sections — used by View Full Note. */
+  structured?: ChartingStructuredData | null;
   aiGenerated: boolean;
   edited: boolean;
+  confirmed?: boolean;
+  confirmedAt?: string | null;
   attendingPhysician?: string;
   editHistory: {
     editedBy: string;
     editedAt: string;
     changes: string;
   }[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ChartingHistoryDate {
+  date: string;
+  count: number;
+  isToday: boolean;
 }
 
 export interface WorkloadData {
@@ -167,8 +245,45 @@ export interface PatientAssignmentRecord {
   attendingPhysician?: string;
 }
 
+export type DutyShift = 'morning' | 'afternoon' | 'night';
+export type DutyStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+
+export interface DutyAssignment {
+  id: number;
+  nurseId: string;
+  nurseName: string;
+  departmentId: number;
+  departmentName: string;
+  dutyDate: string;
+  shift: DutyShift;
+  shiftLabel: string;
+  startTime: string;
+  endTime: string;
+  regularHours: number;
+  overtimeStart: string | null;
+  overtimeEnd: string | null;
+  overtimeHours: number;
+  totalHours: number;
+  status: DutyStatus;
+  statusLabel: string;
+  notes: string;
+  /** Real attendance — null until the nurse taps Start/End Shift. */
+  actualStartTime: string | null;
+  actualEndTime: string | null;
+  actualWorkedHours: number;
+  actualOvertimeHours: number;
+  /** Set only when a supervisor closes out a shift the nurse never ended themselves. */
+  actualEndRecordedBy: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface KardexHistory {
   id: string;
+  /** The Patient this kardex is linked to — populated even for a brand-new
+   * patient, so the caller can act on them (e.g. assign doctors) right after. */
+  patientCode?: string | null;
   patientName: string;
   lastName: string;
   firstName: string;
@@ -184,6 +299,7 @@ export interface KardexHistory {
   admittingDiagnosis: string;
   finalDiagnosis: string;
   diet: string;
+  allergies: string[];
   temperature: string;
   pulseRate: string;
   respiratoryRate: string;

@@ -11,7 +11,8 @@ import {
 } from 'react-native';
 import {
   User,
-  Heart,
+  UserRound,
+  HeartPulse,
   FileText,
   AlertTriangle,
   Printer,
@@ -24,12 +25,18 @@ import {
   CheckCircle2,
   XCircle,
   RotateCcw,
+  Stethoscope,
+  MapPin,
+  BedDouble,
+  Plus,
 } from 'lucide-react-native';
-import { Card, CardContent, CardHeader, CardTitle } from '../../components/Card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
 import { Badge } from '../../components/Badge';
+import { PatientCareTeam } from '../../components/PatientCareTeam';
+import { VitalSignsGrid } from '../../components/VitalSignsGrid';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Colors, Radius, Shadows } from '../../constants/colors';
@@ -37,6 +44,7 @@ import {
   createKardexRecord,
   fetchKardexRecords,
   reviewKardexRecord,
+  setPatientAssignedDoctors,
   ApiError,
 } from '../../services/api';
 import type { DuplicatePatientMatch, KardexHistory } from '../../types/domain';
@@ -49,6 +57,15 @@ const STATUS_BADGE: Record<
   approved: { label: 'Approved', variant: 'success' },
   returned: { label: 'Returned', variant: 'warning' },
   rejected: { label: 'Rejected', variant: 'destructive' },
+};
+
+// Left-edge accent on each queue card — lets a supervisor scanning a long
+// list tell status apart at a glance, without reading every badge.
+const STATUS_ACCENT: Record<KardexHistory['status'], string> = {
+  submitted: Colors.blue500,
+  approved: Colors.green600,
+  returned: Colors.orange600,
+  rejected: Colors.red600,
 };
 
 export default function KardexScreen() {
@@ -70,6 +87,8 @@ export default function KardexScreen() {
   const [admittingDiagnosis, setAdmittingDiagnosis] = useState('');
   const [finalDiagnosis, setFinalDiagnosis] = useState('');
   const [diet, setDiet] = useState('');
+  const [allergies, setAllergies] = useState<string[]>([]);
+  const [allergyDraft, setAllergyDraft] = useState('');
 
   const [temperature, setTemperature] = useState('');
   const [pulseRate, setPulseRate] = useState('');
@@ -78,6 +97,12 @@ export default function KardexScreen() {
   const [oxygenSaturation, setOxygenSaturation] = useState('');
 
   const [specialEndorsements, setSpecialEndorsements] = useState('');
+
+  const [doctorIds, setDoctorIds] = useState<number[]>([]);
+  const [careTeamValid, setCareTeamValid] = useState(true);
+  // Bumped on every save/clear so PatientCareTeam remounts fresh for the
+  // next patient — it fetches its own data internally.
+  const [careTeamResetKey, setCareTeamResetKey] = useState(0);
 
   const [kardexHistory, setKardexHistory] = useState<KardexHistory[]>([]);
 
@@ -153,6 +178,19 @@ export default function KardexScreen() {
     setSelectedHistoryEntry(null);
   };
 
+  const addAllergy = () => {
+    const entry = allergyDraft.trim();
+    if (!entry) return;
+    setAllergies((prev) =>
+      prev.some((a) => a.toLowerCase() === entry.toLowerCase()) ? prev : [...prev, entry]
+    );
+    setAllergyDraft('');
+  };
+
+  const removeAllergy = (index: number) => {
+    setAllergies((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const validateRequiredFields = () => {
     const errors: string[] = [];
     if (!firstName) errors.push('First Name');
@@ -179,12 +217,16 @@ export default function KardexScreen() {
     setAdmittingDiagnosis('');
     setFinalDiagnosis('');
     setDiet('');
+    setAllergies([]);
+    setAllergyDraft('');
     setTemperature('');
     setPulseRate('');
     setRespiratoryRate('');
     setBloodPressure('');
     setOxygenSaturation('');
     setSpecialEndorsements('');
+    setDoctorIds([]);
+    setCareTeamResetKey((k) => k + 1);
   };
 
   const handleSaveClick = () => {
@@ -192,6 +234,12 @@ export default function KardexScreen() {
     if (errors.length > 0) {
       toast.error('Missing Required Fields', {
         description: `Please fill in: ${errors.join(', ')}`,
+      });
+      return;
+    }
+    if (!careTeamValid) {
+      toast.error('Incomplete Care Team', {
+        description: 'Please assign at least one doctor to each selected department.',
       });
       return;
     }
@@ -217,6 +265,7 @@ export default function KardexScreen() {
         admittingDiagnosis,
         finalDiagnosis,
         diet,
+        allergies,
         temperature,
         pulseRate,
         respiratoryRate,
@@ -225,6 +274,10 @@ export default function KardexScreen() {
         specialEndorsements,
         confirmDuplicate,
       });
+
+      if (newEntry.patientCode && doctorIds.length > 0) {
+        await setPatientAssignedDoctors(newEntry.patientCode, doctorIds);
+      }
 
       setKardexHistory((prev) => [newEntry, ...prev]);
       setShowConfirmDialog(false);
@@ -265,6 +318,7 @@ Chief Complaint: ${chiefComplaint || 'N/A'}
 Admitting Diagnosis: ${admittingDiagnosis || 'N/A'}
 Final Diagnosis: ${finalDiagnosis || 'N/A'}
 Diet: ${diet || 'N/A'}
+Allergies: ${allergies.length > 0 ? allergies.join(', ') : 'None known'}
 
 VITAL SIGNS
 Temp: ${temperature || 'N/A'} °C
@@ -351,6 +405,17 @@ ${specialEndorsements || 'None'}
     </View>
   );
 
+
+  const isSupervisor = user?.role === 'supervisor';
+  const pendingReviewCount = kardexHistory.filter((e) => e.status === 'submitted').length;
+  // Supervisors work through a queue — surface what needs a decision first,
+  // without hiding or reordering anything a staff nurse would see.
+  const displayedHistory = isSupervisor
+    ? [...kardexHistory].sort((a, b) =>
+        (a.status === 'submitted' ? 0 : 1) - (b.status === 'submitted' ? 0 : 1)
+      )
+    : kardexHistory;
+
   return (
     <ScrollView
       style={styles.screen}
@@ -364,6 +429,50 @@ ${specialEndorsements || 'None'}
         <Text style={styles.pageSubtitle}>Patient Summary & Care Plan</Text>
       </View>
 
+      {/* Patient quick summary — live preview of what's been entered so far */}
+      <View style={styles.summaryCard}>
+        <View style={styles.summaryHeaderRow}>
+          <UserRound size={16} color={Colors.blue700} />
+          <Text style={styles.summaryEyebrow}>PATIENT</Text>
+        </View>
+        <View style={styles.summaryNameRow}>
+          <Text style={styles.summaryName} numberOfLines={1}>
+            {[firstName, middleName, lastName].filter(Boolean).join(' ') || 'New patient'}
+          </Text>
+          <View style={styles.statusChip}>
+            <View style={styles.statusDotGreen} />
+            <Text style={styles.statusChipText}>Admitted</Text>
+          </View>
+        </View>
+        <View style={styles.summaryFactsRow}>
+          <Text style={styles.summaryFact}>{age ? `${age} yrs` : 'Age —'}</Text>
+          <Text style={styles.summaryDivider}>•</Text>
+          <Text style={styles.summaryFact}>{gender || 'Sex —'}</Text>
+          <Text style={styles.summaryDivider}>•</Text>
+          <View style={styles.summaryFactIconRow}>
+            <MapPin size={12} color={Colors.mutedForeground} />
+            <Text style={styles.summaryFact}>{room ? `Room ${room}` : 'Room —'}</Text>
+          </View>
+          {bedNumber ? (
+            <>
+              <Text style={styles.summaryDivider}>•</Text>
+              <View style={styles.summaryFactIconRow}>
+                <BedDouble size={12} color={Colors.mutedForeground} />
+                <Text style={styles.summaryFact}>Bed {bedNumber}</Text>
+              </View>
+            </>
+          ) : null}
+        </View>
+        <View style={styles.summaryMetaRow}>
+          <Text style={styles.summaryMeta}>
+            Admitted: <Text style={styles.summaryMetaValue}>{admissionDate || 'Not yet entered'}</Text>
+          </Text>
+          <Text style={styles.summaryMeta}>
+            Attending: <Text style={styles.summaryMetaValue}>{attendingPhysician || 'Not yet entered'}</Text>
+          </Text>
+        </View>
+      </View>
+
       {/* Patient Demographics */}
       <Card>
         <CardHeader>
@@ -373,6 +482,7 @@ ${specialEndorsements || 'None'}
           </View>
         </CardHeader>
         <CardContent style={styles.gap4}>
+          <Text style={styles.groupHeading}>Personal Information</Text>
           <View style={styles.rowWrap}>
             <View style={[styles.field, styles.colThird]}>
               <RequiredLabel text="Last Name" />
@@ -401,7 +511,7 @@ ${specialEndorsements || 'None'}
           </View>
 
           <View style={styles.rowWrap}>
-            <View style={[styles.field, styles.colQuarter]}>
+            <View style={[styles.field, styles.colThird]}>
               <RequiredLabel text="Age" />
               <Input
                 value={age}
@@ -410,7 +520,7 @@ ${specialEndorsements || 'None'}
                 keyboardType="numeric"
               />
             </View>
-            <View style={[styles.field, styles.colQuarter]}>
+            <View style={[styles.field, styles.colThird]}>
               <Select
                 label="Sex/Gender *"
                 value={gender}
@@ -422,7 +532,7 @@ ${specialEndorsements || 'None'}
                 placeholder="Select"
               />
             </View>
-            <View style={[styles.field, styles.colQuarter]}>
+            <View style={[styles.field, styles.colThird]}>
               <FieldLabel text="Religion" />
               <Input
                 value={religion}
@@ -430,7 +540,12 @@ ${specialEndorsements || 'None'}
                 placeholder="Religion"
               />
             </View>
-            <View style={[styles.field, styles.colQuarter]}>
+          </View>
+
+          <View style={styles.groupDivider} />
+          <Text style={styles.groupHeading}>Admission Information</Text>
+          <View style={styles.rowWrap}>
+            <View style={[styles.field, styles.colThird]}>
               <RequiredLabel text="Admission Date" />
               <Input
                 value={admissionDate}
@@ -438,10 +553,7 @@ ${specialEndorsements || 'None'}
                 placeholder="YYYY-MM-DD"
               />
             </View>
-          </View>
-
-          <View style={styles.rowWrap}>
-            <View style={[styles.field, styles.colHalf]}>
+            <View style={[styles.field, styles.colThird]}>
               <RequiredLabel text="Room" />
               <Input
                 value={room}
@@ -449,7 +561,7 @@ ${specialEndorsements || 'None'}
                 placeholder="Room number"
               />
             </View>
-            <View style={[styles.field, styles.colHalf]}>
+            <View style={[styles.field, styles.colThird]}>
               <FieldLabel text="Bed Number" />
               <Input
                 value={bedNumber}
@@ -517,6 +629,43 @@ ${specialEndorsements || 'None'}
               placeholder="e.g., NPO, Regular, Low-sodium"
             />
           </View>
+
+          <View style={styles.field}>
+            <FieldLabel text="Allergies" />
+            <View style={styles.allergyInputRow}>
+              <View style={{ flex: 1 }}>
+                <Input
+                  value={allergyDraft}
+                  onChangeText={setAllergyDraft}
+                  placeholder="e.g., Penicillin, Latex, Shellfish"
+                  onSubmitEditing={addAllergy}
+                  returnKeyType="done"
+                />
+              </View>
+              <Pressable
+                onPress={addAllergy}
+                disabled={!allergyDraft.trim()}
+                style={[styles.allergyAddBtn, !allergyDraft.trim() && styles.allergyAddBtnDisabled]}
+              >
+                <Plus size={16} color={Colors.white} />
+              </Pressable>
+            </View>
+            {allergies.length > 0 ? (
+              <View style={styles.allergyChipsRow}>
+                {allergies.map((allergy, index) => (
+                  <View key={`${allergy}-${index}`} style={styles.allergyChip}>
+                    <AlertTriangle size={12} color={Colors.orange700} />
+                    <Text style={styles.allergyChipText}>{allergy}</Text>
+                    <Pressable onPress={() => removeAllergy(index)} hitSlop={6}>
+                      <X size={13} color={Colors.orange700} />
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text style={styles.allergyEmptyText}>No known allergies recorded.</Text>
+            )}
+          </View>
         </CardContent>
       </Card>
 
@@ -524,67 +673,58 @@ ${specialEndorsements || 'None'}
       <Card>
         <CardHeader>
           <View style={styles.titleRow}>
-            <Heart size={20} color={Colors.red600} />
+            <HeartPulse size={20} color={Colors.red600} />
             <CardTitle>Latest Vital Signs</CardTitle>
           </View>
         </CardHeader>
         <CardContent>
-          <View style={styles.rowWrap}>
-            <View style={[styles.field, styles.colThird]}>
-              <FieldLabel text="Temperature (°C)" />
-              <Input
-                value={temperature}
-                onChangeText={setTemperature}
-                placeholder="36.5"
-                keyboardType="decimal-pad"
-              />
-            </View>
-            <View style={[styles.field, styles.colThird]}>
-              <FieldLabel text="Pulse Rate (bpm)" />
-              <Input
-                value={pulseRate}
-                onChangeText={setPulseRate}
-                placeholder="80"
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={[styles.field, styles.colThird]}>
-              <FieldLabel text="Respiratory Rate" />
-              <Input
-                value={respiratoryRate}
-                onChangeText={setRespiratoryRate}
-                placeholder="18"
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={[styles.field, styles.colThird]}>
-              <FieldLabel text="Blood Pressure" />
-              <Input
-                value={bloodPressure}
-                onChangeText={setBloodPressure}
-                placeholder="120/80"
-              />
-            </View>
-            <View style={[styles.field, styles.colThird]}>
-              <FieldLabel text="O2 Saturation (%)" />
-              <Input
-                value={oxygenSaturation}
-                onChangeText={setOxygenSaturation}
-                placeholder="98"
-                keyboardType="numeric"
-              />
-            </View>
+          <VitalSignsGrid
+            temperature={temperature}
+            onTemperatureChange={setTemperature}
+            pulseRate={pulseRate}
+            onPulseRateChange={setPulseRate}
+            respiratoryRate={respiratoryRate}
+            onRespiratoryRateChange={setRespiratoryRate}
+            bloodPressure={bloodPressure}
+            onBloodPressureChange={setBloodPressure}
+            oxygenSaturation={oxygenSaturation}
+            onOxygenSaturationChange={setOxygenSaturation}
+          />
+        </CardContent>
+      </Card>
+
+      {/* Patient Care Team */}
+      <Card>
+        <CardHeader>
+          <View style={styles.titleRow}>
+            <Stethoscope size={20} color={Colors.blue600} />
+            <CardTitle>Patient Care Team</CardTitle>
           </View>
+          <CardDescription>
+            Departments and doctors responsible for this patient's care.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PatientCareTeam
+            key={careTeamResetKey}
+            initialAssignedDoctors={[]}
+            doctorIds={doctorIds}
+            onChange={setDoctorIds}
+            onValidityChange={setCareTeamValid}
+          />
         </CardContent>
       </Card>
 
       {/* Special Endorsements */}
-      <Card>
+      <Card style={styles.endorsementsCard}>
         <CardHeader>
           <View style={styles.titleRow}>
             <AlertTriangle size={20} color={Colors.orange600} />
             <CardTitle>Special Endorsements</CardTitle>
           </View>
+          <CardDescription>
+            Important instructions, precautions, and patient-specific notes.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <TextArea
@@ -602,7 +742,7 @@ ${specialEndorsements || 'None'}
           <View style={styles.actionRow}>
             <Button
               onPress={handleSaveClick}
-              style={{ ...styles.actionBtn, backgroundColor: Colors.blue600 }}
+              style={{ ...styles.actionBtn, ...styles.saveBtn, backgroundColor: Colors.blue600 }}
               size="lg"
             >
               <View style={styles.btnInner}>
@@ -650,37 +790,43 @@ ${specialEndorsements || 'None'}
           <CardHeader>
             <View style={styles.titleRow}>
               <Clock size={20} color={Colors.purple600} />
-              <CardTitle>Recent Kardex History</CardTitle>
+              <CardTitle>Recent Kardex Activity</CardTitle>
             </View>
           </CardHeader>
-          <CardContent style={styles.gap3}>
-            {kardexHistory.map((entry) => (
+          <CardContent style={{ gap: 0 }}>
+            {kardexHistory.slice(0, 5).map((entry, index) => (
               <Pressable
                 key={entry.id}
-                style={styles.historyItem}
+                style={styles.timelineRow}
                 onPress={() => handleViewHistory(entry)}
               >
-                <View style={{ flex: 1 }}>
+                <View style={styles.timelineRail}>
+                  <View style={styles.timelineDot} />
+                  {index < Math.min(kardexHistory.length, 5) - 1 ? (
+                    <View style={styles.timelineLine} />
+                  ) : null}
+                </View>
+                <View style={styles.timelineContent}>
+                  <Text style={styles.timelineDate}>
+                    {new Date(entry.savedAt).toLocaleString()}
+                  </Text>
                   <View style={styles.reviewStatusRow}>
-                    <Text style={styles.historyName}>{entry.patientName}</Text>
-                    <Badge variant={STATUS_BADGE[entry.status].variant}>
-                      {STATUS_BADGE[entry.status].label}
-                    </Badge>
-                  </View>
-                  <Text style={styles.historyRoom}>Room: {entry.room}</Text>
-                  <View style={styles.metaRow}>
-                    <Calendar size={12} color={Colors.gray500} />
-                    <Text style={styles.historyDate}>
-                      {new Date(entry.savedAt).toLocaleString()}
+                    <Text style={styles.timelineText}>
+                      Kardex saved for <Text style={styles.summaryBold}>{entry.patientName}</Text>
+                      {' '}(Room {entry.room}) by {entry.savedBy}
                     </Text>
                   </View>
-                </View>
-                <View style={styles.historyRight}>
-                  <Text style={styles.savedByLabel}>Saved by</Text>
-                  <Text style={styles.savedByName}>{entry.savedBy}</Text>
+                  <Badge variant={STATUS_BADGE[entry.status].variant}>
+                    {STATUS_BADGE[entry.status].label}
+                  </Badge>
                 </View>
               </Pressable>
             ))}
+            {kardexHistory.length > 5 ? (
+              <Pressable onPress={handleOpenHistoryList} style={styles.viewAllRow}>
+                <Text style={styles.viewAllText}>View Full History ({kardexHistory.length})</Text>
+              </Pressable>
+            ) : null}
           </CardContent>
         </Card>
       ) : null}
@@ -817,6 +963,16 @@ ${specialEndorsements || 'None'}
                 ? 'Complete kardex record - Read-only view for audit and verification'
                 : 'View all saved kardex records'}
             </Text>
+
+            {isSupervisor && !selectedHistoryEntry && pendingReviewCount > 0 ? (
+              <View style={styles.pendingBanner}>
+                <Clock size={15} color={Colors.blue700} />
+                <Text style={styles.pendingBannerText}>
+                  {pendingReviewCount} {pendingReviewCount === 1 ? 'record' : 'records'} awaiting
+                  your review
+                </Text>
+              </View>
+            ) : null}
 
             <ScrollView
               style={styles.historyScroll}
@@ -972,6 +1128,14 @@ ${specialEndorsements || 'None'}
                         label="Diet"
                         value={selectedHistoryEntry.diet || 'N/A'}
                       />
+                      <ReadOnlyField
+                        label="Allergies"
+                        value={
+                          selectedHistoryEntry.allergies?.length
+                            ? selectedHistoryEntry.allergies.join(', ')
+                            : 'None known'
+                        }
+                      />
                     </View>
                   </View>
 
@@ -979,7 +1143,7 @@ ${specialEndorsements || 'None'}
 
                   <View>
                     <View style={[styles.titleRow, { marginBottom: 12 }]}>
-                      <Heart size={20} color={Colors.red600} />
+                      <HeartPulse size={20} color={Colors.red600} />
                       <Text style={styles.sectionHeading}>Vital Signs</Text>
                     </View>
                     <View style={styles.rowWrap}>
@@ -1037,9 +1201,14 @@ ${specialEndorsements || 'None'}
                     <>
                       <View style={styles.separator} />
                       <View style={styles.reviewPanel}>
-                        <View style={[styles.titleRow, { marginBottom: 12 }]}>
-                          <FileText size={20} color={Colors.purple600} />
-                          <Text style={styles.sectionHeading}>Supervisor Review</Text>
+                        <View style={styles.reviewPanelHeader}>
+                          <View style={styles.titleRow}>
+                            <FileText size={20} color={Colors.purple600} />
+                            <Text style={styles.sectionHeading}>Supervisor Review</Text>
+                          </View>
+                          <View style={styles.actionRequiredChip}>
+                            <Text style={styles.actionRequiredText}>ACTION REQUIRED</Text>
+                          </View>
                         </View>
                         {reviewActionPending ? (
                           <View style={styles.gap3}>
@@ -1092,7 +1261,7 @@ ${specialEndorsements || 'None'}
                               size="sm"
                               onPress={() => handleReview('approved')}
                               disabled={reviewSubmitting}
-                              style={{ flex: 1, backgroundColor: Colors.green600 }}
+                              style={{ flex: 1.3, backgroundColor: Colors.green600 }}
                             >
                               <View style={styles.btnInner}>
                                 <CheckCircle2 size={16} color={Colors.white} />
@@ -1131,8 +1300,14 @@ ${specialEndorsements || 'None'}
                 </View>
               ) : (
                 <View style={styles.gap3}>
-                  {kardexHistory.map((entry) => (
-                    <View key={entry.id} style={styles.historyListItem}>
+                  {displayedHistory.map((entry) => (
+                    <View
+                      key={entry.id}
+                      style={[
+                        styles.historyListItem,
+                        { borderLeftColor: STATUS_ACCENT[entry.status] },
+                      ]}
+                    >
                       <View style={{ flex: 1 }}>
                         <View style={styles.historyListTop}>
                           <Text style={styles.historyListName}>{entry.patientName}</Text>
@@ -1163,17 +1338,30 @@ ${specialEndorsements || 'None'}
                           </Text>
                         </View>
                       </View>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onPress={() => handleViewHistory(entry)}
-                        style={styles.viewDetailsBtn}
-                      >
-                        <View style={styles.btnInner}>
-                          <Eye size={16} color={Colors.purple600} />
-                          <Text style={styles.historyBtnText}>View Details</Text>
-                        </View>
-                      </Button>
+                      {isSupervisor && entry.status === 'submitted' ? (
+                        <Button
+                          size="sm"
+                          onPress={() => handleViewHistory(entry)}
+                          style={{ backgroundColor: Colors.blue600 }}
+                        >
+                          <View style={styles.btnInner}>
+                            <CheckCircle2 size={16} color={Colors.white} />
+                            <Text style={styles.btnTextWhite}>Review</Text>
+                          </View>
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onPress={() => handleViewHistory(entry)}
+                          style={styles.viewDetailsBtn}
+                        >
+                          <View style={styles.btnInner}>
+                            <Eye size={16} color={Colors.purple600} />
+                            <Text style={styles.historyBtnText}>View Details</Text>
+                          </View>
+                        </Button>
+                      )}
                     </View>
                   ))}
                 </View>
@@ -1227,6 +1415,91 @@ const styles = StyleSheet.create({
     color: Colors.gray600,
     marginTop: 2,
   },
+  summaryCard: {
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Colors.blue200,
+    borderRadius: Radius.lg,
+    padding: 16,
+    gap: 6,
+  },
+  summaryHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  summaryEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.blue700,
+    letterSpacing: 0.5,
+  },
+  summaryNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  summaryName: {
+    flex: 1,
+    fontSize: 19,
+    fontWeight: '700',
+    color: Colors.gray900,
+  },
+  statusChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: Colors.green50,
+  },
+  statusDotGreen: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.green600,
+  },
+  statusChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.green700,
+  },
+  summaryFactsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  summaryFactIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  summaryFact: {
+    fontSize: 13,
+    color: Colors.foreground,
+    fontWeight: '500',
+  },
+  summaryDivider: {
+    fontSize: 12,
+    color: Colors.gray400,
+  },
+  summaryMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 16,
+    marginTop: 2,
+  },
+  summaryMeta: {
+    fontSize: 12,
+    color: Colors.mutedForeground,
+  },
+  summaryMetaValue: {
+    color: Colors.foreground,
+    fontWeight: '600',
+  },
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1263,6 +1536,18 @@ const styles = StyleSheet.create({
     flexBasis: '45%',
     minWidth: 140,
   },
+  groupHeading: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.blue700,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  groupDivider: {
+    height: 1,
+    backgroundColor: Colors.border,
+    marginVertical: 2,
+  },
   textarea: {
     borderWidth: 1,
     borderColor: Colors.border,
@@ -1289,8 +1574,52 @@ const styles = StyleSheet.create({
   },
   actionCard: {
     backgroundColor: Colors.blue50,
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: Colors.blue200,
+  },
+  endorsementsCard: {
+    borderColor: Colors.orange100,
+  },
+  allergyInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  allergyAddBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.blue600,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  allergyAddBtnDisabled: {
+    opacity: 0.5,
+  },
+  allergyChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  allergyChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: Colors.orange50,
+    borderWidth: 1,
+    borderColor: Colors.orange100,
+  },
+  allergyChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.orange700,
+  },
+  allergyEmptyText: {
+    fontSize: 12,
+    color: Colors.gray500,
   },
   actionRow: {
     flexDirection: 'row',
@@ -1302,11 +1631,14 @@ const styles = StyleSheet.create({
     minWidth: 140,
     height: 48,
   },
+  saveBtn: {
+    flex: 1.4,
+  },
   printBtn: {
-    borderWidth: 2,
+    borderWidth: 1,
   },
   historyBtn: {
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: Colors.purple600,
     height: 48,
   },
@@ -1336,26 +1668,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 4,
   },
-  historyItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: Radius.lg,
-    gap: 12,
-  },
-  historyName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: Colors.gray900,
-  },
-  historyRoom: {
-    fontSize: 13,
-    color: Colors.gray600,
-    marginTop: 2,
-  },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1367,17 +1679,50 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: Colors.gray500,
   },
-  historyRight: {
-    alignItems: 'flex-end',
+  timelineRow: {
+    flexDirection: 'row',
+    gap: 12,
   },
-  savedByLabel: {
-    fontSize: 13,
-    color: Colors.gray600,
+  timelineRail: {
+    alignItems: 'center',
+    width: 12,
   },
-  savedByName: {
-    fontSize: 14,
+  timelineDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: Colors.purple600,
+    marginTop: 4,
+  },
+  timelineLine: {
+    flex: 1,
+    width: 2,
+    backgroundColor: Colors.border,
+    marginTop: 2,
+  },
+  timelineContent: {
+    flex: 1,
+    gap: 4,
+    paddingBottom: 16,
+  },
+  timelineDate: {
+    fontSize: 11,
     fontWeight: '600',
-    color: Colors.gray900,
+    color: Colors.gray500,
+  },
+  timelineText: {
+    fontSize: 13,
+    color: Colors.foreground,
+    lineHeight: 18,
+  },
+  viewAllRow: {
+    alignItems: 'center',
+    paddingTop: 4,
+  },
+  viewAllText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.purple600,
   },
   modalBackdrop: {
     flex: 1,
@@ -1494,10 +1839,48 @@ const styles = StyleSheet.create({
   reviewNotesText: { fontSize: 13, color: Colors.gray700, lineHeight: 18 },
   reviewPanel: {
     backgroundColor: Colors.purple50,
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: Colors.purple100,
     borderRadius: Radius.lg,
     padding: 16,
+    gap: 12,
+  },
+  reviewPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  actionRequiredChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: Colors.purple600,
+  },
+  actionRequiredText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: Colors.white,
+    letterSpacing: 0.4,
+  },
+  pendingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.blue50,
+    borderWidth: 1,
+    borderColor: Colors.blue200,
+  },
+  pendingBannerText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.blue700,
   },
   reviewActionsRow: { flexDirection: 'row', gap: 8 },
   separator: {
@@ -1514,8 +1897,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: 16,
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: Colors.border,
+    borderLeftWidth: 4,
     borderRadius: Radius.lg,
     gap: 12,
   },
@@ -1537,7 +1921,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   viewDetailsBtn: {
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: Colors.purple600,
   },
 });

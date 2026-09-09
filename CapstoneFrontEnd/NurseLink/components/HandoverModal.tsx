@@ -46,6 +46,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  const [nursesLoading, setNursesLoading] = useState(false);
+
   useEffect(() => {
     if (!open) {
       setSelectedPatientId('');
@@ -68,22 +70,48 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     let cancelled = false;
     (async () => {
       try {
-        const [patientData, nurseData] = await Promise.all([fetchPatients(), fetchNurses()]);
-        if (!cancelled) {
-          setPatients(patientData);
-          setNurses(nurseData);
-        }
+        const patientData = await fetchPatients({ mine: true });
+        if (!cancelled) setPatients(patientData);
       } catch {
-        if (!cancelled) {
-          setPatients([]);
-          setNurses([]);
-        }
+        if (!cancelled) setPatients([]);
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [open]);
+
+  // Nurses who already received this patient's handover must not be offered
+  // again for it, so the eligible list is re-fetched per selected patient
+  // rather than loaded once for the whole modal.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      setNursesLoading(true);
+      try {
+        const nurseData = await fetchNurses(
+          selectedPatientId ? { excludeForPatient: selectedPatientId } : undefined
+        );
+        if (!cancelled) {
+          setNurses(nurseData);
+          // The previously selected nurse may no longer be eligible for the
+          // newly selected patient — clear it rather than silently submitting
+          // a stale choice.
+          setSelectedNurseId((prev) =>
+            prev && !nurseData.some((n) => n.id === prev) ? '' : prev
+          );
+        }
+      } catch {
+        if (!cancelled) setNurses([]);
+      } finally {
+        if (!cancelled) setNursesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, selectedPatientId]);
 
   useEffect(() => {
     if (selectedNurseId) {
@@ -190,9 +218,12 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 options={patients.map((p) => ({
                   label: `${p.name} • ${p.room}`,
                   value: p.id,
+                  keywords: `${p.id} ${p.room} ${p.diagnosis}`,
                 }))}
                 placeholder="Choose a patient"
                 error={errors.patient}
+                searchable
+                searchPlaceholder="Search by name, ID, or room..."
               />
 
               {selectedPatientId ? (
@@ -231,11 +262,34 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                   options={nurses.map((n) => ({
                     label: `${n.name} • ${n.role}${n.specialization ? ` (${n.specialization})` : ''}`,
                     value: n.id,
+                    keywords: `${n.email || ''} ${n.department || ''}`,
                   }))}
-                  placeholder="Choose a nurse"
+                  placeholder={
+                    nursesLoading
+                      ? 'Loading nurses...'
+                      : selectedPatientId && nurses.length === 0
+                        ? 'All available nurses have already received this patient.'
+                        : 'Choose a nurse'
+                  }
+                  searchable
+                  searchPlaceholder="Search by name, username, or email..."
+                  emptyMessage={
+                    selectedPatientId
+                      ? 'All available nurses have already received this patient.'
+                      : 'No nurses found.'
+                  }
                   error={errors.nurse}
                 />
               </View>
+
+              {selectedPatientId && !nursesLoading && nurses.length === 0 ? (
+                <Alert variant="warning">
+                  <AlertDescription>
+                    All available nurses have already received this patient. This patient
+                    cannot be handed over again until a different nurse becomes eligible.
+                  </AlertDescription>
+                </Alert>
+              ) : null}
 
               <View style={styles.sbarSection}>
                 <Text style={styles.sbarTitle}>SBAR Report</Text>

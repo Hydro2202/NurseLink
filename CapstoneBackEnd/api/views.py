@@ -13,6 +13,7 @@ from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import Count, Max, Prefetch, Q
 from django.utils import timezone
+from zoneinfo import ZoneInfo
 from django.utils.dateparse import parse_date
 from drf_spectacular.utils import (
     OpenApiExample,
@@ -53,6 +54,9 @@ from .id_field_validation import validate_prc_id_fields
 from .prc_ocr import InvalidImageError, PrcOcrError, scan_id_fields, scan_prc_license
 from .models import (
     ChartingNote,
+    Department,
+    Doctor,
+    DutyAssignment,
     IdScanAttempt,
     FaceVerificationAttempt,
     HandoverNote,
@@ -61,6 +65,7 @@ from .models import (
     NurseProfile,
     Patient,
     PatientAssignment,
+    PatientDoctor,
     RegistrationSession,
     Task,
     UserPreferences,
@@ -104,6 +109,9 @@ from .schema_examples import (
 from .serializers import (
     ChangePasswordSerializer,
     ChartingNoteSerializer,
+    DepartmentSerializer,
+    DoctorSerializer,
+    DutyAssignmentSerializer,
     StructureChartSerializer,
     StructureChartResponseSerializer,
     VerifyIdSerializer,
@@ -2042,8 +2050,9 @@ class PatientViewSet(viewsets.ModelViewSet):
     lookup_url_kwarg = 'patient_code'
 
     def get_queryset(self):
-        # assignedBy reads the active PatientAssignment per row, so prefetch
-        # it — otherwise a full ward list costs one extra query per patient.
+        # assignedBy reads the active PatientAssignment per row, and
+        # assignedDoctors reads the active PatientDoctor rows — prefetch both,
+        # otherwise a full ward list costs two extra queries per patient.
         qs = Patient.objects.select_related('assigned_nurse').prefetch_related(
             Prefetch(
                 'assignments',
@@ -2051,7 +2060,13 @@ class PatientViewSet(viewsets.ModelViewSet):
                 .select_related('assigned_by')
                 .order_by('-assigned_at'),
                 to_attr='active_assignments',
-            )
+            ),
+            Prefetch(
+                'assigned_doctors',
+                queryset=PatientDoctor.objects.filter(status='active')
+                .select_related('doctor', 'doctor__department'),
+                to_attr='active_doctor_assignments',
+            ),
         ).all()
         mine = self.request.query_params.get('mine')
         search = self.request.query_params.get('search')
@@ -2106,6 +2121,107 @@ class PatientViewSet(viewsets.ModelViewSet):
             )
         # Related tasks/assignments/kardex cascade or are cleaned via FK rules
         return super().destroy(request, *args, **kwargs)
+
+    @extend_schema(
+        request=inline_serializer(
+            name='SetAssignedDoctorsRequest',
+            fields={'doctorIds': serializers.ListField(child=serializers.IntegerField())},
+        ),
+        responses={200: DoctorSerializer(many=True)},
+        tags=['Patients'],
+        summary="Get or replace a patient's Kardex-assigned doctors",
+        description=(
+            'GET returns the doctors currently on this patient\'s care team — the source of '
+            'truth Add New Task reads from. POST replaces the whole set with `doctorIds`. '
+            'Removed assignments are deactivated, not deleted, so history (and any task '
+            'already created against them) survives. A doctor already on the team who has '
+            'since gone inactive can still be kept as-is; only a *newly added* id is checked '
+            'for active status — the client cannot use this endpoint to freshly attach an '
+            'inactive doctor.'
+        ),
+    )
+    @action(detail=True, methods=['get', 'post'], url_path='assigned-doctors')
+    def assigned_doctors(self, request, patient_code=None):
+        patient = self.get_object()
+        if request.method == 'GET':
+            doctors = [
+                pd.doctor for pd in
+                PatientDoctor.objects.filter(patient=patient, status='active')
+                .select_related('doctor', 'doctor__department')
+            ]
+            return Response(DoctorSerializer(doctors, many=True).data)
+
+        doctor_ids = request.data.get('doctorIds')
+        if not isinstance(doctor_ids, list):
+            return Response(
+                {'doctorIds': 'doctorIds must be an array.'}, status=status.HTTP_400_BAD_REQUEST
+            )
+        doctors = list(Doctor.objects.filter(pk__in=doctor_ids))
+        found_ids = {d.pk for d in doctors}
+        missing = [d for d in doctor_ids if d not in found_ids]
+        if missing:
+            return Response(
+                {'doctorIds': f'Doctor(s) not found: {", ".join(str(m) for m in missing)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        currently_active_ids = set(
+            PatientDoctor.objects.filter(patient=patient, status='active')
+            .values_list('doctor_id', flat=True)
+        )
+        newly_added_ids = found_ids - currently_active_ids
+        inactive = [d.full_name for d in doctors if d.pk in newly_added_ids and d.status != 'active']
+        if inactive:
+            return Response(
+                {'doctorIds': f'Not available for assignment: {", ".join(inactive)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Deactivate rather than delete — a doctor removed from the care team
+        # may already be attached to real tasks, and Kardex history should
+        # still show they were once responsible for this patient.
+        PatientDoctor.objects.filter(patient=patient, status='active').exclude(
+            doctor_id__in=found_ids
+        ).update(status='inactive')
+        for doctor in doctors:
+            PatientDoctor.objects.update_or_create(
+                patient=patient, doctor=doctor,
+                defaults={'status': 'active', 'assigned_by': request.user},
+            )
+        active_doctors = [
+            pd.doctor for pd in
+            PatientDoctor.objects.filter(patient=patient, status='active')
+            .select_related('doctor', 'doctor__department')
+        ]
+        return Response(DoctorSerializer(active_doctors, many=True).data)
+
+
+class DepartmentViewSet(viewsets.ReadOnlyModelViewSet):
+    """Fixed reference list — departments are seeded via migration, not
+    created through the API, so this is read-only."""
+
+    serializer_class = DepartmentSerializer
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    queryset = Department.objects.all()
+    pagination_class = None
+
+
+class DoctorViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = DoctorSerializer
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = Doctor.objects.select_related('department').all()
+        department_id = self.request.query_params.get('department')
+        search = self.request.query_params.get('search')
+        if department_id:
+            qs = qs.filter(department_id=department_id)
+        if search:
+            qs = qs.filter(
+                Q(full_name__icontains=search)
+                | Q(specialization__icontains=search)
+                | Q(license_number__icontains=search)
+            )
+        return qs
 
 
 @extend_schema_view(
@@ -2304,12 +2420,126 @@ class ChartingViewSet(viewsets.ModelViewSet):
     lookup_field = 'note_code'
     lookup_url_kwarg = 'note_code'
 
+    # Philippine hospital app — calendar "Today" / history dates use local civil days.
+    CHARTING_CALENDAR_TZ = 'Asia/Manila'
+
+    def _charting_tz(self):
+        try:
+            from zoneinfo import ZoneInfo
+
+            return ZoneInfo(
+                self.request.query_params.get('tz')
+                or getattr(settings, 'CHARTING_TIME_ZONE', self.CHARTING_CALENDAR_TZ)
+            )
+        except Exception:
+            from zoneinfo import ZoneInfo
+
+            return ZoneInfo(self.CHARTING_CALENDAR_TZ)
+
     def get_queryset(self):
         qs = ChartingNote.objects.select_related('patient', 'nurse').all()
+        mine = (self.request.query_params.get('mine') or '').strip().lower()
+        if mine in ('1', 'true', 'yes', 'on'):
+            qs = qs.filter(nurse=self.request.user)
         patient_id = self.request.query_params.get('patientId')
         if patient_id:
             qs = qs.filter(patient__patient_code=patient_id)
+        date_str = (self.request.query_params.get('date') or '').strip()
+        if date_str:
+            day = parse_date(date_str)
+            if day is None:
+                return qs.none()
+            from datetime import datetime, time as dtime, timedelta
+
+            tz = self._charting_tz()
+            start = datetime.combine(day, dtime.min, tzinfo=tz)
+            end = start + timedelta(days=1)
+            qs = qs.filter(timestamp__gte=start, timestamp__lt=end)
         return qs
+
+    def _ensure_note_owner(self, note):
+        if note.nurse_id and note.nurse_id != self.request.user.id:
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied('You can only modify your own charting notes.')
+
+    def perform_update(self, serializer):
+        self._ensure_note_owner(serializer.instance)
+        # Clients must not flip confirmation via generic PATCH — use /confirm/.
+        serializer.validated_data.pop('confirmed', None)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._ensure_note_owner(instance)
+        instance.delete()
+
+    @extend_schema(
+        tags=['Charting'],
+        summary='Confirm a charting note',
+        description=(
+            'Marks the note as confirmed by its author. Idempotent — already-confirmed '
+            'notes are returned unchanged. Does not create a duplicate record.'
+        ),
+        responses={200: ChartingNoteSerializer},
+    )
+    @action(detail=True, methods=['post'])
+    def confirm(self, request, note_code=None):
+        note = self.get_object()
+        self._ensure_note_owner(note)
+        if not note.confirmed:
+            note.confirmed = True
+            note.confirmed_at = timezone.now()
+            note.save(update_fields=['confirmed', 'confirmed_at', 'updated_at'])
+        return Response(ChartingNoteSerializer(note, context={'request': request}).data)
+
+    @extend_schema(
+        tags=['Charting'],
+        summary='List charting history dates for the logged-in nurse',
+        description=(
+            'Returns calendar dates (Asia/Manila by default) that have at least one '
+            'charting note authored by the current nurse, with per-day counts. '
+            'Used by My Charting History — never returns another nurse’s dates.'
+        ),
+        responses={
+            200: inline_serializer(
+                name='ChartingHistoryDate',
+                fields={
+                    'date': serializers.DateField(),
+                    'count': serializers.IntegerField(),
+                    'isToday': serializers.BooleanField(),
+                },
+                many=True,
+            )
+        },
+    )
+    @action(detail=False, methods=['get'], url_path='history-dates')
+    def history_dates(self, request):
+        from django.db.models.functions import TruncDate
+
+        tz = self._charting_tz()
+        today = timezone.now().astimezone(tz).date()
+        rows = (
+            ChartingNote.objects.filter(nurse=request.user)
+            .annotate(day=TruncDate('timestamp', tzinfo=tz))
+            .values('day')
+            .annotate(count=Count('id'))
+            .order_by('-day')
+        )
+        payload = []
+        for row in rows:
+            day = row['day']
+            if day is None:
+                continue
+            if hasattr(day, 'date'):
+                day = day.date()
+            payload.append(
+                {
+                    'date': day.isoformat(),
+                    'count': row['count'],
+                    'isToday': day == today,
+                }
+            )
+        return Response(payload)
 
     @extend_schema(
         request=StructureChartSerializer,
@@ -2343,7 +2573,8 @@ class ChartingViewSet(viewsets.ModelViewSet):
         now = timezone.now()
 
         # Vitals on record unless the caller overrode them.
-        vitals = data.get('vitalSigns') or {
+        caller_vitals = data.get('vitalSigns')
+        vitals = caller_vitals or {
             'heartRate': patient.heart_rate,
             'bloodPressure': patient.blood_pressure,
             'temperature': patient.temperature,
@@ -2351,6 +2582,7 @@ class ChartingViewSet(viewsets.ModelViewSet):
             'respiratoryRate': patient.respiratory_rate,
         }
 
+        nurse_assessment = (data.get('assessment') or '').strip()
         payload = {
             'patient': {
                 'id': patient.patient_code,
@@ -2366,13 +2598,22 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 'alerts': patient.alerts or [],
             },
             'vitalSigns': vitals,
-            'assessment': data['assessment'],
+            'assessment': nurse_assessment,
             'interventions': data.get('interventions') or [],
             'patientResponse': data.get('patientResponse') or '',
             'noteType': data.get('noteType') or 'progress',
             'shift': data.get('shift') or '',
             'nurseName': nurse_name,
             'timestamp': now.isoformat(),
+            # Explicit contract for the workflow: never invent clinical facts.
+            'instructions': (
+                'Structure a nursing progress note using ONLY (1) the nurse assessment '
+                'text, (2) the patient demographics/allergies/medications/alerts provided, '
+                'and (3) the vitalSigns provided. Do not invent symptoms, diagnoses, '
+                'medications, interventions, vital signs, or observations that are not '
+                'present in those inputs. If a section has no supporting input, omit it '
+                'or leave it empty.'
+            ),
         }
 
         # Identifier + duration only. The payload carries clinical detail and
@@ -2431,23 +2672,60 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Fill in what the app needs to render, without overwriting the workflow.
-        structured.setdefault('patientName', patient.name)
-        structured.setdefault('patientId', patient.patient_code)
-        structured.setdefault('room', patient.room)
-        structured.setdefault('attendingPhysician', patient.attending_physician)
-        structured.setdefault('nurseName', nurse_name)
-        structured.setdefault('vitalSigns', vitals)
-        structured.setdefault('timestamp', now.isoformat())
+        # Authoritative patient context wins over anything the workflow invents.
+        # Assessment keeps the nurse's typed text when the workflow omits it;
+        # vitals always reflect the record (or caller override), never fabricated values.
+        structured['patientName'] = patient.name
+        structured['patientId'] = patient.patient_code
+        structured['room'] = patient.room
+        structured['attendingPhysician'] = patient.attending_physician
+        structured['nurseName'] = nurse_name
+        structured['vitalSigns'] = vitals
+        structured['timestamp'] = now.isoformat()
+        structured['diagnosis'] = patient.diagnosis
+        structured['riskLevel'] = patient.risk_level
+        if patient.allergies:
+            structured['allergies'] = (
+                ', '.join(patient.allergies)
+                if isinstance(patient.allergies, list)
+                else str(patient.allergies)
+            )
+        if patient.medications:
+            structured['medications'] = (
+                ', '.join(patient.medications)
+                if isinstance(patient.medications, list)
+                else str(patient.medications)
+            )
+        if patient.alerts:
+            structured['alerts'] = (
+                '; '.join(patient.alerts)
+                if isinstance(patient.alerts, list)
+                else str(patient.alerts)
+            )
+        # Preserve the nurse's exact assessment input for audit / display fidelity.
+        structured['sourceAssessment'] = nurse_assessment
+        if not (structured.get('assessment') or '').strip():
+            structured['assessment'] = nurse_assessment
+        # Only keep interventions the nurse supplied or the workflow returned —
+        # never inject stock phrases here.
+        if not isinstance(structured.get('interventions'), list):
+            structured['interventions'] = list(data.get('interventions') or [])
+        # Drop empty clinical narrative fields rather than inventing placeholders.
+        for key in ('patientResponse', 'clinicalSummary', 'plan'):
+            if key in structured and not str(structured.get(key) or '').strip():
+                structured[key] = ''
 
         saved_id = ''
         if data.get('save'):
+            # Persist structured alongside narrative so View Full Note can
+            # rehydrate the exact approved chart (no empty template / no invention).
             note_serializer = ChartingNoteSerializer(
                 data={
                     'patientId': patient.patient_code,
                     'timestamp': now.isoformat(),
                     'type': data.get('noteType') or 'progress',
-                    'content': note_text or json.dumps(structured, indent=2),
+                    'content': note_text,
+                    'structured': structured,
                     'aiGenerated': True,
                 },
                 context={'request': request},
@@ -2568,6 +2846,251 @@ class AssignmentViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
 
+class DutyAssignmentViewSet(viewsets.ModelViewSet):
+    """
+    The duty roster. A supervisor sees and manages every assignment; a
+    staff nurse can only read their own — scoped here server-side, not by
+    the frontend choosing what to ask for, so a nurse can't see (or infer)
+    another nurse's schedule by passing a different nurseId. Only a
+    supervisor can create, edit, or delete an entry.
+    """
+
+    serializer_class = DutyAssignmentSerializer
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+
+    def get_queryset(self):
+        qs = DutyAssignment.objects.select_related(
+            'nurse', 'department', 'created_by', 'actual_end_recorded_by'
+        ).all()
+        params = self.request.query_params
+        date_param = params.get('date')
+        date_from = params.get('dateFrom')
+        date_to = params.get('dateTo')
+        shift = params.get('shift')
+        department_id = params.get('departmentId')
+        status_filter = params.get('status')
+        nurse_id = params.get('nurseId')
+        search = params.get('search')
+
+        if date_param:
+            qs = qs.filter(duty_date=date_param)
+        if date_from:
+            qs = qs.filter(duty_date__gte=date_from)
+        if date_to:
+            qs = qs.filter(duty_date__lte=date_to)
+        if shift:
+            qs = qs.filter(shift=shift)
+        if department_id:
+            qs = qs.filter(department_id=department_id)
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if search:
+            qs = qs.filter(
+                Q(nurse__first_name__icontains=search)
+                | Q(nurse__last_name__icontains=search)
+                | Q(nurse__username__icontains=search)
+                | Q(department__name__icontains=search)
+            )
+
+        if get_user_role(self.request.user) == 'staff_nurse':
+            # Authoritative regardless of what nurseId (if any) was requested.
+            return qs.filter(nurse=self.request.user)
+        if nurse_id:
+            qs = qs.filter(nurse_id=nurse_id)
+        return qs
+
+    def get_permissions(self):
+        if self.action in ('create', 'update', 'partial_update', 'destroy', 'close'):
+            return [permissions.IsAuthenticated(), IsSupervisor()]
+        return super().get_permissions()
+
+    def perform_destroy(self, instance):
+        # Deletes the real row — the roster must reflect the actual database,
+        # not a soft-hidden record the API keeps returning under a filter.
+        instance.delete()
+
+    @extend_schema(
+        request=None,
+        responses={200: DutyAssignmentSerializer},
+        summary='Clock in — record the real start of this shift',
+        description=(
+            'No request body — the assignment is identified by the URL. Only the assigned '
+            'nurse may call this, on their own assignment, for today (or a still-open shift '
+            'from yesterday, for a night shift that crosses midnight). Rejected if already '
+            'started, or if it is more than DUTY_START_BUFFER_MINUTES before the scheduled '
+            'start.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def start(self, request, pk=None):
+        assignment = self.get_object()
+        if assignment.nurse_id != request.user.pk:
+            return Response(
+                {'detail': 'You can only start your own duty assignment.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # "Today" here must be the facility's local calendar day, not
+        # Django's TIME_ZONE (UTC) — timezone.localdate() would reject a
+        # valid same-day shift for hours near local midnight, since duty_date
+        # is a local-wall-clock value while the server's own clock runs UTC.
+        local_today = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
+        if assignment.duty_date not in (local_today, local_today - timedelta(days=1)):
+            return Response(
+                {'detail': 'This assignment is not for today — it cannot be started now.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if assignment.actual_start_time is not None:
+            return Response(
+                {'detail': 'This shift has already been started.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        now = timezone.now()
+        scheduled_start = assignment.scheduled_start_datetime()
+        buffer_minutes = getattr(settings, 'DUTY_START_BUFFER_MINUTES', 15)
+        earliest = scheduled_start - timedelta(minutes=buffer_minutes)
+        if now < earliest:
+            return Response(
+                {
+                    'detail': (
+                        f'Too early to start this shift — it can be started starting '
+                        f'{buffer_minutes} minutes before {scheduled_start.strftime("%I:%M %p")}.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        assignment.actual_start_time = now
+        assignment.save(update_fields=['actual_start_time', 'actual_worked_hours', 'actual_overtime_hours'])
+
+        # A nurse arriving noticeably late is exactly the kind of thing a
+        # supervisor watching the roster would otherwise have to notice
+        # themselves — scheduled and actual both stay on the record either
+        # way, this is only about telling someone sooner.
+        if assignment.created_by and now > scheduled_start + timedelta(minutes=buffer_minutes):
+            notify(
+                assignment.created_by,
+                notification_type='warning',
+                event='duty_started_late',
+                title='Nurse started shift late',
+                message=(
+                    f'{assignment.nurse.get_full_name().strip() or assignment.nurse.username} '
+                    f'started their {assignment.get_shift_display()} shift at '
+                    f'{assignment.department.name} at '
+                    f'{now.astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).strftime("%I:%M %p")}, '
+                    f'after the {scheduled_start.strftime("%I:%M %p")} scheduled start.'
+                ),
+            )
+
+        return Response(DutyAssignmentSerializer(assignment, context={'request': request}).data)
+
+    @extend_schema(
+        request=None,
+        responses={200: DutyAssignmentSerializer},
+        summary='Clock out — record the real end of this shift',
+        description=(
+            'No request body — the assignment is identified by the URL. Only the assigned '
+            'nurse may call this, and only after start has been recorded. actual_worked_hours '
+            'and actual_overtime_hours are computed and frozen here — the same wrap-aware '
+            'reasoning DutyAssignment.duration_hours uses for the scheduled hours, applied to '
+            'real timestamps instead of bare times.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def end(self, request, pk=None):
+        assignment = self.get_object()
+        if assignment.nurse_id != request.user.pk:
+            return Response(
+                {'detail': 'You can only end your own duty assignment.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if assignment.actual_start_time is None:
+            return Response(
+                {'detail': 'This shift has not been started yet.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if assignment.actual_end_time is not None:
+            return Response(
+                {'detail': 'This shift has already been ended.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        assignment.actual_end_time = timezone.now()
+        if assignment.status != 'cancelled':
+            assignment.status = 'completed'
+        assignment.save(
+            update_fields=[
+                'actual_end_time', 'status', 'actual_worked_hours', 'actual_overtime_hours',
+            ]
+        )
+
+        if assignment.created_by and assignment.actual_overtime_hours > 0:
+            notify(
+                assignment.created_by,
+                notification_type='warning',
+                event='duty_overtime_recorded',
+                title='Nurse worked overtime',
+                message=(
+                    f'{assignment.nurse.get_full_name().strip() or assignment.nurse.username} '
+                    f'worked {assignment.actual_overtime_hours}h of overtime on their '
+                    f'{assignment.get_shift_display()} shift at {assignment.department.name}.'
+                ),
+            )
+
+        return Response(DutyAssignmentSerializer(assignment, context={'request': request}).data)
+
+    @extend_schema(
+        request=None,
+        responses={200: DutyAssignmentSerializer},
+        summary='Supervisor correction — close out a shift the nurse never ended',
+        description=(
+            'No request body — the end time is recorded as now. Supervisor-only. For when a '
+            'nurse forgot to tap End Shift: the assignment must already have actual_start_time '
+            'set and no actual_end_time yet. Unlike the nurse\'s own end action, this stamps '
+            'actual_end_recorded_by so the record is never indistinguishable from a real '
+            'self-reported clock-out.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def close(self, request, pk=None):
+        assignment = self.get_object()
+        if assignment.actual_start_time is None:
+            return Response(
+                {'detail': 'This shift was never started — there is nothing to close out.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if assignment.actual_end_time is not None:
+            return Response(
+                {'detail': 'This shift has already been ended.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        assignment.actual_end_time = timezone.now()
+        assignment.actual_end_recorded_by = request.user
+        if assignment.status != 'cancelled':
+            assignment.status = 'completed'
+        assignment.save(
+            update_fields=[
+                'actual_end_time', 'actual_end_recorded_by', 'status',
+                'actual_worked_hours', 'actual_overtime_hours',
+            ]
+        )
+
+        notify(
+            assignment.nurse,
+            notification_type='info',
+            event='duty_closed_by_supervisor',
+            title='Your shift was closed out',
+            message=(
+                f'{request.user.get_full_name().strip() or request.user.username} closed out your '
+                f'{assignment.get_shift_display()} shift at {assignment.department.name} on your behalf, '
+                'since it was not ended. Contact them if the recorded time looks wrong.'
+            ),
+        )
+
+        return Response(DutyAssignmentSerializer(assignment, context={'request': request}).data)
+
+
 @extend_schema_view(
     create=extend_schema(
         summary='Save a kardex card',
@@ -2656,7 +3179,18 @@ class NurseViewSet(viewsets.ViewSet):
 
     def list(self, request):
         nurses = (
-            User.objects.filter(nurse_profile__role='staff_nurse', nurse_profile__is_active_staff=True)
+            # Both call sites (handover's receiving-nurse picker, task
+            # assignment) offer this list as "someone else to hand work to" —
+            # the signed-in nurse should never appear as a candidate for
+            # their own handover or task assignment.
+            # A pending/rejected nurse can't even log in (see LoginView), so
+            # offering them as a handover or task recipient is a dead end.
+            User.objects.filter(
+                nurse_profile__role='staff_nurse',
+                nurse_profile__is_active_staff=True,
+                nurse_profile__approval_status='approved',
+            )
+            .exclude(pk=request.user.pk)
             .select_related('nurse_profile')
             .annotate(
                 patient_count=Count(
@@ -2669,6 +3203,22 @@ class NurseViewSet(viewsets.ViewSet):
             )
             .order_by('first_name', 'last_name')
         )
+        search = request.query_params.get('search')
+        if search:
+            nurses = nurses.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(username__icontains=search)
+                | Q(email__icontains=search)
+            )
+        # Handover nurse picker: a nurse who already received this patient
+        # (any status — see HandoverSerializer.create) must not be offered
+        # again for the same patient.
+        exclude_for_patient = request.query_params.get('excludeForPatient')
+        if exclude_for_patient:
+            patient = Patient.objects.filter(patient_code=exclude_for_patient).first()
+            if patient is not None:
+                nurses = nurses.exclude(handovers_received__patient=patient)
         results = []
         for nurse in nurses:
             profile = nurse.nurse_profile

@@ -10,8 +10,11 @@ router.register(r'handovers', views.HandoverViewSet, basename='handover')
 router.register(r'charting', views.ChartingViewSet, basename='charting')
 router.register(r'notifications', views.NotificationViewSet, basename='notification')
 router.register(r'assignments', views.AssignmentViewSet, basename='assignment')
+router.register(r'duty-assignments', views.DutyAssignmentViewSet, basename='duty-assignment')
 router.register(r'kardex', views.KardexViewSet, basename='kardex')
 router.register(r'nurses', views.NurseViewSet, basename='nurse')
+router.register(r'departments', views.DepartmentViewSet, basename='department')
+router.register(r'doctors', views.DoctorViewSet, basename='doctor')
 router.register(r'admin/users', views.AdminUserViewSet, basename='admin-user')
 
 urlpatterns = [

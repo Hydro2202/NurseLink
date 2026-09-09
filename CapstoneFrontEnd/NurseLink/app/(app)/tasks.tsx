@@ -180,6 +180,8 @@ export default function TasksPage() {
           dueTime: taskData.dueTime || '',
           status: 'pending',
           category: taskData.category || 'medication',
+          departmentId: taskData.departmentId,
+          doctorIds: taskData.doctorIds,
           attendingPhysician: taskData.attendingPhysician,
           patientRoom: taskData.patientRoom,
           doctorOrder: taskData.doctorOrder,
@@ -624,6 +626,7 @@ export default function TasksPage() {
         task={selectedTask}
         mode={taskModalMode}
         allTasks={tasks}
+        patientScope="mine"
       />
 
       <DeleteConfirmDialog

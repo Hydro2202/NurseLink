@@ -21,33 +21,52 @@ def _is_approved(user) -> bool:
     return bool(profile and profile.approval_status == 'approved' and profile.is_active_staff)
 
 
+def _denial_context(user) -> str:
+    """
+    Names exactly which account/role was checked, so a 403 is self-diagnosing
+    instead of a bare "you do not have permission" — this codebase has many
+    lookalike test accounts (several "Raiden Villapando"/"Lawrence Cortez"
+    logins split across staff_nurse and supervisor), so "which account am I
+    actually signed in as right now" is the real question behind most
+    permission reports, not a bug in the check itself.
+    """
+    role = get_user_role(user) or 'no role assigned'
+    return f"Signed in as {user.email or user.username} ({role})."
+
+
 class IsSupervisor(BasePermission):
     """Allow only approved supervisors."""
 
     def has_permission(self, request, view):
-        return bool(
-            request.user
-            and request.user.is_authenticated
-            and get_user_role(request.user) == 'supervisor'
-            and _is_approved(request.user)
-        )
+        if not (request.user and request.user.is_authenticated):
+            self.message = 'You must be signed in to do this.'
+            return False
+        if get_user_role(request.user) != 'supervisor':
+            self.message = f'This action requires a supervisor account. {_denial_context(request.user)}'
+            return False
+        if not _is_approved(request.user):
+            self.message = f'Your supervisor account is not approved or has been deactivated. {_denial_context(request.user)}'
+            return False
+        return True
 
 
 class IsApprovedNurse(BasePermission):
     """Any authenticated, admin-approved nurse (staff or supervisor)."""
 
-    message = (
-        'Your account is pending admin approval. Hospital records are not '
-        'available until an administrator approves your registration.'
-    )
-
     def has_permission(self, request, view):
-        return bool(
-            request.user
-            and request.user.is_authenticated
-            and get_user_role(request.user) in ('staff_nurse', 'supervisor')
-            and _is_approved(request.user)
-        )
+        if not (request.user and request.user.is_authenticated):
+            self.message = 'You must be signed in to do this.'
+            return False
+        if get_user_role(request.user) not in ('staff_nurse', 'supervisor'):
+            self.message = f'This action requires a nurse or supervisor account. {_denial_context(request.user)}'
+            return False
+        if not _is_approved(request.user):
+            self.message = (
+                'Your account is pending admin approval. Hospital records are not '
+                f'available until an administrator approves your registration. {_denial_context(request.user)}'
+            )
+            return False
+        return True
 
 
 class IsSupervisorOrReadOnly(BasePermission):
@@ -55,10 +74,14 @@ class IsSupervisorOrReadOnly(BasePermission):
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
+            self.message = 'You must be signed in to do this.'
             return False
         if request.method in SAFE_METHODS:
             return True
-        return get_user_role(request.user) == 'supervisor'
+        if get_user_role(request.user) != 'supervisor':
+            self.message = f'This action requires a supervisor account. {_denial_context(request.user)}'
+            return False
+        return True
 
 
 class IsAdmin(BasePermission):

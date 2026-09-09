@@ -13,6 +13,7 @@ import {
   MapPin,
   Calendar,
   Stethoscope,
+  Building2,
   AlertCircle,
   Activity,
   Eye,
@@ -27,6 +28,7 @@ import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
+import { RiskBadge } from '../../components/RiskBadge';
 import { TaskAssignmentModal } from '../../components/TaskAssignmentModal';
 import { PatientKardexModal } from '../../components/PatientKardexModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
@@ -36,6 +38,20 @@ import { useAuth } from '../../contexts/AuthContext';
 
 function getAttendingPhysician(patient: Patient) {
   return patient.attendingPhysician || 'Not Assigned';
+}
+
+/** Groups a patient's Kardex-assigned doctors by department, so a card with
+ * "Cardiology: Dr. A, Dr. B" reads as one line per department rather than
+ * one line per doctor. */
+function groupDoctorsByDepartment(patient: Patient) {
+  const groups = new Map<string, string[]>();
+  for (const doctor of patient.assignedDoctors || []) {
+    const dept = doctor.departmentName || 'Unassigned Department';
+    const names = groups.get(dept) || [];
+    names.push(doctor.name);
+    groups.set(dept, names);
+  }
+  return Array.from(groups.entries()).map(([department, doctors]) => ({ department, doctors }));
 }
 
 /**
@@ -107,12 +123,6 @@ export default function AllPatientsPage() {
     return matchesSearch && matchesRoom && matchesRisk;
   });
 
-  const riskVariant = (risk: string) => {
-    if (risk === 'high') return 'destructive' as const;
-    if (risk === 'medium') return 'default' as const;
-    return 'outline' as const;
-  };
-
   return (
     <>
       <ScrollView
@@ -169,8 +179,9 @@ export default function AllPatientsPage() {
             style={styles.filterSelect}
             options={[
               { label: 'All Risk Levels', value: 'all' },
+              { label: 'Critical Risk', value: 'critical' },
               { label: 'High Risk', value: 'high' },
-              { label: 'Medium Risk', value: 'medium' },
+              { label: 'Moderate Risk', value: 'medium' },
               { label: 'Low Risk', value: 'low' },
             ]}
           />
@@ -186,11 +197,20 @@ export default function AllPatientsPage() {
           </Card>
           <Card style={styles.statCard}>
             <CardContent style={styles.statContent}>
-              <Text style={styles.statLabel}>High Risk</Text>
+              <Text style={styles.statLabel}>Critical</Text>
               <Text style={[styles.statValue, { color: Colors.red600 }]}>
-                {patients.filter((p) => p.riskLevel === 'high').length}
+                {patients.filter((p) => p.riskLevel === 'critical').length}
               </Text>
               <AlertCircle size={18} color={Colors.red600} />
+            </CardContent>
+          </Card>
+          <Card style={styles.statCard}>
+            <CardContent style={styles.statContent}>
+              <Text style={styles.statLabel}>High Risk</Text>
+              <Text style={[styles.statValue, { color: Colors.orange600 }]}>
+                {patients.filter((p) => p.riskLevel === 'high').length}
+              </Text>
+              <AlertCircle size={18} color={Colors.orange600} />
             </CardContent>
           </Card>
           <Card style={styles.statCard}>
@@ -230,9 +250,7 @@ export default function AllPatientsPage() {
                 <View style={styles.nameRow}>
                   <Text style={styles.patientName}>{patient.name}</Text>
                   <Badge variant="outline">{patient.id}</Badge>
-                  <Badge variant={riskVariant(patient.riskLevel)}>
-                    {patient.riskLevel.toUpperCase()} RISK
-                  </Badge>
+                  <RiskBadge level={patient.riskLevel} size="sm" />
                 </View>
 
                 <View style={styles.metaRow}>
@@ -270,6 +288,21 @@ export default function AllPatientsPage() {
                     <Text style={styles.assignment}>{getAssignmentLabel(patient)}</Text>
                   </View>
                 </View>
+
+                {patient.assignedDoctors && patient.assignedDoctors.length > 0 ? (
+                  <View style={styles.medicalTeamBox}>
+                    <Text style={styles.medicalTeamLabel}>Medical Team</Text>
+                    {groupDoctorsByDepartment(patient).map(({ department, doctors }) => (
+                      <View key={department} style={styles.physicianRow}>
+                        <Building2 size={13} color={Colors.blue700} />
+                        <Text style={styles.medicalTeamText} numberOfLines={1}>
+                          <Text style={styles.medicalTeamDept}>{department}: </Text>
+                          {doctors.join(', ')}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
 
                 <View style={styles.vitalsGrid}>
                   <View style={styles.vitalBox}>
@@ -432,6 +465,28 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   physician: { fontSize: 12, color: Colors.blue700, fontWeight: '600' },
+  medicalTeamBox: {
+    backgroundColor: Colors.blue50,
+    borderRadius: Radius.md,
+    padding: 10,
+    gap: 4,
+  },
+  medicalTeamLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.blue700,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+    marginBottom: 2,
+  },
+  medicalTeamText: {
+    flex: 1,
+    fontSize: 12,
+    color: Colors.foreground,
+  },
+  medicalTeamDept: {
+    fontWeight: '700',
+  },
   vitalsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   vitalBox: {
     width: '22%',

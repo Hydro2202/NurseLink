@@ -47,12 +47,36 @@ class AssessRiskLevelTests(APITestCase):
         self.assertEqual(risk, 'medium')
 
     def test_severe_fever_is_high_risk(self):
-        risk = assess_risk_level(temperature='40.1')
+        risk = assess_risk_level(temperature='39.2')
         self.assertEqual(risk, 'high')
+
+    def test_extreme_fever_is_critical_risk(self):
+        risk = assess_risk_level(temperature='40.1')
+        self.assertEqual(risk, 'critical')
 
     def test_hypotensive_blood_pressure_is_high_risk(self):
         risk = assess_risk_level(blood_pressure='80/50')
         self.assertEqual(risk, 'high')
+
+    def test_severely_hypotensive_blood_pressure_is_critical_risk(self):
+        risk = assess_risk_level(blood_pressure='75/45')
+        self.assertEqual(risk, 'critical')
+
+    def test_critical_beats_high_when_both_present(self):
+        risk = assess_risk_level(temperature='40.1', pulse_rate='75')
+        self.assertEqual(risk, 'critical')
+
+    def test_very_low_oxygen_saturation_is_critical_risk(self):
+        risk = assess_risk_level(oxygen_saturation='80')
+        self.assertEqual(risk, 'critical')
+
+    def test_extreme_tachycardia_is_critical_risk(self):
+        risk = assess_risk_level(pulse_rate='160')
+        self.assertEqual(risk, 'critical')
+
+    def test_extreme_respiratory_rate_is_critical_risk(self):
+        risk = assess_risk_level(respiratory_rate='35')
+        self.assertEqual(risk, 'critical')
 
     def test_blank_vitals_are_never_flagged(self):
         # Nothing filled in at all -> nothing to be concerned about, not a

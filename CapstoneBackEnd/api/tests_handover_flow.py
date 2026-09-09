@@ -238,11 +238,18 @@ class HandoverCreatedNotificationTests(APITestCase):
         # The twin must not be told about work that is not theirs.
         self.assertFalse(Notification.objects.filter(recipient=self.twin).exists())
 
-    def test_an_ambiguous_name_with_no_id_notifies_nobody(self):
+    def test_an_ambiguous_name_with_no_id_is_rejected(self):
+        # A handover that saved but resolved to nobody used to look identical
+        # to a working one from the sender's side — it appeared in their list,
+        # 201 and all — with a popup that simply never arrived as the only
+        # symptom. Rejecting it outright means the sender finds out immediately
+        # and picks the right Ben Diaz from the list instead.
         response = self.client.post('/api/handovers/', self.payload(), format='json')
 
-        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('nurseToId', response.json())
         self.assertEqual(Notification.objects.count(), 0)
+        self.assertFalse(HandoverNote.objects.exists())
 
     def test_an_unknown_nurse_id_is_rejected(self):
         response = self.client.post(

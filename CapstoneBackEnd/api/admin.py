@@ -4,6 +4,9 @@ from django.contrib.auth.models import User
 
 from .models import (
     ChartingNote,
+    Department,
+    Doctor,
+    DutyAssignment,
     FaceVerificationAttempt,
     HandoverNote,
     KardexRecord,
@@ -11,9 +14,11 @@ from .models import (
     NurseProfile,
     Patient,
     PatientAssignment,
+    PatientDoctor,
     RegistrationOTP,
     RegistrationSession,
     Task,
+    TaskDoctor,
 )
 from .notifications import notify
 
@@ -103,9 +108,37 @@ class PatientAdmin(admin.ModelAdmin):
 
 @admin.register(Task)
 class TaskAdmin(admin.ModelAdmin):
-    list_display = ('task_code', 'title', 'patient_name', 'assigned_to', 'status', 'priority')
-    list_filter = ('status', 'priority', 'category')
+    list_display = ('task_code', 'title', 'patient_name', 'department', 'assigned_to', 'status', 'priority')
+    list_filter = ('status', 'priority', 'category', 'department')
     search_fields = ('task_code', 'title', 'patient_name', 'assigned_to')
+
+
+@admin.register(Department)
+class DepartmentAdmin(admin.ModelAdmin):
+    list_display = ('name',)
+    search_fields = ('name',)
+
+
+@admin.register(Doctor)
+class DoctorAdmin(admin.ModelAdmin):
+    list_display = ('full_name', 'department', 'specialization', 'license_number', 'status')
+    list_filter = ('department', 'status')
+    list_editable = ('status',)
+    search_fields = ('full_name', 'specialization', 'license_number')
+
+
+@admin.register(TaskDoctor)
+class TaskDoctorAdmin(admin.ModelAdmin):
+    list_display = ('task', 'doctor', 'assigned_at', 'assigned_by')
+    list_filter = ('assigned_at',)
+    search_fields = ('task__task_code', 'doctor__full_name')
+
+
+@admin.register(PatientDoctor)
+class PatientDoctorAdmin(admin.ModelAdmin):
+    list_display = ('patient', 'doctor', 'status', 'assigned_at', 'assigned_by')
+    list_filter = ('status',)
+    search_fields = ('patient__patient_code', 'patient__name', 'doctor__full_name')
 
 
 @admin.register(HandoverNote)
@@ -116,8 +149,15 @@ class HandoverNoteAdmin(admin.ModelAdmin):
 
 @admin.register(ChartingNote)
 class ChartingNoteAdmin(admin.ModelAdmin):
-    list_display = ('note_code', 'patient_name', 'note_type', 'nurse_name', 'timestamp')
-    list_filter = ('note_type',)
+    list_display = (
+        'note_code',
+        'patient_name',
+        'note_type',
+        'nurse_name',
+        'confirmed',
+        'timestamp',
+    )
+    list_filter = ('note_type', 'confirmed', 'ai_generated')
 
 
 @admin.register(Notification)
@@ -130,6 +170,18 @@ class NotificationAdmin(admin.ModelAdmin):
 class PatientAssignmentAdmin(admin.ModelAdmin):
     list_display = ('patient', 'assigned_nurse_name', 'status', 'priority', 'assigned_at')
     list_filter = ('status', 'priority')
+
+
+@admin.register(DutyAssignment)
+class DutyAssignmentAdmin(admin.ModelAdmin):
+    list_display = (
+        'nurse', 'department', 'duty_date', 'shift', 'start_time', 'end_time',
+        'regular_hours', 'overtime_hours', 'total_hours', 'status',
+    )
+    list_filter = ('shift', 'status', 'department')
+    search_fields = ('nurse__first_name', 'nurse__last_name', 'nurse__username', 'department__name')
+    date_hierarchy = 'duty_date'
+    readonly_fields = ('regular_hours', 'overtime_hours', 'total_hours')
 
 
 @admin.register(KardexRecord)

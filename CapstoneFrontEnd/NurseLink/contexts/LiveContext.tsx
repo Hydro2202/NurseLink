@@ -46,11 +46,13 @@ const POLL_INTERVAL_MS = 4000;
 /**
  * Interval used while the WebSocket is connected.
  *
- * Push is the real delivery path once it is up, so this drops back to a slow
- * safety net — it catches anything a socket could miss across a reconnect, and
- * keeps working untouched if push is unavailable entirely.
+ * Push is the real delivery path once it is up, so this drops back to a
+ * slower safety net rather than matching POLL_INTERVAL_MS — but not so slow
+ * that a push silently dropped by a flaky connection (socket still reports
+ * "connected" right up until its next failed heartbeat) leaves a nurse
+ * waiting the better part of a minute for something that already happened.
  */
-const BACKGROUND_POLL_INTERVAL_MS = 30000;
+const BACKGROUND_POLL_INTERVAL_MS = 10000;
 
 const EMPTY: LiveState = {
   notifications: '',

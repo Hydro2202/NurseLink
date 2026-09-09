@@ -106,7 +106,7 @@ export function StructuredNursingNote({
       value: vitalSigns.respiratoryRate,
       icon: <Wind size={16} color={Colors.teal600} />,
     },
-  ];
+  ].filter((vital) => Boolean(vital.value && String(vital.value).trim()));
 
   const getRiskBadgeStyle = (risk: string) => {
     const riskLower = risk.toLowerCase();
@@ -131,7 +131,15 @@ export function StructuredNursingNote({
     };
   };
 
-  const riskStyle = getRiskBadgeStyle(riskLevel);
+  const riskStyle = riskLevel ? getRiskBadgeStyle(riskLevel) : null;
+  const hasAssessmentDetails =
+    Boolean(assessment?.trim()) ||
+    Boolean(diagnosis?.trim()) ||
+    Boolean(riskLevel?.trim()) ||
+    Boolean(allergies?.trim()) ||
+    Boolean(medications?.trim()) ||
+    Boolean(alerts?.trim());
+
 
   return (
     <View style={styles.container}>
@@ -218,83 +226,104 @@ export function StructuredNursingNote({
         </CardContent>
       </Card>
 
-      {/* Vital Signs */}
-      <Card style={{ ...styles.sectionCard, borderLeftColor: Colors.red600 }}>
-        <CardHeader>
-          <View style={styles.sectionTitleRow}>
-            <Activity size={20} color={Colors.red600} />
-            <Text style={styles.sectionTitle}>Vital Signs</Text>
-          </View>
-        </CardHeader>
-        <CardContent>
-          <View style={styles.vitalsGrid}>
-            {vitalSignsData.map((vital, index) => (
-              <View key={index} style={styles.vitalCard}>
-                <View style={styles.vitalHeader}>
-                  {vital.icon}
-                  <Text style={styles.vitalLabel}>{vital.label}</Text>
+      {/* Vital Signs — only values that were actually recorded */}
+      {vitalSignsData.length > 0 ? (
+        <Card style={{ ...styles.sectionCard, borderLeftColor: Colors.red600 }}>
+          <CardHeader>
+            <View style={styles.sectionTitleRow}>
+              <Activity size={20} color={Colors.red600} />
+              <Text style={styles.sectionTitle}>Vital Signs</Text>
+            </View>
+          </CardHeader>
+          <CardContent>
+            <View style={styles.vitalsGrid}>
+              {vitalSignsData.map((vital, index) => (
+                <View key={index} style={styles.vitalCard}>
+                  <View style={styles.vitalHeader}>
+                    {vital.icon}
+                    <Text style={styles.vitalLabel}>{vital.label}</Text>
+                  </View>
+                  <Text style={styles.vitalValue}>{vital.value}</Text>
                 </View>
-                <Text style={styles.vitalValue}>{vital.value}</Text>
-              </View>
-            ))}
-          </View>
-        </CardContent>
-      </Card>
+              ))}
+            </View>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* Assessment & Observations */}
-      <Card style={{ ...styles.sectionCard, borderLeftColor: Colors.green600 }}>
-        <CardHeader>
-          <View style={styles.sectionTitleRow}>
-            <ClipboardList size={20} color={Colors.green600} />
-            <Text style={styles.sectionTitle}>Assessment & Observations</Text>
-          </View>
-        </CardHeader>
-        <CardContent style={{ gap: 16 }}>
-          <View style={styles.assessmentBox}>
-            <Text style={styles.assessmentText}>{assessment}</Text>
-          </View>
-
-          <View style={styles.diagRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.fieldLabel}>Current Diagnosis</Text>
-              <Text style={styles.fieldValue}>{diagnosis}</Text>
+      {hasAssessmentDetails ? (
+        <Card style={{ ...styles.sectionCard, borderLeftColor: Colors.green600 }}>
+          <CardHeader>
+            <View style={styles.sectionTitleRow}>
+              <ClipboardList size={20} color={Colors.green600} />
+              <Text style={styles.sectionTitle}>Assessment & Observations</Text>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.fieldLabel}>Risk Level</Text>
-              <Badge
-                variant="outline"
-                style={{
-                  backgroundColor: riskStyle.backgroundColor,
-                  borderColor: riskStyle.borderColor,
-                }}
-                textStyle={{ color: riskStyle.textColor }}
-              >
-                {riskLevel}
-              </Badge>
-            </View>
-          </View>
+          </CardHeader>
+          <CardContent style={{ gap: 16 }}>
+            {assessment?.trim() ? (
+              <View style={styles.assessmentBox}>
+                <Text style={styles.assessmentText}>{assessment}</Text>
+              </View>
+            ) : null}
 
-          <View style={styles.separator} />
+            {diagnosis?.trim() || riskLevel?.trim() ? (
+              <View style={styles.diagRow}>
+                {diagnosis?.trim() ? (
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.fieldLabel}>Current Diagnosis</Text>
+                    <Text style={styles.fieldValue}>{diagnosis}</Text>
+                  </View>
+                ) : null}
+                {riskLevel?.trim() && riskStyle ? (
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.fieldLabel}>Risk Level</Text>
+                    <Badge
+                      variant="outline"
+                      style={{
+                        backgroundColor: riskStyle.backgroundColor,
+                        borderColor: riskStyle.borderColor,
+                      }}
+                      textStyle={{ color: riskStyle.textColor }}
+                    >
+                      {riskLevel}
+                    </Badge>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
 
-          <View style={{ gap: 12 }}>
-            <DetailRow
-              icon={<AlertCircle size={16} color={Colors.red600} />}
-              label="Allergies"
-              value={allergies}
-            />
-            <DetailRow
-              icon={<Pill size={16} color={Colors.blue500} />}
-              label="Active Medications"
-              value={medications}
-            />
-            <DetailRow
-              icon={<AlertCircle size={16} color={Colors.orange600} />}
-              label="Alerts"
-              value={alerts}
-            />
-          </View>
-        </CardContent>
-      </Card>
+            {allergies?.trim() || medications?.trim() || alerts?.trim() ? (
+              <>
+                <View style={styles.separator} />
+                <View style={{ gap: 12 }}>
+                  {allergies?.trim() ? (
+                    <DetailRow
+                      icon={<AlertCircle size={16} color={Colors.red600} />}
+                      label="Allergies"
+                      value={allergies}
+                    />
+                  ) : null}
+                  {medications?.trim() ? (
+                    <DetailRow
+                      icon={<Pill size={16} color={Colors.blue500} />}
+                      label="Active Medications"
+                      value={medications}
+                    />
+                  ) : null}
+                  {alerts?.trim() ? (
+                    <DetailRow
+                      icon={<AlertCircle size={16} color={Colors.orange600} />}
+                      label="Alerts"
+                      value={alerts}
+                    />
+                  ) : null}
+                </View>
+              </>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* Interventions Performed */}
       {interventions && interventions.length > 0 ? (

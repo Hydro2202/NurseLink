@@ -147,8 +147,11 @@ export function AssignPatientModal({
                 options={patients.map((p) => ({
                   label: `${p.name} • ${p.room} (${p.id})`,
                   value: p.id,
+                  keywords: `${p.id} ${p.room} ${p.diagnosis}`,
                 }))}
                 placeholder="Choose a patient"
+                searchable
+                searchPlaceholder="Search by name, ID, or room..."
               />
             )}
             <Input label="Room *" value={formData.room} onChangeText={(room) => setFormData((p) => ({ ...p, room }))} />
@@ -175,6 +178,8 @@ export function AssignPatientModal({
                   value: nurse.id,
                 }))}
                 placeholder="Select a nurse"
+                searchable
+                searchPlaceholder="Search by name..."
               />
             )}
             <Select

@@ -1,8 +1,12 @@
 import uuid
+from datetime import datetime, timedelta
+from datetime import time as dtime
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.utils import timezone
 
 
 class NurseProfile(models.Model):
@@ -103,6 +107,7 @@ class Patient(models.Model):
         ('low', 'Low'),
         ('medium', 'Medium'),
         ('high', 'High'),
+        ('critical', 'Critical'),
     ]
 
     patient_code = models.CharField(max_length=20, unique=True, db_index=True)
@@ -244,6 +249,14 @@ class Task(models.Model):
     def __str__(self):
         return f'{self.task_code} — {self.title}'
 
+    department = models.ForeignKey(
+        'Department',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tasks',
+    )
+
     def save(self, *args, **kwargs):
         if self.patient and not self.patient_name:
             self.patient_name = self.patient.name
@@ -252,6 +265,91 @@ class Task(models.Model):
         if self.patient and not self.attending_physician:
             self.attending_physician = self.patient.attending_physician
         super().save(*args, **kwargs)
+
+
+class Department(models.Model):
+    name = models.CharField(max_length=150, unique=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class Doctor(models.Model):
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('inactive', 'Inactive'),
+    ]
+
+    full_name = models.CharField(max_length=200)
+    specialization = models.CharField(max_length=150, blank=True, default='')
+    department = models.ForeignKey(Department, on_delete=models.PROTECT, related_name='doctors')
+    license_number = models.CharField(max_length=50, blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active', db_index=True)
+
+    class Meta:
+        ordering = ['full_name']
+
+    def __str__(self):
+        return f'{self.full_name} ({self.department.name})'
+
+
+class TaskDoctor(models.Model):
+    """Junction row: one task can have many doctors, one doctor can be on
+    many tasks. A doctor is never overwritten by selecting another — each
+    selection adds its own row here rather than replacing a single field."""
+
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='task_doctors')
+    doctor = models.ForeignKey(Doctor, on_delete=models.CASCADE, related_name='task_assignments')
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='doctor_assignments_made',
+    )
+
+    class Meta:
+        unique_together = ('task', 'doctor')
+        ordering = ['assigned_at']
+
+    def __str__(self):
+        return f'{self.task.task_code} -> {self.doctor.full_name}'
+
+
+class PatientDoctor(models.Model):
+    """A patient's Kardex-level doctor roster — who is actually responsible
+    for this patient, independent of any one task. Add New Task reads from
+    this (filtered by department) rather than the hospital-wide Doctor list,
+    so a task can only ever be assigned to a doctor already on this patient's
+    care team."""
+
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('inactive', 'Inactive'),
+    ]
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='assigned_doctors')
+    doctor = models.ForeignKey(Doctor, on_delete=models.CASCADE, related_name='patient_assignments')
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='patient_doctor_assignments_made',
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+
+    class Meta:
+        unique_together = ('patient', 'doctor')
+        ordering = ['assigned_at']
+
+    def __str__(self):
+        return f'{self.patient.patient_code} -> {self.doctor.full_name}'
 
 
 class HandoverNote(models.Model):
@@ -358,8 +456,14 @@ class ChartingNote(models.Model):
     timestamp = models.DateTimeField()
     note_type = models.CharField(max_length=30, choices=TYPE_CHOICES, default='progress')
     content = models.TextField()
+    # Section-by-section structure rendered by the app (Auto Charting). Persisted so
+    # View Full Note can rehydrate the exact approved chart without regex-parsing
+    # free text (and without inventing clinical content that was never saved).
+    structured_data = models.JSONField(default=dict, blank=True)
     ai_generated = models.BooleanField(default=False)
     edited = models.BooleanField(default=False)
+    confirmed = models.BooleanField(default=False)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
     attending_physician = models.CharField(max_length=200, blank=True, default='')
     edit_history = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -370,6 +474,8 @@ class ChartingNote(models.Model):
         indexes = [
             models.Index(fields=['timestamp']),
             models.Index(fields=['note_type']),
+            models.Index(fields=['confirmed']),
+            models.Index(fields=['nurse', 'timestamp']),
         ]
 
     def __str__(self):
@@ -499,6 +605,162 @@ class PatientAssignment(models.Model):
         super().save(*args, **kwargs)
         if self.status == 'active' and self.patient_id:
             Patient.objects.filter(pk=self.patient_id).update(assigned_nurse=self.assigned_nurse)
+
+
+class DutyAssignment(models.Model):
+    """
+    A supervisor-created duty-roster entry: which nurse works which
+    department, on which date, for which hours. Regular/overtime/total
+    hours are always derived here from the stored times (see save()) —
+    never trusted as-given from the client — so the numbers can't drift
+    from what was actually scheduled. Schedule-conflict checking lives in
+    DutyAssignmentSerializer.validate(), the same layer PatientAssignment
+    uses for its own business rules.
+    """
+
+    SHIFT_CHOICES = [
+        ('morning', 'Morning'),
+        ('afternoon', 'Afternoon'),
+        ('night', 'Night'),
+    ]
+    STATUS_CHOICES = [
+        ('scheduled', 'Scheduled'),
+        ('in_progress', 'In Progress'),
+        ('completed', 'Completed'),
+        ('cancelled', 'Cancelled'),
+    ]
+    # Defaults offered when a shift is picked in the UI — the supervisor can
+    # still adjust start/end afterward, these are just a sane starting point.
+    SHIFT_DEFAULT_TIMES = {
+        'morning': (dtime(7, 0), dtime(15, 0)),
+        'afternoon': (dtime(15, 0), dtime(23, 0)),
+        'night': (dtime(23, 0), dtime(7, 0)),
+    }
+
+    nurse = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='duty_assignments',
+    )
+    department = models.ForeignKey(
+        Department,
+        on_delete=models.PROTECT,
+        related_name='duty_assignments',
+    )
+    duty_date = models.DateField(db_index=True)
+    shift = models.CharField(max_length=20, choices=SHIFT_CHOICES, default='morning')
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    regular_hours = models.FloatField(default=0)
+    overtime_start = models.TimeField(null=True, blank=True)
+    overtime_end = models.TimeField(null=True, blank=True)
+    overtime_hours = models.FloatField(default=0)
+    total_hours = models.FloatField(default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='scheduled', db_index=True)
+    # Real attendance, layered on top of the schedule above — start_time/
+    # end_time stay the plan; these are when the nurse actually clocked in
+    # and out. Both null until the nurse acts; actual_worked_hours/
+    # actual_overtime_hours are derived from them the same way regular_hours/
+    # overtime_hours are derived from the schedule (see save()), and freeze
+    # once actual_end_time is set rather than staying "live".
+    actual_start_time = models.DateTimeField(null=True, blank=True)
+    actual_end_time = models.DateTimeField(null=True, blank=True)
+    actual_worked_hours = models.FloatField(default=0)
+    actual_overtime_hours = models.FloatField(default=0)
+    # Set only when a supervisor closes out a shift the nurse never ended
+    # themselves (see DutyAssignmentViewSet.close) — null for an ordinary
+    # self-ended shift. This is what lets the record say "closed by a
+    # supervisor" rather than silently looking like the nurse's own action.
+    actual_end_recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='duty_shifts_closed',
+    )
+    notes = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='duty_assignments_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['duty_date', 'start_time']
+        indexes = [
+            models.Index(fields=['nurse', 'duty_date']),
+            models.Index(fields=['department', 'duty_date']),
+        ]
+
+    def __str__(self):
+        nurse_name = self.nurse.get_full_name().strip() or self.nurse.username
+        return f'{nurse_name} — {self.department.name} — {self.duty_date}'
+
+    @staticmethod
+    def duration_hours(start, end):
+        """Hours between two times of day. Wraps past midnight when end <= start."""
+        if start is None or end is None:
+            return 0.0
+        start_minutes = start.hour * 60 + start.minute
+        end_minutes = end.hour * 60 + end.minute
+        if end_minutes <= start_minutes:
+            end_minutes += 24 * 60
+        return round((end_minutes - start_minutes) / 60, 2)
+
+    def scheduled_start_datetime(self):
+        """
+        duty_date + start_time as a real, comparable moment in time.
+
+        duty_date/start_time are the facility's local wall-clock values (as
+        entered on the roster), not UTC — localized against
+        DUTY_LOCAL_TIMEZONE rather than Django's active TIME_ZONE (UTC), so
+        this lines up with the real instant timezone.now() returns
+        regardless of what timezone the server process itself runs in.
+        """
+        naive = datetime.combine(self.duty_date, self.start_time)
+        return timezone.make_aware(naive, timezone=ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
+
+    def scheduled_end_datetime(self):
+        """
+        duty_date + end_time as a real moment — same midnight-wrap rule as
+        duration_hours (end_time <= start_time means the shift ends the next
+        calendar day), just expressed as an absolute timestamp instead of a
+        bare time-of-day, which is what actual clock-in/out needs to compare
+        against. Same DUTY_LOCAL_TIMEZONE localization as scheduled_start_datetime.
+        """
+        naive = datetime.combine(self.duty_date, self.end_time)
+        if self.end_time <= self.start_time:
+            naive += timedelta(days=1)
+        return timezone.make_aware(naive, timezone=ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
+
+    def save(self, *args, **kwargs):
+        self.regular_hours = self.duration_hours(self.start_time, self.end_time)
+        self.overtime_hours = (
+            self.duration_hours(self.overtime_start, self.overtime_end)
+            if self.overtime_start and self.overtime_end
+            else 0.0
+        )
+        self.total_hours = round(self.regular_hours + self.overtime_hours, 2)
+
+        # Actual attendance — worked time is simply the clocked span; actual
+        # overtime is whatever of that span falls after the scheduled end,
+        # the real-attendance counterpart to overtime_hours above. Frozen the
+        # moment actual_end_time is set; while only actual_start_time exists
+        # the nurse is still clocked in, so there is nothing to freeze yet.
+        if self.actual_start_time and self.actual_end_time:
+            worked_seconds = (self.actual_end_time - self.actual_start_time).total_seconds()
+            self.actual_worked_hours = round(max(worked_seconds, 0) / 3600, 2)
+            overtime_seconds = (self.actual_end_time - self.scheduled_end_datetime()).total_seconds()
+            self.actual_overtime_hours = round(max(overtime_seconds, 0) / 3600, 2)
+        else:
+            self.actual_worked_hours = 0.0
+            self.actual_overtime_hours = 0.0
+
+        super().save(*args, **kwargs)
 
 
 class KardexRecord(models.Model):

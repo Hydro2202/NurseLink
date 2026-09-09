@@ -1,10 +1,14 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL, TOKEN_KEY } from './config';
+import * as authStorage from './authStorage';
 import type { User, UserRole } from '../types/user';
 import type {
   AnalyticsData,
   AppNotification,
   ChartingNote,
+  ChartingHistoryDate,
+  Department,
+  Doctor,
+  DutyAssignment,
   HandoverNote,
   KardexHistory,
   Nurse,
@@ -27,15 +31,26 @@ export class ApiError extends Error {
 }
 
 export async function getToken(): Promise<string | null> {
-  return AsyncStorage.getItem(TOKEN_KEY);
+  return authStorage.getItem(TOKEN_KEY);
 }
 
 export async function setToken(token: string | null): Promise<void> {
   if (token) {
-    await AsyncStorage.setItem(TOKEN_KEY, token);
+    await authStorage.setItem(TOKEN_KEY, token);
   } else {
-    await AsyncStorage.removeItem(TOKEN_KEY);
+    await authStorage.removeItem(TOKEN_KEY);
   }
+}
+
+// AuthContext registers a handler here so any screen's API call — not just
+// the app-boot session check — can react to a token going bad mid-session
+// (e.g. rotated by a password change elsewhere, or the account was removed).
+// Without this, a screen's own catch block only had enough to log/toast the
+// failure; the stale token stayed on device and every subsequent request
+// kept failing the same way until the nurse manually logged out.
+let unauthorizedHandler: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  unauthorizedHandler = fn;
 }
 
 type RequestOptions = {
@@ -112,6 +127,9 @@ export async function apiRequest<T>(
   }
 
   if (!response.ok) {
+    if (auth && response.status === 401) {
+      unauthorizedHandler?.();
+    }
     throw new ApiError(extractDetail(data, response.status), response.status, data);
   }
 
@@ -510,6 +528,38 @@ export async function unassignTask(taskId: string): Promise<Task> {
   return apiRequest<Task>(`/tasks/${taskId}/unassign/`, { method: 'POST' });
 }
 
+/** A patient's Kardex-assigned doctors — the source of truth Add New Task's
+ * doctor field reads from (never the whole hospital roster). */
+export async function fetchPatientAssignedDoctors(patientCode: string): Promise<Doctor[]> {
+  return apiRequest<Doctor[]>(`/patients/${patientCode}/assigned-doctors/`);
+}
+
+/** Replaces the patient's whole assigned-doctors set (Kardex screen). */
+export async function setPatientAssignedDoctors(
+  patientCode: string,
+  doctorIds: number[]
+): Promise<Doctor[]> {
+  return apiRequest<Doctor[]>(`/patients/${patientCode}/assigned-doctors/`, {
+    method: 'POST',
+    body: { doctorIds },
+  });
+}
+
+export async function fetchDepartments(): Promise<Department[]> {
+  return apiRequest<Department[]>('/departments/');
+}
+
+export async function fetchDoctors(options?: {
+  departmentId?: number | string;
+  search?: string;
+}): Promise<Doctor[]> {
+  const params = new URLSearchParams();
+  if (options?.departmentId) params.set('department', String(options.departmentId));
+  if (options?.search) params.set('search', options.search);
+  const query = params.toString();
+  return apiRequest<Doctor[]>(`/doctors/${query ? `?${query}` : ''}`);
+}
+
 export async function completeTask(taskId: string): Promise<Task> {
   return apiRequest<Task>(`/tasks/${taskId}/complete/`, { method: 'POST' });
 }
@@ -540,11 +590,21 @@ export async function acknowledgeHandover(id: string): Promise<HandoverNote> {
 
 export async function fetchChartingNotes(options?: {
   patientId?: string;
+  /** When true, backend returns only the logged-in nurse's notes. */
+  mine?: boolean;
+  /** Local calendar date YYYY-MM-DD (Asia/Manila by default on the server). */
+  date?: string;
 }): Promise<ChartingNote[]> {
-  const query = options?.patientId
-    ? `?patientId=${encodeURIComponent(options.patientId)}`
-    : '';
-  return apiRequest<ChartingNote[]>(`/charting/${query}`);
+  const params = new URLSearchParams();
+  if (options?.patientId) params.set('patientId', options.patientId);
+  if (options?.mine) params.set('mine', 'true');
+  if (options?.date) params.set('date', options.date);
+  const query = params.toString();
+  return apiRequest<ChartingNote[]>(`/charting/${query ? `?${query}` : ''}`);
+}
+
+export async function fetchChartingHistoryDates(): Promise<ChartingHistoryDate[]> {
+  return apiRequest<ChartingHistoryDate[]>('/charting/history-dates/');
 }
 
 /**
@@ -570,9 +630,11 @@ export async function structureChartRequest(payload: {
   vitalSigns?: Record<string, unknown>;
   save?: boolean;
 }): Promise<StructureChartResponse> {
+  // n8n structure-chart can exceed the default 15s client timeout.
   return apiRequest<StructureChartResponse>('/charting/structure/', {
     method: 'POST',
     body: payload,
+    timeoutMs: 60000,
   });
 }
 
@@ -587,12 +649,24 @@ export async function updateChartingNote(
   return apiRequest<ChartingNote>(`/charting/${id}/`, { method: 'PATCH', body: data });
 }
 
+export async function confirmChartingNote(id: string): Promise<ChartingNote> {
+  return apiRequest<ChartingNote>(`/charting/${id}/confirm/`, { method: 'POST' });
+}
+
 export async function deleteChartingNote(id: string): Promise<void> {
   await apiRequest(`/charting/${id}/`, { method: 'DELETE' });
 }
 
-export async function fetchNurses(): Promise<Nurse[]> {
-  return apiRequest<Nurse[]>('/nurses/');
+export async function fetchNurses(options?: {
+  search?: string;
+  /** Patient ID (patient_code) — excludes nurses who already received a handover for this patient. */
+  excludeForPatient?: string;
+}): Promise<Nurse[]> {
+  const params = new URLSearchParams();
+  if (options?.search) params.set('search', options.search);
+  if (options?.excludeForPatient) params.set('excludeForPatient', options.excludeForPatient);
+  const query = params.toString();
+  return apiRequest<Nurse[]>(`/nurses/${query ? `?${query}` : ''}`);
 }
 
 /** Supervisor-only: change a nurse's department and/or shift. */
@@ -703,6 +777,71 @@ export async function updateAssignment(
 
 export async function deleteAssignment(id: string): Promise<void> {
   await apiRequest(`/assignments/${id}/`, { method: 'DELETE' });
+}
+
+export async function fetchDutyAssignments(options?: {
+  date?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  shift?: string;
+  departmentId?: string | number;
+  status?: string;
+  nurseId?: string;
+  search?: string;
+}): Promise<DutyAssignment[]> {
+  const params = new URLSearchParams();
+  if (options?.date) params.set('date', options.date);
+  if (options?.dateFrom) params.set('dateFrom', options.dateFrom);
+  if (options?.dateTo) params.set('dateTo', options.dateTo);
+  if (options?.shift) params.set('shift', options.shift);
+  if (options?.departmentId) params.set('departmentId', String(options.departmentId));
+  if (options?.status) params.set('status', options.status);
+  if (options?.nurseId) params.set('nurseId', options.nurseId);
+  if (options?.search) params.set('search', options.search);
+  const query = params.toString() ? `?${params}` : '';
+  return apiRequest<DutyAssignment[]>(`/duty-assignments/${query}`);
+}
+
+export type DutyAssignmentInput = {
+  nurseId: string;
+  departmentId: number;
+  dutyDate: string;
+  shift: string;
+  startTime: string;
+  endTime: string;
+  overtimeStart?: string | null;
+  overtimeEnd?: string | null;
+  status?: string;
+  notes?: string;
+};
+
+export async function createDutyAssignment(data: DutyAssignmentInput): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>('/duty-assignments/', { method: 'POST', body: data });
+}
+
+export async function updateDutyAssignment(
+  id: number,
+  data: Partial<DutyAssignmentInput>
+): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/`, { method: 'PATCH', body: data });
+}
+
+export async function deleteDutyAssignment(id: number): Promise<void> {
+  await apiRequest(`/duty-assignments/${id}/`, { method: 'DELETE' });
+}
+
+/** Clock in — records the real start time server-side. No request body. */
+export async function startDutyAssignment(id: number): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/start/`, { method: 'POST' });
+}
+
+/** Clock out — records the real end time and freezes actual hours server-side. */
+export async function endDutyAssignment(id: number): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/end/`, { method: 'POST' });
+}
+
+export async function closeDutyAssignment(id: number): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/close/`, { method: 'POST' });
 }
 
 export async function fetchKardexRecords(): Promise<KardexHistory[]> {
