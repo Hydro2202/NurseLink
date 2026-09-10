@@ -14,6 +14,7 @@ import type {
   Nurse,
   Patient,
   PatientAssignmentRecord,
+  PatientVisit,
   Task,
   WorkloadData,
 } from '../types/domain';
@@ -105,13 +106,29 @@ export async function apiRequest<T>(
     });
   } catch (error) {
     clearTimeout(timeoutId);
+    // Logged unconditionally, with the real error object — "Failed to fetch"
+    // (the browser's own message for "the request never got a response at
+    // all": server down, wrong host/port, CORS preflight rejected, offline)
+    // is otherwise the only thing anyone ever sees, with no way to tell it
+    // apart from a timeout or any other network failure.
+    console.error(`[NurseLink] API request failed: ${method} ${API_BASE_URL}${path}`, error);
     if (error instanceof Error && error.name === 'AbortError') {
       throw new ApiError('Request timed out. Is the backend running?', 408);
     }
-    throw new ApiError(
-      error instanceof Error ? error.message : 'Network request failed',
-      0
-    );
+    // A bare TypeError is fetch's own signal that the request never
+    // completed (as opposed to the server responding with an error status,
+    // which is handled below via response.ok) — across both browser fetch
+    // and React Native's fetch polyfill, "Failed to fetch"/"Network request
+    // failed" are exactly this case, not a hint on their own of what's
+    // actually wrong, so replace it with something a nurse (or whoever is
+    // debugging with them) can act on.
+    const message =
+      error instanceof TypeError
+        ? `Could not reach the NurseLink server at ${API_BASE_URL}. It may be offline, or this device may not be able to reach it — check your connection and try again.`
+        : error instanceof Error
+          ? error.message
+          : 'Network request failed';
+    throw new ApiError(message, 0);
   } finally {
     clearTimeout(timeoutId);
   }
@@ -121,12 +138,25 @@ export async function apiRequest<T>(
   if (text) {
     try {
       data = JSON.parse(text);
-    } catch {
+    } catch (parseError) {
+      // The server responded, but not with JSON — most often an HTML error
+      // page from a 500 that never reached DRF's exception handling, or a
+      // proxy/gateway page for the wrong host entirely. Worth its own log
+      // line: extractDetail below will still show *something*, but not why.
+      console.error(
+        `[NurseLink] API response was not valid JSON: ${method} ${API_BASE_URL}${path} (status ${response.status})`,
+        parseError,
+        text.slice(0, 500)
+      );
       data = text;
     }
   }
 
   if (!response.ok) {
+    console.error(
+      `[NurseLink] API error response: ${method} ${API_BASE_URL}${path} → ${response.status}`,
+      data
+    );
     if (auth && response.status === 401) {
       unauthorizedHandler?.();
     }
@@ -499,6 +529,33 @@ export async function deletePatient(patientCode: string): Promise<void> {
   await apiRequest(`/patients/${patientCode}/`, { method: 'DELETE' });
 }
 
+/** Supervisor-only. Sets status to discharged and records who/when. The
+ * record is kept, not deleted — see fetchPatientVisits for its history. */
+export async function dischargePatient(patientCode: string): Promise<Patient> {
+  return apiRequest<Patient>(`/patients/${patientCode}/discharge/`, { method: 'POST' });
+}
+
+/** Supervisor-only. Reactivates a discharged patient under their existing
+ * profile (same id) for a new admission, rather than creating a duplicate. */
+export async function readmitPatient(
+  patientCode: string,
+  data: {
+    diagnosis: string;
+    room: string;
+    admissionDate?: string;
+    attendingPhysician?: string;
+    departmentId?: number | null;
+    riskLevel?: Patient['riskLevel'];
+  }
+): Promise<Patient> {
+  return apiRequest<Patient>(`/patients/${patientCode}/readmit/`, { method: 'POST', body: data });
+}
+
+/** Every admission-to-discharge visit on record for this patient, newest first. */
+export async function fetchPatientVisits(patientCode: string): Promise<PatientVisit[]> {
+  return apiRequest<PatientVisit[]>(`/patients/${patientCode}/visits/`);
+}
+
 export async function fetchTasks(options?: {
   mine?: boolean;
   assignedTo?: string;
@@ -661,10 +718,15 @@ export async function fetchNurses(options?: {
   search?: string;
   /** Patient ID (patient_code) — excludes nurses who already received a handover for this patient. */
   excludeForPatient?: string;
+  /** Only nurses on the Duty Roster for this shift (today, unless `date` is also given). */
+  shift?: string;
+  date?: string;
 }): Promise<Nurse[]> {
   const params = new URLSearchParams();
   if (options?.search) params.set('search', options.search);
   if (options?.excludeForPatient) params.set('excludeForPatient', options.excludeForPatient);
+  if (options?.shift) params.set('shift', options.shift);
+  if (options?.date) params.set('date', options.date);
   const query = params.toString();
   return apiRequest<Nurse[]>(`/nurses/${query ? `?${query}` : ''}`);
 }
@@ -716,6 +778,10 @@ export interface LiveState {
   tasks: string;
   handovers: string;
   patients: string;
+  /** The signed-in nurse's own department:shift — set by a supervisor via
+   * assignNurse, not by this device. Independent of notification
+   * preferences, since it's account data, not an alert. */
+  profile: string;
   unreadCount: number;
 }
 

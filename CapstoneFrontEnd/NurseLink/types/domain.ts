@@ -77,12 +77,55 @@ export interface Patient {
   medications: string[];
   alerts: string[];
   attendingPhysician?: string;
+  status?: 'admitted' | 'observation' | 'discharged';
+  statusLabel?: string;
+  departmentId?: number | null;
+  departmentName?: string;
+  dischargedAt?: string | null;
+  dischargedByName?: string | null;
   assignedNurseId?: string | null;
   assignedNurseName?: string | null;
   /** Nurse who assigned assignedNurseName to this patient (usually whoever added them via Kardex). */
   assignedBy?: string | null;
   /** This patient's Kardex-assigned doctors, across every department — see PatientDoctor. */
   assignedDoctors?: TaskDoctorAssignment[];
+  /** Whoever is actually on shift right now for this patient's department, per the
+   * Duty Roster — distinct from assignedNurseId/assignedNurseName (the static
+   * day-to-day care assignment). Null when nobody is currently scheduled, or the
+   * patient has no department set. */
+  onDutyNurseId?: string | null;
+  onDutyNurseName?: string | null;
+  /** {editedBy, editedAt, changes} entries — see PatientSerializer.update(). */
+  editHistory?: { editedBy: string; editedAt: string; changes: string[] }[];
+  lastEditedAt?: string | null;
+  lastEditedByName?: string | null;
+}
+
+/** One admission-to-discharge encounter under a Patient profile — never
+ * overwritten by a later visit; see PatientVisit on the backend. */
+export interface PatientVisit {
+  id: number;
+  admissionDate: string;
+  dischargeDate: string | null;
+  isActive: boolean;
+  diagnosis: string;
+  room: string;
+  attendingPhysician: string;
+  assignedNurseName: string | null;
+  medicalTeam: { name: string; specialization: string; departmentName: string }[];
+  dischargedByName: string | null;
+  vitals: {
+    id: number;
+    recordedAt: string;
+    heartRate: number | null;
+    bloodPressure: string;
+    temperature: number | null;
+    oxygenSaturation: number | null;
+    respiratoryRate: number | null;
+    painScale: number | null;
+    source: string;
+  }[];
+  notes: { id: string; timestamp: string; type: string; content: string }[];
 }
 
 export interface HandoverNote {
@@ -179,6 +222,9 @@ export interface ChartingHistoryDate {
 export interface WorkloadData {
   nurseId: string;
   nurseName: string;
+  /** Disambiguates same-named nurses — several accounts on this ward share a
+   * display name, so the name alone is not enough to tell them apart. */
+  nurseEmail: string;
   shift: string;
   department: string;
   patientCount: number;
@@ -322,6 +368,10 @@ export interface DuplicatePatientMatch {
   gender: string;
   room: string;
   admissionDate: string | null;
+  /** A 'discharged' match is a readmission candidate — see readmitPatient() —
+   * not necessarily a true duplicate the way an active match is. */
+  status?: 'admitted' | 'observation' | 'discharged';
+  statusLabel?: string;
 }
 
 export interface AnalyticsData {

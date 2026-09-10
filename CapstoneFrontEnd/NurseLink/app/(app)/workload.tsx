@@ -120,7 +120,10 @@ export default function WorkloadPage() {
   const overtimeData = useMemo(() => {
     const byShift: Record<string, number[]> = { morning: [], afternoon: [], night: [] };
     workloadData.forEach((n) => {
-      const key = (n.shift || 'morning') as keyof typeof byShift;
+      // Unassigned nurses (no shift yet) don't belong in any bucket —
+      // lumping them into Morning skewed that shift's average.
+      if (!n.shift) return;
+      const key = n.shift as keyof typeof byShift;
       if (byShift[key]) byShift[key].push(n.overtimeHours);
     });
     return (['morning', 'afternoon', 'night'] as const).map((shift) => {
@@ -401,6 +404,10 @@ export default function WorkloadPage() {
                       <View key={nurse.nurseId} style={styles.teamRow}>
                         <View style={styles.flex1}>
                           <Text style={styles.nurseName}>{nurse.nurseName}</Text>
+                          {/* Several nurses on this ward share a display name —
+                              without the email, there is no way to tell which
+                              account "Assign" below is about to change. */}
+                          <Text style={styles.nurseEmail}>{nurse.nurseEmail}</Text>
                           <Text style={styles.nurseShift}>
                             {nurse.shift.charAt(0).toUpperCase() + nurse.shift.slice(1)} shift
                           </Text>
@@ -412,6 +419,7 @@ export default function WorkloadPage() {
                             setAssignTarget({
                               id: nurse.nurseId,
                               name: nurse.nurseName,
+                              email: nurse.nurseEmail,
                               department: nurse.department,
                               shift: nurse.shift,
                             });
@@ -634,6 +642,7 @@ const styles = StyleSheet.create({
   teamRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   nurseHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   nurseName: { fontSize: 15, fontWeight: '700', color: Colors.foreground },
+  nurseEmail: { fontSize: 11.5, color: Colors.gray500, marginTop: 1 },
   nurseShift: { fontSize: 12, color: Colors.mutedForeground, marginTop: 2 },
   metrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   metric: { minWidth: 70 },

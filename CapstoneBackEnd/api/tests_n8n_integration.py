@@ -719,14 +719,18 @@ class StructureChartEndpointTests(TestCase):
         self.assertEqual(res.status_code, 200)
         workflow, payload = mock_call.call_args[0]
         self.assertEqual(workflow, 'structure_chart')
-        # The nurse types the assessment; the server supplies the clinical context.
+        # The nurse types the assessment; the server supplies demographic
+        # context. Vitals are NOT seeded from Patient's stored snapshot —
+        # they must be extracted from the assessment text (or an explicit
+        # manual override), so with neither given here the payload carries
+        # no vitalSigns at all rather than the patient's on-record 96 bpm.
         self.assertEqual(payload['assessment'], 'Alert and oriented x3.')
         self.assertEqual(payload['patient']['name'], 'Ramon Dela Cruz')
-        self.assertEqual(payload['vitalSigns']['heartRate'], 96)
+        self.assertIsNone(payload['vitalSigns'])
         self.assertEqual(payload['nurseName'], 'Sarah Johnson')
 
     @patch('api.views.call_workflow')
-    def test_supplied_vitals_override_the_record(self, mock_call):
+    def test_supplied_vitals_are_sent_as_a_manual_override(self, mock_call):
         mock_call.return_value = {'note': 'x'}
 
         self._post(vitalSigns={'heartRate': 102, 'bloodPressure': '142/88'})
@@ -779,19 +783,120 @@ class StructureChartEndpointTests(TestCase):
 
     @patch('api.views.call_workflow')
     def test_structured_response_is_backfilled_with_patient_context(self, mock_call):
-        mock_call.return_value = {'structured': {'assessment': 'Stable.'}}
+        mock_call.return_value = {
+            'structured': {
+                'assessment': 'Stable. HR 88, temp 38.9C noted on exam.',
+                'vitalSigns': {'heartRate': 88, 'temperature': 38.9},
+            }
+        }
 
         res = self._post()
 
         structured = res.data['structured']
-        self.assertEqual(structured['assessment'], 'Stable.')
-        # Server forces authoritative patient context onto the structured payload.
+        self.assertEqual(structured['assessment'], 'Stable. HR 88, temp 38.9C noted on exam.')
+        # Server forces authoritative patient identity/demographic context
+        # onto the structured payload — but NOT vitals, which come from
+        # exactly what the workflow extracted from the assessment text.
         self.assertEqual(structured['patientName'], 'Ramon Dela Cruz')
         self.assertEqual(structured['room'], 'ICU-04')
         self.assertEqual(structured['nurseName'], 'Sarah Johnson')
         self.assertEqual(structured['sourceAssessment'], 'Alert and oriented x3.')
-        self.assertEqual(structured['vitalSigns']['heartRate'], 96)
+        self.assertEqual(structured['vitalSigns']['heartRate'], 88)
+        self.assertEqual(structured['vitalSigns']['temperature'], 38.9)
         self.assertEqual(structured['diagnosis'], 'Community-acquired pneumonia')
+
+    @patch('api.views.call_workflow')
+    def test_vitals_not_mentioned_in_the_assessment_come_back_null_not_the_stored_record(self, mock_call):
+        """
+        The bug this guards against: vitalSigns used to be unconditionally
+        overwritten with Patient.heart_rate/etc. (96/138/86/38.2/93/22 here),
+        discarding whatever — or nothing — the workflow actually found in
+        the assessment text. A vital genuinely not documented must come back
+        null, never silently backfilled from the patient's on-record values.
+        """
+        mock_call.return_value = {'structured': {'assessment': 'Stable.'}}
+
+        res = self._post()
+
+        vitals = res.data['structured']['vitalSigns']
+        self.assertEqual(
+            vitals,
+            {
+                'heartRate': None, 'bloodPressure': None, 'temperature': None,
+                'oxygenSaturation': None, 'respiratoryRate': None,
+            },
+        )
+
+    @patch('api.views.call_workflow')
+    def test_workflow_returning_zero_for_a_vital_is_treated_as_not_documented(self, mock_call):
+        mock_call.return_value = {
+            'structured': {'vitalSigns': {'heartRate': 0, 'temperature': 37.1}},
+        }
+
+        res = self._post()
+
+        vitals = res.data['structured']['vitalSigns']
+        self.assertIsNone(vitals['heartRate'])
+        self.assertEqual(vitals['temperature'], 37.1)
+
+    @patch('api.views.call_workflow')
+    def test_vitals_are_extracted_from_the_assessment_text_even_when_the_workflow_returns_none(
+        self, mock_call
+    ):
+        """
+        Reproduces the real, confirmed n8n behavior: the workflow's own LLM
+        node turns vitals language into prose (assessment/clinicalSummary
+        text) rather than a structured vitalSigns object — verified by
+        calling it live with this exact kind of text. The backend's own
+        deterministic extraction (api/vitals_extraction.py) must still
+        populate the form fields from the assessment text alone.
+        """
+        mock_call.return_value = {
+            'structured': {
+                'assessment': 'Patient is febrile with tachycardia and hypertension.',
+                # No 'vitalSigns' key — exactly what the live workflow returns.
+            }
+        }
+
+        res = self._post(
+            assessment=(
+                'Heart rate 110 bpm, irregular. Temperature 38.6C, febrile. '
+                'SpO2 92% on room air. Respiratory rate 24. BP 160/100, elevated.'
+            )
+        )
+
+        vitals = res.data['structured']['vitalSigns']
+        self.assertEqual(vitals['heartRate'], 110)
+        self.assertEqual(vitals['temperature'], 38.6)
+        self.assertEqual(vitals['oxygenSaturation'], 92)
+        self.assertEqual(vitals['respiratoryRate'], 24)
+        self.assertEqual(vitals['bloodPressure'], '160/100')
+
+    @patch('api.views.call_workflow')
+    def test_text_extraction_wins_over_the_workflows_own_extraction(self, mock_call):
+        # The nurse's own words are more trustworthy than whatever the
+        # workflow's LLM node happened to produce for the same note.
+        mock_call.return_value = {
+            'structured': {'vitalSigns': {'heartRate': 70}},
+        }
+
+        res = self._post(assessment='Heart rate 110, irregular rhythm noted.')
+
+        self.assertEqual(res.data['structured']['vitalSigns']['heartRate'], 110)
+
+    @patch('api.views.call_workflow')
+    def test_manual_override_wins_over_the_workflows_own_extraction(self, mock_call):
+        mock_call.return_value = {
+            'structured': {'vitalSigns': {'heartRate': 88, 'bloodPressure': '120/80'}},
+        }
+
+        res = self._post(vitalSigns={'heartRate': 102})
+
+        vitals = res.data['structured']['vitalSigns']
+        self.assertEqual(vitals['heartRate'], 102)
+        # A field the override didn't touch still falls back to the
+        # workflow's own extraction rather than going blank.
+        self.assertEqual(vitals['bloodPressure'], '120/80')
 
     @patch('api.views.call_workflow')
     def test_empty_workflow_output_is_reported_not_silently_saved(self, mock_call):

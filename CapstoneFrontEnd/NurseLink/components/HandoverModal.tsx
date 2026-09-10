@@ -81,23 +81,24 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     };
   }, [open]);
 
-  // Nurses who already received this patient's handover must not be offered
-  // again for it, so the eligible list is re-fetched per selected patient
-  // rather than loaded once for the whole modal.
+  // Same-shift nurses only (from the Duty Roster, not a static profile
+  // default) — re-fetched whenever the Shift field or selected patient
+  // changes, so the list never keeps stale results from a previous shift.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     (async () => {
       setNursesLoading(true);
       try {
-        const nurseData = await fetchNurses(
-          selectedPatientId ? { excludeForPatient: selectedPatientId } : undefined
-        );
+        const nurseData = await fetchNurses({
+          shift: formData.shift,
+          ...(selectedPatientId ? { excludeForPatient: selectedPatientId } : null),
+        });
         if (!cancelled) {
           setNurses(nurseData);
           // The previously selected nurse may no longer be eligible for the
-          // newly selected patient — clear it rather than silently submitting
-          // a stale choice.
+          // newly selected shift/patient — clear it rather than silently
+          // submitting a stale choice.
           setSelectedNurseId((prev) =>
             prev && !nurseData.some((n) => n.id === prev) ? '' : prev
           );
@@ -111,7 +112,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     return () => {
       cancelled = true;
     };
-  }, [open, selectedPatientId]);
+  }, [open, selectedPatientId, formData.shift]);
 
   useEffect(() => {
     if (selectedNurseId) {
@@ -121,6 +122,17 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       }
     }
   }, [selectedNurseId, nurses]);
+
+  const nurseNameCounts = nurses.reduce<Record<string, number>>((acc, n) => {
+    acc[n.name] = (acc[n.name] || 0) + 1;
+    return acc;
+  }, {});
+  const noNursesReason =
+    !nursesLoading && nurses.length === 0
+      ? selectedPatientId
+        ? 'No nurses assigned to this shift today, or all have already received this patient.'
+        : 'No nurses assigned to this shift today.'
+      : '';
 
   useEffect(() => {
     if (selectedPatientId) {
@@ -260,34 +272,24 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                   value={selectedNurseId}
                   onValueChange={setSelectedNurseId}
                   options={nurses.map((n) => ({
-                    label: `${n.name} • ${n.role}${n.specialization ? ` (${n.specialization})` : ''}`,
+                    // Two nurses can share a display name — disambiguate with
+                    // email only when this list actually has a collision, so
+                    // the common case stays a clean single label.
+                    label: `${n.name}${nurseNameCounts[n.name] > 1 && n.email ? ` (${n.email})` : ''} • ${n.role}${n.specialization ? ` (${n.specialization})` : ''}`,
                     value: n.id,
                     keywords: `${n.email || ''} ${n.department || ''}`,
                   }))}
-                  placeholder={
-                    nursesLoading
-                      ? 'Loading nurses...'
-                      : selectedPatientId && nurses.length === 0
-                        ? 'All available nurses have already received this patient.'
-                        : 'Choose a nurse'
-                  }
+                  placeholder={nursesLoading ? 'Loading nurses...' : noNursesReason || 'Choose a nurse'}
                   searchable
                   searchPlaceholder="Search by name, username, or email..."
-                  emptyMessage={
-                    selectedPatientId
-                      ? 'All available nurses have already received this patient.'
-                      : 'No nurses found.'
-                  }
+                  emptyMessage={noNursesReason || 'No nurses found.'}
                   error={errors.nurse}
                 />
               </View>
 
-              {selectedPatientId && !nursesLoading && nurses.length === 0 ? (
+              {!nursesLoading && nurses.length === 0 ? (
                 <Alert variant="warning">
-                  <AlertDescription>
-                    All available nurses have already received this patient. This patient
-                    cannot be handed over again until a different nurse becomes eligible.
-                  </AlertDescription>
+                  <AlertDescription>{noNursesReason}</AlertDescription>
                 </Alert>
               ) : null}
 

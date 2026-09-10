@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
@@ -19,16 +21,20 @@ from .models import (
     Patient,
     PatientAssignment,
     PatientDoctor,
+    PatientVisit,
     RegistrationSession,
     Task,
     TaskDoctor,
+    TaskHandover,
     UserPreferences,
+    VitalSigns,
 )
 from .avatar import AvatarError, normalize_avatar
 from .id_field_validation import validate_prc_id_fields
 from .handover_tasks import create_handover_tasks
 from .notifications import notify_handover_created, notify_task_assigned, resolve_nurse
 from .utils import next_code
+from .vitals_detection import detect_vital_mentions
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -98,7 +104,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_shift(self, obj):
         profile = getattr(obj, 'nurse_profile', None)
-        return profile.shift if profile else 'morning'
+        return profile.shift if profile else ''
 
     def get_clinicalRole(self, obj):
         profile = getattr(obj, 'nurse_profile', None)
@@ -182,9 +188,12 @@ class SignupSerializer(serializers.Serializer):
                 last_name = parts[1]
 
         role = validated_data.get('role', 'staff_nurse')
-        department = validated_data.get('department') or (
-            'Nursing Administration' if role == 'supervisor' else 'Medical-Surgical Unit'
-        )
+        # Left blank unless the signup form explicitly supplied one — a new
+        # account has no real ward assignment yet, and silently defaulting
+        # to a made-up department ("Medical-Surgical Unit") looked like a
+        # real assignment nobody had actually made. A supervisor sets the
+        # real one via PATCH /api/nurses/{id}/assign/ (NurseViewSet.assign).
+        department = validated_data.get('department') or ''
 
         with transaction.atomic():
             user = User.objects.create_user(
@@ -198,6 +207,11 @@ class SignupSerializer(serializers.Serializer):
                 user=user,
                 role=role,
                 department=department,
+                # Same reasoning as department above: the signup form never
+                # asks for a shift, so defaulting to 'morning' here made an
+                # unassigned account look scheduled. Left blank until a
+                # supervisor sets a real one via the assign action.
+                shift='',
                 license_number=validated_data.get('licenseNumber') or '',
                 middle_name=validated_data.get('middleName') or '',
                 # Identity is established by the time we get here — the
@@ -586,10 +600,81 @@ def duplicate_patient_payload(matches):
                 'gender': p.gender,
                 'room': p.room,
                 'admissionDate': p.admission_date.isoformat() if p.admission_date else None,
+                # A discharged match is a readmission candidate (use
+                # PatientViewSet.readmit, not a fresh create) rather than a
+                # true duplicate — the caller needs status to tell the two
+                # apart, since both look identical otherwise.
+                'status': p.status,
+                'statusLabel': p.get_status_display(),
             }
             for p in matches
         ],
     }
+
+
+def medical_team_snapshot(patient):
+    """
+    [{name, specialization, departmentName}, ...] — a point-in-time copy of
+    a patient's active Kardex care team, for PatientVisit.medical_team.
+
+    Not a live PatientDoctor join at read time: PatientDoctor is unique on
+    (patient, doctor), so a doctor reassigned on a later visit reactivates
+    the same row rather than creating a new one, and a live date-range
+    query would misattribute it. See PatientVisit's docstring.
+    """
+    assignments = patient.assigned_doctors.filter(status='active').select_related(
+        'doctor', 'doctor__department'
+    )
+    return [
+        {
+            'name': pd.doctor.full_name,
+            'specialization': pd.doctor.specialization,
+            'departmentName': pd.doctor.department.name,
+        }
+        for pd in assignments
+    ]
+
+
+def nurse_display_name(user):
+    if not user:
+        return ''
+    return user.get_full_name().strip() or user.username
+
+
+def open_patient_visit(patient):
+    """A fresh PatientVisit for `patient`'s current admission, seeded from
+    its current fields — called on Patient.create and PatientViewSet.readmit."""
+    return PatientVisit.objects.create(
+        patient=patient,
+        admission_date=patient.admission_date,
+        diagnosis=patient.diagnosis,
+        room=patient.room,
+        attending_physician=patient.attending_physician,
+        assigned_nurse=patient.assigned_nurse,
+        assigned_nurse_name=nurse_display_name(patient.assigned_nurse),
+    )
+
+
+# Fields worth naming in Patient.edit_history when they actually change —
+# demographic/clinical facts a supervisor might correct, not bookkeeping
+# columns like updated_at. Keys are validated_data/model attribute names
+# (post-`source=` resolution), values are what a human reads in the log.
+PATIENT_EDIT_LOG_LABELS = {
+    'name': 'Name',
+    'age': 'Age',
+    'gender': 'Sex',
+    'room': 'Room',
+    'diagnosis': 'Diagnosis',
+    'risk_level': 'Risk Level',
+    'attending_physician': 'Attending Physician',
+    'department': 'Department',
+    'admission_date': 'Admission Date',
+    'heart_rate': 'Heart Rate',
+    'blood_pressure': 'Blood Pressure',
+    'temperature': 'Temperature',
+    'oxygen_saturation': 'Oxygen Saturation',
+    'respiratory_rate': 'Respiratory Rate',
+}
 
 
 class PatientSerializer(serializers.ModelSerializer):
@@ -610,6 +695,26 @@ class PatientSerializer(serializers.ModelSerializer):
     assignedNurseName = serializers.SerializerMethodField(read_only=True)
     assignedBy = serializers.SerializerMethodField(read_only=True)
     assignedDoctors = serializers.SerializerMethodField(read_only=True)
+    status = serializers.ChoiceField(choices=Patient.STATUS_CHOICES, required=False)
+    statusLabel = serializers.CharField(source='get_status_display', read_only=True)
+    departmentId = serializers.PrimaryKeyRelatedField(
+        source='department', queryset=Department.objects.all(), required=False, allow_null=True
+    )
+    departmentName = serializers.CharField(source='department.name', read_only=True, default='')
+    dischargedAt = serializers.DateTimeField(source='discharged_at', read_only=True)
+    dischargedByName = serializers.SerializerMethodField(read_only=True)
+    # The nurse actually on shift right now for this patient's department,
+    # per the Duty Roster — distinct from assignedNurseId/assignedNurseName
+    # above (the static day-to-day care assignment). See
+    # PatientViewSet.get_serializer_context for how current_duty_by_department
+    # is computed once per request rather than per row.
+    onDutyNurseId = serializers.SerializerMethodField(read_only=True)
+    onDutyNurseName = serializers.SerializerMethodField(read_only=True)
+    # {editedBy, editedAt, changes} entries — see update() below. Read-only:
+    # this is only ever appended to server-side, never written directly.
+    editHistory = serializers.ListField(source='edit_history', read_only=True)
+    lastEditedAt = serializers.SerializerMethodField(read_only=True)
+    lastEditedByName = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Patient
@@ -622,7 +727,13 @@ class PatientSerializer(serializers.ModelSerializer):
             'diagnosis',
             'admissionDate',
             'riskLevel',
+            'status',
+            'statusLabel',
             'attendingPhysician',
+            'departmentId',
+            'departmentName',
+            'dischargedAt',
+            'dischargedByName',
             'vitalSigns',
             'allergies',
             'medications',
@@ -631,8 +742,54 @@ class PatientSerializer(serializers.ModelSerializer):
             'assignedNurseName',
             'assignedBy',
             'assignedDoctors',
+            'onDutyNurseId',
+            'onDutyNurseName',
+            'editHistory',
+            'lastEditedAt',
+            'lastEditedByName',
             'confirmDuplicate',
         ]
+
+    def get_lastEditedAt(self, obj):
+        history = obj.edit_history or []
+        return history[-1]['editedAt'] if history else None
+
+    def get_lastEditedByName(self, obj):
+        history = obj.edit_history or []
+        return history[-1]['editedBy'] if history else None
+
+    def get_dischargedByName(self, obj):
+        if not obj.discharged_by_id:
+            return None
+        return obj.discharged_by.get_full_name().strip() or obj.discharged_by.username
+
+    def _current_duty_assignment(self, obj):
+        if not obj.department_id:
+            return None
+        lookup = self.context.get('current_duty_by_department') or {}
+        return lookup.get(obj.department_id)
+
+    def get_onDutyNurseId(self, obj):
+        assignment = self._current_duty_assignment(obj)
+        return str(assignment.nurse_id) if assignment else None
+
+    def get_onDutyNurseName(self, obj):
+        assignment = self._current_duty_assignment(obj)
+        if not assignment:
+            return None
+        nurse = assignment.nurse
+        return nurse.get_full_name().strip() or nurse.username
+
+    def validate_status(self, value):
+        # Discharging is a distinct, audited action (PatientViewSet.discharge)
+        # — never a side effect of an ordinary field edit. Already-discharged
+        # staying discharged (no-op) is fine; anything else transitioning
+        # *to* discharged through this path is not.
+        if value == 'discharged' and (self.instance is None or self.instance.status != 'discharged'):
+            raise serializers.ValidationError(
+                'Use the discharge action to discharge a patient, not a direct status update.'
+            )
+        return value
 
     def get_assignedDoctors(self, obj):
         """The patient's Kardex care team — see PatientDoctor. Reads the
@@ -657,13 +814,30 @@ class PatientSerializer(serializers.ModelSerializer):
             for pd in assignments
         ]
 
+    def _last_closed_visit(self, obj):
+        return obj.visits.filter(discharge_date__isnull=False).order_by('-discharge_date').first()
+
     def get_assignedNurseId(self, obj):
-        return str(obj.assigned_nurse_id) if obj.assigned_nurse_id else None
+        if obj.assigned_nurse_id:
+            return str(obj.assigned_nurse_id)
+        # discharge clears assigned_nurse (nobody is *actively* assigned to a
+        # discharged patient) — fall back to who the last closed visit's
+        # snapshot named, so a discharged card can still show "Last Assigned
+        # Nurse" instead of just going blank.
+        if obj.status == 'discharged':
+            visit = self._last_closed_visit(obj)
+            if visit and visit.assigned_nurse_id:
+                return str(visit.assigned_nurse_id)
+        return None
 
     def get_assignedNurseName(self, obj):
-        if not obj.assigned_nurse:
-            return None
-        return obj.assigned_nurse.get_full_name().strip() or obj.assigned_nurse.username
+        if obj.assigned_nurse:
+            return obj.assigned_nurse.get_full_name().strip() or obj.assigned_nurse.username
+        if obj.status == 'discharged':
+            visit = self._last_closed_visit(obj)
+            if visit and visit.assigned_nurse_name:
+                return visit.assigned_nurse_name
+        return None
 
     def get_assignedBy(self, obj):
         """
@@ -730,14 +904,54 @@ class PatientSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated and not validated_data.get('assigned_nurse'):
             validated_data['assigned_nurse'] = request.user
-        return Patient.objects.create(**validated_data)
+        patient = Patient.objects.create(**validated_data)
+        open_patient_visit(patient)
+        return patient
 
     def update(self, instance, validated_data):
         validated_data.pop('patient_code', None)
         self._apply_vitals(validated_data)
+
+        changed_labels = []
         for attr, value in validated_data.items():
+            label = PATIENT_EDIT_LOG_LABELS.get(attr)
+            if label and getattr(instance, attr) != value:
+                changed_labels.append(label)
             setattr(instance, attr, value)
+
+        if changed_labels:
+            request = self.context.get('request')
+            editor = (
+                nurse_display_name(request.user)
+                if request and request.user.is_authenticated
+                else ''
+            )
+            history = list(instance.edit_history or [])
+            history.append(
+                {
+                    'editedBy': editor,
+                    'editedAt': timezone.now().isoformat(),
+                    'changes': changed_labels,
+                }
+            )
+            instance.edit_history = history
+
         instance.save()
+
+        # A discharged patient's current fields are what the card shows as
+        # "Last Diagnosis"/"Last Room"/etc. — correcting them (e.g. a
+        # misrecorded diagnosis) must also correct the closed visit's own
+        # snapshot, or the visit history still shows the old, wrong value
+        # even though the card itself now looks right. Status is never
+        # touched here — editing a discharged patient's record never
+        # readmits them; that's PatientViewSet.readmit's job alone.
+        if instance.status == 'discharged' and changed_labels:
+            visit = instance.visits.filter(discharge_date__isnull=False).order_by('-discharge_date').first()
+            if visit is not None:
+                visit.diagnosis = instance.diagnosis
+                visit.room = instance.room
+                visit.attending_physician = instance.attending_physician
+                visit.save(update_fields=['diagnosis', 'room', 'attending_physician', 'updated_at'])
 
         # Keep linked kardex demographics in sync with the patient record
         name_parts = (instance.name or '').split()
@@ -768,6 +982,99 @@ class PatientSerializer(serializers.ModelSerializer):
                 kardex.respiratory_rate = str(instance.respiratory_rate)
             kardex.save()
         return instance
+
+
+class PatientVisitSerializer(serializers.ModelSerializer):
+    """
+    One admission-to-discharge encounter — read-only, always nested under a
+    Patient (see PatientViewSet.visits). The still-open visit (discharge_date
+    is null) shows Patient's live current fields rather than its own snapshot,
+    since that snapshot is only written at discharge (see
+    PatientViewSet.discharge) — otherwise the active stay would show
+    whatever it looked like at admission, not now.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    admissionDate = serializers.DateField(source='admission_date', read_only=True)
+    dischargeDate = serializers.DateTimeField(source='discharge_date', read_only=True)
+    isActive = serializers.SerializerMethodField()
+    diagnosis = serializers.SerializerMethodField()
+    room = serializers.SerializerMethodField()
+    attendingPhysician = serializers.SerializerMethodField()
+    assignedNurseName = serializers.SerializerMethodField()
+    medicalTeam = serializers.SerializerMethodField()
+    dischargedByName = serializers.SerializerMethodField()
+    vitals = serializers.SerializerMethodField()
+    notes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PatientVisit
+        fields = [
+            'id', 'admissionDate', 'dischargeDate', 'isActive', 'diagnosis', 'room',
+            'attendingPhysician', 'assignedNurseName', 'medicalTeam', 'dischargedByName',
+            'vitals', 'notes',
+        ]
+
+    def _is_open(self, obj):
+        return obj.discharge_date is None
+
+    def get_isActive(self, obj):
+        return self._is_open(obj)
+
+    def get_diagnosis(self, obj):
+        return obj.patient.diagnosis if self._is_open(obj) else obj.diagnosis
+
+    def get_room(self, obj):
+        return obj.patient.room if self._is_open(obj) else obj.room
+
+    def get_attendingPhysician(self, obj):
+        return obj.patient.attending_physician if self._is_open(obj) else obj.attending_physician
+
+    def get_assignedNurseName(self, obj):
+        if self._is_open(obj):
+            return nurse_display_name(obj.patient.assigned_nurse) or None
+        return obj.assigned_nurse_name or None
+
+    def get_medicalTeam(self, obj):
+        if self._is_open(obj):
+            return medical_team_snapshot(obj.patient)
+        return obj.medical_team or []
+
+    def get_dischargedByName(self, obj):
+        return nurse_display_name(obj.discharged_by) or None
+
+    def get_vitals(self, obj):
+        qs = VitalSigns.objects.filter(patient_id=obj.patient_id, recorded_at__date__gte=obj.admission_date)
+        if obj.discharge_date:
+            qs = qs.filter(recorded_at__lte=obj.discharge_date)
+        return [
+            {
+                'id': v.id,
+                'recordedAt': v.recorded_at.isoformat(),
+                'heartRate': v.heart_rate,
+                'bloodPressure': v.blood_pressure,
+                'temperature': v.temperature,
+                'oxygenSaturation': v.oxygen_saturation,
+                'respiratoryRate': v.respiratory_rate,
+                'painScale': v.pain_scale,
+                'source': v.source,
+            }
+            for v in qs.order_by('-recorded_at')[:50]
+        ]
+
+    def get_notes(self, obj):
+        qs = ChartingNote.objects.filter(patient_id=obj.patient_id, timestamp__date__gte=obj.admission_date)
+        if obj.discharge_date:
+            qs = qs.filter(timestamp__lte=obj.discharge_date)
+        return [
+            {
+                'id': n.note_code,
+                'timestamp': n.timestamp.isoformat(),
+                'type': n.note_type,
+                'content': (n.content or '')[:300],
+            }
+            for n in qs.order_by('-timestamp')[:50]
+        ]
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -1309,6 +1616,12 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
     structured = serializers.JSONField(source='structured_data', required=False)
     confirmed = serializers.BooleanField(required=False)
     confirmedAt = serializers.DateTimeField(source='confirmed_at', required=False, allow_null=True, read_only=True)
+    # Auto-charting — never client-writable, always derived server-side from
+    # the note's own text (see _apply_vitals_flag). 'vitalSignChangeNoted' /
+    # 'vitalSignsAffected' inside `structured` are the nurse-facing explicit
+    # alternative to keyword detection; both feed the same two fields here.
+    vitalsUpdateStatus = serializers.CharField(source='vitals_update_status', read_only=True)
+    flaggedVitals = serializers.ListField(source='flagged_vitals', read_only=True)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
 
@@ -1324,6 +1637,8 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
             'type',
             'content',
             'structured',
+            'vitalsUpdateStatus',
+            'flaggedVitals',
             'aiGenerated',
             'edited',
             'confirmed',
@@ -1411,7 +1726,9 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
         validated_data.setdefault('structured_data', {})
         validated_data['confirmed'] = False
         validated_data['confirmed_at'] = None
-        return ChartingNote.objects.create(**validated_data)
+        instance = ChartingNote.objects.create(**validated_data)
+        self._apply_vitals_flag(instance)
+        return instance
 
     def update(self, instance, validated_data):
         patient_id = validated_data.pop('patientId', serializers.empty)
@@ -1443,7 +1760,116 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
+        if content_changed or structured_changed:
+            self._apply_vitals_flag(instance)
         return instance
+
+    def _apply_vitals_flag(self, note):
+        """
+        Auto-charting trigger detection — run after every create/content-
+        changing update. Only ever moves a note from 'none' to 'pending':
+        never re-flags a note a nurse has already resolved (confirmed a new
+        VitalSigns entry) or one already sitting pending, so re-saving an
+        already-addressed note can't resurrect a stale prompt.
+        """
+        if note.vitals_update_status != 'none':
+            return
+
+        structured = note.structured_data if isinstance(note.structured_data, dict) else {}
+        explicit_flag = bool(structured.get('vitalSignChangeNoted'))
+        explicit_vitals = structured.get('vitalSignsAffected') or []
+        text = ' '.join(filter(None, [note.content or '', structured.get('assessment') or '']))
+
+        detected = set(detect_vital_mentions(text))
+        if explicit_flag:
+            detected |= {v for v in explicit_vitals if v}
+
+        if not detected:
+            return
+
+        note.flagged_vitals = sorted(detected)
+        note.vitals_update_status = 'pending'
+        note.save(update_fields=['flagged_vitals', 'vitals_update_status'])
+
+
+class VitalSignsSerializer(serializers.ModelSerializer):
+    """
+    One timestamped vitals reading — insert-only (VitalSignsViewSet has no
+    update/destroy), so this serializer only ever creates new rows. Creating
+    one also syncs Patient's own heart_rate/etc. "current snapshot" fields,
+    which every existing reader (Kardex, handover SBAR autofill, dashboards)
+    still uses — see create() below.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    patientId = serializers.SlugRelatedField(
+        source='patient', slug_field='patient_code', queryset=Patient.objects.all()
+    )
+    heartRate = serializers.IntegerField(source='heart_rate', required=False, allow_null=True)
+    bloodPressure = serializers.CharField(source='blood_pressure', required=False, allow_blank=True)
+    temperature = serializers.FloatField(required=False, allow_null=True)
+    oxygenSaturation = serializers.IntegerField(source='oxygen_saturation', required=False, allow_null=True)
+    respiratoryRate = serializers.IntegerField(source='respiratory_rate', required=False, allow_null=True)
+    painScale = serializers.IntegerField(source='pain_scale', required=False, allow_null=True)
+    source = serializers.ChoiceField(choices=VitalSigns.SOURCE_CHOICES, required=False)
+    # Set from this, not accepted directly from the client — a reading is
+    # only "assessment-triggered" because a real note triggered it.
+    triggeredByNoteId = serializers.SlugRelatedField(
+        source='triggered_by_note', slug_field='note_code',
+        queryset=ChartingNote.objects.all(), required=False, allow_null=True,
+    )
+    recordedById = serializers.IntegerField(source='recorded_by_id', read_only=True)
+    recordedByName = serializers.SerializerMethodField()
+    notes = serializers.CharField(required=False, allow_blank=True)
+    recordedAt = serializers.DateTimeField(source='recorded_at', required=False)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+    class Meta:
+        model = VitalSigns
+        fields = [
+            'id', 'patientId', 'heartRate', 'bloodPressure', 'temperature',
+            'oxygenSaturation', 'respiratoryRate', 'painScale', 'source',
+            'triggeredByNoteId', 'recordedById', 'recordedByName', 'notes',
+            'recordedAt', 'createdAt',
+        ]
+
+    def get_recordedByName(self, obj):
+        if not obj.recorded_by_id:
+            return None
+        return obj.recorded_by.get_full_name().strip() or obj.recorded_by.username
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        validated_data['recorded_by'] = request.user if request else None
+        validated_data.setdefault(
+            'source', 'assessment_triggered' if validated_data.get('triggered_by_note') else 'scheduled'
+        )
+        instance = super().create(validated_data)
+        self._sync_patient_snapshot(instance)
+        note = instance.triggered_by_note
+        if note is not None:
+            note.vitals_update_status = 'resolved'
+            note.save(update_fields=['vitals_update_status'])
+        return instance
+
+    def _sync_patient_snapshot(self, instance):
+        patient = instance.patient
+        if instance.heart_rate is not None:
+            patient.heart_rate = instance.heart_rate
+        if instance.blood_pressure:
+            patient.blood_pressure = instance.blood_pressure
+        if instance.temperature is not None:
+            patient.temperature = instance.temperature
+        if instance.oxygen_saturation is not None:
+            patient.oxygen_saturation = instance.oxygen_saturation
+        if instance.respiratory_rate is not None:
+            patient.respiratory_rate = instance.respiratory_rate
+        patient.save(
+            update_fields=[
+                'heart_rate', 'blood_pressure', 'temperature',
+                'oxygen_saturation', 'respiratory_rate', 'updated_at',
+            ]
+        )
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -1760,6 +2186,130 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context.get('request')
         validated_data['created_by'] = request.user if request else None
+        return super().create(validated_data)
+
+
+class TaskHandoverSerializer(serializers.ModelSerializer):
+    """
+    A single task/duty item handed to another nurse on the same shift,
+    pending a supervisor's verification.
+
+    shift/department are read-only here on purpose — they are derived in
+    validate() from the sending nurse's own DutyAssignment for dutyDate, the
+    same "never trust the client for roster facts" rule DutyAssignmentSerializer
+    already follows for hours. status/supervisor/verifiedAt/rejectionReason are
+    likewise read-only; they only change through the approve/reject actions on
+    TaskHandoverViewSet, never through a direct PATCH.
+    """
+
+    id = serializers.CharField(source='handover_code', read_only=True)
+    taskId = serializers.PrimaryKeyRelatedField(
+        source='task', queryset=Task.objects.all(), required=False, allow_null=True
+    )
+    taskTitle = serializers.SerializerMethodField()
+    taskDescription = serializers.CharField(
+        source='task_description', required=False, allow_blank=True
+    )
+    fromNurseId = serializers.IntegerField(source='from_nurse_id', read_only=True)
+    fromNurseName = serializers.SerializerMethodField()
+    toNurseId = serializers.PrimaryKeyRelatedField(source='to_nurse', queryset=User.objects.all())
+    toNurseName = serializers.SerializerMethodField()
+    departmentId = serializers.IntegerField(source='department_id', read_only=True)
+    departmentName = serializers.CharField(source='department.name', read_only=True, default='')
+    shift = serializers.CharField(read_only=True)
+    shiftLabel = serializers.CharField(source='get_shift_display', read_only=True)
+    dutyDate = serializers.DateField(source='duty_date', required=False)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    status = serializers.CharField(read_only=True)
+    statusLabel = serializers.CharField(source='get_status_display', read_only=True)
+    supervisorId = serializers.IntegerField(source='supervisor_id', read_only=True)
+    supervisorName = serializers.SerializerMethodField()
+    verifiedAt = serializers.DateTimeField(source='verified_at', read_only=True)
+    rejectionReason = serializers.CharField(source='rejection_reason', read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+
+    class Meta:
+        model = TaskHandover
+        fields = [
+            'id', 'taskId', 'taskTitle', 'taskDescription',
+            'fromNurseId', 'fromNurseName', 'toNurseId', 'toNurseName',
+            'departmentId', 'departmentName', 'shift', 'shiftLabel',
+            'dutyDate', 'notes', 'status', 'statusLabel',
+            'supervisorId', 'supervisorName', 'verifiedAt', 'rejectionReason',
+            'createdAt', 'updatedAt',
+        ]
+
+    def get_taskTitle(self, obj):
+        return obj.task.title if obj.task_id else ''
+
+    def get_fromNurseName(self, obj):
+        return obj.from_nurse.get_full_name().strip() or obj.from_nurse.username
+
+    def get_toNurseName(self, obj):
+        return obj.to_nurse.get_full_name().strip() or obj.to_nurse.username
+
+    def get_supervisorName(self, obj):
+        if not obj.supervisor_id:
+            return None
+        return obj.supervisor.get_full_name().strip() or obj.supervisor.username
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        from_nurse = request.user if request else None
+        to_nurse = attrs.get('to_nurse')
+        task = attrs.get('task')
+        task_description = (attrs.get('task_description') or '').strip()
+
+        if to_nurse and from_nurse and to_nurse.pk == from_nurse.pk:
+            raise serializers.ValidationError(
+                {'toNurseId': 'You cannot hand a task over to yourself.'}
+            )
+        if not task and not task_description:
+            raise serializers.ValidationError(
+                {'taskDescription': 'Describe the task being handed over, or select an existing task.'}
+            )
+
+        duty_date = attrs.get('duty_date') or timezone.now().astimezone(
+            ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)
+        ).date()
+
+        # The sending nurse's own roster entry for that day is what decides
+        # the shift/department this handover happens on — never accepted from
+        # the client, so a nurse can't claim a shift they aren't actually on.
+        from_assignment = (
+            DutyAssignment.objects.filter(nurse=from_nurse, duty_date=duty_date)
+            .exclude(status='cancelled')
+            .first()
+        )
+        if from_assignment is None:
+            raise serializers.ValidationError(
+                {'dutyDate': f'You have no scheduled duty on {duty_date} to hand this task over from.'}
+            )
+
+        to_assignment = (
+            DutyAssignment.objects.filter(
+                nurse=to_nurse, duty_date=duty_date, shift=from_assignment.shift
+            )
+            .exclude(status='cancelled')
+            .first()
+        )
+        if to_assignment is None:
+            raise serializers.ValidationError(
+                {'toNurseId': 'That nurse is not scheduled on the same shift on this date.'}
+            )
+
+        attrs['duty_date'] = duty_date
+        attrs['shift'] = from_assignment.shift
+        attrs['department'] = from_assignment.department
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        validated_data['from_nurse'] = request.user if request else None
+        validated_data['handover_code'] = next_code(TaskHandover, 'handover_code', 'TH')
+        if validated_data.get('task') and not (validated_data.get('task_description') or '').strip():
+            validated_data['task_description'] = validated_data['task'].title
         return super().create(validated_data)
 
 
@@ -2173,7 +2723,7 @@ class StructureChartSerializer(serializers.Serializer):
     """Autocharting — raw assessment in, structured nursing note out via n8n."""
 
     patientId = serializers.CharField(
-        help_text='Patient code, e.g. P-1042. Vitals and demographics are attached server-side.',
+        help_text='Patient code, e.g. P-1042. Demographics are attached server-side; vitals are not.',
     )
     assessment = serializers.CharField(
         help_text='Free-text assessment the nurse typed. This is what the workflow structures.',
@@ -2196,7 +2746,11 @@ class StructureChartSerializer(serializers.Serializer):
     )
     vitalSigns = serializers.DictField(
         required=False,
-        help_text='Overrides the vitals on record. Omit to use the patient\u2019s current vitals.',
+        help_text=(
+            'Optional manual override (e.g. a structured vitals form filled out alongside the '
+            'assessment). Omit to have vitals extracted from `assessment` alone \u2014 never '
+            'defaulted from the patient\u2019s stored record.'
+        ),
     )
     save = serializers.BooleanField(
         required=False,

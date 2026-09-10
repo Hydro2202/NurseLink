@@ -152,6 +152,33 @@ class LiveStateTests(APITestCase):
         )
         self.assertNotEqual(before['patients'], self.state()['patients'])
 
+    def test_a_department_reassignment_moves_only_the_profile_revision(self):
+        before = self.state()
+        profile = self.user.nurse_profile
+        profile.department = 'ICU'
+        profile.save(update_fields=['department'])
+        after = self.state()
+
+        self.assertNotEqual(before['profile'], after['profile'])
+        self.assertEqual(before['tasks'], after['tasks'])
+        self.assertEqual(before['notifications'], after['notifications'])
+
+    def test_a_shift_reassignment_moves_the_profile_revision(self):
+        before = self.state()
+        profile = self.user.nurse_profile
+        profile.shift = 'night'
+        profile.save(update_fields=['shift'])
+
+        self.assertNotEqual(before['profile'], self.state()['profile'])
+
+    def test_another_nurses_reassignment_is_invisible_here(self):
+        before = self.state()
+        other_profile = self.other.nurse_profile
+        other_profile.department = 'ER'
+        other_profile.save(update_fields=['department'])
+
+        self.assertEqual(before['profile'], self.state()['profile'])
+
     def test_the_poll_stays_cheap(self):
         # This is requested every few seconds by every signed-in nurse, so it
         # must never grow into something that walks the tables it summarises.

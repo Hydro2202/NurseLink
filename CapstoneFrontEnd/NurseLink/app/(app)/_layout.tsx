@@ -38,6 +38,7 @@ import { Colors, Shadows, Radius } from '../../constants/colors';
 import { useNotifications } from '../../contexts/NotificationsContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { HandoverAlertModal } from '../../components/HandoverAlertModal';
+import { ProfileSyncListener } from '../../components/ProfileSyncListener';
 
 interface NavItem {
   name: string;
@@ -274,6 +275,9 @@ export default function AppLayout() {
   // Rendered in all three layouts (mobile staff, mobile supervisor, desktop):
   // a patient being handed to you must interrupt wherever you are.
   const handoverAlert = <HandoverAlertModal />;
+  // Same three-layout placement — invisible, just keeps this nurse's own
+  // department/shift in sync after a supervisor reassigns them.
+  const profileSync = <ProfileSyncListener />;
 
   const notificationPanel = (
     <NotificationPanel
@@ -325,6 +329,7 @@ export default function AppLayout() {
         <BottomNavigation role="staff_nurse" activePath={pathname} />
         {logoutDialog}
         {handoverAlert}
+        {profileSync}
         {notificationPanel}
         {profileMenu}
       </SafeAreaView>
@@ -366,6 +371,7 @@ export default function AppLayout() {
         <BottomNavigation role="supervisor" activePath={pathname} />
         {logoutDialog}
         {handoverAlert}
+        {profileSync}
         {notificationPanel}
         {profileMenu}
       </SafeAreaView>
@@ -497,6 +503,7 @@ export default function AppLayout() {
 
       {logoutDialog}
       {handoverAlert}
+      {profileSync}
       {notificationPanel}
       {profileMenu}
     </SafeAreaView>

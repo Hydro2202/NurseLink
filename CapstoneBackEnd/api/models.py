@@ -109,6 +109,11 @@ class Patient(models.Model):
         ('high', 'High'),
         ('critical', 'Critical'),
     ]
+    STATUS_CHOICES = [
+        ('admitted', 'Admitted'),
+        ('observation', 'Under Observation'),
+        ('discharged', 'Discharged'),
+    ]
 
     patient_code = models.CharField(max_length=20, unique=True, db_index=True)
     name = models.CharField(max_length=200)
@@ -118,7 +123,30 @@ class Patient(models.Model):
     diagnosis = models.CharField(max_length=255)
     admission_date = models.DateField()
     risk_level = models.CharField(max_length=10, choices=RISK_CHOICES, default='low', db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='admitted', db_index=True)
     attending_physician = models.CharField(max_length=200, blank=True, default='')
+    # Which hospital department this patient belongs to — separate from the
+    # free-text `room`, and what the All Patients "Assigned Nurse" column
+    # resolves against the Duty Roster with (see PatientSerializer.
+    # get_onDutyNurseName): nullable, since most existing patients predate
+    # this field and a supervisor sets it explicitly.
+    department = models.ForeignKey(
+        'Department',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='patients',
+    )
+    # Discharge audit trail — set only through PatientViewSet.discharge,
+    # never through a direct field edit (see PatientSerializer.validate_status).
+    discharged_at = models.DateTimeField(null=True, blank=True)
+    discharged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='patients_discharged',
+    )
 
     heart_rate = models.PositiveIntegerField(default=0)
     blood_pressure = models.CharField(max_length=20, default='')
@@ -138,6 +166,12 @@ class Patient(models.Model):
         related_name='assigned_patients',
     )
 
+    # Audit trail for record corrections (e.g. a supervisor fixing a
+    # misrecorded vital or wrong diagnosis on a discharged patient) — same
+    # {editedBy, editedAt, changes} shape ChartingNote.edit_history already
+    # uses. See PatientSerializer.update().
+    edit_history = models.JSONField(default=list, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -150,6 +184,69 @@ class Patient(models.Model):
 
     def __str__(self):
         return f'{self.patient_code} — {self.name}'
+
+
+class PatientVisit(models.Model):
+    """
+    One admission-to-discharge encounter under a Patient profile.
+
+    Patient's own diagnosis/room/attending_physician/assigned_nurse fields
+    stay the *current* snapshot — every existing reader (Kardex, handover
+    SBAR, dashboards) keeps using them exactly as before. This is the
+    history layer underneath: readmitting a discharged patient (see
+    PatientViewSet.readmit) reactivates the same Patient row rather than
+    creating a duplicate, and opens a new PatientVisit rather than losing
+    the previous stay's record.
+
+    diagnosis/room/attending_physician/assigned_nurse_name/medical_team are
+    snapshotted (not live-joined) because PatientDoctor is unique on
+    (patient, doctor) — a doctor re-assigned on a later visit reactivates
+    the same row rather than creating a new one, so a later admission can
+    silently rewrite what a date-range query would attribute to an earlier
+    visit. Vitals and notes don't have that problem (VitalSigns/ChartingNote
+    are insert-only, one row per real event) and are read live, scoped to
+    [admission_date, discharge_date or now) — see PatientVisitSerializer.
+    """
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='visits')
+    admission_date = models.DateField()
+    # Null while the visit is still open (the patient hasn't been discharged
+    # from *this* stay yet).
+    discharge_date = models.DateTimeField(null=True, blank=True)
+    diagnosis = models.CharField(max_length=255, blank=True, default='')
+    room = models.CharField(max_length=50, blank=True, default='')
+    attending_physician = models.CharField(max_length=200, blank=True, default='')
+    assigned_nurse = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='patient_visits',
+    )
+    assigned_nurse_name = models.CharField(max_length=200, blank=True, default='')
+    # [{"name": ..., "specialization": ..., "departmentName": ...}, ...] —
+    # a snapshot of the Kardex care team, not a live PatientDoctor join; see
+    # the class docstring for why.
+    medical_team = models.JSONField(default=list, blank=True)
+    discharged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='visits_discharged',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-admission_date', '-created_at']
+        indexes = [
+            models.Index(fields=['patient', '-admission_date']),
+        ]
+
+    def __str__(self):
+        status = 'active' if self.discharge_date is None else 'closed'
+        return f'{self.patient_id} visit @ {self.admission_date} ({status})'
 
 
 def default_task_checklist():
@@ -466,6 +563,26 @@ class ChartingNote(models.Model):
     confirmed_at = models.DateTimeField(null=True, blank=True)
     attending_physician = models.CharField(max_length=200, blank=True, default='')
     edit_history = models.JSONField(default=list, blank=True)
+    # Auto-charting: whether this note's assessment/observation text (or an
+    # explicit "vital sign change noted" checkbox in structured_data) flagged
+    # a vital-sign change worth re-charting — see api/vitals_detection.py and
+    # ChartingNoteSerializer._apply_vitals_flag. 'pending' until a nurse
+    # confirms a new VitalSigns entry (which flips it to 'resolved') or the
+    # note simply sits dismissed — 'pending' covers both, on purpose: a
+    # dismissed prompt is still an outstanding vitals recheck, not a
+    # cancelled one.
+    VITALS_STATUS_CHOICES = [
+        ('none', 'No vital-sign change flagged'),
+        ('pending', 'Pending vitals update'),
+        ('resolved', 'Vitals updated'),
+    ]
+    vitals_update_status = models.CharField(
+        max_length=20, choices=VITALS_STATUS_CHOICES, default='none', db_index=True
+    )
+    # Which vital-sign categories were detected/flagged, e.g.
+    # ['bloodPressure', 'temperature'] — keys match VitalSigns/PatientSerializer's
+    # vitalSigns dict, so the frontend can highlight exactly those fields.
+    flagged_vitals = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -476,10 +593,74 @@ class ChartingNote(models.Model):
             models.Index(fields=['note_type']),
             models.Index(fields=['confirmed']),
             models.Index(fields=['nurse', 'timestamp']),
+            models.Index(fields=['vitals_update_status']),
         ]
 
     def __str__(self):
         return f'{self.note_code} — {self.patient_name}'
+
+
+class VitalSigns(models.Model):
+    """
+    One timestamped vital-signs reading for a patient — an insert-only
+    history row, never edited in place, unlike Patient.heart_rate/etc. (the
+    "current snapshot" fields, which VitalSignsSerializer.create keeps in
+    sync for the many existing call sites — Kardex, handover SBAR autofill —
+    that still read the snapshot rather than this history).
+
+    source/triggered_by_note is the auto-charting link: an assessment note
+    whose text mentioned a vital-sign change (see api/vitals_detection.py)
+    prompts a nurse to confirm a new reading pre-filled from the previous
+    one; triggered_by_note is set when that reading came from such a prompt,
+    and stays null for ordinary scheduled charting — this is what lets the
+    vitals timeline show *why* a reading exists.
+    """
+
+    SOURCE_CHOICES = [
+        ('scheduled', 'Scheduled Charting'),
+        ('assessment_triggered', 'Assessment-Triggered Update'),
+    ]
+
+    patient = models.ForeignKey(
+        Patient, on_delete=models.CASCADE, related_name='vital_signs_history',
+    )
+    heart_rate = models.PositiveIntegerField(null=True, blank=True)
+    blood_pressure = models.CharField(max_length=20, blank=True, default='')
+    temperature = models.FloatField(null=True, blank=True)
+    oxygen_saturation = models.PositiveIntegerField(null=True, blank=True)
+    respiratory_rate = models.PositiveIntegerField(null=True, blank=True)
+    pain_scale = models.PositiveIntegerField(
+        null=True, blank=True, validators=[MaxValueValidator(10)]
+    )
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='scheduled', db_index=True)
+    triggered_by_note = models.ForeignKey(
+        ChartingNote,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='triggered_vitals',
+    )
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='vital_signs_recorded',
+    )
+    notes = models.CharField(max_length=255, blank=True, default='')
+    recorded_at = models.DateTimeField(default=timezone.now, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-recorded_at']
+        verbose_name_plural = 'Vital signs'
+        indexes = [
+            models.Index(fields=['patient', '-recorded_at']),
+            models.Index(fields=['source']),
+        ]
+
+    def __str__(self):
+        return f'{self.patient_id} vitals @ {self.recorded_at:%Y-%m-%d %H:%M}'
 
 
 class Notification(models.Model):
@@ -761,6 +942,83 @@ class DutyAssignment(models.Model):
             self.actual_overtime_hours = 0.0
 
         super().save(*args, **kwargs)
+
+
+class TaskHandover(models.Model):
+    """
+    One task/duty item handed from one nurse to another on the same shift.
+
+    Distinct from HandoverNote (the SBAR patient handover, which notifies its
+    recipient immediately on creation): this is for a specific task, and the
+    receiving nurse is never told anything about it until a supervisor has
+    verified it — see notify_task_handover_verified, the only place that
+    notification is raised. shift/department are never taken from the client;
+    they are read off the sending nurse's own DutyAssignment for duty_date at
+    creation time (see TaskHandoverSerializer.validate), so they always match
+    the actual day's roster rather than a static profile default.
+    """
+
+    STATUS_CHOICES = [
+        ('pending', 'Pending Verification'),
+        ('verified', 'Verified'),
+        ('rejected', 'Rejected'),
+    ]
+
+    handover_code = models.CharField(max_length=30, unique=True, db_index=True)
+    task = models.ForeignKey(
+        Task,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='task_handovers',
+    )
+    # Free-text summary of the work being handed over — always populated
+    # (defaulted from task.title when a task is linked), so a handover is
+    # always readable even if the linked Task is later deleted.
+    task_description = models.TextField(blank=True, default='')
+    from_nurse = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='task_handovers_sent',
+    )
+    to_nurse = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='task_handovers_received',
+    )
+    department = models.ForeignKey(
+        Department,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='task_handovers',
+    )
+    shift = models.CharField(max_length=20, choices=DutyAssignment.SHIFT_CHOICES, blank=True, default='')
+    duty_date = models.DateField(db_index=True)
+    notes = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
+    supervisor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='task_handovers_reviewed',
+    )
+    verified_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status', 'duty_date']),
+            models.Index(fields=['to_nurse', 'status']),
+            models.Index(fields=['from_nurse']),
+        ]
+
+    def __str__(self):
+        return f'{self.handover_code} — {self.from_nurse} to {self.to_nurse}'
 
 
 class KardexRecord(models.Model):

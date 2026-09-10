@@ -8,6 +8,9 @@ import { Select } from './Select';
 export interface AssignTarget {
   id: string;
   name: string;
+  /** Shown alongside the name so a supervisor can confirm they have the
+   * right account — several nurses on this ward share a display name. */
+  email: string;
   department: string;
   shift: string;
 }
@@ -56,6 +59,7 @@ export function NurseAssignModal({ open, onOpenChange, nurse, onSave }: NurseAss
       <Pressable style={styles.backdrop} onPress={() => !loading && onOpenChange(false)}>
         <Pressable style={[styles.dialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
           <Text style={styles.title}>Assign {nurse.name}</Text>
+          {nurse.email ? <Text style={styles.emailConfirm}>{nurse.email}</Text> : null}
           <Text style={styles.description}>
             Change this nurse&apos;s department or shift. They will be notified.
           </Text>
@@ -110,6 +114,7 @@ const styles = StyleSheet.create({
     maxWidth: 420,
   },
   title: { fontSize: 18, fontWeight: '700', color: Colors.foreground, marginBottom: 4 },
+  emailConfirm: { fontSize: 12.5, color: Colors.blue700, fontWeight: '600', marginBottom: 8 },
   description: { fontSize: 13, color: Colors.mutedForeground, marginBottom: 16, lineHeight: 18 },
   form: { gap: 14 },
   footer: {

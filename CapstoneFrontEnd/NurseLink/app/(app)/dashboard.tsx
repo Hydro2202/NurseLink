@@ -28,8 +28,8 @@ import {
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import type { Patient, Task, WorkloadData } from '../../types/domain';
-import { fetchPatients, fetchTasks, fetchWorkload } from '../../services/api';
+import type { Patient, Task, WorkloadData, DutyAssignment } from '../../types/domain';
+import { fetchPatients, fetchTasks, fetchWorkload, fetchDutyAssignments } from '../../services/api';
 import { useLiveRefresh } from '../../contexts/LiveContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
@@ -38,6 +38,42 @@ import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
 import { Progress } from '../../components/Progress';
 import { Button } from '../../components/Button';
 import { Colors, Shadows, Radius } from '../../constants/colors';
+
+// Same local-calendar-day helpers as my-duty.tsx — never toISOString(),
+// which converts to UTC and can shift the day.
+function pad(n: number) {
+  return String(n).padStart(2, '0');
+}
+function toIsoLocal(d: Date) {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function todayIso() {
+  return toIsoLocal(new Date());
+}
+function addDays(iso: string, days: number) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return toIsoLocal(d);
+}
+function formatTime(hhmm: string) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${pad(m)} ${period}`;
+}
+function combine(dateIso: string, hhmm: string): Date {
+  const [y, mo, da] = dateIso.split('-').map(Number);
+  const [h, m] = hhmm.split(':').map(Number);
+  return new Date(y, mo - 1, da, h, m, 0, 0);
+}
+// Same midnight-wrap rule as my-duty.tsx: an end time at or before the
+// start time means the shift spills into the next calendar day.
+function scheduledRange(a: DutyAssignment): { start: Date; end: Date } {
+  const start = combine(a.dutyDate, a.startTime.slice(0, 5));
+  let end = combine(a.dutyDate, a.endTime.slice(0, 5));
+  if (end.getTime() <= start.getTime()) end = new Date(end.getTime() + 86400000);
+  return { start, end };
+}
 
 type StatCardProps = {
   title: string;
@@ -94,6 +130,7 @@ export default function DashboardPage() {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
+  const [dutyAssignments, setDutyAssignments] = useState<DutyAssignment[]>([]);
 
   const chartWidth = Math.max(width - 64, 280);
 
@@ -104,14 +141,21 @@ export default function DashboardPage() {
 
   const loadDashboard = useCallback(async () => {
     try {
-      const [patientData, taskData, workload] = await Promise.all([
+      const [patientData, taskData, workload, duty] = await Promise.all([
         fetchPatients(isStaffNurse ? { mine: true } : undefined),
         fetchTasks(isStaffNurse ? { mine: true } : undefined),
         isStaffNurse ? Promise.resolve([]) : fetchWorkload(),
+        // Yesterday too: a night shift that started before midnight is
+        // still "today's duty" until it ends. No nurseId param needed —
+        // the backend already scopes this to the signed-in nurse.
+        isStaffNurse
+          ? fetchDutyAssignments({ dateFrom: addDays(todayIso(), -1), dateTo: todayIso() })
+          : Promise.resolve([]),
       ]);
       setPatients(patientData);
       setTasks(taskData);
       setWorkloadData(workload);
+      setDutyAssignments(duty);
     } catch (error) {
       console.warn('Failed to load dashboard data:', error);
     }
@@ -169,12 +213,36 @@ export default function DashboardPage() {
     }));
   }, [patients]);
 
+  // The nurse's actual scheduled shift, per the Duty Roster — the ground
+  // truth for what they're working right now, as opposed to
+  // NurseProfile.shift (a general default a supervisor rarely revisits once
+  // the roster is doing the real day-to-day scheduling).
+  const todayDuty = useMemo(() => {
+    const today = todayIso();
+    const yesterday = addDays(today, -1);
+    const relevant = dutyAssignments.filter(
+      (a) => (a.dutyDate === today || a.dutyDate === yesterday) && a.status !== 'cancelled'
+    );
+    const active = relevant.find((a) => {
+      const { start, end } = scheduledRange(a);
+      return currentTime.getTime() >= start.getTime() && currentTime.getTime() < end.getTime();
+    });
+    return active || relevant.find((a) => a.dutyDate === today) || null;
+  }, [dutyAssignments, currentTime]);
+
+  // Deliberately does NOT fall back to NurseProfile.shift when there's no
+  // duty today — that field is a rarely-touched general default (set once
+  // via Workload's Assign action) and is frequently stale on accounts the
+  // roster has since taken over scheduling for. Showing it as if it were
+  // today's real assignment is exactly the bug this replaced: better to
+  // say nothing than to show a shift the nurse isn't actually working.
+  // Same wording as My Duty's own empty state, for consistency.
   const shiftLabel = useMemo(() => {
-    const shift = user?.shift || 'morning';
-    if (shift === 'afternoon') return 'Afternoon Shift (15:00-23:00)';
-    if (shift === 'night') return 'Night Shift (23:00-07:00)';
-    return 'Morning Shift (07:00-15:00)';
-  }, [user?.shift]);
+    if (!todayDuty) return 'No Duty Assigned Today';
+    const start = formatTime(todayDuty.startTime.slice(0, 5));
+    const end = formatTime(todayDuty.endTime.slice(0, 5));
+    return `${todayDuty.shiftLabel} Shift (${start}-${end})`;
+  }, [todayDuty]);
 
   const safetyAlerts = useMemo(() => {
     const alerts: {

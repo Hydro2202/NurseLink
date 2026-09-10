@@ -5,6 +5,7 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
+  Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import {
@@ -18,11 +19,23 @@ import {
   Activity,
   Eye,
   UserPlus,
+  LogOut,
+  ArrowUpDown,
+  RotateCcw,
+  History,
   Edit2,
-  Trash2,
+  Heart,
+  Thermometer,
+  Droplet,
 } from 'lucide-react-native';
-import { fetchPatients, deletePatient, ApiError } from '../../services/api';
-import type { Patient } from '../../types/domain';
+import {
+  fetchPatients,
+  dischargePatient,
+  fetchDepartments,
+  updatePatient,
+  ApiError,
+} from '../../services/api';
+import type { Department, Patient } from '../../types/domain';
 import { Card, CardContent } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
@@ -32,7 +45,10 @@ import { RiskBadge } from '../../components/RiskBadge';
 import { TaskAssignmentModal } from '../../components/TaskAssignmentModal';
 import { PatientKardexModal } from '../../components/PatientKardexModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
-import { Colors, Radius } from '../../constants/colors';
+import { PatientVisitHistoryModal } from '../../components/PatientVisitHistoryModal';
+import { ReadmitPatientModal } from '../../components/ReadmitPatientModal';
+import { EditPatientModal } from '../../components/EditPatientModal';
+import { Colors, Radius, Shadows } from '../../constants/colors';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -66,27 +82,112 @@ function getAssignmentLabel(patient: Patient) {
   return by && by !== nurse ? `${nurse} · assigned by ${by}` : nurse;
 }
 
+/** Bare name only, for filter-matching and the unique-nurse dropdown list —
+ * prefers who's actually on shift right now (see onDutyNurseName) over the
+ * static day-to-day assignment. */
+function getAssignedNurseName(patient: Patient): string {
+  return patient.onDutyNurseName?.trim() || patient.assignedNurseName?.trim() || '';
+}
+
+/** Display string for the "Assigned Nurse" column/row — same preference as
+ * getAssignedNurseName, but labelled so it's never mistaken for a live
+ * reading when it's actually the (possibly stale) static assignment. */
+function getAssignedNurseDisplay(patient: Patient): string {
+  if (patient.onDutyNurseName) return patient.onDutyNurseName;
+  if (patient.assignedNurseName) return `${patient.assignedNurseName} (off duty)`;
+  return 'Unassigned';
+}
+
+const STATUS_CONFIG: Record<
+  string,
+  { label: string; variant: 'info' | 'warning' | 'secondary' }
+> = {
+  admitted: { label: 'Admitted', variant: 'info' },
+  observation: { label: 'Under Observation', variant: 'warning' },
+  discharged: { label: 'Discharged', variant: 'secondary' },
+};
+
+// Rough adult reference ranges — good enough to flag "worth a second look"
+// on a roster card, not a clinical decision aid. 0/blank means "not
+// recorded" (this codebase's convention for an unset vital), never flagged.
+type VitalSeverity = 'critical' | 'warning' | 'normal';
+
+function heartRateSeverity(hr: number): VitalSeverity {
+  if (!hr) return 'normal';
+  if (hr < 40 || hr > 150) return 'critical';
+  if (hr < 60 || hr > 100) return 'warning';
+  return 'normal';
+}
+function temperatureSeverity(temp: number): VitalSeverity {
+  if (!temp) return 'normal';
+  if (temp >= 39.5 || temp < 35) return 'critical';
+  if (temp >= 37.8 || temp < 36) return 'warning';
+  return 'normal';
+}
+function spo2Severity(spo2: number): VitalSeverity {
+  if (!spo2) return 'normal';
+  if (spo2 < 90) return 'critical';
+  if (spo2 < 95) return 'warning';
+  return 'normal';
+}
+function bloodPressureSeverity(bp: string): VitalSeverity {
+  const match = (bp || '').match(/(\d+)\s*\/\s*(\d+)/);
+  if (!match) return 'normal';
+  const systolic = Number(match[1]);
+  const diastolic = Number(match[2]);
+  if (systolic >= 180 || systolic < 90 || diastolic >= 120 || diastolic < 60) return 'critical';
+  if (systolic >= 140 || diastolic >= 90) return 'warning';
+  return 'normal';
+}
+
+const VITAL_SEVERITY_STYLE: Record<
+  VitalSeverity,
+  { bg: string; border: string; text: string }
+> = {
+  critical: { bg: Colors.red50, border: Colors.red300, text: Colors.red700 },
+  warning: { bg: Colors.orange50, border: Colors.orange300, text: Colors.orange700 },
+  normal: { bg: Colors.blue50, border: Colors.blue100, text: Colors.foreground },
+};
+
+type SortKey = 'name' | 'room' | 'nurse' | 'status';
+// 'active' (the default) means not-discharged — a discharged patient's
+// record is kept, never deleted, but stays out of the working list unless
+// a supervisor explicitly asks to see it via 'discharged' or 'all'.
+type StatusFilter = 'active' | 'admitted' | 'observation' | 'discharged' | 'all';
+
 export default function AllPatientsPage() {
   const router = useRouter();
   const toast = useToast();
   const { user } = useAuth();
   const isSupervisor = user?.role === 'supervisor';
-  // Mirrors the API: supervisors edit/delete anyone, a staff nurse only the
-  // patients assigned to them. Showing buttons that 403 is worse than hiding.
-  const canManage = (patient: Patient) =>
-    isSupervisor || (!!user?.id && patient.assignedNurseId === user.id);
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [roomFilter, setRoomFilter] = useState('all');
   const [riskFilter, setRiskFilter] = useState('all');
+  const [deptFilter, setDeptFilter] = useState('all');
+  const [nurseFilter, setNurseFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('active');
+  const [dischargeDateFrom, setDischargeDateFrom] = useState('');
+  const [dischargeDateTo, setDischargeDateTo] = useState('');
+  const [sortBy, setSortBy] = useState<SortKey>('name');
+  const [sortDesc, setSortDesc] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<'add' | 'edit'>('add');
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [toDelete, setToDelete] = useState<Patient | null>(null);
+  const [dischargeOpen, setDischargeOpen] = useState(false);
+  const [toDischarge, setToDischarge] = useState<Patient | null>(null);
+  const [discharging, setDischarging] = useState(false);
+  const [settingDeptFor, setSettingDeptFor] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyPatient, setHistoryPatient] = useState<Patient | null>(null);
+  const [readmitOpen, setReadmitOpen] = useState(false);
+  const [readmitTarget, setReadmitTarget] = useState<Patient | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<Patient | null>(null);
 
   const loadPatients = async () => {
     try {
@@ -104,10 +205,20 @@ export default function AllPatientsPage() {
 
   useEffect(() => {
     loadPatients();
+    fetchDepartments()
+      .then(setDepartments)
+      .catch(() => setDepartments([]));
   }, []);
 
   const uniqueRooms = useMemo(
     () => Array.from(new Set(patients.map((p) => p.room.split('-')[0]))),
+    [patients]
+  );
+  const uniqueNurses = useMemo(
+    () =>
+      Array.from(new Set(patients.map(getAssignedNurseName).filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b)
+      ),
     [patients]
   );
 
@@ -120,8 +231,60 @@ export default function AllPatientsPage() {
       patient.room.toLowerCase().includes(q);
     const matchesRoom = roomFilter === 'all' || patient.room.startsWith(roomFilter);
     const matchesRisk = riskFilter === 'all' || patient.riskLevel === riskFilter;
-    return matchesSearch && matchesRoom && matchesRisk;
+    const matchesDept = deptFilter === 'all' || String(patient.departmentId ?? '') === deptFilter;
+    const matchesNurse = nurseFilter === 'all' || getAssignedNurseName(patient) === nurseFilter;
+    const patientStatus = patient.status || 'admitted';
+    const matchesStatus =
+      statusFilter === 'all'
+        ? true
+        : statusFilter === 'active'
+          ? patientStatus !== 'discharged'
+          : patientStatus === statusFilter;
+    // Discharge date range only means anything in the Discharged view —
+    // an active patient has no dischargedAt to compare against.
+    const dischargedDate = patient.dischargedAt ? patient.dischargedAt.slice(0, 10) : '';
+    const matchesDischargeFrom =
+      statusFilter !== 'discharged' || !dischargeDateFrom || (dischargedDate && dischargedDate >= dischargeDateFrom);
+    const matchesDischargeTo =
+      statusFilter !== 'discharged' || !dischargeDateTo || (dischargedDate && dischargedDate <= dischargeDateTo);
+    return (
+      matchesSearch && matchesRoom && matchesRisk && matchesDept && matchesNurse &&
+      matchesStatus && matchesDischargeFrom && matchesDischargeTo
+    );
   });
+
+  const dischargedCount = useMemo(
+    () => patients.filter((p) => p.status === 'discharged').length,
+    [patients]
+  );
+
+  const sortedPatients = useMemo(() => {
+    const sorters: Record<SortKey, (p: Patient) => string> = {
+      name: (p) => p.name.toLowerCase(),
+      room: (p) => p.room.toLowerCase(),
+      nurse: (p) => getAssignedNurseName(p).toLowerCase() || '￿', // unassigned sorts last
+      status: (p) => p.status || 'admitted',
+    };
+    const key = sorters[sortBy];
+    const sorted = [...filteredPatients].sort((a, b) => key(a).localeCompare(key(b)));
+    return sortDesc ? sorted.reverse() : sorted;
+  }, [filteredPatients, sortBy, sortDesc]);
+
+  const setPatientDepartment = async (patient: Patient, departmentId: string) => {
+    setSettingDeptFor(patient.id);
+    try {
+      const updated = await updatePatient(patient.id, {
+        departmentId: departmentId ? Number(departmentId) : null,
+      } as Partial<Patient>);
+      setPatients((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    } catch (error) {
+      toast.error('Failed to set department', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setSettingDeptFor(null);
+    }
+  };
 
   return (
     <>
@@ -137,6 +300,7 @@ export default function AllPatientsPage() {
             <Text style={styles.subtitle}>
               Supervisor view — {filteredPatients.length} of {patients.length} patients
               {loading ? ' (loading...)' : ''}
+              {statusFilter === 'active' ? ' · discharged patients hidden, switch filter to view' : ''}
             </Text>
           </View>
           {isSupervisor ? (
@@ -154,14 +318,85 @@ export default function AllPatientsPage() {
           ) : null}
         </View>
 
+        <View style={styles.tabRow}>
+          <Pressable
+            onPress={() => setStatusFilter('active')}
+            style={[styles.tabBtn, statusFilter !== 'discharged' && styles.tabBtnActive]}
+          >
+            <User size={14} color={statusFilter !== 'discharged' ? Colors.white : Colors.gray600} />
+            <Text style={[styles.tabBtnText, statusFilter !== 'discharged' && styles.tabBtnTextActive]}>
+              Active Patients
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setStatusFilter('discharged')}
+            style={[styles.tabBtn, statusFilter === 'discharged' && styles.tabBtnActive]}
+          >
+            <LogOut size={14} color={statusFilter === 'discharged' ? Colors.white : Colors.gray600} />
+            <Text style={[styles.tabBtnText, statusFilter === 'discharged' && styles.tabBtnTextActive]}>
+              Discharged
+            </Text>
+            {dischargedCount > 0 ? (
+              <View style={styles.tabBadge}>
+                <Text style={styles.tabBadgeText}>{dischargedCount}</Text>
+              </View>
+            ) : null}
+          </Pressable>
+        </View>
+
         <Input
-          placeholder="Search by name, patient ID, or room..."
+          placeholder={
+            statusFilter === 'discharged'
+              ? 'Search discharged patients by name or ID...'
+              : 'Search by name, patient ID, or room...'
+          }
           value={searchQuery}
           onChangeText={setSearchQuery}
           leftIcon={<Search size={16} color={Colors.gray500} />}
         />
 
+        {statusFilter === 'discharged' ? (
+          <View style={styles.filterRow}>
+            <Input
+              label="Discharged From"
+              value={dischargeDateFrom}
+              onChangeText={setDischargeDateFrom}
+              placeholder="YYYY-MM-DD"
+              containerStyle={styles.filterSelect}
+            />
+            <Input
+              label="Discharged To"
+              value={dischargeDateTo}
+              onChangeText={setDischargeDateTo}
+              placeholder="YYYY-MM-DD"
+              containerStyle={styles.filterSelect}
+            />
+          </View>
+        ) : null}
+
         <View style={styles.filterRow}>
+          <Select
+            value={deptFilter}
+            onValueChange={setDeptFilter}
+            placeholder="All Departments"
+            style={styles.filterSelect}
+            searchable
+            options={[
+              { label: 'All Departments', value: 'all' },
+              ...departments.map((d) => ({ label: d.name, value: String(d.id) })),
+            ]}
+          />
+          <Select
+            value={nurseFilter}
+            onValueChange={setNurseFilter}
+            placeholder="All Nurses"
+            style={styles.filterSelect}
+            searchable
+            options={[
+              { label: 'All Nurses', value: 'all' },
+              ...uniqueNurses.map((name) => ({ label: name, value: name })),
+            ]}
+          />
           <Select
             value={roomFilter}
             onValueChange={setRoomFilter}
@@ -170,6 +405,19 @@ export default function AllPatientsPage() {
             options={[
               { label: 'All Rooms', value: 'all' },
               ...uniqueRooms.map((room) => ({ label: room, value: room })),
+            ]}
+          />
+          <Select
+            value={statusFilter}
+            onValueChange={(v) => setStatusFilter(v as StatusFilter)}
+            placeholder="Active Patients"
+            style={styles.filterSelect}
+            options={[
+              { label: 'Active Patients', value: 'active' },
+              { label: 'Admitted', value: 'admitted' },
+              { label: 'Under Observation', value: 'observation' },
+              { label: 'Discharged', value: 'discharged' },
+              { label: 'All Records', value: 'all' },
             ]}
           />
           <Select
@@ -185,6 +433,30 @@ export default function AllPatientsPage() {
               { label: 'Low Risk', value: 'low' },
             ]}
           />
+        </View>
+
+        <View style={styles.sortRow}>
+          <Text style={styles.sortLabel}>Sort by</Text>
+          <Select
+            value={sortBy}
+            onValueChange={(v) => setSortBy(v as SortKey)}
+            style={styles.sortSelect}
+            options={[
+              { label: 'Patient Name', value: 'name' },
+              { label: 'Room', value: 'room' },
+              { label: 'Assigned Nurse', value: 'nurse' },
+              { label: 'Status', value: 'status' },
+            ]}
+          />
+          <Pressable
+            onPress={() => setSortDesc((prev) => !prev)}
+            style={styles.sortDirBtn}
+            hitSlop={6}
+            accessibilityLabel={sortDesc ? 'Sort descending' : 'Sort ascending'}
+          >
+            <ArrowUpDown size={14} color={Colors.gray600} />
+            <Text style={styles.sortDirText}>{sortDesc ? 'Z–A' : 'A–Z'}</Text>
+          </Pressable>
         </View>
 
         <View style={styles.statsGrid}>
@@ -231,61 +503,181 @@ export default function AllPatientsPage() {
               <Activity size={18} color={Colors.green600} />
             </CardContent>
           </Card>
+          <Card style={styles.statCard}>
+            <CardContent style={styles.statContent}>
+              <Text style={styles.statLabel}>Discharged</Text>
+              <Text style={[styles.statValue, { color: Colors.gray600 }]}>
+                {patients.filter((p) => p.status === 'discharged').length}
+              </Text>
+              <LogOut size={18} color={Colors.gray600} />
+            </CardContent>
+          </Card>
         </View>
 
         {loading ? (
           <View style={styles.center}>
             <ActivityIndicator size="large" color={Colors.blue600} />
           </View>
-        ) : filteredPatients.length === 0 ? (
+        ) : sortedPatients.length === 0 ? (
           <Card>
             <CardContent style={styles.center}>
               <Text style={styles.muted}>No patients found</Text>
             </CardContent>
           </Card>
         ) : (
-          filteredPatients.map((patient) => (
-            <Card key={patient.id} style={styles.patientCard}>
+          sortedPatients.map((patient) => {
+            const statusConfig = STATUS_CONFIG[patient.status || 'admitted'] || STATUS_CONFIG.admitted;
+            const isDischarged = patient.status === 'discharged';
+            return (
+            <Card
+              key={patient.id}
+              style={{
+                ...styles.patientCard,
+                ...(isDischarged ? styles.patientCardDischarged : null),
+              }}
+            >
               <CardContent style={styles.cardBody}>
-                <View style={styles.nameRow}>
-                  <Text style={styles.patientName}>{patient.name}</Text>
-                  <Badge variant="outline">{patient.id}</Badge>
-                  <RiskBadge level={patient.riskLevel} size="sm" />
+                {/* Header: identity + quick-access icon actions */}
+                <View style={styles.cardHeader}>
+                  <View style={styles.identityBlock}>
+                    <View style={styles.nameRow}>
+                      <Text style={styles.patientName}>{patient.name}</Text>
+                      <Badge variant="outline">{patient.id}</Badge>
+                    </View>
+                    <View style={styles.badgeRow}>
+                      <Badge variant={statusConfig.variant}>{statusConfig.label}</Badge>
+                      <RiskBadge level={patient.riskLevel} size="sm" />
+                    </View>
+                  </View>
+                  <View style={styles.headerActions}>
+                    <Pressable
+                      onPress={() => {
+                        setHistoryPatient(patient);
+                        setHistoryOpen(true);
+                      }}
+                      style={styles.iconBtn}
+                      hitSlop={6}
+                      accessibilityLabel={`View visit history for ${patient.name}`}
+                    >
+                      <History size={15} color={Colors.blue700} />
+                    </Pressable>
+                    {isSupervisor ? (
+                      <Pressable
+                        onPress={() => {
+                          setEditTarget(patient);
+                          setEditOpen(true);
+                        }}
+                        style={styles.iconBtn}
+                        hitSlop={6}
+                        accessibilityLabel={`Edit record for ${patient.name}`}
+                      >
+                        <Edit2 size={15} color={Colors.blue700} />
+                      </Pressable>
+                    ) : null}
+                  </View>
                 </View>
+
+                <View style={styles.metaDivider} />
 
                 <View style={styles.metaRow}>
                   <View style={styles.metaItem}>
-                    <User size={14} color={Colors.mutedForeground} />
+                    <User size={13} color={Colors.mutedForeground} />
                     <Text style={styles.metaText}>
                       {patient.age}y · {patient.gender}
                     </Text>
                   </View>
                   <View style={styles.metaItem}>
-                    <MapPin size={14} color={Colors.mutedForeground} />
-                    <Text style={styles.metaText}>{patient.room}</Text>
+                    <MapPin size={13} color={Colors.mutedForeground} />
+                    <Text style={styles.metaText}>
+                      {isDischarged ? 'Last Room: ' : ''}
+                      {patient.room}
+                    </Text>
                   </View>
                   <View style={styles.metaItem}>
-                    <Calendar size={14} color={Colors.mutedForeground} />
+                    <Calendar size={13} color={Colors.mutedForeground} />
                     <Text style={styles.metaText}>
-                      {new Date(patient.admissionDate).toLocaleDateString()}
+                      Admitted {new Date(patient.admissionDate).toLocaleDateString()}
                     </Text>
                   </View>
+                  {isDischarged && patient.dischargedAt ? (
+                    <View style={styles.metaItem}>
+                      <LogOut size={13} color={Colors.gray500} />
+                      <Text style={styles.metaText}>
+                        Discharged {new Date(patient.dischargedAt).toLocaleDateString()}
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
 
-                <View style={styles.diagnosisBox}>
-                  <Text style={styles.diagnosisText}>
-                    <Text style={styles.bold}>Diagnosis: </Text>
-                    {patient.diagnosis}
-                  </Text>
-                  <View style={styles.physicianRow}>
-                    <Stethoscope size={14} color={Colors.blue700} />
-                    <Text style={styles.physician}>
-                      {getAttendingPhysician(patient)}
+                {(isDischarged && patient.dischargedByName) || patient.lastEditedByName ? (
+                  <View style={styles.chipRow}>
+                    {isDischarged && patient.dischargedByName ? (
+                      <View style={styles.dischargedByBox}>
+                        <LogOut size={10} color={Colors.gray600} />
+                        <Text style={styles.dischargedByCardText}>
+                          Discharged by {patient.dischargedByName}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {patient.lastEditedByName ? (
+                      <View style={styles.dischargedByBox}>
+                        <Edit2 size={10} color={Colors.gray600} />
+                        <Text style={styles.dischargedByCardText}>
+                          Edited by {patient.lastEditedByName}
+                          {patient.lastEditedAt
+                            ? ` · ${new Date(patient.lastEditedAt).toLocaleDateString()}`
+                            : ''}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
+
+                <View style={styles.sectionBox}>
+                  <Text style={styles.sectionHeading}>Clinical Details</Text>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>
+                      {isDischarged ? 'Last Diagnosis' : 'Diagnosis'}
+                    </Text>
+                    <Text style={styles.detailValue}>{patient.diagnosis}</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <View style={styles.detailLabelRow}>
+                      <Stethoscope size={12.5} color={Colors.blue700} />
+                      <Text style={styles.detailLabel}>Attending Physician</Text>
+                    </View>
+                    <Text style={styles.detailValue}>{getAttendingPhysician(patient)}</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>
+                      {isDischarged ? 'Last Assigned Nurse' : 'Assigned Nurse'}
+                    </Text>
+                    <Text style={styles.detailValue}>
+                      {isDischarged
+                        ? patient.assignedNurseName || 'Not on record'
+                        : getAssignedNurseDisplay(patient)}
                     </Text>
                   </View>
-                  <View style={styles.physicianRow}>
-                    <User size={14} color={Colors.mutedForeground} />
-                    <Text style={styles.assignment}>{getAssignmentLabel(patient)}</Text>
+                  {!isDischarged ? (
+                    <Text style={styles.assignmentSub}>{getAssignmentLabel(patient)}</Text>
+                  ) : null}
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>
+                      {isDischarged ? 'Last Department' : 'Department'}
+                    </Text>
+                    {isSupervisor && !isDischarged ? (
+                      <Select
+                        value={patient.departmentId != null ? String(patient.departmentId) : ''}
+                        onValueChange={(v) => setPatientDepartment(patient, v)}
+                        placeholder={settingDeptFor === patient.id ? 'Saving...' : 'Set department'}
+                        style={styles.deptSelect}
+                        options={departments.map((d) => ({ label: d.name, value: String(d.id) }))}
+                      />
+                    ) : (
+                      <Text style={styles.detailValue}>
+                        {patient.departmentName || 'No department set'}
+                      </Text>
+                    )}
                   </View>
                 </View>
 
@@ -304,23 +696,63 @@ export default function AllPatientsPage() {
                   </View>
                 ) : null}
 
+                <Text style={styles.vitalsSectionLabel}>
+                  {isDischarged ? 'Last Recorded Vitals' : 'Current Vitals'}
+                </Text>
                 <View style={styles.vitalsGrid}>
-                  <View style={styles.vitalBox}>
-                    <Text style={styles.vitalLabel}>HR</Text>
-                    <Text style={styles.vitalValue}>{patient.vitalSigns.heartRate}</Text>
-                  </View>
-                  <View style={styles.vitalBox}>
-                    <Text style={styles.vitalLabel}>BP</Text>
-                    <Text style={styles.vitalValue}>{patient.vitalSigns.bloodPressure}</Text>
-                  </View>
-                  <View style={styles.vitalBox}>
-                    <Text style={styles.vitalLabel}>Temp</Text>
-                    <Text style={styles.vitalValue}>{patient.vitalSigns.temperature}°C</Text>
-                  </View>
-                  <View style={styles.vitalBox}>
-                    <Text style={styles.vitalLabel}>SpO2</Text>
-                    <Text style={styles.vitalValue}>{patient.vitalSigns.oxygenSaturation}%</Text>
-                  </View>
+                  {(
+                    [
+                      {
+                        key: 'hr', short: 'HR', icon: Heart,
+                        value: patient.vitalSigns.heartRate, unit: 'bpm',
+                        severity: heartRateSeverity(patient.vitalSigns.heartRate),
+                      },
+                      {
+                        key: 'bp', short: 'BP', icon: Activity,
+                        value: patient.vitalSigns.bloodPressure, unit: 'mmHg',
+                        severity: bloodPressureSeverity(patient.vitalSigns.bloodPressure),
+                      },
+                      {
+                        key: 'temp', short: 'Temp', icon: Thermometer,
+                        value: patient.vitalSigns.temperature, unit: '°C',
+                        severity: temperatureSeverity(patient.vitalSigns.temperature),
+                      },
+                      {
+                        key: 'spo2', short: 'SpO2', icon: Droplet,
+                        value: patient.vitalSigns.oxygenSaturation, unit: '%',
+                        severity: spo2Severity(patient.vitalSigns.oxygenSaturation),
+                      },
+                    ] as const
+                  ).map((vital) => {
+                    const severityStyle = VITAL_SEVERITY_STYLE[vital.severity];
+                    const VitalIcon = vital.icon;
+                    const hasReading = !!vital.value;
+                    const spacedUnit = vital.unit === '°C' || vital.unit === '%';
+                    return (
+                      <View
+                        key={vital.key}
+                        style={[
+                          styles.vitalBox,
+                          { backgroundColor: severityStyle.bg, borderColor: severityStyle.border },
+                        ]}
+                      >
+                        <View style={styles.vitalIconRow}>
+                          <VitalIcon size={11} color={severityStyle.text} />
+                          <Text style={[styles.vitalLabel, { color: severityStyle.text }]}>
+                            {vital.short}
+                          </Text>
+                          {hasReading && vital.severity !== 'normal' ? (
+                            <AlertCircle size={10} color={severityStyle.text} />
+                          ) : null}
+                        </View>
+                        <Text style={[styles.vitalValue, { color: severityStyle.text }]}>
+                          {hasReading
+                            ? `${vital.value}${spacedUnit ? '' : ' '}${vital.unit}`
+                            : '—'}
+                        </Text>
+                      </View>
+                    );
+                  })}
                 </View>
 
                 {patient.alerts.length > 0 ? (
@@ -335,50 +767,58 @@ export default function AllPatientsPage() {
                 ) : null}
 
                 <View style={styles.actions}>
-                  {canManage(patient) ? (
+                  {isDischarged ? (
+                    isSupervisor ? (
+                      <Button
+                        size="sm"
+                        style={styles.readmitBtn}
+                        onPress={() => {
+                          setReadmitTarget(patient);
+                          setReadmitOpen(true);
+                        }}
+                      >
+                        <RotateCcw size={15} color={Colors.white} />
+                        <Text style={styles.primaryBtnText}>Readmit Patient</Text>
+                      </Button>
+                    ) : (
+                      <Text style={styles.dischargedNote}>
+                        This patient must be readmitted before further action.
+                      </Text>
+                    )
+                  ) : (
                     <>
                       <Button
-                        variant="outline"
                         size="sm"
                         style={styles.actionBtn}
                         onPress={() => {
-                          setFormMode('edit');
-                          setEditingPatient(patient);
-                          setFormOpen(true);
+                          setSelectedPatient(patient);
+                          setTaskModalOpen(true);
                         }}
                       >
-                        <Edit2 size={14} color={Colors.blue700} />
-                        <Text style={styles.outlineBtnText}>Edit</Text>
+                        <UserPlus size={14} color={Colors.white} />
+                        <Text style={styles.primaryBtnText}>Assign Nurse</Text>
                       </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        style={styles.actionBtn}
-                        onPress={() => {
-                          setToDelete(patient);
-                          setDeleteOpen(true);
-                        }}
-                      >
-                        <Trash2 size={14} color={Colors.red600} />
-                        <Text style={[styles.outlineBtnText, { color: Colors.red600 }]}>Delete</Text>
-                      </Button>
+                      {isSupervisor ? (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          style={styles.actionBtn}
+                          onPress={() => {
+                            setToDischarge(patient);
+                            setDischargeOpen(true);
+                          }}
+                        >
+                          <LogOut size={14} color={Colors.white} />
+                          <Text style={styles.primaryBtnText}>Discharge</Text>
+                        </Button>
+                      ) : null}
                     </>
-                  ) : null}
-                  <Button
-                    size="sm"
-                    style={styles.actionBtn}
-                    onPress={() => {
-                      setSelectedPatient(patient);
-                      setTaskModalOpen(true);
-                    }}
-                  >
-                    <UserPlus size={14} color={Colors.white} />
-                    <Text style={styles.primaryBtnText}>Assign Nurse</Text>
-                  </Button>
+                  )}
                 </View>
               </CardContent>
             </Card>
-          ))
+            );
+          })
         )}
       </ScrollView>
 
@@ -386,6 +826,27 @@ export default function AllPatientsPage() {
         open={taskModalOpen}
         onOpenChange={setTaskModalOpen}
         patient={selectedPatient}
+      />
+      <PatientVisitHistoryModal
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        patient={historyPatient}
+      />
+      <ReadmitPatientModal
+        open={readmitOpen}
+        onOpenChange={setReadmitOpen}
+        patient={readmitTarget}
+        onReadmitted={(updated) => {
+          setPatients((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+        }}
+      />
+      <EditPatientModal
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        patient={editTarget}
+        onSaved={(updated) => {
+          setPatients((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+        }}
       />
       <PatientKardexModal
         open={formOpen}
@@ -395,27 +856,34 @@ export default function AllPatientsPage() {
         onSaved={loadPatients}
       />
       <ConfirmDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        title="Delete Patient"
+        open={dischargeOpen}
+        onOpenChange={setDischargeOpen}
+        title="Discharge Patient"
         description={
-          toDelete
-            ? `Delete ${toDelete.name}? Related kardex, tasks, and assignments will be removed.`
-            : 'Delete this patient?'
+          toDischarge
+            ? `Are you sure you want to discharge ${toDischarge.name}? This action cannot be undone.`
+            : 'Discharge this patient?'
         }
-        confirmLabel="Delete"
+        confirmLabel="Discharge"
         destructive
+        loading={discharging}
         onConfirm={async () => {
-          if (!toDelete) return;
+          if (!toDischarge) return;
+          setDischarging(true);
           try {
-            await deletePatient(toDelete.id);
-            toast.success('Patient deleted');
-            setToDelete(null);
-            await loadPatients();
+            const updated = await dischargePatient(toDischarge.id);
+            setPatients((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+            toast.success('Patient discharged', {
+              description: `${toDischarge.name} has been marked as discharged.`,
+            });
+            setDischargeOpen(false);
+            setToDischarge(null);
           } catch (error) {
-            toast.error('Failed to delete patient', {
+            toast.error('Failed to discharge patient', {
               description: error instanceof ApiError ? error.message : 'Please try again.',
             });
+          } finally {
+            setDischarging(false);
           }
         }}
       />
@@ -434,8 +902,44 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 22, fontWeight: '700', color: Colors.foreground },
   subtitle: { fontSize: 13, color: Colors.mutedForeground },
-  filterRow: { flexDirection: 'row', gap: 10 },
-  filterSelect: { flex: 1 },
+  tabRow: { flexDirection: 'row', gap: 8, backgroundColor: Colors.gray100, padding: 4, borderRadius: Radius.lg, alignSelf: 'flex-start' },
+  tabBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: Radius.md,
+  },
+  tabBtnActive: { backgroundColor: Colors.blue600, ...Shadows.sm },
+  tabBtnText: { fontSize: 13, fontWeight: '700', color: Colors.gray600 },
+  tabBtnTextActive: { color: Colors.white },
+  tabBadge: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.full,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabBadgeText: { fontSize: 10.5, fontWeight: '800', color: Colors.blue700 },
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  filterSelect: { flexGrow: 1, flexBasis: 150, minWidth: 140 },
+  sortRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  sortLabel: { fontSize: 12.5, fontWeight: '600', color: Colors.mutedForeground },
+  sortSelect: { flex: 1, maxWidth: 220 },
+  sortDirBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  sortDirText: { fontSize: 12, fontWeight: '700', color: Colors.gray600 },
   statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   statCard: { width: '47%', flexGrow: 1, minWidth: 140 },
   statContent: { padding: 12, gap: 4 },
@@ -443,28 +947,74 @@ const styles = StyleSheet.create({
   statValue: { fontSize: 22, fontWeight: '700', color: Colors.foreground },
   center: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
   muted: { color: Colors.mutedForeground, fontSize: 14 },
-  patientCard: { borderWidth: 1, borderColor: Colors.border },
-  cardBody: { gap: 12, padding: 14 },
-  nameRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },
-  patientName: { fontSize: 16, fontWeight: '700', color: Colors.foreground },
-  metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  metaText: { fontSize: 12, color: Colors.mutedForeground },
-  diagnosisBox: {
+  patientCard: { borderWidth: 1, borderColor: Colors.border, ...Shadows.sm },
+  patientCardDischarged: { backgroundColor: Colors.gray50, borderColor: Colors.gray200 },
+  cardBody: { gap: 14, padding: 18 },
+
+  // Header: identity on the left, quick-access icon actions pinned right —
+  // kept out of the action-button row below so they never compete with it.
+  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  identityBlock: { flex: 1, gap: 6 },
+  nameRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  badgeRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },
+  patientName: { fontSize: 17, fontWeight: '700', color: Colors.foreground },
+  headerActions: { flexDirection: 'row', gap: 6 },
+  iconBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.blue50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // A thin rule separates "who this is" from "the facts about them" —
+  // point 2 of the redesign ask, so the header doesn't blend into the rest.
+  metaDivider: { height: 1, backgroundColor: Colors.gray100 },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  metaText: { fontSize: 12, color: Colors.mutedForeground, fontWeight: '500' },
+
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  dischargedByBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: Colors.gray100,
+    borderRadius: Radius.full,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    alignSelf: 'flex-start',
+  },
+  dischargedByCardText: { fontSize: 11, fontWeight: '600', color: Colors.gray600 },
+
+  // Clinical details: a labelled card, each fact its own row (label above
+  // value) rather than one dense "Label: value" run-on line.
+  sectionBox: {
     backgroundColor: Colors.gray50,
     borderRadius: Radius.md,
-    padding: 10,
-    gap: 6,
+    padding: 12,
+    gap: 10,
   },
-  diagnosisText: { fontSize: 13, color: Colors.foreground, lineHeight: 18 },
-  bold: { fontWeight: '700' },
+  sectionHeading: {
+    fontSize: 11.5,
+    fontWeight: '800',
+    color: Colors.gray600,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  detailRow: { gap: 3 },
+  detailLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  detailLabel: { fontSize: 11, fontWeight: '700', color: Colors.mutedForeground },
+  detailValue: { fontSize: 13.5, color: Colors.foreground, fontWeight: '600' },
+  assignmentSub: {
+    fontSize: 11,
+    color: Colors.gray400,
+    marginTop: -6,
+  },
+  deptSelect: { minWidth: 160, alignSelf: 'flex-start' },
+
   physicianRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  assignment: {
-    fontSize: 12,
-    color: Colors.mutedForeground,
-    flexShrink: 1,
-  },
-  physician: { fontSize: 12, color: Colors.blue700, fontWeight: '600' },
   medicalTeamBox: {
     backgroundColor: Colors.blue50,
     borderRadius: Radius.md,
@@ -487,18 +1037,28 @@ const styles = StyleSheet.create({
   medicalTeamDept: {
     fontWeight: '700',
   },
+
+  vitalsSectionLabel: {
+    fontSize: 11.5,
+    fontWeight: '800',
+    color: Colors.gray600,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
   vitalsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   vitalBox: {
     width: '22%',
     flexGrow: 1,
-    minWidth: 64,
-    backgroundColor: Colors.blue50,
-    borderRadius: Radius.sm,
-    padding: 8,
-    alignItems: 'center',
+    minWidth: 72,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    padding: 9,
+    gap: 3,
   },
-  vitalLabel: { fontSize: 10, color: Colors.mutedForeground },
-  vitalValue: { fontSize: 13, fontWeight: '700', color: Colors.foreground },
+  vitalIconRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  vitalLabel: { fontSize: 10.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.2 },
+  vitalValue: { fontSize: 13.5, fontWeight: '800' },
+
   alerts: { gap: 6 },
   alertChip: {
     flexDirection: 'row',
@@ -512,8 +1072,19 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   alertText: { flex: 1, fontSize: 12, color: Colors.orange700 },
-  actions: { flexDirection: 'row', gap: 8, paddingTop: 4 },
+
+  actions: { flexDirection: 'row', gap: 8, paddingTop: 6, marginTop: 2, borderTopWidth: 1, borderTopColor: Colors.gray100 },
   actionBtn: { flex: 1 },
-  outlineBtnText: { fontSize: 13, fontWeight: '600', color: Colors.foreground },
+  // Discharged cards get one full-width, unmistakably primary action rather
+  // than sharing the row with a second (now-removed) button.
+  readmitBtn: { flex: 1, ...Shadows.sm },
   primaryBtnText: { fontSize: 13, fontWeight: '600', color: Colors.white },
+  dischargedNote: {
+    flex: 1,
+    fontSize: 12,
+    color: Colors.gray500,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    paddingVertical: 8,
+  },
 });

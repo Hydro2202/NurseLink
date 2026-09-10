@@ -19,6 +19,8 @@ from .models import (
     RegistrationSession,
     Task,
     TaskDoctor,
+    TaskHandover,
+    VitalSigns,
 )
 from .notifications import notify
 
@@ -155,9 +157,22 @@ class ChartingNoteAdmin(admin.ModelAdmin):
         'note_type',
         'nurse_name',
         'confirmed',
+        'vitals_update_status',
         'timestamp',
     )
-    list_filter = ('note_type', 'confirmed', 'ai_generated')
+    list_filter = ('note_type', 'confirmed', 'ai_generated', 'vitals_update_status')
+
+
+@admin.register(VitalSigns)
+class VitalSignsAdmin(admin.ModelAdmin):
+    list_display = (
+        'patient', 'heart_rate', 'blood_pressure', 'temperature',
+        'oxygen_saturation', 'respiratory_rate', 'pain_scale', 'source',
+        'triggered_by_note', 'recorded_by', 'recorded_at',
+    )
+    list_filter = ('source',)
+    search_fields = ('patient__patient_code', 'patient__name')
+    date_hierarchy = 'recorded_at'
 
 
 @admin.register(Notification)
@@ -182,6 +197,21 @@ class DutyAssignmentAdmin(admin.ModelAdmin):
     search_fields = ('nurse__first_name', 'nurse__last_name', 'nurse__username', 'department__name')
     date_hierarchy = 'duty_date'
     readonly_fields = ('regular_hours', 'overtime_hours', 'total_hours')
+
+
+@admin.register(TaskHandover)
+class TaskHandoverAdmin(admin.ModelAdmin):
+    list_display = (
+        'handover_code', 'from_nurse', 'to_nurse', 'department', 'shift',
+        'duty_date', 'status', 'supervisor', 'verified_at',
+    )
+    list_filter = ('status', 'shift', 'department')
+    search_fields = (
+        'handover_code', 'from_nurse__first_name', 'from_nurse__last_name',
+        'to_nurse__first_name', 'to_nurse__last_name',
+    )
+    date_hierarchy = 'duty_date'
+    readonly_fields = ('handover_code', 'created_at', 'updated_at')
 
 
 @admin.register(KardexRecord)

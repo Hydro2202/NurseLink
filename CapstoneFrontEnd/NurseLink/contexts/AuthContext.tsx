@@ -28,6 +28,15 @@ interface AuthContextType {
   isLoading: boolean;
   /** Resolves with the saved user; rejects if the server refused the change. */
   updateUser: (updates: Partial<User>) => Promise<User | undefined>;
+  /**
+   * Re-fetches this nurse's own profile from the server and replaces the
+   * cached one — for facts that can change from *someone else's* action
+   * (a supervisor reassigning this nurse's department/shift) rather than
+   * this nurse's own edit, which updateUser already handles. fetchMe() only
+   * otherwise runs once, at app boot, so without this a reassignment sits
+   * invisible on this device until the next full login.
+   */
+  refreshUser: () => Promise<void>;
   updateActivity: () => void;
 }
 
@@ -215,6 +224,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [user]
   );
 
+  const refreshUser = useCallback(async () => {
+    if (!user) return;
+    try {
+      const fresh = await fetchMe();
+      setUser(fresh);
+      await authStorage.setItem(USER_KEY, JSON.stringify(fresh));
+    } catch {
+      // Best-effort — a failed background resync should not disrupt
+      // whatever the nurse is doing; the next trigger (or next login)
+      // will pick it up.
+    }
+  }, [user]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -225,6 +247,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAuthenticated: !!user,
         isLoading,
         updateUser,
+        refreshUser,
         updateActivity,
       }}
     >

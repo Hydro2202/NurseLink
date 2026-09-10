@@ -59,6 +59,7 @@ const EMPTY: LiveState = {
   tasks: '',
   handovers: '',
   patients: '',
+  profile: '',
   unreadCount: 0,
 };
 

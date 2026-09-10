@@ -68,15 +68,22 @@ from .models import (
     PatientDoctor,
     RegistrationSession,
     Task,
+    TaskHandover,
     UserPreferences,
+    VitalSigns,
+    PatientVisit,
 )
 from .handover_tasks import adopt_handover_tasks
+from .vitals_extraction import extract_vitals_from_text
 from .notifications import (
     notify,
     notify_handover_acknowledged,
     notify_handover_created,
     notify_kardex_reviewed,
     notify_nurse_reassigned,
+    notify_task_handover_accepted,
+    notify_task_handover_rejected,
+    notify_task_handover_verified,
 )
 from .otp_service import OtpCooldownError, OtpDeliveryError, OtpResendLimitError, issue_otp, verify_otp
 from .permissions import IsAdmin, IsApprovedNurse, IsSupervisor, get_user_role
@@ -127,14 +134,20 @@ from .serializers import (
     NurseAssignmentSerializer,
     PatientAssignmentSerializer,
     PatientSerializer,
+    PatientVisitSerializer,
     RegistrationEmailSerializer,
     ResendOtpSerializer,
     SendOtpSerializer,
     SignupSerializer,
+    TaskHandoverSerializer,
     TaskSerializer,
+    VitalSignsSerializer,
     UpdateMeSerializer,
     UserPreferencesSerializer,
     UserSerializer,
+    medical_team_snapshot,
+    nurse_display_name,
+    open_patient_visit,
     VerifyOtpSerializer,
 )
 
@@ -2053,7 +2066,9 @@ class PatientViewSet(viewsets.ModelViewSet):
         # assignedBy reads the active PatientAssignment per row, and
         # assignedDoctors reads the active PatientDoctor rows — prefetch both,
         # otherwise a full ward list costs two extra queries per patient.
-        qs = Patient.objects.select_related('assigned_nurse').prefetch_related(
+        qs = Patient.objects.select_related(
+            'assigned_nurse', 'department', 'discharged_by'
+        ).prefetch_related(
             Prefetch(
                 'assignments',
                 queryset=PatientAssignment.objects.filter(status='active')
@@ -2091,15 +2106,183 @@ class PatientViewSet(viewsets.ModelViewSet):
             )
         return qs
 
+    def _current_duty_by_department(self):
+        """
+        One nurse per department who is actually on shift right now, per the
+        Duty Roster — computed once per request (cached on the instance,
+        since a ViewSet is instantiated fresh per request) rather than once
+        per patient row, so a ward list of any size costs exactly one extra
+        query for this instead of an N+1.
+        """
+        if hasattr(self, '_duty_cache'):
+            return self._duty_cache
+        local_now = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
+        local_today = local_now.date()
+        candidates = (
+            DutyAssignment.objects.filter(duty_date__in=(local_today, local_today - timedelta(days=1)))
+            .exclude(status='cancelled')
+            .select_related('nurse')
+        )
+        result = {}
+        for candidate in candidates:
+            if candidate.department_id in result:
+                continue
+            if candidate.scheduled_start_datetime() <= local_now <= candidate.scheduled_end_datetime():
+                result[candidate.department_id] = candidate
+        self._duty_cache = result
+        return result
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['current_duty_by_department'] = self._current_duty_by_department()
+        return context
+
     def get_permissions(self):
         # Supervisors: full CRUD. Staff nurses: can update/delete their own
         # assigned patients (see update()/destroy() below for that check).
         # Every branch must include IsApprovedNurse — this method fully
         # replaces the class-level permission_classes, so a branch that
         # forgot it would silently let a pending nurse through.
-        if self.action == 'create':
+        if self.action in ('create', 'discharge', 'readmit'):
             return [permissions.IsAuthenticated(), IsApprovedNurse(), IsSupervisor()]
         return [permissions.IsAuthenticated(), IsApprovedNurse()]
+
+    @extend_schema(
+        request=None,
+        responses={200: PatientSerializer},
+        summary='Discharge a patient',
+        description=(
+            'No request body — the patient is identified by the URL. Supervisor-only. Sets '
+            'status to discharged, records the discharge timestamp and which supervisor '
+            'performed it (audit trail), ends the patient’s active nurse assignment, and '
+            'clears assignedNurseId — the patient no longer appears as anyone’s actively '
+            'assigned patient. The record itself is never deleted: this admission’s '
+            'PatientVisit is closed out with a snapshot of its final diagnosis/room/attending '
+            'physician/assigned nurse/medical team (see the visits action), not erased. '
+            'Rejected with 400 if already discharged.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def discharge(self, request, patient_code=None):
+        patient = self.get_object()
+        if patient.status == 'discharged':
+            return Response(
+                {'detail': 'This patient has already been discharged.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            # Captured before any field on `patient` is cleared below, so the
+            # visit's archived snapshot reflects how the stay actually ended.
+            nurse_name = nurse_display_name(patient.assigned_nurse)
+            nurse = patient.assigned_nurse
+            team_snapshot = medical_team_snapshot(patient)
+
+            patient.status = 'discharged'
+            patient.discharged_at = timezone.now()
+            patient.discharged_by = request.user
+            patient.assigned_nurse = None
+            patient.save(
+                update_fields=[
+                    'status', 'discharged_at', 'discharged_by', 'assigned_nurse', 'updated_at',
+                ]
+            )
+            PatientAssignment.objects.filter(patient=patient, status='active').update(status='completed')
+
+            visit = patient.visits.filter(discharge_date__isnull=True).order_by('-admission_date').first()
+            if visit is None:
+                # Every patient gets an opening visit on create/readmit, so
+                # this is only a safety net — the discharge itself must never
+                # be lost over a missing history row.
+                visit = PatientVisit(patient=patient, admission_date=patient.admission_date)
+            visit.discharge_date = patient.discharged_at
+            visit.diagnosis = patient.diagnosis
+            visit.room = patient.room
+            visit.attending_physician = patient.attending_physician
+            visit.assigned_nurse = nurse
+            visit.assigned_nurse_name = nurse_name
+            visit.medical_team = team_snapshot
+            visit.discharged_by = request.user
+            visit.save()
+
+        return Response(PatientSerializer(patient, context=self.get_serializer_context()).data)
+
+    @extend_schema(
+        request=inline_serializer(
+            name='ReadmitPatient',
+            fields={
+                'admissionDate': serializers.DateField(required=False),
+                'diagnosis': serializers.CharField(),
+                'room': serializers.CharField(),
+                'attendingPhysician': serializers.CharField(required=False, allow_blank=True),
+                'departmentId': serializers.IntegerField(required=False, allow_null=True),
+                'riskLevel': serializers.ChoiceField(choices=Patient.RISK_CHOICES, required=False),
+            },
+        ),
+        responses={200: PatientSerializer},
+        summary='Readmit a discharged patient under their existing profile',
+        description=(
+            'Supervisor-only. For a returning patient — reuses the existing Patient row (same '
+            'patient_code) instead of creating a duplicate: reactivates status to admitted, '
+            'clears the discharge audit fields, applies the new admission’s diagnosis/room/etc., '
+            'and opens a fresh PatientVisit. The previous stay’s visit record is untouched and '
+            'stays available via the visits action — nothing about the prior admission is lost '
+            'or overwritten. 400 if the patient is not currently discharged, or if diagnosis/'
+            'room are missing.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def readmit(self, request, patient_code=None):
+        patient = self.get_object()
+        if patient.status != 'discharged':
+            return Response(
+                {'detail': 'Only a discharged patient can be readmitted. Use update for an active patient.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        diagnosis = (request.data.get('diagnosis') or '').strip()
+        room = (request.data.get('room') or '').strip()
+        if not diagnosis or not room:
+            return Response(
+                {'detail': 'diagnosis and room are required to readmit a patient.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            patient.status = 'admitted'
+            patient.discharged_at = None
+            patient.discharged_by = None
+            patient.admission_date = request.data.get('admissionDate') or timezone.localdate()
+            patient.diagnosis = diagnosis
+            patient.room = room
+            if 'attendingPhysician' in request.data:
+                patient.attending_physician = request.data.get('attendingPhysician') or ''
+            if request.data.get('departmentId'):
+                patient.department_id = request.data['departmentId']
+            if request.data.get('riskLevel'):
+                patient.risk_level = request.data['riskLevel']
+            patient.save()
+            open_patient_visit(patient)
+
+        return Response(PatientSerializer(patient, context=self.get_serializer_context()).data)
+
+    @extend_schema(
+        responses={200: PatientVisitSerializer(many=True)},
+        summary='A patient’s visit history — every admission, past and present',
+        description=(
+            'Newest first. Each entry is one admission-to-discharge encounter, including the '
+            'vitals and progress notes recorded during that stay. The still-open visit (if the '
+            'patient is currently admitted) reflects Patient’s live current fields; closed '
+            'visits show the snapshot recorded at discharge.'
+        ),
+    )
+    @action(detail=True, methods=['get'])
+    def visits(self, request, patient_code=None):
+        patient = self.get_object()
+        visits = patient.visits.select_related('assigned_nurse', 'discharged_by').order_by(
+            '-admission_date', '-created_at'
+        )
+        return Response(PatientVisitSerializer(visits, many=True, context={'request': request}).data)
 
     def update(self, request, *args, **kwargs):
         patient = self.get_object()
@@ -2397,6 +2580,209 @@ class HandoverViewSet(viewsets.ModelViewSet):
         return Response(data)
 
 
+# A task can be reassigned on handover approval only while it is still open —
+# mirrors handover_tasks.OPEN_STATUSES (a completed/overdue task keeps
+# whoever finished or is chasing it, a handover never resurrects it).
+TASK_HANDOVER_REASSIGNABLE_STATUSES = ('pending', 'in_progress')
+
+
+class TaskHandoverViewSet(viewsets.ModelViewSet):
+    """
+    Task-level shift handover, gated by supervisor verification.
+
+    Distinct from /api/handovers/ (the SBAR patient handover, notified
+    immediately): a TaskHandover always starts 'pending' and the receiving
+    nurse hears nothing about it until a supervisor calls approve — see
+    notify_task_handover_verified. No update/destroy — once created, a
+    handover only changes through approve/reject.
+    """
+
+    serializer_class = TaskHandoverSerializer
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    lookup_field = 'handover_code'
+    lookup_url_kwarg = 'handover_code'
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_permissions(self):
+        if self.action in ('approve', 'reject'):
+            return [permissions.IsAuthenticated(), IsSupervisor()]
+        return super().get_permissions()
+
+    def get_queryset(self):
+        qs = TaskHandover.objects.select_related(
+            'task', 'from_nurse', 'to_nurse', 'department', 'supervisor'
+        ).all()
+
+        # A staff nurse only ever sees handovers they sent or received; the
+        # supervisor queue (point 3 of the spec) is everything, filterable.
+        if get_user_role(self.request.user) == 'staff_nurse':
+            qs = qs.filter(Q(from_nurse=self.request.user) | Q(to_nurse=self.request.user))
+
+        params = self.request.query_params
+        status_filter = params.get('status')
+        department_id = params.get('departmentId')
+        shift = params.get('shift')
+        date_param = params.get('date')
+        date_from = params.get('dateFrom')
+        date_to = params.get('dateTo')
+
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if department_id:
+            qs = qs.filter(department_id=department_id)
+        if shift:
+            qs = qs.filter(shift=shift)
+        if date_param:
+            qs = qs.filter(duty_date=date_param)
+        if date_from:
+            qs = qs.filter(duty_date__gte=date_from)
+        if date_to:
+            qs = qs.filter(duty_date__lte=date_to)
+        return qs
+
+    @extend_schema(
+        responses={200: TaskHandoverSerializer(many=True)},
+        summary='Nurses eligible to receive a handover',
+        description=(
+            'Same-shift nurses only, pulled from today’s Duty Roster (not a static '
+            'profile shift) — the signed-in nurse’s own duty assignment for `date` decides '
+            'the shift. 400 if the signed-in nurse has no duty assignment for that date. '
+            'Defaults `date` to today and `sameDepartment` to true.'
+        ),
+    )
+    @action(detail=False, methods=['get'])
+    def eligible_recipients(self, request):
+        date_param = request.query_params.get('date')
+        if date_param:
+            duty_date = date_param
+        else:
+            duty_date = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
+
+        from_assignment = (
+            DutyAssignment.objects.filter(nurse=request.user, duty_date=duty_date)
+            .exclude(status='cancelled')
+            .select_related('department')
+            .first()
+        )
+        if from_assignment is None:
+            return Response(
+                {'detail': f'You have no scheduled duty on {duty_date} to hand a task over from.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        same_department = request.query_params.get('sameDepartment', 'true').lower() != 'false'
+        candidates = (
+            DutyAssignment.objects.filter(duty_date=duty_date, shift=from_assignment.shift)
+            .exclude(status='cancelled')
+            .exclude(nurse=request.user)
+            .select_related('nurse', 'department')
+        )
+        if same_department:
+            candidates = candidates.filter(department_id=from_assignment.department_id)
+
+        seen = set()
+        results = []
+        for assignment in candidates.order_by('nurse__first_name', 'nurse__last_name'):
+            if assignment.nurse_id in seen:
+                continue
+            seen.add(assignment.nurse_id)
+            nurse = assignment.nurse
+            results.append(
+                {
+                    'id': str(nurse.pk),
+                    'name': nurse.get_full_name().strip() or nurse.username,
+                    'departmentId': assignment.department_id,
+                    'departmentName': assignment.department.name,
+                    'shift': assignment.shift,
+                    'shiftLabel': assignment.get_shift_display(),
+                }
+            )
+        return Response(results)
+
+    @extend_schema(
+        request=None,
+        responses={200: TaskHandoverSerializer},
+        summary='Approve a pending handover',
+        description=(
+            'No request body — the handover is identified by the URL. Supervisor-only. '
+            'Sets status to verified, records the supervisor and timestamp, reassigns the '
+            'linked task (if any and still open) to the receiving nurse, and is the only '
+            'point at which the receiving nurse is notified.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def approve(self, request, handover_code=None):
+        handover = self.get_object()
+        if handover.status != 'pending':
+            return Response(
+                {'detail': f'This handover has already been {handover.get_status_display().lower()}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        handover.status = 'verified'
+        handover.supervisor = request.user
+        handover.verified_at = timezone.now()
+        handover.save(update_fields=['status', 'supervisor', 'verified_at', 'updated_at'])
+
+        if handover.task_id and handover.task.status in TASK_HANDOVER_REASSIGNABLE_STATUSES:
+            handover.task.assigned_nurse = handover.to_nurse
+            handover.task.assigned_to = handover.to_nurse.get_full_name().strip() or handover.to_nurse.username
+            handover.task.save(update_fields=['assigned_nurse', 'assigned_to', 'updated_at'])
+
+        notify_task_handover_verified(handover)
+        notify_task_handover_accepted(handover)
+
+        return Response(TaskHandoverSerializer(handover, context={'request': request}).data)
+
+    @extend_schema(
+        request=inline_serializer(
+            name='RejectTaskHandover',
+            fields={'reason': serializers.CharField(required=False, allow_blank=True)},
+        ),
+        responses={200: TaskHandoverSerializer},
+        summary='Reject a pending handover',
+        description=(
+            'Supervisor-only. Sets status to rejected with an optional reason; the task is '
+            'never reassigned and the receiving nurse is never notified — only the sending '
+            'nurse hears about it, with the reason.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def reject(self, request, handover_code=None):
+        handover = self.get_object()
+        if handover.status != 'pending':
+            return Response(
+                {'detail': f'This handover has already been {handover.get_status_display().lower()}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        handover.status = 'rejected'
+        handover.supervisor = request.user
+        handover.rejection_reason = (request.data.get('reason') or '').strip()
+        handover.save(update_fields=['status', 'supervisor', 'rejection_reason', 'updated_at'])
+
+        notify_task_handover_rejected(handover)
+
+        return Response(TaskHandoverSerializer(handover, context={'request': request}).data)
+
+
+def _documented_vital(value):
+    """
+    A vital-sign value is only "documented" when it's a real, non-zero
+    reading — 0/''/None all mean "not mentioned" (Patient.heart_rate/etc.
+    default to 0 precisely because they've never been charted, and no vital
+    sign here is ever legitimately 0), so all three normalize to None
+    rather than a false zero reaching the chart. Used by
+    ChartingViewSet.structure to decide, per vital, whether the workflow's
+    own extraction from the assessment text actually found something.
+    """
+    if value in (None, ''):
+        return None
+    if isinstance(value, (int, float)) and value == 0:
+        return None
+    return value
+
+
 @extend_schema_view(
     create=extend_schema(
         summary='Create a charting note',
@@ -2548,9 +2934,11 @@ class ChartingViewSet(viewsets.ModelViewSet):
         summary='Autocharting — generate a structured nursing note (via n8n)',
         description=(
             'Editable request body. Sends the nurse’s raw assessment plus the patient’s '
-            'demographics and current vitals to the n8n **structure-chart** workflow, and '
-            'returns the generated narrative note alongside the section-by-section structure '
-            'the app renders.\n\n'
+            'demographics to the n8n **structure-chart** workflow, and returns the generated '
+            'narrative note alongside the section-by-section structure the app renders. '
+            'vitalSigns in the response is extracted from the assessment text alone (or the '
+            'request’s own `vitalSigns`, if supplied as a manual override) — never defaulted '
+            'from the patient’s stored record; any vital not documented comes back null.\n\n'
             'Set `save: true` to persist the result as a ChartingNote with `aiGenerated: true`. '
             'Returns 503 when the workflow is not listening.'
         ),
@@ -2572,15 +2960,17 @@ class ChartingViewSet(viewsets.ModelViewSet):
         nurse_name = request.user.get_full_name().strip() or request.user.username
         now = timezone.now()
 
-        # Vitals on record unless the caller overrode them.
-        caller_vitals = data.get('vitalSigns')
-        vitals = caller_vitals or {
-            'heartRate': patient.heart_rate,
-            'bloodPressure': patient.blood_pressure,
-            'temperature': patient.temperature,
-            'oxygenSaturation': patient.oxygen_saturation,
-            'respiratoryRate': patient.respiratory_rate,
-        }
+        # Vitals for THIS note must come from what the nurse actually typed in
+        # the assessment, not from Patient's stored snapshot — that snapshot
+        # can be stale, unrelated to this encounter, or simply 0/'' for a
+        # patient whose vitals were never charted, and silently seeding it
+        # here previously meant the workflow's own extraction from the
+        # assessment text was always thrown away and replaced by it (see the
+        # unconditional `structured['vitalSigns'] = vitals` this used to be,
+        # below). A caller MAY still pass an explicit vitalSigns object — a
+        # real structured-form override, not a guess — which takes priority
+        # per field over whatever the workflow extracts from the text.
+        caller_vitals = data.get('vitalSigns') or {}
 
         nurse_assessment = (data.get('assessment') or '').strip()
         payload = {
@@ -2597,7 +2987,9 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 'medications': patient.medications or [],
                 'alerts': patient.alerts or [],
             },
-            'vitalSigns': vitals,
+            # Sent only as a manual override hint when the caller actually
+            # supplied one — never the patient's stored snapshot.
+            'vitalSigns': caller_vitals or None,
             'assessment': nurse_assessment,
             'interventions': data.get('interventions') or [],
             'patientResponse': data.get('patientResponse') or '',
@@ -2609,10 +3001,18 @@ class ChartingViewSet(viewsets.ModelViewSet):
             'instructions': (
                 'Structure a nursing progress note using ONLY (1) the nurse assessment '
                 'text, (2) the patient demographics/allergies/medications/alerts provided, '
-                'and (3) the vitalSigns provided. Do not invent symptoms, diagnoses, '
-                'medications, interventions, vital signs, or observations that are not '
-                'present in those inputs. If a section has no supporting input, omit it '
-                'or leave it empty.'
+                'and (3) the vitalSigns manual override, if one was provided (otherwise none '
+                'was, and vitals must come from (1) alone). Do not invent symptoms, '
+                'diagnoses, medications, interventions, vital signs, or observations that are '
+                'not present in those inputs.\n\n'
+                'For vitalSigns specifically: extract heartRate, bloodPressure, temperature, '
+                'oxygenSaturation, and respiratoryRate ONLY from values the nurse explicitly '
+                'documented in the assessment text (or the manual override, if provided). Do '
+                'not substitute a default, placeholder, or estimated value, and do not reuse a '
+                'vital sign from a different note or from the patient\'s general record. If a '
+                'specific vital sign is not documented, leave that field null in your response '
+                '— never return 0 or an empty string as a stand-in for "not documented".\n\n'
+                'If a section has no supporting input, omit it or leave it empty.'
             ),
         }
 
@@ -2672,15 +3072,40 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Authoritative patient context wins over anything the workflow invents.
-        # Assessment keeps the nurse's typed text when the workflow omits it;
-        # vitals always reflect the record (or caller override), never fabricated values.
+        # Authoritative patient context wins over anything the workflow invents
+        # for identity/demographic fields. Assessment keeps the nurse's typed
+        # text when the workflow omits it.
         structured['patientName'] = patient.name
         structured['patientId'] = patient.patient_code
         structured['room'] = patient.room
         structured['attendingPhysician'] = patient.attending_physician
         structured['nurseName'] = nurse_name
-        structured['vitalSigns'] = vitals
+        # vitalSigns is the one field that is NOT patient-record-authoritative
+        # — it must reflect only what this specific note documents. Per
+        # field, in priority order: (1) the caller's manual override, (2)
+        # this backend's own deterministic extraction straight from the
+        # nurse's assessment text — the primary source, since the n8n
+        # workflow's own LLM node does not reliably return a structured
+        # vitalSigns object at all (confirmed live: it turns "HR 110, BP
+        # 160/100" etc. into prose, not a parsed field — see
+        # vitals_extraction.py), (3) whatever the workflow itself returned,
+        # as a last-resort fallback in case it ever does supply something
+        # useful the regex missed. Anything none of the three supplies stays
+        # null (never 0/''), i.e. genuinely not documented in this note.
+        text_extracted_vitals = extract_vitals_from_text(nurse_assessment)
+        workflow_vitals = structured.get('vitalSigns')
+        if not isinstance(workflow_vitals, dict):
+            workflow_vitals = {}
+        structured['vitalSigns'] = {
+            key: (
+                _documented_vital(caller_vitals.get(key))
+                if caller_vitals.get(key) is not None
+                else _documented_vital(text_extracted_vitals.get(key))
+                if text_extracted_vitals.get(key) is not None
+                else _documented_vital(workflow_vitals.get(key))
+            )
+            for key in ('heartRate', 'bloodPressure', 'temperature', 'oxygenSaturation', 'respiratoryRate')
+        }
         structured['timestamp'] = now.isoformat()
         structured['diagnosis'] = patient.diagnosis
         structured['riskLevel'] = patient.risk_level
@@ -2741,6 +3166,83 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 'aiGenerated': True,
                 'saved': bool(saved_id),
                 'noteId': saved_id,
+            }
+        )
+
+
+class VitalSignsViewSet(viewsets.ModelViewSet):
+    """
+    Timestamped vitals history for a patient — insert-only (no update/
+    destroy: a charted reading is never edited in place, only superseded by
+    a newer one), one row per reading rather than the single mutable
+    snapshot on Patient.
+
+    `latest` is what the auto-charting prompt on a flagged ChartingNote
+    pre-fills its quick-entry form from — the "previous values" the nurse
+    confirms or adjusts rather than starting blank.
+    """
+
+    serializer_class = VitalSignsSerializer
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        qs = VitalSigns.objects.select_related('patient', 'recorded_by', 'triggered_by_note').all()
+        params = self.request.query_params
+        patient_id = params.get('patientId')
+        if patient_id:
+            qs = qs.filter(patient__patient_code=patient_id)
+        source = params.get('source')
+        if source:
+            qs = qs.filter(source=source)
+        return qs
+
+    @extend_schema(
+        responses={200: VitalSignsSerializer},
+        summary='Most recent vitals for a patient — the auto-charting baseline',
+        description=(
+            'Requires `patientId`. Returns `{hasPriorVitals, baseline}` — baseline is the most '
+            'recent VitalSigns row for this patient, or (when none exists yet) a fallback built '
+            'from Patient\'s own current heart_rate/etc. fields if those were ever set, so a '
+            'brand-new patient with no vitals history at all gets `hasPriorVitals: false` and '
+            'the quick-entry form opens blank as a fresh entry rather than a stale "update".'
+        ),
+    )
+    @action(detail=False, methods=['get'])
+    def latest(self, request):
+        patient_id = request.query_params.get('patientId')
+        if not patient_id:
+            return Response({'detail': 'patientId is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        patient = Patient.objects.filter(patient_code=patient_id).first()
+        if patient is None:
+            return Response({'detail': 'Patient not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        latest = VitalSigns.objects.filter(patient=patient).order_by('-recorded_at').first()
+        if latest is not None:
+            return Response(
+                {
+                    'hasPriorVitals': True,
+                    'baseline': VitalSignsSerializer(latest, context={'request': request}).data,
+                }
+            )
+
+        has_snapshot = any(
+            [
+                patient.heart_rate, patient.blood_pressure, patient.temperature,
+                patient.oxygen_saturation, patient.respiratory_rate,
+            ]
+        )
+        return Response(
+            {
+                'hasPriorVitals': has_snapshot,
+                'baseline': {
+                    'heartRate': patient.heart_rate or None,
+                    'bloodPressure': patient.blood_pressure or '',
+                    'temperature': patient.temperature or None,
+                    'oxygenSaturation': patient.oxygen_saturation or None,
+                    'respiratoryRate': patient.respiratory_rate or None,
+                    'painScale': None,
+                } if has_snapshot else None,
             }
         )
 
@@ -3219,6 +3721,27 @@ class NurseViewSet(viewsets.ViewSet):
             patient = Patient.objects.filter(patient_code=exclude_for_patient).first()
             if patient is not None:
                 nurses = nurses.exclude(handovers_received__patient=patient)
+
+        # Handover's Shift field: only offer nurses actually on the Duty
+        # Roster for that shift/date, not a static profile default. Resolved
+        # as a `pk__in` subquery of distinct nurse ids rather than joining
+        # DutyAssignment onto `nurses` directly — a nurse can have more than
+        # one roster entry the same day, and a direct join would fan that out
+        # into one duplicate row per extra entry instead of one row per nurse.
+        shift = request.query_params.get('shift')
+        if shift:
+            date_param = request.query_params.get('date')
+            duty_date = date_param or timezone.now().astimezone(
+                ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)
+            ).date()
+            scheduled_nurse_ids = (
+                DutyAssignment.objects.filter(duty_date=duty_date, shift=shift)
+                .exclude(status='cancelled')
+                .values_list('nurse_id', flat=True)
+                .distinct()
+            )
+            nurses = nurses.filter(pk__in=scheduled_nurse_ids)
+
         results = []
         for nurse in nurses:
             profile = nurse.nurse_profile
@@ -3445,6 +3968,12 @@ class WorkloadView(APIView):
                 {
                     'nurseId': str(nurse.pk),
                     'nurseName': name,
+                    # This ward has several nurses sharing a display name
+                    # (see the Duty Roster / handover pickers, which already
+                    # disambiguate the same way) — without an email, a
+                    # supervisor reassigning "RAIDEN VILLAPANDO" here has no
+                    # way to tell which of several accounts they just picked.
+                    'nurseEmail': nurse.email,
                     'shift': profile.shift,
                     'department': profile.department,
                     'patientCount': patients,
@@ -3613,6 +4142,7 @@ class LiveStateView(APIView):
                     'tasks': serializers.CharField(),
                     'handovers': serializers.CharField(),
                     'patients': serializers.CharField(),
+                    'profile': serializers.CharField(),
                     'unreadCount': serializers.IntegerField(),
                 },
             )
@@ -3638,6 +4168,18 @@ class LiveStateView(APIView):
         )
         latest = inbox['latest']
 
+        # A single row, not a collection — "count:newest" doesn't apply, so
+        # the revision is just the fields a nurse's own screens actually
+        # read live (department/shift, set by a supervisor via
+        # NurseViewSet.assign). Deliberately NOT tied to the Notification
+        # this also raises: a nurse with notifications for this turned off
+        # must still see their own current department/shift, since that is
+        # account data, not an alert.
+        own_profile = getattr(user, 'nurse_profile', None)
+        profile_revision = (
+            f'{own_profile.department}:{own_profile.shift}' if own_profile else '-'
+        )
+
         return Response(
             {
                 'notifications': '%d:%d:%s'
@@ -3649,6 +4191,7 @@ class LiveStateView(APIView):
                 'tasks': self._revision(Task.objects.all()),
                 'handovers': self._revision(HandoverNote.objects.all()),
                 'patients': self._revision(Patient.objects.all()),
+                'profile': profile_revision,
                 'unreadCount': inbox['unread'] or 0,
             }
         )

@@ -40,12 +40,14 @@ const RISK_CONFIG: Record<
     text: '#C2410C',
   },
   critical: {
+    // Solid, not just an outline — this is the one risk level that should
+    // never blend in at a glance across a long patient list.
     label: 'Critical Risk',
     description: 'Immediate attention required.',
     icon: OctagonAlert,
-    bg: Colors.destructiveLight,
-    border: Colors.red600,
-    text: Colors.red600,
+    bg: Colors.red600,
+    border: Colors.red700,
+    text: Colors.white,
   },
 };
 

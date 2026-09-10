@@ -29,6 +29,9 @@ HANDOVER_ACKNOWLEDGED = 'handover_acknowledged'
 TASK_ASSIGNED = 'task_assigned'
 KARDEX_REVIEWED = 'kardex_reviewed'
 NURSE_REASSIGNED = 'nurse_reassigned'
+TASK_HANDOVER_VERIFIED = 'task_handover_verified'
+TASK_HANDOVER_ACCEPTED = 'task_handover_accepted'
+TASK_HANDOVER_REJECTED = 'task_handover_rejected'
 
 
 
@@ -383,6 +386,93 @@ def notify_kardex_reviewed(kardex, reviewer):
         sender=reviewer,
         action_label='Open Kardex',
         action_path='/kardex',
+    )
+
+
+def notify_task_handover_verified(handover):
+    """
+    Tell the receiving nurse a task has been handed over to them.
+
+    This is deliberately the *only* place a TaskHandover ever reaches the
+    receiving nurse's inbox — the whole point of the supervisor-verification
+    gate is that nothing is said to them before a supervisor signs off, so
+    this must never be called from the create path, only from the approve
+    action once status is already 'verified'.
+    """
+    recipient = handover.to_nurse
+    if recipient is None:
+        return None
+    if not wants(recipient, 'task_notifications'):
+        return None
+
+    sender_name = handover.from_nurse.get_full_name().strip() or handover.from_nurse.username
+    task_label = handover.task.title if handover.task_id else (handover.task_description or 'a task')
+    tail = f' Notes: {handover.notes}' if handover.notes else ''
+
+    return notify(
+        recipient,
+        notification_type='info',
+        event=TASK_HANDOVER_VERIFIED,
+        title='Task handed over to you',
+        message=f'{sender_name} handed over "{task_label}" to you, verified by a supervisor.{tail}',
+        sender=handover.from_nurse,
+        action_label='Open tasks',
+        action_path='/tasks',
+        action_highlight_id=handover.task.task_code if handover.task_id else handover.handover_code,
+    )
+
+
+def notify_task_handover_accepted(handover):
+    """
+    Tell the sending nurse their handover was verified — the optional second
+    notification the spec calls for, so they know the task really is off
+    their plate rather than silently disappearing from their queue.
+    """
+    recipient = handover.from_nurse
+    if recipient is None:
+        return None
+    if not wants(recipient, 'task_notifications'):
+        return None
+
+    receiver_name = handover.to_nurse.get_full_name().strip() or handover.to_nurse.username
+    return notify(
+        recipient,
+        notification_type='success',
+        event=TASK_HANDOVER_ACCEPTED,
+        title='Handover verified',
+        message=f'Your handover to {receiver_name} was verified by a supervisor and they have been notified.',
+        sender=handover.supervisor,
+        action_label='Open tasks',
+        action_path='/tasks',
+        action_highlight_id=handover.task.task_code if handover.task_id else handover.handover_code,
+    )
+
+
+def notify_task_handover_rejected(handover):
+    """Tell the sending nurse why their handover was rejected — the task stays theirs."""
+    recipient = handover.from_nurse
+    if recipient is None:
+        return None
+    if not wants(recipient, 'task_notifications'):
+        return None
+
+    supervisor_name = (
+        handover.supervisor.get_full_name().strip() or handover.supervisor.username
+        if handover.supervisor else 'A supervisor'
+    )
+    receiver_name = handover.to_nurse.get_full_name().strip() or handover.to_nurse.username
+    tail = f' Reason: {handover.rejection_reason}' if handover.rejection_reason else ''
+
+    return notify(
+        recipient,
+        notification_type='warning',
+        event=TASK_HANDOVER_REJECTED,
+        title='Handover rejected',
+        message=f'{supervisor_name} rejected your handover to {receiver_name}.{tail}',
+        sender=handover.supervisor,
+        action_label='Open tasks',
+        action_path='/tasks',
+        action_highlight_id=handover.task.task_code if handover.task_id else handover.handover_code,
     )
 
 

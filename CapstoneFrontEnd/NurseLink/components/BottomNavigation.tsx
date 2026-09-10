@@ -10,6 +10,8 @@ import {
   Users,
   BarChart3,
   Settings,
+  Stethoscope,
+  Calendar,
   type LucideIcon,
 } from 'lucide-react-native';
 import { Colors, Shadows } from '../constants/colors';
@@ -23,8 +25,14 @@ interface NavItem {
   color: string;
 }
 
+// Kept in sync by hand with the sidebar's navItems in app/(app)/_layout.tsx —
+// this is a *separate* list (mobile's bottom tab bar vs. the desktop
+// sidebar), so a screen added to one does not automatically appear in the
+// other. My Duty / Duty Roster were added to the sidebar without ever being
+// added here, which is exactly why they were missing on mobile.
 const STAFF_NAV: NavItem[] = [
   { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, color: Colors.blue600 },
+  { name: 'My Duty', href: '/(app)/my-duty', icon: Stethoscope, color: Colors.teal600 },
   { name: 'Tasks', href: '/(app)/tasks', icon: ClipboardList, color: Colors.green600 },
   { name: 'Handover', href: '/(app)/handover', icon: FileText, color: Colors.purple600 },
   { name: 'Charting', href: '/(app)/charting', icon: FileText, color: Colors.orange600 },
@@ -33,6 +41,7 @@ const STAFF_NAV: NavItem[] = [
 
 const SUPERVISOR_NAV: NavItem[] = [
   { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, color: Colors.blue600 },
+  { name: 'Duty Roster', href: '/(app)/duty-roster', icon: Calendar, color: Colors.teal600 },
   { name: 'Patients', href: '/(app)/all-patients', icon: Users, color: Colors.purple600 },
   { name: 'Analytics', href: '/(app)/analytics', icon: BarChart3, color: Colors.green600 },
   { name: 'Workload', href: '/(app)/workload', icon: BarChart3, color: Colors.orange600 },
