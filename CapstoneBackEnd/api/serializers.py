@@ -14,6 +14,7 @@ from .models import (
     Department,
     Doctor,
     DutyAssignment,
+    FaceVerificationAttempt,
     HandoverNote,
     KardexRecord,
     Notification,
@@ -518,26 +519,36 @@ class UpdateMeSerializer(serializers.Serializer):
 
         instance.save()
 
-        profile, _ = NurseProfile.objects.get_or_create(user=instance)
-        mapping = {
-            'middleName': 'middle_name',
-            'licenseNumber': 'license_number',
-            'avatar': 'avatar',
-            'clinicalRole': 'clinical_role',
-            'specialization': 'specialization',
-        }
-        changed = False
-        for src, dest in mapping.items():
-            if src in validated_data:
-                setattr(profile, dest, validated_data[src] or '')
-                changed = True
-        if changed:
-            profile.save()
-        # get_or_create hands back a different Python object than the one already
-        # cached on instance.nurse_profile by authentication, so without this the
-        # caller serializes the pre-edit profile and the change looks like it
-        # silently reverted — even though it is safely in the database.
-        instance.nurse_profile = profile
+        # An admin (is_staff) account is deliberately created without a
+        # NurseProfile — AdminUserViewSet's queryset starts from NurseProfile,
+        # so that absence is what keeps every admin account out of the
+        # Accounts list and un-touchable by another admin (see its
+        # docstring). get_or_create-ing one here the first time an admin
+        # edits their own name/avatar would silently undo that guarantee —
+        # so admin fields (avatar/clinicalRole/specialization/licenseNumber,
+        # all clinical-role concepts anyway) are simply not saved for them.
+        if not instance.is_staff:
+            profile, _ = NurseProfile.objects.get_or_create(user=instance)
+            mapping = {
+                'middleName': 'middle_name',
+                'licenseNumber': 'license_number',
+                'avatar': 'avatar',
+                'clinicalRole': 'clinical_role',
+                'specialization': 'specialization',
+            }
+            changed = False
+            for src, dest in mapping.items():
+                if src in validated_data:
+                    setattr(profile, dest, validated_data[src] or '')
+                    changed = True
+            if changed:
+                profile.save()
+            # get_or_create hands back a different Python object than the one
+            # already cached on instance.nurse_profile by authentication, so
+            # without this the caller serializes the pre-edit profile and the
+            # change looks like it silently reverted — even though it is
+            # safely in the database.
+            instance.nurse_profile = profile
         return instance
 
 
@@ -2869,3 +2880,66 @@ class UserPreferencesSerializer(serializers.ModelSerializer):
             'showCharts',
             'backgroundSync',
         ]
+
+
+class FaceVerificationAttemptSerializer(serializers.ModelSerializer):
+    """
+    Admin-only read view of the verification history feeding a signup's
+    identity check. Never carries raw images/biometrics — the model itself
+    only ever stores the outcome (see FaceVerificationAttempt docstring).
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    sessionId = serializers.UUIDField(source='session.session_id', read_only=True)
+    reasonLabel = serializers.CharField(source='get_reason_display', read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+    class Meta:
+        model = FaceVerificationAttempt
+        fields = [
+            'id', 'sessionId', 'matched', 'confidence', 'reason', 'reasonLabel',
+            'countable', 'createdAt',
+        ]
+
+
+class RegistrationSessionSerializer(serializers.ModelSerializer):
+    """Admin-only read view of a signup's identity-verification progress —
+    the audit trail behind every account approve/reject decision."""
+
+    id = serializers.IntegerField(read_only=True)
+    sessionId = serializers.UUIDField(source='session_id', read_only=True)
+    faceAttempts = serializers.IntegerField(source='face_attempts', read_only=True)
+    faceVerified = serializers.BooleanField(source='face_verified', read_only=True)
+    faceLocked = serializers.BooleanField(source='face_locked', read_only=True)
+    otpVerified = serializers.BooleanField(source='otp_verified', read_only=True)
+    verificationMethod = serializers.CharField(source='verification_method', read_only=True)
+    prcVerified = serializers.BooleanField(source='prc_verified', read_only=True)
+    prcLicenseNumber = serializers.CharField(source='prc_license_number', read_only=True)
+    prcFullName = serializers.CharField(source='prc_full_name', read_only=True)
+    prcProfession = serializers.CharField(source='prc_profession', read_only=True)
+    idLastName = serializers.CharField(source='id_last_name', read_only=True)
+    idFirstName = serializers.CharField(source='id_first_name', read_only=True)
+    idMiddleName = serializers.CharField(source='id_middle_name', read_only=True)
+    idRegistrationNo = serializers.CharField(source='id_registration_no', read_only=True)
+    idVerificationStatus = serializers.CharField(source='id_verification_status', read_only=True)
+    isVerified = serializers.BooleanField(source='is_verified', read_only=True)
+    userId = serializers.SerializerMethodField()
+    userEmail = serializers.SerializerMethodField()
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+
+    class Meta:
+        model = RegistrationSession
+        fields = [
+            'id', 'sessionId', 'email', 'faceAttempts', 'faceVerified', 'faceLocked',
+            'otpVerified', 'verificationMethod', 'prcVerified', 'prcLicenseNumber',
+            'prcFullName', 'prcProfession', 'idLastName', 'idFirstName', 'idMiddleName',
+            'idRegistrationNo', 'idVerificationStatus', 'isVerified', 'userId', 'userEmail',
+            'createdAt', 'updatedAt',
+        ]
+
+    def get_userId(self, obj):
+        return str(obj.user_id) if obj.user_id else None
+
+    def get_userEmail(self, obj):
+        return obj.user.email if obj.user_id else ''

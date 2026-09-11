@@ -361,6 +361,12 @@ class VerifyIdEndpointTests(TestCase):
         self.assertFalse(res.data['verified'])
         self.assertIn('retake', res.data['message'].lower())
 
+    # With the local OCR fallback on (the default — see
+    # tests_id_photo_check.py for that path), an offline workflow no longer
+    # hard-fails registration; it falls through to Tesseract instead. This
+    # isolates the n8n-only path by switching the fallback off, same as
+    # test_ocr_workflow_returning_nothing_is_not_verified does.
+    @override_settings(ID_OCR_LOCAL_FALLBACK=False)
     @patch('api.views.call_workflow', side_effect=N8nWorkflowOffline(workflow='verify_id'))
     def test_offline_workflow_returns_503_not_500(self, _mock_call):
         res = self.client.post('/api/auth/verify-id/', {'idImage': 'x'}, format='json')
@@ -459,6 +465,10 @@ class VerifyIdMultipartUploadTests(TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertIn('too large', res.data['message'].lower())
 
+    # Same reasoning as test_offline_workflow_returns_503_not_500 above: the
+    # local OCR fallback (on by default) now catches this instead of
+    # hard-failing, so isolating the n8n-only path needs it switched off.
+    @override_settings(ID_OCR_LOCAL_FALLBACK=False)
     @patch('api.views.call_workflow_multipart')
     def test_n8n_error_on_multipart_path_is_handled_like_json_path(self, mock_multipart):
         mock_multipart.side_effect = N8nWorkflowOffline(workflow='verify_id')

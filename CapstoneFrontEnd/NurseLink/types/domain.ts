@@ -374,6 +374,112 @@ export interface DuplicatePatientMatch {
   statusLabel?: string;
 }
 
+/** A shift-to-shift task handoff (distinct from the SBAR HandoverNote) —
+ * see TaskHandoverSerializer. Read-only here; the Admin panel only browses
+ * these for oversight, the actual send/accept/verify flow lives elsewhere. */
+export interface AdminTaskHandover {
+  id: string;
+  taskId: number | null;
+  taskTitle: string;
+  taskDescription: string;
+  fromNurseId: number;
+  fromNurseName: string;
+  toNurseId: number;
+  toNurseName: string;
+  departmentId: number | null;
+  departmentName: string;
+  shift: string;
+  shiftLabel: string;
+  dutyDate: string;
+  notes: string;
+  status: 'pending' | 'accepted' | 'verified' | 'rejected';
+  statusLabel: string;
+  supervisorId: number | null;
+  supervisorName: string;
+  verifiedAt: string | null;
+  rejectionReason: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** One timestamped vitals reading — see VitalSignsSerializer. Insert-only. */
+export interface AdminVitalReading {
+  id: number;
+  patientId: string;
+  heartRate: number | null;
+  bloodPressure: string;
+  temperature: number | null;
+  oxygenSaturation: number | null;
+  respiratoryRate: number | null;
+  painScale: number | null;
+  source: string;
+  notes: string;
+  recordedById: number | null;
+  recordedByName: string | null;
+  recordedAt: string;
+  createdAt: string;
+}
+
+/** One nurse or supervisor account, as the Admin Accounts screen manages
+ * it — backed by AdminUserViewSet. Never includes another admin account
+ * (an admin User has no NurseProfile, so this list can't include one). */
+export interface AdminAccount {
+  id: string;
+  name: string;
+  email: string;
+  role: 'staff_nurse' | 'supervisor';
+  department: string;
+  licenseNumber: string;
+  hospitalName: string;
+  employeeId: string;
+  clinicalRole: string;
+  approvalStatus: 'pending' | 'approved' | 'rejected';
+  rejectionReason: string;
+  isActiveStaff: boolean;
+  verificationMethod: string;
+  dateJoined: string | null;
+}
+
+/** A signup wizard's identity-verification progress — the evidence behind
+ * an approve/reject decision on an AdminAccount. Read-only. */
+export interface AdminRegistrationSession {
+  id: number;
+  sessionId: string;
+  email: string;
+  faceAttempts: number;
+  faceVerified: boolean;
+  faceLocked: boolean;
+  otpVerified: boolean;
+  verificationMethod: string;
+  prcVerified: boolean;
+  prcLicenseNumber: string;
+  prcFullName: string;
+  prcProfession: string;
+  idLastName: string;
+  idFirstName: string;
+  idMiddleName: string;
+  idRegistrationNo: string;
+  idVerificationStatus: string;
+  isVerified: boolean;
+  userId: string | null;
+  userEmail: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** One face-match attempt within a registration session's verification
+ * history. Never carries raw images — see the backend model docstring. */
+export interface AdminFaceVerificationAttempt {
+  id: number;
+  sessionId: string;
+  matched: boolean;
+  confidence: number;
+  reason: string;
+  reasonLabel: string;
+  countable: boolean;
+  createdAt: string;
+}
+
 export interface AnalyticsData {
   taskCompletion: { value: number; label: string; frontColor?: string }[];
   workloadTrend: { value: number; label: string }[];

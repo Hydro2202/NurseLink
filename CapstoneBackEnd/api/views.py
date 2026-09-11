@@ -80,13 +80,21 @@ from .notifications import (
     notify_handover_acknowledged,
     notify_handover_created,
     notify_kardex_reviewed,
+    notify_admin_new_registration,
     notify_nurse_reassigned,
     notify_task_handover_accepted,
     notify_task_handover_rejected,
     notify_task_handover_verified,
 )
 from .otp_service import OtpCooldownError, OtpDeliveryError, OtpResendLimitError, issue_otp, verify_otp
-from .permissions import IsAdmin, IsApprovedNurse, IsSupervisor, get_user_role
+from .permissions import (
+    IsAdmin,
+    IsApprovedNurse,
+    IsApprovedNurseOrAdmin,
+    IsApprovedNurseOrAdminReadOnly,
+    IsSupervisor,
+    get_user_role,
+)
 from .schema_examples import (
     ASSIGNMENT_CREATE_EXAMPLES,
     ASSIGNMENT_UPDATE_EXAMPLES,
@@ -119,6 +127,8 @@ from .serializers import (
     DepartmentSerializer,
     DoctorSerializer,
     DutyAssignmentSerializer,
+    FaceVerificationAttemptSerializer,
+    RegistrationSessionSerializer,
     StructureChartSerializer,
     StructureChartResponseSerializer,
     VerifyIdSerializer,
@@ -206,6 +216,10 @@ class SignupView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         token, _ = Token.objects.get_or_create(user=user)
+        # Outside the transaction SignupSerializer.create() already
+        # committed in — this fans out to every admin and can email/push,
+        # neither of which belongs inside a DB write's lock.
+        notify_admin_new_registration(user)
         return Response(
             {'token': token.key, 'user': UserSerializer(user).data},
             status=status.HTTP_201_CREATED,
@@ -1238,16 +1252,31 @@ class VerifyIdView(APIView):
                 payload = {**form_fields, 'idImage': strip_data_uri(legacy_base64)}
                 result = call_workflow('verify_id', payload)
         except N8nError as exc:
-            logger.warning('verify-id: n8n unavailable session=%s error=%s', session.session_id, exc)
-            return Response(
-                {
-                    **error_response_body(exc),
-                    'verified': False,
-                    'verificationStatus': 'unavailable',
-                    'registrationSessionId': str(session.session_id),
-                },
-                status=exc.http_status,
+            if not settings.ID_OCR_LOCAL_FALLBACK:
+                logger.warning('verify-id: n8n unavailable session=%s error=%s', session.session_id, exc)
+                return Response(
+                    {
+                        **error_response_body(exc),
+                        'verified': False,
+                        'verificationStatus': 'unavailable',
+                        'registrationSessionId': str(session.session_id),
+                    },
+                    status=exc.http_status,
+                )
+            # The local-fallback block below was only ever reached when n8n
+            # answered 200 with nothing usable (its OCR node's third-party
+            # service degrading gracefully) — not when the n8n call itself
+            # fails outright (down, misconfigured, a workflow node erroring
+            # with a non-2xx). That is the same "OCR provider is having a
+            # bad day" outage in a different shape, so it gets the same
+            # answer: keep going with an empty result and let Tesseract have
+            # a shot at the card, instead of hard-failing registration on
+            # n8n's uptime.
+            logger.warning(
+                'verify-id: n8n call failed, trying local OCR fallback session=%s error=%s',
+                session.session_id, exc,
             )
+            result = {}
 
         logger.info('OCR verification completed session=%s', session.session_id)
 
@@ -2058,7 +2087,7 @@ class LogoutView(APIView):
 )
 class PatientViewSet(viewsets.ModelViewSet):
     serializer_class = PatientSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     lookup_field = 'patient_code'
     lookup_url_kwarg = 'patient_code'
 
@@ -2140,12 +2169,16 @@ class PatientViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         # Supervisors: full CRUD. Staff nurses: can update/delete their own
         # assigned patients (see update()/destroy() below for that check).
-        # Every branch must include IsApprovedNurse — this method fully
-        # replaces the class-level permission_classes, so a branch that
-        # forgot it would silently let a pending nurse through.
+        # Every branch must include IsApprovedNurse (or the admin-read-only
+        # variant) — this method fully replaces the class-level
+        # permission_classes, so a branch that forgot it would silently let
+        # a pending nurse through.
         if self.action in ('create', 'discharge', 'readmit'):
             return [permissions.IsAuthenticated(), IsApprovedNurse(), IsSupervisor()]
-        return [permissions.IsAuthenticated(), IsApprovedNurse()]
+        # Admin gets list/retrieve here (SAFE_METHODS) for the Admin panel's
+        # Patients oversight screen — never write, since discharge/create
+        # above already lock write access to a supervisor.
+        return [permissions.IsAuthenticated(), IsApprovedNurseOrAdminReadOnly()]
 
     @extend_schema(
         request=None,
@@ -2382,15 +2415,27 @@ class DepartmentViewSet(viewsets.ReadOnlyModelViewSet):
     created through the API, so this is read-only."""
 
     serializer_class = DepartmentSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     queryset = Department.objects.all()
     pagination_class = None
 
 
-class DoctorViewSet(viewsets.ReadOnlyModelViewSet):
+class DoctorViewSet(viewsets.ModelViewSet):
+    """
+    Read: any approved nurse/supervisor (feeds task/patient doctor pickers),
+    plus admin. Write: admin only — Doctor was Django-admin-only reference
+    data until now, so the in-app Admin panel is the first UI anyone gets
+    for keeping this list current.
+    """
+
     serializer_class = DoctorSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     pagination_class = None
+
+    def get_permissions(self):
+        if self.action in ('create', 'update', 'partial_update', 'destroy'):
+            return [permissions.IsAuthenticated(), IsAdmin()]
+        return super().get_permissions()
 
     def get_queryset(self):
         qs = Doctor.objects.select_related('department').all()
@@ -2426,7 +2471,7 @@ class DoctorViewSet(viewsets.ReadOnlyModelViewSet):
 )
 class TaskViewSet(viewsets.ModelViewSet):
     serializer_class = TaskSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     lookup_field = 'task_code'
     lookup_url_kwarg = 'task_code'
     # Task assignments are never hard-deleted through the normal API surface —
@@ -2533,7 +2578,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 )
 class HandoverViewSet(viewsets.ModelViewSet):
     serializer_class = HandoverSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     lookup_field = 'handover_code'
     lookup_url_kwarg = 'handover_code'
 
@@ -2598,7 +2643,7 @@ class TaskHandoverViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = TaskHandoverSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     lookup_field = 'handover_code'
     lookup_url_kwarg = 'handover_code'
     http_method_names = ['get', 'post', 'head', 'options']
@@ -2802,7 +2847,7 @@ def _documented_vital(value):
 )
 class ChartingViewSet(viewsets.ModelViewSet):
     serializer_class = ChartingNoteSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     lookup_field = 'note_code'
     lookup_url_kwarg = 'note_code'
 
@@ -3183,7 +3228,7 @@ class VitalSignsViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = VitalSignsSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):
@@ -3261,7 +3306,11 @@ class VitalSignsViewSet(viewsets.ModelViewSet):
 )
 class NotificationViewSet(viewsets.ModelViewSet):
     serializer_class = NotificationSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    # Full access, not read-only — see IsApprovedNurseOrAdmin: this inbox is
+    # already scoped to the requesting user by get_queryset() below, so an
+    # admin marking/deleting their own notification never touches anyone
+    # else's data.
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdmin]
     http_method_names = ['get', 'patch', 'delete', 'post', 'head', 'options']
 
     def get_queryset(self):
@@ -3328,7 +3377,7 @@ class NotificationViewSet(viewsets.ModelViewSet):
 )
 class AssignmentViewSet(viewsets.ModelViewSet):
     serializer_class = PatientAssignmentSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
 
     def get_queryset(self):
         qs = PatientAssignment.objects.select_related(
@@ -3358,7 +3407,7 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = DutyAssignmentSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
 
     def get_queryset(self):
         qs = DutyAssignment.objects.select_related(
@@ -3602,7 +3651,7 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
 )
 class KardexViewSet(viewsets.ModelViewSet):
     serializer_class = KardexRecordSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
 
     def get_queryset(self):
@@ -3669,7 +3718,7 @@ class KardexViewSet(viewsets.ModelViewSet):
 
 
 class NurseViewSet(viewsets.ViewSet):
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
 
     def get_permissions(self):
         # Everyone approved can see the roster (it feeds the handover/task
@@ -3946,8 +3995,75 @@ def _admin_user_payload(profile: NurseProfile) -> dict:
     }
 
 
+class RegistrationSessionViewSet(viewsets.ModelViewSet):
+    """
+    Admin-only audit trail of every signup wizard's identity-verification
+    progress — the evidence behind an approve/reject decision on
+    AdminUserViewSet. A session's verification fields are set by the signup
+    flow itself (VerifyIdView, FaceVerificationView, OTP views), never
+    edited by hand — hence no create/update here, only list/retrieve/
+    destroy. Delete exists because VerifyIdView creates one of these the
+    moment Step 1 starts, before any real verification has happened; anyone
+    who abandons the wizard there leaves a permanent blank "Unknown" row
+    with nothing an admin can do about it otherwise.
+    """
+
+    serializer_class = RegistrationSessionSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    http_method_names = ['get', 'delete', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        qs = RegistrationSession.objects.select_related('user').order_by('-created_at')
+        email = self.request.query_params.get('email')
+        verified = self.request.query_params.get('verified')
+        if email:
+            qs = qs.filter(email__icontains=email)
+        if verified in ('1', 'true', 'True'):
+            qs = qs.filter(Q(face_verified=True) | Q(otp_verified=True))
+        elif verified in ('0', 'false', 'False'):
+            qs = qs.filter(face_verified=False, otp_verified=False)
+        return qs
+
+    @extend_schema(
+        request=None,
+        responses={200: inline_serializer(name='ClearAbandonedResponse', fields={'deleted': serializers.IntegerField()})},
+        summary='Delete every abandoned registration session',
+        description=(
+            'No request body. Deletes every session with no email, no face/OTP verification, '
+            'and no linked account — someone who opened the signup wizard and never got past '
+            'Step 1. Never touches a session with any real progress on it.'
+        ),
+    )
+    @action(detail=False, methods=['post'], url_path='clear-abandoned')
+    def clear_abandoned(self, request):
+        # Truly nothing on it — no email, no name from even a partial OCR
+        # read, no face/OTP verification, no linked account. A session with
+        # any one of those still has a real identity attached to it and
+        # stays, even if the applicant never finished.
+        deleted, _ = RegistrationSession.objects.filter(
+            email='', id_first_name='', id_last_name='',
+            face_verified=False, otp_verified=False, user__isnull=True,
+        ).delete()
+        return Response({'deleted': deleted})
+
+
+class FaceVerificationAttemptViewSet(viewsets.ReadOnlyModelViewSet):
+    """Admin-only per-attempt log behind a RegistrationSession's face_attempts
+    count — never raw images (see FaceVerificationAttempt model docstring)."""
+
+    serializer_class = FaceVerificationAttemptSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get_queryset(self):
+        qs = FaceVerificationAttempt.objects.select_related('session').order_by('-created_at')
+        session_id = self.request.query_params.get('sessionId')
+        if session_id:
+            qs = qs.filter(session__session_id=session_id)
+        return qs
+
+
 class WorkloadView(APIView):
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
 
     @extend_schema(tags=['Analytics'], summary='Workload summary')
     def get(self, request):
@@ -3987,7 +4103,7 @@ class WorkloadView(APIView):
 
 
 class AnalyticsView(APIView):
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurse]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
 
     @extend_schema(tags=['Analytics'], summary='Analytics dashboard data')
     def get(self, request):

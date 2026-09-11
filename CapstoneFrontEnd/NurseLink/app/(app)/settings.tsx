@@ -159,7 +159,8 @@ export default function SettingsScreen() {
     router.replace('/login' as any);
   };
 
-  const roleLabel = user?.role === 'staff_nurse' ? 'Nurse' : 'Supervisor';
+  const roleLabel =
+    user?.role === 'staff_nurse' ? 'Nurse' : user?.role === 'admin' ? 'Administrator' : 'Supervisor';
 
   const profileUserForModal: ProfileUser | null = user
     ? {
@@ -242,15 +243,17 @@ export default function SettingsScreen() {
             </View>
           </View>
 
-          <View style={styles.roleBox}>
-            <Text style={styles.roleText}>
-              <Text style={styles.roleBold}>Role: </Text>
-              {roleLabel}
-            </Text>
-            <Text style={styles.roleHint}>
-              Role cannot be changed. Contact your administrator for role updates.
-            </Text>
-          </View>
+          {user?.role !== 'admin' ? (
+            <View style={styles.roleBox}>
+              <Text style={styles.roleText}>
+                <Text style={styles.roleBold}>Role: </Text>
+                {roleLabel}
+              </Text>
+              <Text style={styles.roleHint}>
+                Role cannot be changed. Contact your administrator for role updates.
+              </Text>
+            </View>
+          ) : null}
 
           <Button
             onPress={() => setShowProfileEdit(true)}

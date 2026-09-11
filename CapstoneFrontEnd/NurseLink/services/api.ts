@@ -2,6 +2,11 @@ import { API_BASE_URL, TOKEN_KEY } from './config';
 import * as authStorage from './authStorage';
 import type { User, UserRole } from '../types/user';
 import type {
+  AdminAccount,
+  AdminFaceVerificationAttempt,
+  AdminRegistrationSession,
+  AdminTaskHandover,
+  AdminVitalReading,
   AnalyticsData,
   AppNotification,
   ChartingNote,
@@ -617,6 +622,16 @@ export async function fetchDoctors(options?: {
   return apiRequest<Doctor[]>(`/doctors/${query ? `?${query}` : ''}`);
 }
 
+// Create/update: admin-only (see DoctorViewSet.get_permissions) — Doctor was
+// Django-admin-only reference data until the Admin panel added this.
+export async function createDoctor(data: Partial<Doctor>): Promise<Doctor> {
+  return apiRequest<Doctor>('/doctors/', { method: 'POST', body: data });
+}
+
+export async function updateDoctor(id: number | string, data: Partial<Doctor>): Promise<Doctor> {
+  return apiRequest<Doctor>(`/doctors/${id}/`, { method: 'PATCH', body: data });
+}
+
 export async function completeTask(taskId: string): Promise<Task> {
   return apiRequest<Task>(`/tasks/${taskId}/complete/`, { method: 'POST' });
 }
@@ -933,4 +948,82 @@ export async function reviewKardexRecord(
     method: 'POST',
     body: { decision, notes: notes || '' },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Admin panel — everything here requires a real is_staff account (IsAdmin on
+// the backend). See types/domain.ts AdminAccount/AdminRegistrationSession/
+// AdminFaceVerificationAttempt for the shapes.
+
+export async function fetchAdminAccounts(options?: {
+  role?: 'staff_nurse' | 'supervisor';
+  status?: 'pending' | 'approved' | 'rejected';
+}): Promise<AdminAccount[]> {
+  const params = new URLSearchParams();
+  if (options?.role) params.set('role', options.role);
+  if (options?.status) params.set('status', options.status);
+  const query = params.toString();
+  return apiRequest<AdminAccount[]>(`/admin/users/${query ? `?${query}` : ''}`);
+}
+
+export async function approveAdminAccount(id: string): Promise<AdminAccount> {
+  return apiRequest<AdminAccount>(`/admin/users/${id}/approve/`, { method: 'POST' });
+}
+
+export async function rejectAdminAccount(id: string, reason: string): Promise<AdminAccount> {
+  return apiRequest<AdminAccount>(`/admin/users/${id}/reject/`, { method: 'POST', body: { reason } });
+}
+
+export async function deactivateAdminAccount(id: string): Promise<AdminAccount> {
+  return apiRequest<AdminAccount>(`/admin/users/${id}/deactivate/`, { method: 'POST' });
+}
+
+export async function reactivateAdminAccount(id: string): Promise<AdminAccount> {
+  return apiRequest<AdminAccount>(`/admin/users/${id}/reactivate/`, { method: 'POST' });
+}
+
+export async function setAdminAccountPassword(id: string, password: string): Promise<void> {
+  await apiRequest(`/admin/users/${id}/set-password/`, { method: 'POST', body: { password } });
+}
+
+export async function fetchAdminRegistrationSessions(options?: {
+  email?: string;
+  verified?: boolean;
+}): Promise<AdminRegistrationSession[]> {
+  const params = new URLSearchParams();
+  if (options?.email) params.set('email', options.email);
+  if (options?.verified !== undefined) params.set('verified', String(options.verified));
+  const query = params.toString();
+  return apiRequest<AdminRegistrationSession[]>(`/admin/registration-sessions/${query ? `?${query}` : ''}`);
+}
+
+export async function fetchAdminFaceVerificationAttempts(
+  sessionId?: string
+): Promise<AdminFaceVerificationAttempt[]> {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+  return apiRequest<AdminFaceVerificationAttempt[]>(`/admin/face-verification-attempts/${query}`);
+}
+
+// `id` here is the numeric row id (AdminRegistrationSession.id) — the
+// router's lookup key — not the UUID sessionId field.
+export async function deleteAdminRegistrationSession(id: number): Promise<void> {
+  await apiRequest(`/admin/registration-sessions/${id}/`, { method: 'DELETE' });
+}
+
+export async function clearAbandonedRegistrationSessions(): Promise<{ deleted: number }> {
+  return apiRequest<{ deleted: number }>('/admin/registration-sessions/clear-abandoned/', {
+    method: 'POST',
+  });
+}
+
+// Read-only oversight — the real send/accept/verify workflow lives outside
+// the Admin panel. Admin's own read access to /task-handovers/ and
+// /vital-signs/ comes from IsApprovedNurseOrAdminReadOnly on those viewsets.
+export async function fetchTaskHandovers(): Promise<AdminTaskHandover[]> {
+  return apiRequest<AdminTaskHandover[]>('/task-handovers/');
+}
+
+export async function fetchVitalReadings(options?: { patientId?: string }): Promise<AdminVitalReading[]> {
+  const query = options?.patientId ? `?patientId=${encodeURIComponent(options.patientId)}` : '';
+  return apiRequest<AdminVitalReading[]>(`/vital-signs/${query}`);
 }

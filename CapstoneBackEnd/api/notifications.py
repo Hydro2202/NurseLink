@@ -32,6 +32,7 @@ NURSE_REASSIGNED = 'nurse_reassigned'
 TASK_HANDOVER_VERIFIED = 'task_handover_verified'
 TASK_HANDOVER_ACCEPTED = 'task_handover_accepted'
 TASK_HANDOVER_REJECTED = 'task_handover_rejected'
+NEW_REGISTRATION_PENDING = 'new_registration_pending'
 
 
 
@@ -511,3 +512,41 @@ def notify_nurse_reassigned(profile, actor, *, changed_department, changed_shift
         action_label='Open Settings',
         action_path='/settings',
     )
+
+
+def notify_admin_new_registration(new_user):
+    """
+    Tell every admin (User.is_staff) account the moment a new signup
+    finishes — the whole point of the Admin Accounts screen is reviewing
+    exactly these, and until this exists nothing ever told an admin one
+    was waiting.
+
+    Unconditional, like AdminUserViewSet.approve()/reject() already are —
+    this is core admin operational information, not something to gate
+    behind a nurse-facing preference switch (an admin account might not
+    even have meaningful preferences to check).
+
+    Fans out to every admin rather than one recipient: any of them can act
+    on it, and AdminUserViewSet.list() already shows the same pending
+    account to all of them.
+    """
+    profile = getattr(new_user, 'nurse_profile', None)
+    role_label = 'Supervisor' if profile and profile.role == 'supervisor' else 'Staff Nurse'
+    name = new_user.get_full_name().strip() or new_user.username
+
+    admins = User.objects.filter(is_staff=True)
+    created = []
+    for admin in admins:
+        result = notify(
+            admin,
+            notification_type='warning',
+            event=NEW_REGISTRATION_PENDING,
+            title='New account pending approval',
+            message=f'{name} ({role_label}) just signed up and is waiting for approval.',
+            sender=new_user,
+            action_label='Review',
+            action_path='/admin/accounts',
+        )
+        if result is not None:
+            created.append(result)
+    return created

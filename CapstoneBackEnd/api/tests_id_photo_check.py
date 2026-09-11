@@ -268,6 +268,52 @@ class VerifyIdPortraitGateTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertFalse(res.data['verified'])
 
+    @override_settings(ID_OCR_LOCAL_FALLBACK=True)
+    @patch('api.views.scan_id_fields')
+    @patch('api.views.call_workflow')
+    @patch('api.views.check_id_has_portrait')
+    def test_local_ocr_fills_in_when_the_n8n_call_itself_fails(
+        self, mock_portrait, mock_call, mock_scan
+    ):
+        """
+        Distinct from the "n8n answers 200 with nothing" case above — this is
+        n8n itself being unreachable or erroring (down, misconfigured, a
+        workflow node throwing a non-2xx). Same outage in a different shape,
+        so the local fallback must catch it too instead of hard-failing the
+        whole signup on n8n's uptime.
+        """
+        from api.n8n_client import N8nHTTPError
+
+        mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
+        mock_call.side_effect = N8nHTTPError('boom', workflow='verify_id', status=502, body='bad gateway')
+        mock_scan.return_value = {
+            'lastName': 'Cortez', 'firstName': 'Raiden', 'middleName': 'Monteiro',
+            'registrationNumber': '0987654', 'registrationDate': '12/27/2025',
+            'validUntil': '06/29/2029', 'overallConfidence': 0.95,
+        }
+
+        res = self.client.post('/api/auth/verify-id/', {'idImage': _b64(_card())}, format='json')
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['verified'])
+        self.assertEqual(res.data['lastName'], 'Cortez')
+
+    @override_settings(ID_OCR_LOCAL_FALLBACK=False)
+    @patch('api.views.call_workflow')
+    @patch('api.views.check_id_has_portrait')
+    def test_n8n_call_failing_is_still_a_hard_error_when_fallback_is_off(
+        self, mock_portrait, mock_call
+    ):
+        from api.n8n_client import N8nHTTPError
+
+        mock_portrait.return_value = PortraitCheckResult(has_photo=True, face_count=1, confidence=0.9)
+        mock_call.side_effect = N8nHTTPError('boom', workflow='verify_id', status=502, body='bad gateway')
+
+        res = self.client.post('/api/auth/verify-id/', {'idImage': _b64(_card())}, format='json')
+
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(res.data['verified'])
+
     @patch('api.views.call_workflow')
     def test_undecodable_upload_is_400(self, mock_call):
         res = self.client.post('/api/auth/verify-id/', {'idImage': 'garbage'}, format='json')

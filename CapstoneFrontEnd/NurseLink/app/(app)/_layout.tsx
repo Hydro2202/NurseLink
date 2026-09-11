@@ -27,6 +27,8 @@ import {
   Users,
   Calendar,
   Stethoscope,
+  ShieldCheck,
+  IdCard,
   type LucideIcon,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
@@ -45,15 +47,21 @@ interface NavItem {
   href: string;
   icon: LucideIcon;
   show: boolean;
+  /** Match only the exact path, never a sub-route prefix. Needed for
+   * '/(app)/admin' — every other admin nav item lives under that same
+   * path (/(app)/admin/accounts, etc.), so the default prefix match would
+   * make Dashboard show "active" on every admin screen at once. */
+  exact?: boolean;
 }
 
 function normalizePath(path: string): string {
   return path.replace(/^\/\(app\)/, '') || '/';
 }
 
-function pathMatches(pathname: string, href: string): boolean {
+function pathMatches(pathname: string, href: string, exact?: boolean): boolean {
   const active = normalizePath(pathname);
   const target = normalizePath(href);
+  if (exact) return active === target;
   return active === target || active.startsWith(target + '/');
 }
 
@@ -213,6 +221,17 @@ export default function AppLayout() {
     }
   }, [user, isLoading, router]);
 
+  // Login always lands on /(app)/dashboard (it has no way to know the role
+  // ahead of the response) — an admin has no dashboard.tsx of their own, so
+  // bounce them to their real home the moment that resolves. Also catches a
+  // stray back-navigation into a nurse/supervisor screen from an admin
+  // session.
+  useEffect(() => {
+    if (!isLoading && user?.role === 'admin' && normalizePath(pathname) === '/dashboard') {
+      router.replace('/(app)/admin' as any);
+    }
+  }, [user, isLoading, pathname, router]);
+
   if (isLoading) {
     return (
       <View style={styles.loading}>
@@ -228,6 +247,7 @@ export default function AppLayout() {
 
   const isStaffNurse = user.role === 'staff_nurse';
   const isSupervisor = user.role === 'supervisor';
+  const isAdmin = user.role === 'admin';
 
   const handleLogout = async () => {
     setShowLogoutDialog(false);
@@ -251,11 +271,32 @@ export default function AppLayout() {
     { name: 'Settings', href: '/(app)/settings', icon: Settings, show: true },
   ].filter((item) => item.show);
 
-  const currentPageName =
-    navigation.find((item) => pathMatches(pathname, item.href))?.name || 'Dashboard';
+  // Deliberately lean: the Admin dashboard itself is the hub (a
+  // Django-admin-style index listing every section — Patients, Tasks,
+  // Handovers, Charting, Duty, Kardex, Doctors, Departments...), so the
+  // persistent nav only carries what's needed everywhere, not a copy of
+  // every section link.
+  const adminNavigation: NavItem[] = [
+    { name: 'Dashboard', href: '/(app)/admin', icon: LayoutDashboard, show: true, exact: true },
+    { name: 'Accounts', href: '/(app)/admin/accounts', icon: ShieldCheck, show: true },
+    { name: 'Registrations', href: '/(app)/admin/registrations', icon: IdCard, show: true },
+    { name: 'Settings', href: '/(app)/settings', icon: Settings, show: true },
+  ].filter((item) => item.show);
 
-  const portalName = isStaffNurse ? 'Staff Portal' : isSupervisor ? 'Supervisor Portal' : 'Management Portal';
-  const desktopPortalName = isStaffNurse ? 'Staff Portal' : 'Management Portal';
+  const activeNavigation = isAdmin ? adminNavigation : navigation;
+
+  const currentPageName =
+    activeNavigation.find((item) => pathMatches(pathname, item.href, item.exact))?.name
+    || (isAdmin ? 'Admin Console' : 'Dashboard');
+
+  const portalName = isStaffNurse
+    ? 'Staff Portal'
+    : isSupervisor
+      ? 'Supervisor Portal'
+      : isAdmin
+        ? 'Admin Console'
+        : 'Management Portal';
+  const desktopPortalName = isStaffNurse ? 'Staff Portal' : isAdmin ? 'Admin Console' : 'Management Portal';
 
   const goSettings = () => router.push('/(app)/settings' as any);
 
@@ -292,7 +333,7 @@ export default function AppLayout() {
       onClose={() => setProfileMenuOpen(false)}
       userName={user.name}
       userEmail={user.email}
-      userDepartment={user.department}
+      userDepartment={isAdmin ? 'System Administrator' : user.department}
       onSettings={goSettings}
       onLogout={() => setShowLogoutDialog(true)}
     />
@@ -378,6 +419,45 @@ export default function AppLayout() {
     );
   }
 
+  // Mobile: Admin — same visual language as Staff/Supervisor (same logo,
+  // same blue chrome); only the nav content is admin-specific.
+  if (isAdmin && !isDesktop) {
+    return (
+      <SafeAreaView style={styles.mobileRoot} edges={['top']}>
+        <View style={[styles.mobileHeader, Shadows.md]}>
+          <View style={styles.brandPill}>
+            <View style={styles.brandLogoWrap}>
+              <Image
+                source={require('../../assets/images/NurseLinkLogo.png')}
+                style={styles.brandLogo}
+                resizeMode="contain"
+              />
+            </View>
+            <View>
+              <Text style={styles.brandTitle}>NurseLink</Text>
+              <Text style={styles.brandSub}>{portalName}</Text>
+            </View>
+          </View>
+          <View style={styles.headerActions}>
+            <NotificationBell unreadCount={unreadCount} onPress={() => setNotificationPanelOpen(true)} />
+            <ProfileAvatar avatar={user.avatar} onPress={() => setProfileMenuOpen(true)} />
+          </View>
+        </View>
+
+        <View style={styles.mobileMain}>
+          <Slot />
+        </View>
+
+        <BottomNavigation role="admin" activePath={pathname} />
+        {logoutDialog}
+        {handoverAlert}
+        {profileSync}
+        {notificationPanel}
+        {profileMenu}
+      </SafeAreaView>
+    );
+  }
+
   // Desktop / tablet (>= 1024)
   return (
     <SafeAreaView style={styles.desktopRoot} edges={['top', 'left', 'right']}>
@@ -408,9 +488,9 @@ export default function AppLayout() {
             </View>
 
             <ScrollView style={styles.sidebarNav} contentContainerStyle={styles.sidebarNavContent}>
-              {navigation.map((item) => {
+              {activeNavigation.map((item) => {
                 const Icon = item.icon;
-                const active = pathMatches(pathname, item.href);
+                const active = pathMatches(pathname, item.href, item.exact);
                 return (
                   <Pressable
                     key={item.name}
@@ -443,7 +523,7 @@ export default function AppLayout() {
                     {user.name}
                   </Text>
                   <Text style={styles.sidebarUserDept} numberOfLines={1}>
-                    {user.department}
+                    {isAdmin ? user.email : user.department}
                   </Text>
                 </View>
               </View>
@@ -790,6 +870,7 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     fontWeight: '700',
     color: c.blue600,
   },
+
   sidebarLogout: {
     backgroundColor: c.red600,
     justifyContent: 'flex-start',

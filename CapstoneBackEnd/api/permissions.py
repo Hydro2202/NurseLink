@@ -84,6 +84,39 @@ class IsSupervisorOrReadOnly(BasePermission):
         return True
 
 
+class IsApprovedNurseOrAdminReadOnly(BasePermission):
+    """
+    Same rules as IsApprovedNurse for a nurse/supervisor. An admin
+    (User.is_staff) additionally gets read-only access on top of that, for
+    the in-app Admin oversight panel — never write access through this
+    check alone, since day-to-day clinical data entry stays owned by
+    nurses/supervisors, not admins. A view that also wants admin write
+    access (e.g. managing Doctors) layers IsAdmin on top via get_permissions.
+    """
+
+    def has_permission(self, request, view):
+        if request.user and request.user.is_authenticated and request.user.is_staff:
+            return request.method in SAFE_METHODS
+        return IsApprovedNurse().has_permission(request, view)
+
+
+class IsApprovedNurseOrAdmin(BasePermission):
+    """
+    Same as IsApprovedNurseOrAdminReadOnly, except an admin gets full
+    access, not just read. Only for views whose data is inherently
+    self-scoped to the requesting user (e.g. NotificationViewSet, whose
+    get_queryset() already filters to recipient=request.user) — there an
+    admin marking their own notification read/deleting it can never touch
+    anyone else's data, so the read-only restriction that protects shared
+    clinical records elsewhere doesn't apply here.
+    """
+
+    def has_permission(self, request, view):
+        if request.user and request.user.is_authenticated and request.user.is_staff:
+            return True
+        return IsApprovedNurse().has_permission(request, view)
+
+
 class IsAdmin(BasePermission):
     """
     Allow only real Django staff accounts (User.is_staff), never a claim

@@ -18,6 +18,14 @@ router.register(r'nurses', views.NurseViewSet, basename='nurse')
 router.register(r'departments', views.DepartmentViewSet, basename='department')
 router.register(r'doctors', views.DoctorViewSet, basename='doctor')
 router.register(r'admin/users', views.AdminUserViewSet, basename='admin-user')
+router.register(
+    r'admin/registration-sessions', views.RegistrationSessionViewSet, basename='admin-registration-session'
+)
+router.register(
+    r'admin/face-verification-attempts',
+    views.FaceVerificationAttemptViewSet,
+    basename='admin-face-verification-attempt',
+)
 
 urlpatterns = [
     path('preferences/', views.PreferencesView.as_view(), name='preferences'),

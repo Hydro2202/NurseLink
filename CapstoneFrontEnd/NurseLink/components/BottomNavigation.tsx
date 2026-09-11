@@ -12,17 +12,22 @@ import {
   Settings,
   Stethoscope,
   Calendar,
+  ShieldCheck,
+  IdCard,
   type LucideIcon,
 } from 'lucide-react-native';
 import { Colors, Shadows } from '../constants/colors';
 
-export type NavRole = 'staff_nurse' | 'supervisor';
+export type NavRole = 'staff_nurse' | 'supervisor' | 'admin';
 
 interface NavItem {
   name: string;
   href: string;
   icon: LucideIcon;
   color: string;
+  /** Match only the exact path, never a sub-route prefix — see ADMIN_NAV's
+   * Dashboard entry, which every other admin route lives under. */
+  exact?: boolean;
 }
 
 // Kept in sync by hand with the sidebar's navItems in app/(app)/_layout.tsx —
@@ -48,6 +53,17 @@ const SUPERVISOR_NAV: NavItem[] = [
   { name: 'Settings', href: '/(app)/settings', icon: Settings, color: Colors.gray600 },
 ];
 
+// Deliberately lean, mirroring app/(app)/_layout.tsx's adminNavigation — the
+// Admin dashboard itself is the hub linking to every other section. Same
+// color language as STAFF_NAV/SUPERVISOR_NAV above — Admin isn't a separate
+// visual theme, just its own set of destinations.
+const ADMIN_NAV: NavItem[] = [
+  { name: 'Dashboard', href: '/(app)/admin', icon: LayoutDashboard, color: Colors.blue600, exact: true },
+  { name: 'Accounts', href: '/(app)/admin/accounts', icon: ShieldCheck, color: Colors.purple600 },
+  { name: 'Registrations', href: '/(app)/admin/registrations', icon: IdCard, color: Colors.teal600 },
+  { name: 'Settings', href: '/(app)/settings', icon: Settings, color: Colors.gray600 },
+];
+
 interface BottomNavigationProps {
   role: NavRole;
   activePath: string;
@@ -58,16 +74,17 @@ function normalizePath(path: string): string {
   return path.replace(/^\/\(app\)/, '') || '/';
 }
 
-function isActivePath(activePath: string, href: string): boolean {
+function isActivePath(activePath: string, href: string, exact?: boolean): boolean {
   const active = normalizePath(activePath);
   const target = normalizePath(href);
+  if (exact) return active === target;
   return active === target || active.startsWith(target + '/');
 }
 
 export function BottomNavigation({ role, activePath }: BottomNavigationProps) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const items = role === 'staff_nurse' ? STAFF_NAV : SUPERVISOR_NAV;
+  const items = role === 'staff_nurse' ? STAFF_NAV : role === 'supervisor' ? SUPERVISOR_NAV : ADMIN_NAV;
 
   return (
     <View
@@ -82,7 +99,7 @@ export function BottomNavigation({ role, activePath }: BottomNavigationProps) {
       <View style={styles.row}>
         {items.map((item) => {
           const Icon = item.icon;
-          const active = isActivePath(activePath, item.href);
+          const active = isActivePath(activePath, item.href, item.exact);
 
           return (
             <Pressable
