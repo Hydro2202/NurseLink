@@ -222,8 +222,8 @@ const ROLE_OPTIONS: Array<{ label: string; value: UserRole; emoji: string; detai
     detail: 'Staff Nurse or Registered Nurse responsible for direct patient care and clinical documentation.',
   },
   {
-    label: 'Supervisor',
-    value: 'supervisor',
+    label: 'Head Nurse',
+    value: 'head_nurse',
     emoji: '👨‍💼',
     detail: 'Head Nurse, Nursing Supervisor, or Charge Nurse overseeing nursing staff and patient care operations.',
   },

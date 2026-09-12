@@ -105,7 +105,7 @@ export default function TasksPage() {
   );
 
   // A task can arrive from another nurse's device — handed over, or assigned by
-  // a supervisor — so the list also follows the shared live revision rather
+  // a head nurse — so the list also follows the shared live revision rather
   // than only reloading when this screen happens to regain focus.
   useLiveRefresh('tasks', loadTasks);
 
@@ -598,7 +598,7 @@ export default function TasksPage() {
                         >
                           <Edit size={16} color={Colors.blue600} />
                         </Button>
-                        {user?.role === 'supervisor' && task.assignedTo ? (
+                        {user?.role === 'head_nurse' && task.assignedTo ? (
                           <Button
                             size="icon-sm"
                             variant="outline"

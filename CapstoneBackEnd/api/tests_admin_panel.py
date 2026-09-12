@@ -119,7 +119,7 @@ class AdminReadOnlyOversightTests(APITestCase):
         self.assertEqual(response.status_code, 200)
 
     def test_approved_supervisor_can_still_create_a_patient(self):
-        supervisor = make_nurse('sup2@hospital.com', 'Maria', 'Santos', role='supervisor')
+        supervisor = make_nurse('sup2@hospital.com', 'Maria', 'Santos', role='head_nurse')
         self.client.force_authenticate(supervisor)
         create = self.client.post('/api/patients/', {
             'name': 'Supervisor Created Patient', 'age': 55, 'gender': 'Male', 'room': '303',
@@ -331,11 +331,11 @@ class NewRegistrationNotifiesAdminsTests(APITestCase):
             self.assertIn('Staff Nurse', notif.message)
             self.assertEqual(notif.action_path, '/admin/accounts')
 
-    def test_supervisor_signup_says_supervisor_in_the_message(self):
-        response = self._signup(email='newsup@hospital.com', role='supervisor')
+    def test_head_nurse_signup_says_head_nurse_in_the_message(self):
+        response = self._signup(email='newsup@hospital.com', role='head_nurse')
         self.assertEqual(response.status_code, 201, response.content)
         notif = Notification.objects.get(recipient=self.admin1, event='new_registration_pending')
-        self.assertIn('Supervisor', notif.message)
+        self.assertIn('Head Nurse', notif.message)
 
     def test_an_ordinary_nurse_does_not_get_this_notification(self):
         self._signup()

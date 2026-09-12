@@ -26,7 +26,7 @@ def _denial_context(user) -> str:
     Names exactly which account/role was checked, so a 403 is self-diagnosing
     instead of a bare "you do not have permission" — this codebase has many
     lookalike test accounts (several "Raiden Villapando"/"Lawrence Cortez"
-    logins split across staff_nurse and supervisor), so "which account am I
+    logins split across staff_nurse and head_nurse), so "which account am I
     actually signed in as right now" is the real question behind most
     permission reports, not a bug in the check itself.
     """
@@ -35,30 +35,37 @@ def _denial_context(user) -> str:
 
 
 class IsSupervisor(BasePermission):
-    """Allow only approved supervisors."""
+    """
+    Allow only approved head nurses.
+
+    Kept named IsSupervisor internally — 'head nurse' is the role's display
+    name and stored value (NurseProfile.role == 'head_nurse'); the class
+    name itself is just an internal identifier, unchanged so every import
+    site across the codebase didn't need touching for a pure relabel.
+    """
 
     def has_permission(self, request, view):
         if not (request.user and request.user.is_authenticated):
             self.message = 'You must be signed in to do this.'
             return False
-        if get_user_role(request.user) != 'supervisor':
-            self.message = f'This action requires a supervisor account. {_denial_context(request.user)}'
+        if get_user_role(request.user) != 'head_nurse':
+            self.message = f'This action requires a head nurse account. {_denial_context(request.user)}'
             return False
         if not _is_approved(request.user):
-            self.message = f'Your supervisor account is not approved or has been deactivated. {_denial_context(request.user)}'
+            self.message = f'Your head nurse account is not approved or has been deactivated. {_denial_context(request.user)}'
             return False
         return True
 
 
 class IsApprovedNurse(BasePermission):
-    """Any authenticated, admin-approved nurse (staff or supervisor)."""
+    """Any authenticated, admin-approved nurse (staff or head nurse)."""
 
     def has_permission(self, request, view):
         if not (request.user and request.user.is_authenticated):
             self.message = 'You must be signed in to do this.'
             return False
-        if get_user_role(request.user) not in ('staff_nurse', 'supervisor'):
-            self.message = f'This action requires a nurse or supervisor account. {_denial_context(request.user)}'
+        if get_user_role(request.user) not in ('staff_nurse', 'head_nurse'):
+            self.message = f'This action requires a nurse or head nurse account. {_denial_context(request.user)}'
             return False
         if not _is_approved(request.user):
             self.message = (
@@ -70,7 +77,7 @@ class IsApprovedNurse(BasePermission):
 
 
 class IsSupervisorOrReadOnly(BasePermission):
-    """Supervisors can write; authenticated users can read."""
+    """Head nurses can write; authenticated users can read."""
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
@@ -78,19 +85,19 @@ class IsSupervisorOrReadOnly(BasePermission):
             return False
         if request.method in SAFE_METHODS:
             return True
-        if get_user_role(request.user) != 'supervisor':
-            self.message = f'This action requires a supervisor account. {_denial_context(request.user)}'
+        if get_user_role(request.user) != 'head_nurse':
+            self.message = f'This action requires a head nurse account. {_denial_context(request.user)}'
             return False
         return True
 
 
 class IsApprovedNurseOrAdminReadOnly(BasePermission):
     """
-    Same rules as IsApprovedNurse for a nurse/supervisor. An admin
+    Same rules as IsApprovedNurse for a nurse/head nurse. An admin
     (User.is_staff) additionally gets read-only access on top of that, for
     the in-app Admin oversight panel — never write access through this
     check alone, since day-to-day clinical data entry stays owned by
-    nurses/supervisors, not admins. A view that also wants admin write
+    nurses/head nurses, not admins. A view that also wants admin write
     access (e.g. managing Doctors) layers IsAdmin on top via get_permissions.
     """
 

@@ -28,7 +28,7 @@ interface TaskModalProps {
   mode: 'add' | 'edit';
   allTasks?: Task[];
   // 'mine' scopes the patient picker to patients assigned to the logged-in
-  // user (nurse's own Add New Task). Defaults to 'all' so supervisor-facing
+  // user (nurse's own Add New Task). Defaults to 'all' so head-nurse-facing
   // call sites (e.g. managing a specific nurse's tasks) keep their existing
   // unscoped roster.
   patientScope?: 'mine' | 'all';

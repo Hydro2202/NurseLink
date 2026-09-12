@@ -14,7 +14,7 @@ class NurseProfile(models.Model):
 
     ROLE_CHOICES = [
         ('staff_nurse', 'Staff Nurse'),
-        ('supervisor', 'Supervisor'),
+        ('head_nurse', 'Head Nurse'),
     ]
     VERIFICATION_METHOD_CHOICES = [
         ('FACE', 'Face Verification'),
@@ -1047,6 +1047,10 @@ class KardexRecord(models.Model):
     middle_name = models.CharField(max_length=100, blank=True, default='')
     age = models.CharField(max_length=20, blank=True, default='')
     gender = models.CharField(max_length=20, blank=True, default='')
+    # Free text, not a DateField — same convention as admission_date below:
+    # this is a manually-filled Kardex form field, not a system date the app
+    # computes anything from, so it stays exactly what the nurse typed.
+    birthday = models.CharField(max_length=50, blank=True, default='')
     religion = models.CharField(max_length=100, blank=True, default='')
     room = models.CharField(max_length=50, blank=True, default='')
     bed_number = models.CharField(max_length=50, blank=True, default='')
@@ -1056,6 +1060,7 @@ class KardexRecord(models.Model):
     admitting_diagnosis = models.TextField(blank=True, default='')
     final_diagnosis = models.TextField(blank=True, default='')
     diet = models.CharField(max_length=200, blank=True, default='')
+    ivf = models.CharField(max_length=200, blank=True, default='')
     temperature = models.CharField(max_length=20, blank=True, default='')
     pulse_rate = models.CharField(max_length=20, blank=True, default='')
     respiratory_rate = models.CharField(max_length=20, blank=True, default='')

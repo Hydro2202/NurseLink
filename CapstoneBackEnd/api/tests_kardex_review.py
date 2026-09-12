@@ -32,7 +32,7 @@ class KardexReviewTests(APITestCase):
         cache.clear()
         self.nurse = make_user('nurse@hospital.com', 'Ben', 'Diaz', 'staff_nurse')
         self.other_nurse = make_user('other@hospital.com', 'Cora', 'Reyes', 'staff_nurse')
-        self.supervisor = make_user('sup@hospital.com', 'Maria', 'Santos', 'supervisor')
+        self.supervisor = make_user('sup@hospital.com', 'Maria', 'Santos', 'head_nurse')
         self.patient = Patient.objects.create(
             patient_code='P800', name='Juan Dela Cruz', age=61, gender='Male',
             room='204-B', diagnosis='CHF', admission_date=datetime.date(2026, 3, 2),

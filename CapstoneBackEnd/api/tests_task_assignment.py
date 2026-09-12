@@ -29,7 +29,7 @@ def make_user(email, first, last, role):
 class TaskAssignmentTests(APITestCase):
     def setUp(self):
         cache.clear()
-        self.supervisor = make_user('sup@hospital.com', 'Maria', 'Santos', 'supervisor')
+        self.supervisor = make_user('sup@hospital.com', 'Maria', 'Santos', 'head_nurse')
         self.nurse = make_user('nurse@hospital.com', 'Ben', 'Diaz', 'staff_nurse')
         self.other_nurse = make_user('other@hospital.com', 'Cora', 'Reyes', 'staff_nurse')
         self.patient = Patient.objects.create(

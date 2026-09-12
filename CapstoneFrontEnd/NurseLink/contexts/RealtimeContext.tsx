@@ -14,11 +14,11 @@ import { useAuth } from './AuthContext';
 /**
  * One WebSocket per signed-in nurse, for the whole app.
  *
- * Handovers happen on other people's devices, so the app has to be told rather
+ * Referrals happen on other people's devices, so the app has to be told rather
  * than ask. This holds a single socket open for as long as the nurse is signed
  * in, and every screen sees its events through this context — the connection is
  * deliberately not owned by any screen, so navigating between Dashboard,
- * Handover, Kardex and the rest neither drops it nor opens a second one.
+ * Referral, Kardex and the rest neither drops it nor opens a second one.
  *
  * The socket is authenticated with the same token as the REST API. It carries
  * the events themselves, not just a nudge, so a popup can appear the instant a

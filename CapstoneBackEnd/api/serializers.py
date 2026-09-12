@@ -141,7 +141,7 @@ class SignupSerializer(serializers.Serializer):
     lastName = serializers.CharField(required=False, allow_blank=True, default='')
     name = serializers.CharField(required=False, allow_blank=True, default='')
     role = serializers.ChoiceField(
-        choices=['staff_nurse', 'supervisor'],
+        choices=['staff_nurse', 'head_nurse'],
         default='staff_nurse',
     )
     department = serializers.CharField(required=False, allow_blank=True, default='')
@@ -192,7 +192,7 @@ class SignupSerializer(serializers.Serializer):
         # Left blank unless the signup form explicitly supplied one — a new
         # account has no real ward assignment yet, and silently defaulting
         # to a made-up department ("Medical-Surgical Unit") looked like a
-        # real assignment nobody had actually made. A supervisor sets the
+        # real assignment nobody had actually made. A head nurse sets the
         # real one via PATCH /api/nurses/{id}/assign/ (NurseViewSet.assign).
         department = validated_data.get('department') or ''
 
@@ -211,7 +211,7 @@ class SignupSerializer(serializers.Serializer):
                 # Same reasoning as department above: the signup form never
                 # asks for a shift, so defaulting to 'morning' here made an
                 # unassigned account look scheduled. Left blank until a
-                # supervisor sets a real one via the assign action.
+                # head nurse sets a real one via the assign action.
                 shift='',
                 license_number=validated_data.get('licenseNumber') or '',
                 middle_name=validated_data.get('middleName') or '',
@@ -247,7 +247,7 @@ class LoginSerializer(serializers.Serializer):
         min_length=1,
     )
     role = serializers.ChoiceField(
-        choices=['staff_nurse', 'supervisor'],
+        choices=['staff_nurse', 'head_nurse'],
         required=False,
         help_text='Optional. Must match the account role if provided.',
     )
@@ -469,9 +469,9 @@ class UpdateMeSerializer(serializers.Serializer):
     # data: URI, which URLValidator rejects. validate_avatar re-encodes it.
     avatar = serializers.CharField(required=False, allow_blank=True, trim_whitespace=False)
     # department and shift are deliberately NOT here: a nurse choosing their
-    # own department/shift would make supervisor-controlled staffing
-    # assignment (NurseViewSet.assign, supervisor-only) meaningless. Both are
-    # now set exclusively by a supervisor.
+    # own department/shift would make head-nurse-controlled staffing
+    # assignment (NurseViewSet.assign, head-nurse-only) meaningless. Both are
+    # now set exclusively by a head nurse.
     clinicalRole = serializers.CharField(required=False, allow_blank=True, max_length=40)
     specialization = serializers.CharField(required=False, allow_blank=True, max_length=120)
 
@@ -554,7 +554,7 @@ class UpdateMeSerializer(serializers.Serializer):
 
 class NurseAssignmentSerializer(serializers.Serializer):
     """
-    Supervisor-only: change a nurse's department and/or shift. Used by
+    Head-nurse-only: change a nurse's department and/or shift. Used by
     NurseViewSet's `assign` action, never by a nurse editing their own
     profile (see UpdateMeSerializer, which deliberately omits both fields).
     """
@@ -667,7 +667,7 @@ def open_patient_visit(patient):
 
 
 # Fields worth naming in Patient.edit_history when they actually change —
-# demographic/clinical facts a supervisor might correct, not bookkeeping
+# demographic/clinical facts a head nurse might correct, not bookkeeping
 # columns like updated_at. Keys are validated_data/model attribute names
 # (post-`source=` resolution), values are what a human reads in the log.
 PATIENT_EDIT_LOG_LABELS = {
@@ -2130,7 +2130,7 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
     actualEndTime = serializers.DateTimeField(source='actual_end_time', read_only=True)
     actualWorkedHours = serializers.FloatField(source='actual_worked_hours', read_only=True)
     actualOvertimeHours = serializers.FloatField(source='actual_overtime_hours', read_only=True)
-    # Present only when a supervisor closed this shift out rather than the
+    # Present only when a head nurse closed this shift out rather than the
     # nurse ending it themselves — see DutyAssignmentViewSet.close.
     actualEndRecordedBy = serializers.SerializerMethodField()
 
@@ -2203,7 +2203,7 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
 class TaskHandoverSerializer(serializers.ModelSerializer):
     """
     A single task/duty item handed to another nurse on the same shift,
-    pending a supervisor's verification.
+    pending a head nurse's verification.
 
     shift/department are read-only here on purpose — they are derived in
     validate() from the sending nurse's own DutyAssignment for dutyDate, the
@@ -2427,6 +2427,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
     middleName = serializers.CharField(source='middle_name', required=False, allow_blank=True)
     age = serializers.CharField(required=False, allow_blank=True)
     gender = serializers.CharField(required=False, allow_blank=True)
+    birthday = serializers.CharField(required=False, allow_blank=True)
     religion = serializers.CharField(required=False, allow_blank=True)
     room = serializers.CharField(required=False, allow_blank=True)
     bedNumber = serializers.CharField(source='bed_number', required=False, allow_blank=True)
@@ -2440,6 +2441,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
     )
     finalDiagnosis = serializers.CharField(source='final_diagnosis', required=False, allow_blank=True)
     diet = serializers.CharField(required=False, allow_blank=True)
+    ivf = serializers.CharField(required=False, allow_blank=True)
     temperature = serializers.CharField(required=False, allow_blank=True)
     pulseRate = serializers.CharField(source='pulse_rate', required=False, allow_blank=True)
     respiratoryRate = serializers.CharField(
@@ -2477,6 +2479,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
             'middleName',
             'age',
             'gender',
+            'birthday',
             'religion',
             'room',
             'bedNumber',
@@ -2486,6 +2489,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
             'admittingDiagnosis',
             'finalDiagnosis',
             'diet',
+            'ivf',
             'temperature',
             'pulseRate',
             'respiratoryRate',
@@ -2686,7 +2690,7 @@ class VerifyIdSerializer(serializers.Serializer):
         help_text='Which document is being read.',
     )
     expectedRole = serializers.ChoiceField(
-        choices=['staff_nurse', 'supervisor'],
+        choices=['staff_nurse', 'head_nurse'],
         required=False,
         allow_blank=True,
         help_text='Optional. The workflow flags a mismatch against the position it reads.',

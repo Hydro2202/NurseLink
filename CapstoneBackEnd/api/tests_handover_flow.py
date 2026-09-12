@@ -117,7 +117,7 @@ class HandoverAcknowledgeTests(APITestCase):
         self.acknowledge(handover, self.incoming)
 
         note = Notification.objects.get(recipient=self.outgoing)
-        self.assertEqual(note.title, 'Handover acknowledged')
+        self.assertEqual(note.title, 'Referral acknowledged')
         self.assertIn('Ben Diaz', note.message)
         self.assertIn('2 unfinished tasks', note.message)
         self.assertEqual(note.action_highlight_id, 'H500')
@@ -227,7 +227,7 @@ class HandoverCreatedNotificationTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.content)
 
         note = Notification.objects.get(recipient=self.incoming)
-        self.assertEqual(note.title, 'Patient Handover')
+        self.assertEqual(note.title, 'Patient Referral')
         self.assertEqual(note.event, 'handover_received')
         self.assertIn('Ana Cruz', note.message)
         self.assertIn('Juan Dela Cruz', note.message)

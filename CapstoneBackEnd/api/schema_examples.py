@@ -9,7 +9,7 @@ was the only endpoint with a usable body: it was the only one with examples.
 
 Every entry here is ``request_only`` so these payloads never leak into the
 response samples. Values mirror the accounts created by ``seed_demo``
-(Sarah Johnson, staff nurse, ICU / Maria Santos, supervisor) so a reader can
+(Sarah Johnson, staff nurse, ICU / Maria Santos, head nurse) so a reader can
 copy one straight into a live call.
 """
 
@@ -44,13 +44,13 @@ SIGNUP_EXAMPLES = [
         'Requires a registrationSessionId that has cleared face or OTP verification.',
     ),
     _example(
-        'Supervisor',
+        'Head nurse',
         {
-            'email': 'supervisor@hospital.com',
+            'email': 'headnurse@hospital.com',
             'password': 'password123',
             'firstName': 'Maria',
             'lastName': 'Santos',
-            'role': 'supervisor',
+            'role': 'head_nurse',
             'department': 'Nursing Administration',
             'licenseNumber': 'RN-20001',
             'registrationSessionId': SESSION_ID,
@@ -151,7 +151,7 @@ PATIENT_CREATE_EXAMPLES = [
             'medications': ['Ceftriaxone 1g IV q12h', 'Salbutamol neb q6h'],
             'alerts': ['Fall risk', 'Oxygen dependent'],
         },
-        'Supervisor only. "id" becomes the patient_code and must be unique.',
+        'Head nurse only. "id" becomes the patient_code and must be unique.',
     ),
 ]
 
@@ -222,7 +222,7 @@ TASK_UPDATE_EXAMPLES = [
 
 HANDOVER_CREATE_EXAMPLES = [
     _example(
-        'SBAR handover',
+        'SBAR referral',
         {
             'id': 'H-3011',
             'patientId': 'P-1042',
@@ -332,7 +332,7 @@ ASSIGNMENT_CREATE_EXAMPLES = [
             'notes': 'Needs hourly neuro checks for the first 12 hours.',
             'status': 'active',
         },
-        'Supervisor only. A patient can hold only one active assignment at a time.',
+        'Head nurse only. A patient can hold only one active assignment at a time.',
     ),
 ]
 
@@ -357,6 +357,7 @@ KARDEX_CREATE_EXAMPLES = [
             'middleName': 'Batista',
             'age': '67',
             'gender': 'Male',
+            'birthday': '1959-03-14',
             'religion': 'Roman Catholic',
             'room': 'ICU-04',
             'bedNumber': '2',
@@ -366,6 +367,7 @@ KARDEX_CREATE_EXAMPLES = [
             'admittingDiagnosis': 'Community-acquired pneumonia, moderate risk',
             'finalDiagnosis': '',
             'diet': 'Soft diet, low salt',
+            'ivf': 'D5LR 1L @ 80cc/hr',
             'temperature': '38.2',
             'pulseRate': '96',
             'respiratoryRate': '22',

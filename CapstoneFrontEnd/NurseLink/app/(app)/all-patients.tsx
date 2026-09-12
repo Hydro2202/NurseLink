@@ -152,14 +152,14 @@ const VITAL_SEVERITY_STYLE: Record<
 type SortKey = 'name' | 'room' | 'nurse' | 'status';
 // 'active' (the default) means not-discharged — a discharged patient's
 // record is kept, never deleted, but stays out of the working list unless
-// a supervisor explicitly asks to see it via 'discharged' or 'all'.
+// a head nurse explicitly asks to see it via 'discharged' or 'all'.
 type StatusFilter = 'active' | 'admitted' | 'observation' | 'discharged' | 'all';
 
 export default function AllPatientsPage() {
   const router = useRouter();
   const toast = useToast();
   const { user } = useAuth();
-  const isSupervisor = user?.role === 'supervisor';
+  const isSupervisor = user?.role === 'head_nurse';
   const [patients, setPatients] = useState<Patient[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
@@ -298,7 +298,7 @@ export default function AllPatientsPage() {
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>All Patients</Text>
             <Text style={styles.subtitle}>
-              Supervisor view — {filteredPatients.length} of {patients.length} patients
+              Head nurse view — {filteredPatients.length} of {patients.length} patients
               {loading ? ' (loading...)' : ''}
               {statusFilter === 'active' ? ' · discharged patients hidden, switch filter to view' : ''}
             </Text>

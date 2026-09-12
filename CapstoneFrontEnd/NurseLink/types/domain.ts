@@ -262,7 +262,7 @@ export interface AppNotification {
   patient?: string;
   /** Patient code, when the notification refers to a real patient. */
   patientId?: string | null;
-  /** Handover code, when it refers to a real handover. */
+  /** Handover code, when it refers to a real referral. */
   handoverId?: string | null;
   /** Nurse who caused it. */
   senderName?: string | null;
@@ -318,7 +318,7 @@ export interface DutyAssignment {
   actualEndTime: string | null;
   actualWorkedHours: number;
   actualOvertimeHours: number;
-  /** Set only when a supervisor closes out a shift the nurse never ended themselves. */
+  /** Set only when a head nurse closes out a shift the nurse never ended themselves. */
   actualEndRecordedBy: string | null;
   createdBy: string;
   createdAt: string;
@@ -336,6 +336,7 @@ export interface KardexHistory {
   middleName: string;
   age: string;
   gender: string;
+  birthday: string;
   religion: string;
   room: string;
   bedNumber: string;
@@ -345,6 +346,7 @@ export interface KardexHistory {
   admittingDiagnosis: string;
   finalDiagnosis: string;
   diet: string;
+  ivf: string;
   allergies: string[];
   temperature: string;
   pulseRate: string;
@@ -420,14 +422,14 @@ export interface AdminVitalReading {
   createdAt: string;
 }
 
-/** One nurse or supervisor account, as the Admin Accounts screen manages
+/** One nurse or head nurse account, as the Admin Accounts screen manages
  * it — backed by AdminUserViewSet. Never includes another admin account
  * (an admin User has no NurseProfile, so this list can't include one). */
 export interface AdminAccount {
   id: string;
   name: string;
   email: string;
-  role: 'staff_nurse' | 'supervisor';
+  role: 'staff_nurse' | 'head_nurse';
   department: string;
   licenseNumber: string;
   hospitalName: string;

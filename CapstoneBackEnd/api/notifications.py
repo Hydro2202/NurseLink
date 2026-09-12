@@ -245,16 +245,16 @@ def notify_handover_created(handover):
         recipient,
         notification_type='warning',
         event=HANDOVER_RECEIVED,
-        title='Patient Handover',
+        title='Patient Referral',
         message=(
-            f'Patient {patient_name or "a patient"} has been handed over to you '
+            f'Patient {patient_name or "a patient"} has been referred to you '
             f'by {handover.nurse_from}.'
         ),
         patient_label=patient_name,
         patient=handover.patient,
         handover=handover,
         sender=handover.created_by,
-        action_label='Review handover',
+        action_label='Review referral',
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )
@@ -288,16 +288,16 @@ def notify_handover_acknowledged(handover, nurse, adopted_tasks):
         recipient,
         notification_type='success',
         event=HANDOVER_ACKNOWLEDGED,
-        title='Handover acknowledged',
+        title='Referral acknowledged',
         message=(
-            f'{nurse_name} acknowledged your handover for '
+            f'{nurse_name} acknowledged your referral for '
             f'{handover.patient_name or "a patient"}.{tail}'
         ),
         patient_label=handover.patient_name or '',
         patient=handover.patient,
         handover=handover,
         sender=nurse,
-        action_label='View handover',
+        action_label='View referral',
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )
@@ -348,7 +348,7 @@ def notify_task_assigned(task, actor=None):
 
 def notify_kardex_reviewed(kardex, reviewer):
     """
-    Tell the nurse who saved a kardex what the supervisor decided.
+    Tell the nurse who saved a kardex what the head nurse decided.
 
     Silent on approval would leave 'approved' to mean nothing more than 'not
     complained about yet' — and a return/rejection is exactly the case where
@@ -395,8 +395,8 @@ def notify_task_handover_verified(handover):
     Tell the receiving nurse a task has been handed over to them.
 
     This is deliberately the *only* place a TaskHandover ever reaches the
-    receiving nurse's inbox — the whole point of the supervisor-verification
-    gate is that nothing is said to them before a supervisor signs off, so
+    receiving nurse's inbox — the whole point of the head-nurse-verification
+    gate is that nothing is said to them before a head nurse signs off, so
     this must never be called from the create path, only from the approve
     action once status is already 'verified'.
     """
@@ -415,7 +415,7 @@ def notify_task_handover_verified(handover):
         notification_type='info',
         event=TASK_HANDOVER_VERIFIED,
         title='Task handed over to you',
-        message=f'{sender_name} handed over "{task_label}" to you, verified by a supervisor.{tail}',
+        message=f'{sender_name} handed over "{task_label}" to you, verified by a head nurse.{tail}',
         sender=handover.from_nurse,
         action_label='Open tasks',
         action_path='/tasks',
@@ -441,7 +441,7 @@ def notify_task_handover_accepted(handover):
         notification_type='success',
         event=TASK_HANDOVER_ACCEPTED,
         title='Handover verified',
-        message=f'Your handover to {receiver_name} was verified by a supervisor and they have been notified.',
+        message=f'Your handover to {receiver_name} was verified by a head nurse and they have been notified.',
         sender=handover.supervisor,
         action_label='Open tasks',
         action_path='/tasks',
@@ -459,7 +459,7 @@ def notify_task_handover_rejected(handover):
 
     supervisor_name = (
         handover.supervisor.get_full_name().strip() or handover.supervisor.username
-        if handover.supervisor else 'A supervisor'
+        if handover.supervisor else 'A head nurse'
     )
     receiver_name = handover.to_nurse.get_full_name().strip() or handover.to_nurse.username
     tail = f' Reason: {handover.rejection_reason}' if handover.rejection_reason else ''
@@ -479,9 +479,9 @@ def notify_task_handover_rejected(handover):
 
 def notify_nurse_reassigned(profile, actor, *, changed_department, changed_shift):
     """
-    Tell a nurse their department or shift was changed by a supervisor.
+    Tell a nurse their department or shift was changed by a head nurse.
 
-    Skipped when a supervisor somehow reassigns themselves (not a real
+    Skipped when a head nurse somehow reassigns themselves (not a real
     workflow, but harmless to guard). Gated on task_notifications, same as
     kardex review — the closest existing switch for "something about my
     work assignment changed".
@@ -501,7 +501,7 @@ def notify_nurse_reassigned(profile, actor, *, changed_department, changed_shift
     if not parts:
         return None
 
-    actor_name = actor.get_full_name().strip() or actor.username if actor else 'A supervisor'
+    actor_name = actor.get_full_name().strip() or actor.username if actor else 'A head nurse'
     return notify(
         recipient,
         notification_type='info',
@@ -531,7 +531,7 @@ def notify_admin_new_registration(new_user):
     account to all of them.
     """
     profile = getattr(new_user, 'nurse_profile', None)
-    role_label = 'Supervisor' if profile and profile.role == 'supervisor' else 'Staff Nurse'
+    role_label = 'Head Nurse' if profile and profile.role == 'head_nurse' else 'Staff Nurse'
     name = new_user.get_full_name().strip() or new_user.username
 
     admins = User.objects.filter(is_staff=True)

@@ -1,5 +1,5 @@
 // User Roles and Hierarchy
-export type UserRole = 'chief_nurse' | 'supervisor' | 'head_nurse' | 'oic' | 'staff_nurse';
+export type UserRole = 'chief_nurse' | 'head_nurse' | 'oic' | 'staff_nurse';
 
 export interface User {
   id: string;

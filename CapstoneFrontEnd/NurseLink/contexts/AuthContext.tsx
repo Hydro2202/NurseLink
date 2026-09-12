@@ -31,7 +31,7 @@ interface AuthContextType {
   /**
    * Re-fetches this nurse's own profile from the server and replaces the
    * cached one — for facts that can change from *someone else's* action
-   * (a supervisor reassigning this nurse's department/shift) rather than
+   * (a head nurse reassigning this nurse's department/shift) rather than
    * this nurse's own edit, which updateUser already handles. fetchMe() only
    * otherwise runs once, at app boot, so without this a reassignment sits
    * invisible on this device until the next full login.

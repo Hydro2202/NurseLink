@@ -25,7 +25,7 @@ def make_user(email, first, last, *, role='staff_nurse'):
 class PatientEditTestCase(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='supervisor')
+        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='head_nurse')
         self.nurse = make_user('nurse@hospital.com', 'Juan', 'Dela Cruz')
         self.other_nurse = make_user('other@hospital.com', 'Maria', 'Santos')
         self.dept, _ = Department.objects.get_or_create(name='Cardiology Unit')

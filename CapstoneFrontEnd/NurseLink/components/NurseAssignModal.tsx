@@ -8,7 +8,7 @@ import { Select } from './Select';
 export interface AssignTarget {
   id: string;
   name: string;
-  /** Shown alongside the name so a supervisor can confirm they have the
+  /** Shown alongside the name so a head nurse can confirm they have the
    * right account — several nurses on this ward share a display name. */
   email: string;
   department: string;

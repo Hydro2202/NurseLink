@@ -5,7 +5,7 @@ import { useLiveRefresh } from '../contexts/LiveContext';
  * Keeps the signed-in nurse's own department/shift current on this device.
  *
  * AuthContext fetches the profile once at sign-in and otherwise never
- * refetches it — so when a supervisor reassigns a nurse's department/shift
+ * refetches it — so when a head nurse reassigns a nurse's department/shift
  * (see NurseViewSet.assign), that nurse's own session kept showing the old
  * values (Settings, the Dashboard greeting's shift label, etc.) until they
  * happened to log out and back in.

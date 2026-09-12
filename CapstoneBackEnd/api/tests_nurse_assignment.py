@@ -55,7 +55,7 @@ class NurseSelfEditCannotChangeAssignmentTests(APITestCase):
 class NurseAssignmentTests(APITestCase):
     def setUp(self):
         cache.clear()
-        self.supervisor = make_nurse('sup@hospital.com', 'Ana', 'Cruz', role='supervisor')
+        self.supervisor = make_nurse('sup@hospital.com', 'Ana', 'Cruz', role='head_nurse')
         self.nurse = make_nurse('nurse@hospital.com', 'Ben', 'Diaz', department='ICU', shift='morning')
 
     def test_supervisor_can_change_department_and_shift(self):

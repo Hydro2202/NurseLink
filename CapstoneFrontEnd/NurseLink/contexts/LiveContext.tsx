@@ -15,7 +15,7 @@ import { usePreferences } from './PreferencesContext';
 /**
  * The app's single source of "something changed".
  *
- * Handovers, tasks and notifications all originate on other nurses' devices, so
+ * Referrals, tasks and notifications all originate on other nurses' devices, so
  * nothing local can announce them — the app has to ask. Having each screen ask
  * for its own list on a timer would mean several full responses per nurse per
  * tick, nearly all of them identical to the last. Instead one poller asks the

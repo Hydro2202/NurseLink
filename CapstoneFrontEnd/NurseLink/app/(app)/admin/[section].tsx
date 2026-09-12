@@ -161,8 +161,8 @@ const SECTIONS: Record<string, SectionConfig> = {
     ],
   },
   handovers: {
-    title: 'Handover Notes',
-    description: 'SBAR patient handovers between nurses.',
+    title: 'Referral Notes',
+    description: 'SBAR patient referrals between nurses.',
     fetch: () => fetchHandovers(),
     toRow: (h) => ({
       key: h.id,
@@ -189,7 +189,7 @@ const SECTIONS: Record<string, SectionConfig> = {
   },
   'task-handovers': {
     title: 'Task Handovers',
-    description: 'Shift-to-shift task handoffs, pending supervisor verification.',
+    description: 'Shift-to-shift task handoffs, pending head nurse verification.',
     fetch: () => fetchTaskHandovers(),
     toRow: (h) => ({
       key: h.id,
@@ -208,7 +208,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Duty date', value: h.dutyDate },
       { label: 'Notes', value: h.notes || '—', multiline: true },
       { label: 'Status', value: h.statusLabel || h.status },
-      { label: 'Supervisor', value: h.supervisorName || '—' },
+      { label: 'Head nurse', value: h.supervisorName || '—' },
       { label: 'Verified at', value: h.verifiedAt ? fmtDate(h.verifiedAt) : '—' },
       { label: 'Rejection reason', value: h.rejectionReason || '—', multiline: true },
       { label: 'Created', value: fmtDate(h.createdAt) },
@@ -275,7 +275,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Actual end', value: d.actualEndTime ? fmtDate(d.actualEndTime) : 'Not ended' },
       { label: 'Actual worked hours', value: String(d.actualWorkedHours ?? 0) },
       { label: 'Actual overtime hours', value: String(d.actualOvertimeHours ?? 0) },
-      { label: 'End recorded by (supervisor)', value: d.actualEndRecordedBy || '—' },
+      { label: 'End recorded by (head nurse)', value: d.actualEndRecordedBy || '—' },
       { label: 'Created by', value: d.createdBy || '—' },
     ],
   },
@@ -293,6 +293,7 @@ const SECTIONS: Record<string, SectionConfig> = {
     detailFields: (k) => [
       { label: 'Patient', value: k.patientName },
       { label: 'Age / Gender', value: `${k.age} / ${k.gender}` },
+      { label: 'Birthday', value: k.birthday || '—' },
       { label: 'Room / Bed', value: `${k.room} / ${k.bedNumber}` },
       { label: 'Admission date', value: k.admissionDate || '—' },
       { label: 'Attending physician', value: k.attendingPhysician || '—' },
@@ -300,6 +301,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Admitting diagnosis', value: k.admittingDiagnosis || '—', multiline: true },
       { label: 'Final diagnosis', value: k.finalDiagnosis || '—', multiline: true },
       { label: 'Diet', value: k.diet || '—' },
+      { label: 'IVF', value: k.ivf || '—' },
       { label: 'Allergies', value: joinOrDash(k.allergies) },
       { label: 'Temperature', value: k.temperature || '—' },
       { label: 'Pulse rate', value: k.pulseRate || '—' },

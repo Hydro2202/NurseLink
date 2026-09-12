@@ -209,17 +209,17 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         <Pressable style={[styles.dialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
           <View style={styles.headerRow}>
             <Shield size={20} color={Colors.primary} />
-            <Text style={styles.title}>Create Handover Note</Text>
+            <Text style={styles.title}>Create Referral Note</Text>
           </View>
           <Text style={styles.description}>
-            Complete the SBAR form to submit a secure handover note to the incoming nurse.
+            Complete the SBAR form to submit a secure referral note to the incoming nurse.
           </Text>
 
           <ScrollView style={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={styles.form}>
               <Alert variant="info" style={styles.hipaaAlert}>
                 <AlertDescription>
-                  All handover notes are encrypted and comply with HIPAA security standards.
+                  All referral notes are encrypted and comply with HIPAA security standards.
                 </AlertDescription>
               </Alert>
 
@@ -367,7 +367,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                       <Text style={styles.label}>Unfinished Tasks</Text>
                       <Text style={styles.unfinishedHint}>
                         Anything still outstanding. When the receiving nurse acknowledges
-                        this handover, each line becomes a task on their list.
+                        this referral, each line becomes a task on their list.
                       </Text>
 
                       <View style={styles.taskInputRow}>
@@ -423,7 +423,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
               Cancel
             </Button>
             <Button onPress={handleSubmit} disabled={loading} loading={loading} style={{ flex: 1 }}>
-              {loading ? 'Submitting...' : 'Submit Handover'}
+              {loading ? 'Submitting...' : 'Submit Referral'}
             </Button>
           </View>
         </Pressable>

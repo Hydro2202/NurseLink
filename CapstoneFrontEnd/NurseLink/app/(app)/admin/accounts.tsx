@@ -169,7 +169,7 @@ export default function AdminAccountsPage() {
     <View style={styles.root}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Accounts</Text>
-        <Text style={styles.subtitle}>Every nurse and supervisor account, regardless of status.</Text>
+        <Text style={styles.subtitle}>Every nurse and head nurse account, regardless of status.</Text>
 
         <Input
           placeholder="Search by name or email"
@@ -198,7 +198,7 @@ export default function AdminAccountsPage() {
                     </View>
                     <Text style={styles.rowMeta}>{account.email}</Text>
                     <Text style={styles.rowMeta}>
-                      {account.role === 'supervisor' ? 'Supervisor' : 'Staff Nurse'}
+                      {account.role === 'head_nurse' ? 'Head Nurse' : 'Staff Nurse'}
                       {account.department ? ` · ${account.department}` : ''}
                     </Text>
                   </View>
@@ -234,7 +234,7 @@ export default function AdminAccountsPage() {
                 </View>
                 <View style={styles.badgeRow}>
                   <Badge variant={STATUS_VARIANT[selected.approvalStatus]}>{selected.approvalStatus}</Badge>
-                  <Badge variant="outline">{selected.role === 'supervisor' ? 'Supervisor' : 'Staff Nurse'}</Badge>
+                  <Badge variant="outline">{selected.role === 'head_nurse' ? 'Head Nurse' : 'Staff Nurse'}</Badge>
                   <Badge variant={selected.isActiveStaff ? 'outline' : 'secondary'}>
                     {selected.isActiveStaff ? 'active' : 'deactivated'}
                   </Badge>

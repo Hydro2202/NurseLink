@@ -151,7 +151,7 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
     }
   };
 
-  const roleLabel = user?.role === 'staff_nurse' ? 'Nurse' : 'Supervisor';
+  const roleLabel = user?.role === 'staff_nurse' ? 'Nurse' : 'Head Nurse';
 
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => onOpenChange(false)}>
@@ -246,7 +246,7 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
                     : '—'}
                 </Text>
                 <Text style={styles.roleHint}>
-                  Role, department and shift are set by your supervisor. Contact them for changes.
+                  Role, department and shift are set by your head nurse. Contact them for changes.
                 </Text>
               </View>
             </View>

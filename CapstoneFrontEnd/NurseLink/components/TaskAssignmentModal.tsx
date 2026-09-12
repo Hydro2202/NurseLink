@@ -68,7 +68,7 @@ export function TaskAssignmentModal({
   }, [patient]);
 
   // Always land back on the form, never mid-review, on a fresh open —
-  // otherwise closing and reopening this modal could strand a supervisor on
+  // otherwise closing and reopening this modal could strand a head nurse on
   // a review screen for a form they never actually filled in this time.
   useEffect(() => {
     if (open) setReviewMode(false);
@@ -120,7 +120,7 @@ export function TaskAssignmentModal({
       // the real PatientAssignment (which the backend uses to close out any
       // previous nurse's active assignment and sync Patient.assigned_nurse).
       // Without this, the patient never showed up on the new nurse's own
-      // My Patients screen even though the supervisor could see the task.
+      // My Patients screen even though the head nurse could see the task.
       if (selectedNurseRecord) {
         await createAssignment({
           patientId: patient.id,

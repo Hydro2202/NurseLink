@@ -32,7 +32,7 @@ class DuplicatePatientTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.nurse = make_user('nurse@hospital.com', 'Ben', 'Diaz')
-        self.supervisor = make_user('sup@hospital.com', 'Maria', 'Santos', role='supervisor')
+        self.supervisor = make_user('sup@hospital.com', 'Maria', 'Santos', role='head_nurse')
         self.existing = Patient.objects.create(
             patient_code='P600', name='Juan Dela Cruz', age=61, gender='Male',
             room='204-B', diagnosis='CHF', admission_date=datetime.date(2026, 3, 2),

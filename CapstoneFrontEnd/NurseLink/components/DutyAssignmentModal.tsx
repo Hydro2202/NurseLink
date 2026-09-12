@@ -53,7 +53,7 @@ const STATUS_OPTIONS = [
 ];
 
 // Mirrors DutyAssignment.duration_hours on the backend exactly, purely for
-// an instant preview as the supervisor types — the backend recomputes and
+// an instant preview as the head nurse types — the backend recomputes and
 // stores the real numbers itself; this never gets sent as-is.
 function durationHours(start: string, end: string): number | null {
   const m = /^(\d{1,2}):(\d{2})$/;

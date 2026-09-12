@@ -55,7 +55,7 @@ class SharedPatientRosterTests(APITestCase):
         self.adder = make_nurse('adder@hospital.com', 'Ana', 'Cruz')
         self.other = make_nurse('other@hospital.com', 'Ben', 'Diaz')
         self.supervisor = make_nurse(
-            'head@hospital.com', 'Cora', 'Reyes', role='supervisor'
+            'head@hospital.com', 'Cora', 'Reyes', role='head_nurse'
         )
         self.patient = make_patient('P900', 'Juan Dela Cruz', self.adder, self.adder)
 

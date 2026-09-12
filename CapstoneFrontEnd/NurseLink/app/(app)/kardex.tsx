@@ -59,7 +59,7 @@ const STATUS_BADGE: Record<
   rejected: { label: 'Rejected', variant: 'destructive' },
 };
 
-// Left-edge accent on each queue card — lets a supervisor scanning a long
+// Left-edge accent on each queue card — lets a head nurse scanning a long
 // list tell status apart at a glance, without reading every badge.
 const STATUS_ACCENT: Record<KardexHistory['status'], string> = {
   submitted: Colors.blue500,
@@ -77,6 +77,7 @@ export default function KardexScreen() {
   const [middleName, setMiddleName] = useState('');
   const [age, setAge] = useState('');
   const [gender, setGender] = useState('');
+  const [birthday, setBirthday] = useState('');
   const [religion, setReligion] = useState('');
   const [room, setRoom] = useState('');
   const [bedNumber, setBedNumber] = useState('');
@@ -87,6 +88,7 @@ export default function KardexScreen() {
   const [admittingDiagnosis, setAdmittingDiagnosis] = useState('');
   const [finalDiagnosis, setFinalDiagnosis] = useState('');
   const [diet, setDiet] = useState('');
+  const [ivf, setIvf] = useState('');
   const [allergies, setAllergies] = useState<string[]>([]);
   const [allergyDraft, setAllergyDraft] = useState('');
 
@@ -208,6 +210,7 @@ export default function KardexScreen() {
     setMiddleName('');
     setAge('');
     setGender('');
+    setBirthday('');
     setReligion('');
     setRoom('');
     setBedNumber('');
@@ -217,6 +220,7 @@ export default function KardexScreen() {
     setAdmittingDiagnosis('');
     setFinalDiagnosis('');
     setDiet('');
+    setIvf('');
     setAllergies([]);
     setAllergyDraft('');
     setTemperature('');
@@ -256,6 +260,7 @@ export default function KardexScreen() {
         middleName,
         age,
         gender,
+        birthday,
         religion,
         room,
         bedNumber,
@@ -265,6 +270,7 @@ export default function KardexScreen() {
         admittingDiagnosis,
         finalDiagnosis,
         diet,
+        ivf,
         allergies,
         temperature,
         pulseRate,
@@ -308,7 +314,7 @@ export default function KardexScreen() {
     return `NURSELINK KARDEX
 ================
 Patient: ${firstName} ${middleName} ${lastName}
-Age: ${age} | Sex: ${gender}
+Age: ${age} | Sex: ${gender} | Birthday: ${birthday || 'N/A'}
 Religion: ${religion || 'N/A'}
 Room: ${room} | Bed: ${bedNumber || 'N/A'}
 Admission Date: ${admissionDate}
@@ -318,6 +324,7 @@ Chief Complaint: ${chiefComplaint || 'N/A'}
 Admitting Diagnosis: ${admittingDiagnosis || 'N/A'}
 Final Diagnosis: ${finalDiagnosis || 'N/A'}
 Diet: ${diet || 'N/A'}
+IVF: ${ivf || 'N/A'}
 Allergies: ${allergies.length > 0 ? allergies.join(', ') : 'None known'}
 
 VITAL SIGNS
@@ -406,9 +413,9 @@ ${specialEndorsements || 'None'}
   );
 
 
-  const isSupervisor = user?.role === 'supervisor';
+  const isSupervisor = user?.role === 'head_nurse';
   const pendingReviewCount = kardexHistory.filter((e) => e.status === 'submitted').length;
-  // Supervisors work through a queue — surface what needs a decision first,
+  // Head nurses work through a queue — surface what needs a decision first,
   // without hiding or reordering anything a staff nurse would see.
   const displayedHistory = isSupervisor
     ? [...kardexHistory].sort((a, b) =>
@@ -540,6 +547,14 @@ ${specialEndorsements || 'None'}
                 placeholder="Religion"
               />
             </View>
+            <View style={[styles.field, styles.colThird]}>
+              <FieldLabel text="Birthday" />
+              <Input
+                value={birthday}
+                onChangeText={setBirthday}
+                placeholder="MM/DD/YYYY"
+              />
+            </View>
           </View>
 
           <View style={styles.groupDivider} />
@@ -627,6 +642,15 @@ ${specialEndorsements || 'None'}
               value={diet}
               onChangeText={setDiet}
               placeholder="e.g., NPO, Regular, Low-sodium"
+            />
+          </View>
+
+          <View style={styles.field}>
+            <FieldLabel text="IVF" />
+            <Input
+              value={ivf}
+              onChangeText={setIvf}
+              placeholder="e.g., D5LR 1L @ 80cc/hr"
             />
           </View>
 
@@ -1070,6 +1094,12 @@ ${specialEndorsements || 'None'}
                       </View>
                       <View style={[styles.field, styles.colQuarter]}>
                         <ReadOnlyField
+                          label="Birthday"
+                          value={selectedHistoryEntry.birthday || 'N/A'}
+                        />
+                      </View>
+                      <View style={[styles.field, styles.colQuarter]}>
+                        <ReadOnlyField
                           label="Admission Date"
                           value={selectedHistoryEntry.admissionDate}
                         />
@@ -1127,6 +1157,10 @@ ${specialEndorsements || 'None'}
                       <ReadOnlyField
                         label="Diet"
                         value={selectedHistoryEntry.diet || 'N/A'}
+                      />
+                      <ReadOnlyField
+                        label="IVF"
+                        value={selectedHistoryEntry.ivf || 'N/A'}
                       />
                       <ReadOnlyField
                         label="Allergies"
@@ -1197,14 +1231,14 @@ ${specialEndorsements || 'None'}
                     />
                   </View>
 
-                  {user?.role === 'supervisor' && selectedHistoryEntry.status === 'submitted' ? (
+                  {user?.role === 'head_nurse' && selectedHistoryEntry.status === 'submitted' ? (
                     <>
                       <View style={styles.separator} />
                       <View style={styles.reviewPanel}>
                         <View style={styles.reviewPanelHeader}>
                           <View style={styles.titleRow}>
                             <FileText size={20} color={Colors.purple600} />
-                            <Text style={styles.sectionHeading}>Supervisor Review</Text>
+                            <Text style={styles.sectionHeading}>Head Nurse Review</Text>
                           </View>
                           <View style={styles.actionRequiredChip}>
                             <Text style={styles.actionRequiredText}>ACTION REQUIRED</Text>

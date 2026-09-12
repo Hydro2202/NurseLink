@@ -38,7 +38,7 @@ def make_user(email, first, last, *, role='staff_nurse'):
 class PatientVisitTestCase(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='supervisor')
+        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='head_nurse')
         self.nurse = make_user('nurse@hospital.com', 'Juan', 'Dela Cruz')
         self.client.force_authenticate(self.supervisor)
 

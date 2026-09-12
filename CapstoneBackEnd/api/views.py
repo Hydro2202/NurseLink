@@ -1783,11 +1783,11 @@ class LoginView(APIView):
                 request_only=True,
             ),
             OpenApiExample(
-                'Supervisor login',
+                'Head nurse login',
                 value={
-                    'email': 'supervisor@hospital.com',
+                    'email': 'headnurse@hospital.com',
                     'password': 'password123',
-                    'role': 'supervisor',
+                    'role': 'head_nurse',
                 },
                 request_only=True,
             ),
@@ -1812,7 +1812,7 @@ class LoginView(APIView):
         # An admin account (User.is_staff, created without a NurseProfile —
         # see AdminUserViewSet/IsAdmin) has no profile here, so every check
         # below is skipped: an admin can log in with either the Nurse or
-        # Supervisor button selected, and always reaches the app regardless.
+        # Head Nurse button selected, and always reaches the app regardless.
         profile = getattr(user, 'nurse_profile', None)
         if requested_role and profile and profile.role != requested_role:
             return Response(
@@ -1899,7 +1899,7 @@ class OAuthTokenView(APIView):
                 'client_secret': serializers.CharField(required=False, allow_blank=True),
                 'scope': serializers.CharField(required=False, allow_blank=True),
                 'role': serializers.ChoiceField(
-                    choices=['staff_nurse', 'supervisor'],
+                    choices=['staff_nurse', 'head_nurse'],
                     required=False,
                 ),
             },
@@ -1925,9 +1925,9 @@ class OAuthTokenView(APIView):
                 request_only=True,
             ),
             OpenApiExample(
-                'Supervisor credentials',
+                'Head nurse credentials',
                 value={
-                    'username': 'supervisor@hospital.com',
+                    'username': 'headnurse@hospital.com',
                     'password': 'password123',
                     'grant_type': 'password',
                 },
@@ -2071,7 +2071,7 @@ class LogoutView(APIView):
 @extend_schema_view(
     create=extend_schema(
         summary='Admit a patient',
-        description='Editable request body. Supervisor only.',
+        description='Editable request body. Head nurse only.',
         examples=PATIENT_CREATE_EXAMPLES,
     ),
     update=extend_schema(
@@ -2167,7 +2167,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         return context
 
     def get_permissions(self):
-        # Supervisors: full CRUD. Staff nurses: can update/delete their own
+        # Head nurses: full CRUD. Staff nurses: can update/delete their own
         # assigned patients (see update()/destroy() below for that check).
         # Every branch must include IsApprovedNurse (or the admin-read-only
         # variant) — this method fully replaces the class-level
@@ -2177,7 +2177,7 @@ class PatientViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated(), IsApprovedNurse(), IsSupervisor()]
         # Admin gets list/retrieve here (SAFE_METHODS) for the Admin panel's
         # Patients oversight screen — never write, since discharge/create
-        # above already lock write access to a supervisor.
+        # above already lock write access to a head nurse.
         return [permissions.IsAuthenticated(), IsApprovedNurseOrAdminReadOnly()]
 
     @extend_schema(
@@ -2185,8 +2185,8 @@ class PatientViewSet(viewsets.ModelViewSet):
         responses={200: PatientSerializer},
         summary='Discharge a patient',
         description=(
-            'No request body — the patient is identified by the URL. Supervisor-only. Sets '
-            'status to discharged, records the discharge timestamp and which supervisor '
+            'No request body — the patient is identified by the URL. Head-nurse-only. Sets '
+            'status to discharged, records the discharge timestamp and which head nurse '
             'performed it (audit trail), ends the patient’s active nurse assignment, and '
             'clears assignedNurseId — the patient no longer appears as anyone’s actively '
             'assigned patient. The record itself is never deleted: this admission’s '
@@ -2255,7 +2255,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         responses={200: PatientSerializer},
         summary='Readmit a discharged patient under their existing profile',
         description=(
-            'Supervisor-only. For a returning patient — reuses the existing Patient row (same '
+            'Head-nurse-only. For a returning patient — reuses the existing Patient row (same '
             'patient_code) instead of creating a duplicate: reactivates status to admitted, '
             'clears the discharge audit fields, applies the new admission’s diagnosis/room/etc., '
             'and opens a fresh PatientVisit. The previous stay’s visit record is untouched and '
@@ -2320,7 +2320,7 @@ class PatientViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         patient = self.get_object()
         role = get_user_role(request.user)
-        if role != 'supervisor' and patient.assigned_nurse_id != request.user.id:
+        if role != 'head_nurse' and patient.assigned_nurse_id != request.user.id:
             return Response(
                 {'detail': 'You can only edit patients assigned to you.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -2330,7 +2330,7 @@ class PatientViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         patient = self.get_object()
         role = get_user_role(request.user)
-        if role != 'supervisor' and patient.assigned_nurse_id != request.user.id:
+        if role != 'head_nurse' and patient.assigned_nurse_id != request.user.id:
             return Response(
                 {'detail': 'You can only delete patients assigned to you.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -2422,7 +2422,7 @@ class DepartmentViewSet(viewsets.ReadOnlyModelViewSet):
 
 class DoctorViewSet(viewsets.ModelViewSet):
     """
-    Read: any approved nurse/supervisor (feeds task/patient doctor pickers),
+    Read: any approved nurse/head nurse (feeds task/patient doctor pickers),
     plus admin. Write: admin only — Doctor was Django-admin-only reference
     data until now, so the in-app Admin panel is the first UI anyone gets
     for keeping this list current.
@@ -2545,7 +2545,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         summary='Unassign a task from its nurse',
         description=(
             'No request body — the task is identified by the URL. Clears the assigned '
-            'nurse and returns the task to pending, without deleting it. Supervisor only.'
+            'nurse and returns the task to pending, without deleting it. Head nurse only.'
         ),
     )
     @action(detail=True, methods=['post'])
@@ -2592,9 +2592,9 @@ class HandoverViewSet(viewsets.ModelViewSet):
     @extend_schema(
         request=None,
         responses={200: HandoverSerializer},
-        summary='Acknowledge a handover',
+        summary='Acknowledge a referral',
         description=(
-            'No request body — the handover is identified by the URL. Accepting a handover '
+            'No request body — the referral is identified by the URL. Accepting a referral '
             "also moves its unfinished work onto the acknowledging nurse's task list and "
             'tells the outgoing nurse it was received. Acknowledging twice is a no-op.'
         ),
@@ -2633,11 +2633,11 @@ TASK_HANDOVER_REASSIGNABLE_STATUSES = ('pending', 'in_progress')
 
 class TaskHandoverViewSet(viewsets.ModelViewSet):
     """
-    Task-level shift handover, gated by supervisor verification.
+    Task-level shift handover, gated by head nurse verification.
 
     Distinct from /api/handovers/ (the SBAR patient handover, notified
     immediately): a TaskHandover always starts 'pending' and the receiving
-    nurse hears nothing about it until a supervisor calls approve — see
+    nurse hears nothing about it until a head nurse calls approve — see
     notify_task_handover_verified. No update/destroy — once created, a
     handover only changes through approve/reject.
     """
@@ -2659,7 +2659,7 @@ class TaskHandoverViewSet(viewsets.ModelViewSet):
         ).all()
 
         # A staff nurse only ever sees handovers they sent or received; the
-        # supervisor queue (point 3 of the spec) is everything, filterable.
+        # head nurse queue (point 3 of the spec) is everything, filterable.
         if get_user_role(self.request.user) == 'staff_nurse':
             qs = qs.filter(Q(from_nurse=self.request.user) | Q(to_nurse=self.request.user))
 
@@ -2749,8 +2749,8 @@ class TaskHandoverViewSet(viewsets.ModelViewSet):
         responses={200: TaskHandoverSerializer},
         summary='Approve a pending handover',
         description=(
-            'No request body — the handover is identified by the URL. Supervisor-only. '
-            'Sets status to verified, records the supervisor and timestamp, reassigns the '
+            'No request body — the handover is identified by the URL. Head-nurse-only. '
+            'Sets status to verified, records the head nurse and timestamp, reassigns the '
             'linked task (if any and still open) to the receiving nurse, and is the only '
             'point at which the receiving nurse is notified.'
         ),
@@ -2787,7 +2787,7 @@ class TaskHandoverViewSet(viewsets.ModelViewSet):
         responses={200: TaskHandoverSerializer},
         summary='Reject a pending handover',
         description=(
-            'Supervisor-only. Sets status to rejected with an optional reason; the task is '
+            'Head-nurse-only. Sets status to rejected with an optional reason; the task is '
             'never reassigned and the receiving nurse is never notified — only the sending '
             'nurse hears about it, with the reason.'
         ),
@@ -3361,17 +3361,17 @@ class NotificationViewSet(viewsets.ModelViewSet):
 @extend_schema_view(
     create=extend_schema(
         summary='Assign a patient to a nurse',
-        description='Editable request body. Supervisor only.',
+        description='Editable request body. Head nurse only.',
         examples=ASSIGNMENT_CREATE_EXAMPLES,
     ),
     update=extend_schema(
         summary='Replace an assignment',
-        description='Editable request body. Supervisor only.',
+        description='Editable request body. Head nurse only.',
         examples=ASSIGNMENT_UPDATE_EXAMPLES,
     ),
     partial_update=extend_schema(
         summary='Update part of an assignment',
-        description='Editable request body. Supervisor only.',
+        description='Editable request body. Head nurse only.',
         examples=ASSIGNMENT_UPDATE_EXAMPLES,
     ),
 )
@@ -3399,11 +3399,11 @@ class AssignmentViewSet(viewsets.ModelViewSet):
 
 class DutyAssignmentViewSet(viewsets.ModelViewSet):
     """
-    The duty roster. A supervisor sees and manages every assignment; a
+    The duty roster. A head nurse sees and manages every assignment; a
     staff nurse can only read their own — scoped here server-side, not by
     the frontend choosing what to ask for, so a nurse can't see (or infer)
     another nurse's schedule by passing a different nurseId. Only a
-    supervisor can create, edit, or delete an entry.
+    head nurse can create, edit, or delete an entry.
     """
 
     serializer_class = DutyAssignmentSerializer
@@ -3515,7 +3515,7 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
         assignment.save(update_fields=['actual_start_time', 'actual_worked_hours', 'actual_overtime_hours'])
 
         # A nurse arriving noticeably late is exactly the kind of thing a
-        # supervisor watching the roster would otherwise have to notice
+        # head nurse watching the roster would otherwise have to notice
         # themselves — scheduled and actual both stay on the record either
         # way, this is only about telling someone sooner.
         if assignment.created_by and now > scheduled_start + timedelta(minutes=buffer_minutes):
@@ -3593,9 +3593,9 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
     @extend_schema(
         request=None,
         responses={200: DutyAssignmentSerializer},
-        summary='Supervisor correction — close out a shift the nurse never ended',
+        summary='Head nurse correction — close out a shift the nurse never ended',
         description=(
-            'No request body — the end time is recorded as now. Supervisor-only. For when a '
+            'No request body — the end time is recorded as now. Head-nurse-only. For when a '
             'nurse forgot to tap End Shift: the assignment must already have actual_start_time '
             'set and no actual_end_time yet. Unlike the nurse\'s own end action, this stamps '
             'actual_end_recorded_by so the record is never indistinguishable from a real '
@@ -3630,7 +3630,7 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
         notify(
             assignment.nurse,
             notification_type='info',
-            event='duty_closed_by_supervisor',
+            event='duty_closed_by_head_nurse',
             title='Your shift was closed out',
             message=(
                 f'{request.user.get_full_name().strip() or request.user.username} closed out your '
@@ -3680,7 +3680,7 @@ class KardexViewSet(viewsets.ModelViewSet):
         responses={200: KardexRecordSerializer},
         summary='Approve, return, or reject a kardex',
         description=(
-            'Supervisor only. A returned/rejected kardex is corrected by the nurse saving a '
+            'Head nurse only. A returned/rejected kardex is corrected by the nurse saving a '
             'new kardex for the same patient — there is no edit-in-place endpoint.'
         ),
     )
@@ -3722,7 +3722,7 @@ class NurseViewSet(viewsets.ViewSet):
 
     def get_permissions(self):
         # Everyone approved can see the roster (it feeds the handover/task
-        # nurse pickers); only a supervisor can move someone to a different
+        # nurse pickers); only a head nurse can move someone to a different
         # department or shift.
         if self.action == 'assign':
             return [permissions.IsAuthenticated(), IsSupervisor()]
@@ -3842,7 +3842,7 @@ class NurseViewSet(viewsets.ViewSet):
             },
         )},
         tags=['Nurses'],
-        summary='Assign department/shift (supervisor only)',
+        summary='Assign department/shift (head nurse only)',
         description='Editable request body. Send department, shift, or both.',
     )
     @action(detail=True, methods=['patch'])
@@ -3882,7 +3882,7 @@ class NurseViewSet(viewsets.ViewSet):
 class AdminUserViewSet(viewsets.ViewSet):
     """
     The in-app admin interface's user-management surface: list every nurse
-    and supervisor account regardless of role or approval status, and
+    and head nurse account regardless of role or approval status, and
     approve/reject/deactivate/reset-password them. Admin-only (IsAdmin,
     checked against the real User.is_staff flag — see permissions.py for
     why this is not based on the admin@ email convention).
@@ -4087,7 +4087,7 @@ class WorkloadView(APIView):
                     # This ward has several nurses sharing a display name
                     # (see the Duty Roster / handover pickers, which already
                     # disambiguate the same way) — without an email, a
-                    # supervisor reassigning "RAIDEN VILLAPANDO" here has no
+                    # head nurse reassigning "RAIDEN VILLAPANDO" here has no
                     # way to tell which of several accounts they just picked.
                     'nurseEmail': nurse.email,
                     'shift': profile.shift,
@@ -4286,7 +4286,7 @@ class LiveStateView(APIView):
 
         # A single row, not a collection — "count:newest" doesn't apply, so
         # the revision is just the fields a nurse's own screens actually
-        # read live (department/shift, set by a supervisor via
+        # read live (department/shift, set by a head nurse via
         # NurseViewSet.assign). Deliberately NOT tied to the Notification
         # this also raises: a nurse with notifications for this turned off
         # must still see their own current department/shift, since that is

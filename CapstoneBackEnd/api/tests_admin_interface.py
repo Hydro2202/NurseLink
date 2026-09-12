@@ -36,7 +36,7 @@ class AdminLoginTests(APITestCase):
 
     def test_admin_can_log_in_selecting_either_role_button(self):
         make_admin('raiden@admin.com')
-        for role in ('staff_nurse', 'supervisor'):
+        for role in ('staff_nurse', 'head_nurse'):
             response = self.client.post('/api/auth/login/', {
                 'email': 'raiden@admin.com', 'password': 'pw-admin-1234', 'role': role,
             })
@@ -63,7 +63,7 @@ class AdminUserManagementTests(APITestCase):
         self.admin = make_admin()
         self.pending_nurse = make_nurse('pending@hospital.com', 'Ben', 'Diaz')
         self.approved_supervisor = make_nurse(
-            'sup@hospital.com', 'Maria', 'Santos', role='supervisor', approval_status='approved',
+            'sup@hospital.com', 'Maria', 'Santos', role='head_nurse', approval_status='approved',
         )
         self.client.force_authenticate(user=self.admin)
 

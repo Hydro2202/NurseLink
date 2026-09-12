@@ -270,9 +270,9 @@ N8N_WEBHOOK_TOKEN = os.environ.get('N8N_WEBHOOK_TOKEN', '').strip()
 DUTY_START_BUFFER_MINUTES = int(os.environ.get('DUTY_START_BUFFER_MINUTES', '15'))
 
 # How long a nurse may stay clocked in past their scheduled end before the
-# supervisor's Duty Roster flags the shift as "not clocked out" — a nurse
+# head nurse's Duty Roster flags the shift as "not clocked out" — a nurse
 # genuinely working overtime is normal; one who forgot to tap "End Shift"
-# needs a supervisor's attention, and this is what tells them apart.
+# needs a head nurse's attention, and this is what tells them apart.
 DUTY_MISSED_CLOCKOUT_MINUTES = int(os.environ.get('DUTY_MISSED_CLOCKOUT_MINUTES', '120'))
 
 # duty_date/start_time/end_time on DutyAssignment are entered and displayed
@@ -330,7 +330,7 @@ SPECTACULAR_SETTINGS = {
         'copy the returned `token`, then paste it into **bearerAuth**.\n\n'
         '### Test accounts\n'
         '- Nurse: `nurse@hospital.com` / `password123`\n'
-        '- Supervisor: `supervisor@hospital.com` / `password123`\n'
+        '- Head nurse: `headnurse@hospital.com` / `password123`\n'
     ),
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,

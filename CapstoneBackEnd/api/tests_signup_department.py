@@ -59,7 +59,7 @@ class SignupDepartmentTests(APITestCase):
         self.assertEqual(profile.department, '')
 
     def test_new_supervisor_account_starts_with_no_department(self):
-        response = self._signup(email='newsup@hospital.com', role='supervisor')
+        response = self._signup(email='newsup@hospital.com', role='head_nurse')
         self.assertEqual(response.status_code, 201, response.content)
         profile = NurseProfile.objects.get(user__email='newsup@hospital.com')
         self.assertEqual(profile.department, '')

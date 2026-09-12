@@ -1,7 +1,7 @@
 // 'admin' is never selectable at login (the login screen only offers the
 // other two) — it's what a real is_staff account's own role always comes
 // back as, regardless of which button was pressed. See LoginView/isAdmin.
-export type UserRole = 'staff_nurse' | 'supervisor' | 'admin';
+export type UserRole = 'staff_nurse' | 'head_nurse' | 'admin';
 
 export interface User {
   id: string;

@@ -215,7 +215,7 @@ export default function DashboardPage() {
 
   // The nurse's actual scheduled shift, per the Duty Roster — the ground
   // truth for what they're working right now, as opposed to
-  // NurseProfile.shift (a general default a supervisor rarely revisits once
+  // NurseProfile.shift (a general default a head nurse rarely revisits once
   // the roster is doing the real day-to-day scheduling).
   const todayDuty = useMemo(() => {
     const today = todayIso();
@@ -432,7 +432,7 @@ export default function DashboardPage() {
                 onPress={() => router.push('/(app)/handover' as any)}
               >
                 <FileText size={20} color={Colors.white} />
-                <Text style={styles.quickBtnText}>Handover</Text>
+                <Text style={styles.quickBtnText}>Referral</Text>
               </Pressable>
               <Pressable
                 style={[styles.quickBtn, { backgroundColor: Colors.orange600 }]}
@@ -658,7 +658,7 @@ export default function DashboardPage() {
     );
   }
 
-  // Supervisor / Head Nurse Dashboard
+  // Head Nurse Dashboard
   return (
     <ScrollView
       style={styles.scroll}

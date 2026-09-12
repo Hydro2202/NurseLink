@@ -160,7 +160,7 @@ export default function SettingsScreen() {
   };
 
   const roleLabel =
-    user?.role === 'staff_nurse' ? 'Nurse' : user?.role === 'admin' ? 'Administrator' : 'Supervisor';
+    user?.role === 'staff_nurse' ? 'Nurse' : user?.role === 'admin' ? 'Administrator' : 'Head Nurse';
 
   const profileUserForModal: ProfileUser | null = user
     ? {
@@ -336,8 +336,8 @@ export default function SettingsScreen() {
             onValueChange={(value) => setLocal({ taskNotifications: value })}
           />
           <ToggleRow
-            label="Handover Notifications"
-            description="Receive shift handover alerts"
+            label="Referral Notifications"
+            description="Receive patient referral alerts"
             value={handoverNotifications}
             onValueChange={(value) => setLocal({ handoverNotifications: value })}
           />

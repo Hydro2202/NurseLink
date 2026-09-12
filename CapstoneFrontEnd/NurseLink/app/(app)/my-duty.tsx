@@ -574,7 +574,7 @@ export default function MyDutyPage() {
                       <CalendarDays size={26} color={Colors.gray300} />
                       <Text style={styles.emptyTodayTitle}>No Duty Assignments Yet</Text>
                       <Text style={styles.emptyTodayText}>
-                        Your supervisor hasn't scheduled you for any shifts yet.
+                        Your head nurse hasn't scheduled you for any shifts yet.
                       </Text>
                     </CardContent>
                   </Card>

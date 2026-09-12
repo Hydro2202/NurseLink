@@ -253,21 +253,21 @@ export default function LoginPage() {
                       </Text>
                     </Pressable>
                     <Pressable
-                      onPress={() => setSelectedRole('supervisor')}
+                      onPress={() => setSelectedRole('head_nurse')}
                       style={[
                         styles.roleBtn,
-                        selectedRole === 'supervisor' ? styles.roleBtnActive : styles.roleBtnOutline,
+                        selectedRole === 'head_nurse' ? styles.roleBtnActive : styles.roleBtnOutline,
                       ]}
                     >
                       <Text
                         style={[
                           styles.roleBtnText,
-                          selectedRole === 'supervisor'
+                          selectedRole === 'head_nurse'
                             ? styles.roleBtnTextActive
                             : styles.roleBtnTextOutline,
                         ]}
                       >
-                        Supervisor
+                        Head Nurse
                       </Text>
                     </Pressable>
                   </View>

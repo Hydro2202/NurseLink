@@ -534,13 +534,13 @@ export async function deletePatient(patientCode: string): Promise<void> {
   await apiRequest(`/patients/${patientCode}/`, { method: 'DELETE' });
 }
 
-/** Supervisor-only. Sets status to discharged and records who/when. The
+/** Head-nurse-only. Sets status to discharged and records who/when. The
  * record is kept, not deleted — see fetchPatientVisits for its history. */
 export async function dischargePatient(patientCode: string): Promise<Patient> {
   return apiRequest<Patient>(`/patients/${patientCode}/discharge/`, { method: 'POST' });
 }
 
-/** Supervisor-only. Reactivates a discharged patient under their existing
+/** Head-nurse-only. Reactivates a discharged patient under their existing
  * profile (same id) for a new admission, rather than creating a duplicate. */
 export async function readmitPatient(
   patientCode: string,
@@ -746,7 +746,7 @@ export async function fetchNurses(options?: {
   return apiRequest<Nurse[]>(`/nurses/${query ? `?${query}` : ''}`);
 }
 
-/** Supervisor-only: change a nurse's department and/or shift. */
+/** Head-nurse-only: change a nurse's department and/or shift. */
 export async function assignNurse(
   nurseId: string,
   data: { department?: string; shift?: string }
@@ -793,7 +793,7 @@ export interface LiveState {
   tasks: string;
   handovers: string;
   patients: string;
-  /** The signed-in nurse's own department:shift — set by a supervisor via
+  /** The signed-in nurse's own department:shift — set by a head nurse via
    * assignNurse, not by this device. Independent of notification
    * preferences, since it's account data, not an alert. */
   profile: string;
@@ -956,7 +956,7 @@ export async function reviewKardexRecord(
 // AdminFaceVerificationAttempt for the shapes.
 
 export async function fetchAdminAccounts(options?: {
-  role?: 'staff_nurse' | 'supervisor';
+  role?: 'staff_nurse' | 'head_nurse';
   status?: 'pending' | 'approved' | 'rejected';
 }): Promise<AdminAccount[]> {
   const params = new URLSearchParams();

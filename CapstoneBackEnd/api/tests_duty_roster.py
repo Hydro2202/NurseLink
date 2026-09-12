@@ -27,7 +27,7 @@ def make_user(email, first, last, *, role='staff_nurse', approval_status='approv
 
 class DutyAssignmentApiTests(APITestCase):
     def setUp(self):
-        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='supervisor')
+        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='head_nurse')
         self.nurse = make_user('nurse@hospital.com', 'Juan', 'Dela Cruz')
         self.other_nurse = make_user('other@hospital.com', 'Maria', 'Santos')
         # The department-seed migration already puts these rows in place on

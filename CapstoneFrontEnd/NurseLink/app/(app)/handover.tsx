@@ -97,7 +97,7 @@ export default function HandoverPage() {
       // A background refresh that fails should not interrupt the nurse; the
       // next live tick will try again.
       if (!options?.quiet) {
-        toast.error('Failed to load handovers', {
+        toast.error('Failed to load referrals', {
           description: error instanceof ApiError ? error.message : 'Please try again.',
         });
       }
@@ -148,11 +148,11 @@ export default function HandoverPage() {
       // Writing a handover also puts its work on this nurse's task list and
       // notifies the receiving nurse — let the rest of the app catch up now.
       void pollLive();
-      toast.success('Handover submitted successfully!', {
-        description: `Handover note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
+      toast.success('Referral submitted successfully!', {
+        description: `Referral note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
       });
     } catch (error) {
-      toast.error('Failed to submit handover', {
+      toast.error('Failed to submit referral', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
       throw error;
@@ -170,11 +170,11 @@ export default function HandoverPage() {
       // unfinished work onto this nurse's list, and they should not have to
       // discover that by wandering over to the Tasks screen.
       const moved = updated.adoptedTasks?.length ?? 0;
-      toast.success('Handover acknowledged!', {
+      toast.success('Referral acknowledged!', {
         description:
           moved > 0
             ? `${moved} unfinished task${moved > 1 ? 's' : ''} added to your tasks for ${updated.patientName}.`
-            : `You've acknowledged the handover for ${updated.patientName}.`,
+            : `You've acknowledged the referral for ${updated.patientName}.`,
       });
       // We just changed state other nurses are watching. Poll immediately so
       // this device is consistent at once, rather than briefly showing a list
@@ -193,7 +193,7 @@ export default function HandoverPage() {
         });
       }
     } catch (error) {
-      toast.error('Failed to acknowledge handover', {
+      toast.error('Failed to acknowledge referral', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
@@ -216,11 +216,11 @@ export default function HandoverPage() {
       setHandovers((prev) => prev.filter((h) => h.id !== handoverToDelete));
       setDeleteDialogOpen(false);
       setHandoverToDelete(null);
-      toast.success('Handover deleted', {
-        description: `Handover for ${deletedHandover?.patientName} has been removed.`,
+      toast.success('Referral deleted', {
+        description: `Referral for ${deletedHandover?.patientName} has been removed.`,
       });
     } catch (error) {
-      toast.error('Failed to delete handover', {
+      toast.error('Failed to delete referral', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
@@ -406,7 +406,7 @@ export default function HandoverPage() {
             ) : (
               <>
                 <CheckCircle size={16} color={Colors.white} />
-                <Text style={styles.ackBtnText}>Acknowledge Handover</Text>
+                <Text style={styles.ackBtnText}>Acknowledge Referral</Text>
               </>
             )}
           </Button>
@@ -424,13 +424,13 @@ export default function HandoverPage() {
         keyboardShouldPersistTaps="handled"
       >
         <View>
-          <Text style={styles.title}>Shift Handover</Text>
+          <Text style={styles.title}>Referral</Text>
           <Text style={styles.subtitle}>SBAR-based digital endorsement</Text>
         </View>
 
         <Alert variant="info">
           <AlertDescription>
-            All handover notes are encrypted and HIPAA-compliant. Only authorized personnel can
+            All referral notes are encrypted and HIPAA-compliant. Only authorized personnel can
             access this information.
           </AlertDescription>
         </Alert>
@@ -438,7 +438,7 @@ export default function HandoverPage() {
         <View style={styles.controls}>
           <View style={styles.searchWrap}>
             <Input
-              placeholder="Search handovers..."
+              placeholder="Search referrals..."
               value={searchQuery}
               onChangeText={setSearchQuery}
               leftIcon={<Search size={18} color={Colors.mutedForeground} />}
@@ -454,7 +454,7 @@ export default function HandoverPage() {
           />
           <Button onPress={handleCreateHandover} style={styles.newBtn}>
             <Plus size={16} color={Colors.white} />
-            <Text style={styles.newBtnText}>New Handover</Text>
+            <Text style={styles.newBtnText}>New Referral</Text>
           </Button>
         </View>
 
@@ -473,7 +473,7 @@ export default function HandoverPage() {
               <Card>
                 <CardContent style={styles.empty}>
                   <Clock size={48} color={Colors.gray500} />
-                  <Text style={styles.emptyText}>No incoming handovers</Text>
+                  <Text style={styles.emptyText}>No incoming referrals</Text>
                 </CardContent>
               </Card>
             ) : (
@@ -483,7 +483,7 @@ export default function HandoverPage() {
             <Card>
               <CardContent style={styles.empty}>
                 <FileText size={48} color={Colors.gray500} />
-                <Text style={styles.emptyText}>No outgoing handovers</Text>
+                <Text style={styles.emptyText}>No outgoing referrals</Text>
               </CardContent>
             </Card>
           ) : (
@@ -503,8 +503,8 @@ export default function HandoverPage() {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={confirmDeleteHandover}
         loading={deleteLoading}
-        title="Delete Handover"
-        description="Are you sure you want to delete this handover? This action cannot be undone."
+        title="Delete Referral"
+        description="Are you sure you want to delete this referral? This action cannot be undone."
       />
     </View>
   );

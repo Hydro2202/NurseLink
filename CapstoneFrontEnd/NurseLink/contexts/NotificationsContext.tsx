@@ -18,7 +18,7 @@ import { playNotificationSound } from '../utils/notificationSound';
  * Keeps every nurse's inbox current without them having to reload anything.
  *
  * Notifications arrive from other people — a handover sent to you, a task a
- * supervisor just assigned — so the app cannot know about them from its own
+ * head nurse just assigned — so the app cannot know about them from its own
  * actions. It asks the server on a short timer instead.
  *
  * The asking is done once for the whole app by LiveContext, which reports a

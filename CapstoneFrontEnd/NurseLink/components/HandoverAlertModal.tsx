@@ -112,10 +112,10 @@ export function HandoverAlertModal() {
             <View style={styles.bellCircle}>
               <Bell size={22} color={Colors.white} />
             </View>
-            <Text style={styles.title}>New Patient Handover</Text>
+            <Text style={styles.title}>New Patient Referral</Text>
           </View>
 
-          <Text style={styles.lead}>A patient has been handed over to you.</Text>
+          <Text style={styles.lead}>A patient has been referred to you.</Text>
 
           <View style={styles.details}>
             {current.patient ? (
@@ -147,7 +147,7 @@ export function HandoverAlertModal() {
             </Button>
             <Button onPress={viewHandover} style={styles.footerBtn}>
               <View style={styles.primaryInner}>
-                <Text style={styles.primaryText}>View Handover</Text>
+                <Text style={styles.primaryText}>View Referral</Text>
                 <ArrowRight size={14} color={Colors.white} />
               </View>
             </Button>
@@ -155,7 +155,7 @@ export function HandoverAlertModal() {
 
           {pending.length > 1 ? (
             <Text style={styles.queue}>
-              {pending.length - 1} more handover{pending.length - 1 > 1 ? 's' : ''} waiting
+              {pending.length - 1} more referral{pending.length - 1 > 1 ? 's' : ''} waiting
             </Text>
           ) : null}
         </Animated.View>

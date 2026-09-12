@@ -34,7 +34,7 @@ def make_user(email, first, last, *, role='staff_nurse'):
 
 class TaskHandoverTests(APITestCase):
     def setUp(self):
-        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='supervisor')
+        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='head_nurse')
         self.nurse_a = make_user('nursea@hospital.com', 'Juan', 'Dela Cruz')
         self.nurse_b = make_user('nurseb@hospital.com', 'Maria', 'Santos')
         self.nurse_c = make_user('nursec@hospital.com', 'Pedro', 'Reyes')

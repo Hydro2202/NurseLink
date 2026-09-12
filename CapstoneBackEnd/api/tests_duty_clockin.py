@@ -35,7 +35,7 @@ def make_user(email, first, last, *, role='staff_nurse'):
 
 class DutyClockInOutTests(APITestCase):
     def setUp(self):
-        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='supervisor')
+        self.supervisor = make_user('sup@hospital.com', 'Ana', 'Cruz', role='head_nurse')
         self.nurse = make_user('nurse@hospital.com', 'Juan', 'Dela Cruz')
         self.other_nurse = make_user('other@hospital.com', 'Maria', 'Santos')
         self.dept, _ = Department.objects.get_or_create(name='Intensive Care Unit (ICU)')
@@ -288,5 +288,5 @@ class DutyClockInOutTests(APITestCase):
         self.client.force_authenticate(user=self.supervisor)
         with patch('django.utils.timezone.now', return_value=self._at(18, 0)):
             self.client.post(f'/api/duty-assignments/{self.assignment.pk}/close/')
-        note = Notification.objects.filter(recipient=self.nurse, event='duty_closed_by_supervisor').first()
+        note = Notification.objects.filter(recipient=self.nurse, event='duty_closed_by_head_nurse').first()
         self.assertIsNotNone(note)

@@ -33,7 +33,7 @@ class WorkloadViewTests(TestCase):
             password='pw-test-1234', first_name='Ana', last_name='Cruz',
         )
         NurseProfile.objects.create(
-            user=self.supervisor, role='supervisor', approval_status='approved', is_active_staff=True,
+            user=self.supervisor, role='head_nurse', approval_status='approved', is_active_staff=True,
         )
         self.client.force_authenticate(self.supervisor)
 

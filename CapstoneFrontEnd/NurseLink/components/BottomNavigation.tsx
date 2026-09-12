@@ -18,7 +18,7 @@ import {
 } from 'lucide-react-native';
 import { Colors, Shadows } from '../constants/colors';
 
-export type NavRole = 'staff_nurse' | 'supervisor' | 'admin';
+export type NavRole = 'staff_nurse' | 'head_nurse' | 'admin';
 
 interface NavItem {
   name: string;
@@ -39,7 +39,7 @@ const STAFF_NAV: NavItem[] = [
   { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, color: Colors.blue600 },
   { name: 'My Duty', href: '/(app)/my-duty', icon: Stethoscope, color: Colors.teal600 },
   { name: 'Tasks', href: '/(app)/tasks', icon: ClipboardList, color: Colors.green600 },
-  { name: 'Handover', href: '/(app)/handover', icon: FileText, color: Colors.purple600 },
+  { name: 'Referral', href: '/(app)/handover', icon: FileText, color: Colors.purple600 },
   { name: 'Charting', href: '/(app)/charting', icon: FileText, color: Colors.orange600 },
   { name: 'Kardex', href: '/(app)/kardex', icon: BookOpen, color: Colors.gray600 },
 ];
@@ -84,7 +84,7 @@ function isActivePath(activePath: string, href: string, exact?: boolean): boolea
 export function BottomNavigation({ role, activePath }: BottomNavigationProps) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const items = role === 'staff_nurse' ? STAFF_NAV : role === 'supervisor' ? SUPERVISOR_NAV : ADMIN_NAV;
+  const items = role === 'staff_nurse' ? STAFF_NAV : role === 'head_nurse' ? SUPERVISOR_NAV : ADMIN_NAV;
 
   return (
     <View

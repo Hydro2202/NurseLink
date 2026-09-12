@@ -224,7 +224,7 @@ export default function AppLayout() {
   // Login always lands on /(app)/dashboard (it has no way to know the role
   // ahead of the response) — an admin has no dashboard.tsx of their own, so
   // bounce them to their real home the moment that resolves. Also catches a
-  // stray back-navigation into a nurse/supervisor screen from an admin
+  // stray back-navigation into a nurse/head nurse screen from an admin
   // session.
   useEffect(() => {
     if (!isLoading && user?.role === 'admin' && normalizePath(pathname) === '/dashboard') {
@@ -246,7 +246,7 @@ export default function AppLayout() {
   }
 
   const isStaffNurse = user.role === 'staff_nurse';
-  const isSupervisor = user.role === 'supervisor';
+  const isSupervisor = user.role === 'head_nurse';
   const isAdmin = user.role === 'admin';
 
   const handleLogout = async () => {
@@ -260,7 +260,7 @@ export default function AppLayout() {
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, show: true },
     { name: 'Tasks', href: '/(app)/tasks', icon: ClipboardList, show: isStaffNurse },
-    { name: 'Handover', href: '/(app)/handover', icon: FileText, show: isStaffNurse },
+    { name: 'Referral', href: '/(app)/handover', icon: FileText, show: isStaffNurse },
     { name: 'My Duty', href: '/(app)/my-duty', icon: Stethoscope, show: isStaffNurse },
     { name: 'Duty Roster', href: '/(app)/duty-roster', icon: Calendar, show: isSupervisor },
     { name: 'Charting', href: '/(app)/charting', icon: FileText, show: isStaffNurse },
@@ -292,7 +292,7 @@ export default function AppLayout() {
   const portalName = isStaffNurse
     ? 'Staff Portal'
     : isSupervisor
-      ? 'Supervisor Portal'
+      ? 'Head Nurse Portal'
       : isAdmin
         ? 'Admin Console'
         : 'Management Portal';
@@ -313,11 +313,11 @@ export default function AppLayout() {
     />
   );
 
-  // Rendered in all three layouts (mobile staff, mobile supervisor, desktop):
+  // Rendered in all three layouts (mobile staff, mobile head nurse, desktop):
   // a patient being handed to you must interrupt wherever you are.
   const handoverAlert = <HandoverAlertModal />;
   // Same three-layout placement — invisible, just keeps this nurse's own
-  // department/shift in sync after a supervisor reassigns them.
+  // department/shift in sync after a head nurse reassigns them.
   const profileSync = <ProfileSyncListener />;
 
   const notificationPanel = (
@@ -377,7 +377,7 @@ export default function AppLayout() {
     );
   }
 
-  // Mobile: Supervisor
+  // Mobile: Head Nurse
   if (isSupervisor && !isDesktop) {
     return (
       <SafeAreaView style={styles.mobileRoot} edges={['top']}>
@@ -409,7 +409,7 @@ export default function AppLayout() {
           <Slot />
         </View>
 
-        <BottomNavigation role="supervisor" activePath={pathname} />
+        <BottomNavigation role="head_nurse" activePath={pathname} />
         {logoutDialog}
         {handoverAlert}
         {profileSync}
@@ -419,7 +419,7 @@ export default function AppLayout() {
     );
   }
 
-  // Mobile: Admin — same visual language as Staff/Supervisor (same logo,
+  // Mobile: Admin — same visual language as Staff/Head Nurse (same logo,
   // same blue chrome); only the nav content is admin-specific.
   if (isAdmin && !isDesktop) {
     return (

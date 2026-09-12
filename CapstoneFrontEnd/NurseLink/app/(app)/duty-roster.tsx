@@ -175,7 +175,7 @@ const ATTENDANCE_CONFIG: Record<AttendanceStatus, { label: string; color: string
 };
 // A nurse still clocked in this long past their scheduled end is more
 // likely a forgotten clock-out than real overtime — flagged distinctly so
-// a supervisor can follow up, never auto-guessed or silently closed out.
+// a head nurse can follow up, never auto-guessed or silently closed out.
 const MISSED_CLOCKOUT_MINUTES = 120;
 function isMissedClockout(a: DutyAssignment, now: Date): boolean {
   if (!a.actualStartTime || a.actualEndTime) return false;
@@ -201,7 +201,7 @@ function avatarHue(name: string) {
 
 export default function DutyRosterPage() {
   const { user } = useAuth();
-  const isSupervisor = user?.role === 'supervisor';
+  const isSupervisor = user?.role === 'head_nurse';
   const toast = useToast();
   const { width } = useWindowDimensions();
   const isNarrow = width < 640;
@@ -226,12 +226,12 @@ export default function DutyRosterPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [toDelete, setToDelete] = useState<DutyAssignment | null>(null);
   const [deleting, setDeleting] = useState(false);
-  // A supervisor manually closing out a shift the nurse forgot to end — kept
+  // A head nurse manually closing out a shift the nurse forgot to end — kept
   // separate from delete's dialog so it reads distinctly (correction, not removal).
   const [closeOpen, setCloseOpen] = useState(false);
   const [toClose, setToClose] = useState<DutyAssignment | null>(null);
   const [closing, setClosing] = useState(false);
-  // Briefly highlighted so a supervisor can visually confirm their edit/add
+  // Briefly highlighted so a head nurse can visually confirm their edit/add
   // actually landed, rather than the list just silently reflowing.
   const [justSavedId, setJustSavedId] = useState<number | null>(null);
   const [now, setNow] = useState(new Date());
@@ -272,7 +272,7 @@ export default function DutyRosterPage() {
 
   // "Overtime Today" and every live status badge reflect real, live clock
   // data — this is the "reasonable polling interval" refresh that catches a
-  // nurse starting/ending a shift on another device, so a supervisor
+  // nurse starting/ending a shift on another device, so a head nurse
   // watching this page does not have to manually reload to see it.
   useEffect(() => {
     const id = setInterval(() => {
@@ -370,7 +370,7 @@ export default function DutyRosterPage() {
       row[a.shift as 'morning' | 'afternoon' | 'night'] += 1;
       map.set(a.departmentName, row);
     });
-    // Busiest department first, so a supervisor sees where the day's
+    // Busiest department first, so a head nurse sees where the day's
     // weight actually is without reading every row.
     return Array.from(map.entries()).sort((a, b) => {
       const totalA = a[1].morning + a[1].afternoon + a[1].night;
@@ -428,7 +428,7 @@ export default function DutyRosterPage() {
     try {
       await closeDutyAssignment(toClose.id);
       toast.success('Shift Closed Out', {
-        description: `${toClose.nurseName}'s shift was ended now and logged as a supervisor correction.`,
+        description: `${toClose.nurseName}'s shift was ended now and logged as a head nurse correction.`,
       });
       setCloseOpen(false);
       setToClose(null);
@@ -561,7 +561,7 @@ export default function DutyRosterPage() {
             {a.actualEndRecordedBy ? (
               <View style={styles.closedByTag}>
                 <ShieldAlert size={11} color={Colors.orange700} />
-                <Text style={styles.closedByText}>Closed by {a.actualEndRecordedBy} (supervisor correction)</Text>
+                <Text style={styles.closedByText}>Closed by {a.actualEndRecordedBy} (head nurse correction)</Text>
               </View>
             ) : null}
 
@@ -609,7 +609,7 @@ export default function DutyRosterPage() {
         <Alert variant="info">
           <AlertDescription>
             Manage staff assignments and monitor scheduled working hours and overtime. Only authorized
-            supervisors can create or modify duty assignments.
+            head nurses can create or modify duty assignments.
           </AlertDescription>
         </Alert>
 
@@ -867,7 +867,7 @@ export default function DutyRosterPage() {
         title="Close Out This Shift?"
         description={
           toClose
-            ? `${toClose.nurseName} started this shift but never ended it. Ending it now will set the end time to right now and log it as a supervisor correction — this cannot be undone and will be clearly marked as your action, not theirs.`
+            ? `${toClose.nurseName} started this shift but never ended it. Ending it now will set the end time to right now and log it as a head nurse correction — this cannot be undone and will be clearly marked as your action, not theirs.`
             : ''
         }
         confirmLabel="Close Shift Now"

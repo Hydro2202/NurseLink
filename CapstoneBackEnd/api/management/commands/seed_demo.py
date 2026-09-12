@@ -3,7 +3,7 @@ Ensure production-ready test accounts exist with an EMPTY clinical database.
 
 Creates / updates only:
   - nurse@hospital.com      (staff_nurse)
-  - headnurse@hospital.com  (supervisor)
+  - headnurse@hospital.com  (head_nurse)
 
 Removes all patients, tasks, handovers, charting, assignments, kardex,
 notifications, and any other demo users. Never seeds domain records.
@@ -38,11 +38,11 @@ TEST_ACCOUNTS = [
         'specialization': 'ICU',
     },
     {
-        'email': 'supervisor@hospital.com',
+        'email': 'headnurse@hospital.com',
         'password': 'password123',
         'first_name': 'Maria',
         'last_name': 'Santos',
-        'role': 'supervisor',
+        'role': 'head_nurse',
         'department': 'Nursing Administration',
         'license_number': 'RN-20001',
         'clinical_role': 'Charge Nurse',
@@ -51,11 +51,13 @@ TEST_ACCOUNTS = [
     },
 ]
 
-# Supervisor email renamed across two production phases: head@hospital.com ->
-# headnurse@hospital.com -> supervisor@hospital.com. Both are migrated
-# in order so an install on either old email lands on the current one.
-LEGACY_SUPERVISOR_EMAILS = ['head@hospital.com', 'headnurse@hospital.com']
-CANONICAL_SUPERVISOR_EMAIL = 'supervisor@hospital.com'
+# Head nurse email renamed across production phases: head@hospital.com ->
+# headnurse@hospital.com -> supervisor@hospital.com -> headnurse@hospital.com
+# (the role itself was renamed from "Supervisor" back to "Head Nurse"). All
+# legacy emails are migrated in order so an install on any old email lands
+# on the current one.
+LEGACY_SUPERVISOR_EMAILS = ['head@hospital.com', 'supervisor@hospital.com']
+CANONICAL_SUPERVISOR_EMAIL = 'headnurse@hospital.com'
 
 
 class Command(BaseCommand):
@@ -80,10 +82,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS('Production seed complete (empty clinical DB).'))
         self.stdout.write('Test accounts:')
         self.stdout.write('  nurse@hospital.com / password123       (staff_nurse)')
-        self.stdout.write('  supervisor@hospital.com / password123  (supervisor)')
+        self.stdout.write('  headnurse@hospital.com / password123   (head_nurse)')
 
     def _migrate_legacy_supervisor(self):
-        """Rename head@hospital.com or headnurse@hospital.com -> supervisor@hospital.com if needed."""
+        """Rename head@hospital.com or supervisor@hospital.com -> headnurse@hospital.com if needed."""
         for legacy_email in LEGACY_SUPERVISOR_EMAILS:
             try:
                 legacy = User.objects.get(email__iexact=legacy_email)
