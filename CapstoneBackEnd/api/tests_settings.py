@@ -208,7 +208,7 @@ class NotificationPreferenceEffectTests(APITestCase):
 
         from .notifications import notify_handover_acknowledged
 
-        notify_handover_acknowledged(handover, self.receiver, [])
+        notify_handover_acknowledged(handover, self.receiver)
 
         # The sender still wants to know their handover was accepted.
         self.assertEqual(Notification.objects.filter(recipient=self.sender).count(), 1)

@@ -238,9 +238,12 @@ HANDOVER_CREATE_EXAMPLES = [
             },
             'unfinishedTasks': ['T-2075'],
             'photos': [],
-            'status': 'pending',
         },
-        'shift: morning | afternoon | night. status: pending | acknowledged | completed.',
+        (
+            'shift: morning | afternoon | night. status is read-only and always starts as '
+            "'sent' — it only moves via /handovers/{id}/acknowledge|accept|decline|complete/, "
+            'never a direct PATCH; there is no head-nurse approval step.'
+        ),
     ),
 ]
 
@@ -254,7 +257,6 @@ HANDOVER_UPDATE_EXAMPLES = [
                 'assessment': 'Sats 96% on room air. Chest clearing.',
                 'recommendation': 'Step down to q8h vitals.',
             },
-            'status': 'completed',
         },
     ),
 ]

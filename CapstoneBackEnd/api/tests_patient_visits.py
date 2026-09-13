@@ -26,6 +26,20 @@ from .models import (
 )
 
 
+# DISCHARGE_PLAN_REQUIRED defaults to True (see settings.py) — a full
+# M.E.T.H.O.D. plan to post alongside /discharge/.
+DISCHARGE_PLAN_PAYLOAD = {
+    'dischargePlan': {
+        'medications': 'Metformin 500mg PO BID with meals.',
+        'environment': 'Lives alone; daughter checks in daily.',
+        'treatment': 'Continue wound care dressing changes every other day.',
+        'healthTeaching': 'Reviewed signs of infection to watch for.',
+        'outpatientReferral': 'Follow-up with Dr. Alvarez on 2026-09-20.',
+        'diet': 'Low-sodium diet.',
+    }
+}
+
+
 def make_user(email, first, last, *, role='staff_nurse'):
     user = User.objects.create_user(
         username=email, email=email, password='pw-test-1234',
@@ -79,7 +93,9 @@ class PatientDischargeArchivesTheVisitTests(PatientVisitTestCase):
         PatientDoctor.objects.create(patient=self.patient, doctor=self.doctor, assigned_by=self.supervisor)
 
     def test_discharge_does_not_delete_the_patient(self):
-        self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')
+        self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/', DISCHARGE_PLAN_PAYLOAD, format='json',
+        )
         self.assertTrue(Patient.objects.filter(patient_code='P-8001').exists())
 
     def test_discharge_closes_the_active_visit_with_a_snapshot(self):
@@ -87,7 +103,9 @@ class PatientDischargeArchivesTheVisitTests(PatientVisitTestCase):
         self.patient.room = 'ICU-02'
         self.patient.save(update_fields=['diagnosis', 'room'])
 
-        response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')
+        response = self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/', DISCHARGE_PLAN_PAYLOAD, format='json',
+        )
         self.assertEqual(response.status_code, 200, response.content)
 
         self.visit.refresh_from_db()
@@ -99,13 +117,18 @@ class PatientDischargeArchivesTheVisitTests(PatientVisitTestCase):
             {'name': 'Dr. Alvarez', 'specialization': 'Cardiology', 'departmentName': 'Cardiology Unit'}
         ])
         self.assertEqual(self.visit.discharged_by, self.supervisor)
+        self.assertEqual(self.visit.discharge_plan_medications, DISCHARGE_PLAN_PAYLOAD['dischargePlan']['medications'])
+        self.assertEqual(self.visit.discharge_plan_diet, DISCHARGE_PLAN_PAYLOAD['dischargePlan']['diet'])
+        self.assertFalse(self.visit.discharge_plan_ai_generated)
 
     def test_discharge_without_an_existing_visit_row_still_creates_one(self):
         # Defensive path — a patient somehow missing its opening visit (e.g.
         # predates PatientVisit and was never backfilled) must still get a
         # closed visit recorded on discharge, not silently lose the event.
         self.visit.delete()
-        response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')
+        response = self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/', DISCHARGE_PLAN_PAYLOAD, format='json',
+        )
         self.assertEqual(response.status_code, 200, response.content)
         self.assertTrue(PatientVisit.objects.filter(patient=self.patient, discharge_date__isnull=False).exists())
 
@@ -117,7 +140,9 @@ class PatientDischargeArchivesTheVisitTests(PatientVisitTestCase):
         assignedNurseId/Name must fall back to the closed visit's snapshot
         rather than going blank.
         """
-        response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')
+        response = self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/', DISCHARGE_PLAN_PAYLOAD, format='json',
+        )
         self.assertEqual(response.status_code, 200, response.content)
         self.patient.refresh_from_db()
         self.assertIsNone(self.patient.assigned_nurse)

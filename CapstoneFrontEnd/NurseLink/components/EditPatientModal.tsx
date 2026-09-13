@@ -5,6 +5,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
+import { DatePicker, todayIso } from './DatePicker';
 import { Alert, AlertDescription } from './Alert';
 import { updatePatient, fetchDepartments, ApiError } from '../services/api';
 import type { Department, Patient } from '../types/domain';
@@ -209,12 +210,12 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
                 />
 
                 <View style={styles.row}>
-                  <Input
+                  <DatePicker
                     label="Admission Date"
                     value={form.admissionDate}
-                    onChangeText={(v) => setField('admissionDate', v)}
-                    placeholder="YYYY-MM-DD"
-                    containerStyle={styles.field}
+                    onChange={(v) => setField('admissionDate', v)}
+                    maxDate={todayIso()}
+                    style={styles.field}
                   />
                   {isDischarged ? (
                     <Input

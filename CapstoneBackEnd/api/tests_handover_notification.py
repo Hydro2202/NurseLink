@@ -189,7 +189,7 @@ class HandoverNotificationTests(APITestCase):
 
         # The handover is untouched and still listed for the receiving nurse.
         handover = HandoverNote.objects.get(handover_code=code)
-        self.assertEqual(handover.status, 'pending')
+        self.assertEqual(handover.status, 'sent')
         self.assertEqual(handover.nurse_to_user, self.receiver)
 
         # And the entry itself survives in the notification centre.

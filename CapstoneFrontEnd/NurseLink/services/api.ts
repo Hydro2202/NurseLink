@@ -535,9 +535,45 @@ export async function deletePatient(patientCode: string): Promise<void> {
 }
 
 /** Head-nurse-only. Sets status to discharged and records who/when. The
- * record is kept, not deleted — see fetchPatientVisits for its history. */
-export async function dischargePatient(patientCode: string): Promise<Patient> {
-  return apiRequest<Patient>(`/patients/${patientCode}/discharge/`, { method: 'POST' });
+ * record is kept, not deleted — see fetchPatientVisits for its history.
+ * dischargePlan (M.E.T.H.O.D.) is required unless the backend has
+ * DISCHARGE_PLAN_REQUIRED off — omitting it when required returns a 400. */
+export async function dischargePatient(
+  patientCode: string,
+  dischargePlan?: {
+    medications: string;
+    environment: string;
+    treatment: string;
+    healthTeaching: string;
+    outpatientReferral: string;
+    diet: string;
+    aiGenerated?: boolean;
+  }
+): Promise<Patient> {
+  return apiRequest<Patient>(`/patients/${patientCode}/discharge/`, {
+    method: 'POST',
+    body: dischargePlan ? { dischargePlan } : undefined,
+  });
+}
+
+export type DischargePlanDraft = {
+  medications: string;
+  environment: string;
+  treatment: string;
+  healthTeaching: string;
+  outpatientReferral: string;
+  diet: string;
+  aiGenerated: boolean;
+};
+
+/** Any approved nurse. AI-drafts a Discharge Plan from this patient's medications,
+ * most recent Kardex diet entry, and charted notes — a starting point to review/edit,
+ * never persisted until dischargePatient() is called. */
+export async function generateDischargePlan(patientCode: string): Promise<DischargePlanDraft> {
+  return apiRequest<DischargePlanDraft>(`/patients/${patientCode}/discharge-plan-generate/`, {
+    method: 'POST',
+    timeoutMs: 60000,
+  });
 }
 
 /** Head-nurse-only. Reactivates a discharged patient under their existing
@@ -656,8 +692,27 @@ export async function deleteHandover(id: string): Promise<void> {
   await apiRequest(`/handovers/${id}/`, { method: 'DELETE' });
 }
 
+/** Lightweight "seen it" step — moves 'sent' -> 'received'. Does not move any tasks; see acceptHandover for that. */
 export async function acknowledgeHandover(id: string): Promise<HandoverNote> {
   return apiRequest<HandoverNote>(`/handovers/${id}/acknowledge/`, { method: 'POST' });
+}
+
+/** Accepts the referral — moves unfinished tasks onto the accepting nurse's list. Valid from 'sent' or 'received'. */
+export async function acceptHandover(id: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/handovers/${id}/accept/`, { method: 'POST' });
+}
+
+/** Declines the referral, optionally with a reason. Valid from 'sent' or 'received'; terminal once declined. */
+export async function declineHandover(id: string, reason?: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/handovers/${id}/decline/`, {
+    method: 'POST',
+    body: reason ? { reason } : undefined,
+  });
+}
+
+/** Marks an accepted referral completed. Only valid from 'accepted'. */
+export async function completeHandover(id: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/handovers/${id}/complete/`, { method: 'POST' });
 }
 
 export async function fetchChartingNotes(options?: {
@@ -687,6 +742,10 @@ export type StructureChartResponse = {
   success: boolean;
   note: string;
   structured: Record<string, unknown>;
+  focus?: string;
+  data?: string;
+  action?: string;
+  response?: string;
   aiGenerated: boolean;
   saved: boolean;
   noteId?: string;

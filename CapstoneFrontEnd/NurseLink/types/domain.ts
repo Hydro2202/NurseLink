@@ -101,6 +101,25 @@ export interface Patient {
   lastEditedByName?: string | null;
 }
 
+/**
+ * M.E.T.H.O.D. discharge plan — Medications, Environment, Treatment, Health
+ * Teaching, Outpatient Referral, Diet. Filled in as part of discharging a
+ * patient (see PatientViewSet.discharge) and attached to that visit;
+ * completedByName/completedAt mirror PatientVisit.dischargedByName/
+ * dischargeDate since both happen at the same moment.
+ */
+export interface DischargePlan {
+  medications: string;
+  environment: string;
+  treatment: string;
+  healthTeaching: string;
+  outpatientReferral: string;
+  diet: string;
+  aiGenerated: boolean;
+  completedByName: string | null;
+  completedAt: string | null;
+}
+
 /** One admission-to-discharge encounter under a Patient profile — never
  * overwritten by a later visit; see PatientVisit on the backend. */
 export interface PatientVisit {
@@ -126,6 +145,8 @@ export interface PatientVisit {
     source: string;
   }[];
   notes: { id: string; timestamp: string; type: string; content: string }[];
+  hasDischargePlan: boolean;
+  dischargePlan: DischargePlan | null;
 }
 
 export interface HandoverNote {
@@ -152,8 +173,19 @@ export interface HandoverNote {
     uploadedAt: string;
     expiresAt: string;
   }[];
-  status: 'pending' | 'acknowledged' | 'completed';
-  /** Task codes moved onto the acknowledging nurse's list. Returned by acknowledge only. */
+  /**
+   * Nurse-to-nurse only — there is no head-nurse approval gate.
+   * sent -> received -> accepted | declined -> completed. Only the receiving
+   * nurse can move a referral past 'sent' (see acknowledge/accept/decline/
+   * complete in services/api.ts); status itself is read-only server-side.
+   */
+  status: 'sent' | 'received' | 'accepted' | 'declined' | 'completed';
+  statusHistory?: { status: string; by: string | null; byName: string; at: string | null; note?: string }[];
+  acceptedAt?: string | null;
+  declinedAt?: string | null;
+  declinedReason?: string;
+  completedAt?: string | null;
+  /** Task codes moved onto the accepting nurse's list. Returned by accept only. */
   adoptedTasks?: string[];
 }
 
@@ -199,6 +231,13 @@ export interface ChartingNote {
   content: string;
   /** Persisted Auto Charting sections — used by View Full Note. */
   structured?: ChartingStructuredData | null;
+  /** FDAR sections — populated (possibly as empty strings) when noteFormat is 'fdar'; blank for legacy notes. */
+  focus?: string;
+  data?: string;
+  action?: string;
+  response?: string;
+  /** 'legacy' = pre-FDAR note, rendered read-only via StructuredNursingNote with a "Legacy Note" badge. Absent/undefined is treated as 'fdar'. */
+  noteFormat?: 'fdar' | 'legacy';
   aiGenerated: boolean;
   edited: boolean;
   confirmed?: boolean;

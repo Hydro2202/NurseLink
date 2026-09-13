@@ -25,6 +25,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
+import { DatePicker, todayIso } from './DatePicker';
 import { PatientCareTeam } from './PatientCareTeam';
 import { VitalSignsGrid } from './VitalSignsGrid';
 import {
@@ -351,11 +352,12 @@ export function PatientKardexModal({
             <Text style={styles.groupHeading}>Admission Information</Text>
             <View style={styles.rowWrap}>
               <View style={[styles.field, styles.colThird]}>
-                <Input
-                  label="Admission Date *"
+                <DatePicker
+                  label="Admission Date"
+                  required
                   value={form.admissionDate}
-                  onChangeText={(v) => setField('admissionDate', v)}
-                  placeholder="YYYY-MM-DD"
+                  onChange={(v) => setField('admissionDate', v)}
+                  maxDate={todayIso()}
                 />
               </View>
               <View style={[styles.field, styles.colThird]}>

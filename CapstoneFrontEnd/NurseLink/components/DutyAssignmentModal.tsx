@@ -13,6 +13,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
+import { DatePicker, todayIso } from './DatePicker';
 import { Alert, AlertDescription } from './Alert';
 import {
   createDutyAssignment,
@@ -72,10 +73,6 @@ function toMinutesOfDay(t: string): number | null {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
-function todayIso(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 // Local-calendar getters only, never toISOString() — that converts to UTC,
 // which rolls local midnight back a day in any timezone ahead of UTC
 // (e.g. UTC+8) and made every date here look "invalid" or off-by-one.
@@ -346,12 +343,11 @@ export function DutyAssignmentModal({
                 searchPlaceholder="Search departments..."
               />
 
-              <Input
-                label="Duty Date *"
+              <DatePicker
+                label="Duty Date"
+                required
                 value={dutyDate}
-                onChangeText={setDutyDate}
-                placeholder="YYYY-MM-DD"
-                error={dutyDate && !isValidDate(dutyDate) ? 'Enter a valid date (YYYY-MM-DD)' : undefined}
+                onChange={setDutyDate}
               />
 
               <Select

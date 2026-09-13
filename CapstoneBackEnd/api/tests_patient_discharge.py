@@ -19,6 +19,19 @@ from rest_framework.test import APIClient
 
 from .models import Department, DutyAssignment, NurseProfile, Patient, PatientAssignment
 
+# DISCHARGE_PLAN_REQUIRED defaults to True (see settings.py), so /discharge/
+# rejects an incomplete plan — a full M.E.T.H.O.D. plan to post alongside it.
+DISCHARGE_PLAN_PAYLOAD = {
+    'dischargePlan': {
+        'medications': 'Metformin 500mg PO BID with meals.',
+        'environment': 'Lives with spouse; home has stairs, needs a rail installed.',
+        'treatment': 'Continue wound care dressing changes every other day.',
+        'healthTeaching': 'Reviewed signs of infection to watch for.',
+        'outpatientReferral': 'Follow-up with Dr. Lim on 2026-09-20, (02) 555-0100.',
+        'diet': 'Low-sodium diabetic diet.',
+    }
+}
+
 
 def make_user(email, first, last, *, role='staff_nurse'):
     user = User.objects.create_user(
@@ -87,7 +100,9 @@ class PatientStatusFieldTests(PatientDischargeTestCase):
 class PatientDischargeActionTests(PatientDischargeTestCase):
     def test_supervisor_can_discharge_a_patient(self):
         self.client.force_authenticate(self.supervisor)
-        response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')
+        response = self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/', DISCHARGE_PLAN_PAYLOAD, format='json',
+        )
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.data['status'], 'discharged')
         self.assertIsNotNone(response.data['dischargedAt'])
@@ -107,7 +122,9 @@ class PatientDischargeActionTests(PatientDischargeTestCase):
 
     def test_discharge_ends_the_active_patient_assignment(self):
         self.client.force_authenticate(self.supervisor)
-        self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')
+        self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/', DISCHARGE_PLAN_PAYLOAD, format='json',
+        )
         assignment = PatientAssignment.objects.get(patient=self.patient)
         self.assertEqual(assignment.status, 'completed')
 
@@ -120,10 +137,25 @@ class PatientDischargeActionTests(PatientDischargeTestCase):
 
     def test_cannot_discharge_an_already_discharged_patient(self):
         self.client.force_authenticate(self.supervisor)
-        self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')
-        response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')
+        self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/', DISCHARGE_PLAN_PAYLOAD, format='json',
+        )
+        response = self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/', DISCHARGE_PLAN_PAYLOAD, format='json',
+        )
         self.assertEqual(response.status_code, 400)
         self.assertIn('already been discharged', response.json()['detail'])
+
+    def test_discharge_is_rejected_when_the_plan_is_incomplete(self):
+        self.client.force_authenticate(self.supervisor)
+        incomplete = {'dischargePlan': {**DISCHARGE_PLAN_PAYLOAD['dischargePlan'], 'diet': ''}}
+        response = self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/', incomplete, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('diet', response.json()['dischargePlan'])
+        self.patient.refresh_from_db()
+        self.assertEqual(self.patient.status, 'admitted')
 
     def test_unauthenticated_cannot_discharge(self):
         response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')

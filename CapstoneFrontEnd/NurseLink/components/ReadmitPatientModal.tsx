@@ -5,6 +5,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
+import { DatePicker, todayIso } from './DatePicker';
 import { Alert, AlertDescription } from './Alert';
 import { readmitPatient, fetchDepartments, ApiError } from '../services/api';
 import type { Department, Patient } from '../types/domain';
@@ -15,11 +16,6 @@ interface ReadmitPatientModalProps {
   onOpenChange: (open: boolean) => void;
   patient: Patient | null;
   onReadmitted: (patient: Patient) => void;
-}
-
-function todayIso() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 export function ReadmitPatientModal({ open, onOpenChange, patient, onReadmitted }: ReadmitPatientModalProps) {
@@ -101,11 +97,12 @@ export function ReadmitPatientModal({ open, onOpenChange, patient, onReadmitted 
                 </Alert>
               ) : null}
 
-              <Input
-                label="Admission Date *"
+              <DatePicker
+                label="Admission Date"
+                required
                 value={admissionDate}
-                onChangeText={setAdmissionDate}
-                placeholder="YYYY-MM-DD"
+                onChange={setAdmissionDate}
+                maxDate={todayIso()}
               />
               <Input
                 label="Diagnosis *"

@@ -34,6 +34,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
+import { DatePicker, todayIso, formatDisplayDate } from '../../components/DatePicker';
 import { Badge } from '../../components/Badge';
 import { PatientCareTeam } from '../../components/PatientCareTeam';
 import { VitalSignsGrid } from '../../components/VitalSignsGrid';
@@ -314,10 +315,10 @@ export default function KardexScreen() {
     return `NURSELINK KARDEX
 ================
 Patient: ${firstName} ${middleName} ${lastName}
-Age: ${age} | Sex: ${gender} | Birthday: ${birthday || 'N/A'}
+Age: ${age} | Sex: ${gender} | Birthday: ${birthday ? formatDisplayDate(birthday) : 'N/A'}
 Religion: ${religion || 'N/A'}
 Room: ${room} | Bed: ${bedNumber || 'N/A'}
-Admission Date: ${admissionDate}
+Admission Date: ${formatDisplayDate(admissionDate)}
 
 Attending Physician: ${attendingPhysician || 'N/A'}
 Chief Complaint: ${chiefComplaint || 'N/A'}
@@ -548,11 +549,12 @@ ${specialEndorsements || 'None'}
               />
             </View>
             <View style={[styles.field, styles.colThird]}>
-              <FieldLabel text="Birthday" />
-              <Input
+              <DatePicker
+                label="Birthday"
                 value={birthday}
-                onChangeText={setBirthday}
-                placeholder="MM/DD/YYYY"
+                onChange={setBirthday}
+                maxDate={todayIso()}
+                helperText="Cannot be in the future"
               />
             </View>
           </View>
@@ -561,11 +563,12 @@ ${specialEndorsements || 'None'}
           <Text style={styles.groupHeading}>Admission Information</Text>
           <View style={styles.rowWrap}>
             <View style={[styles.field, styles.colThird]}>
-              <RequiredLabel text="Admission Date" />
-              <Input
+              <DatePicker
+                label="Admission Date"
+                required
                 value={admissionDate}
-                onChangeText={setAdmissionDate}
-                placeholder="YYYY-MM-DD"
+                onChange={setAdmissionDate}
+                maxDate={todayIso()}
               />
             </View>
             <View style={[styles.field, styles.colThird]}>
@@ -1095,13 +1098,13 @@ ${specialEndorsements || 'None'}
                       <View style={[styles.field, styles.colQuarter]}>
                         <ReadOnlyField
                           label="Birthday"
-                          value={selectedHistoryEntry.birthday || 'N/A'}
+                          value={selectedHistoryEntry.birthday ? formatDisplayDate(selectedHistoryEntry.birthday) : 'N/A'}
                         />
                       </View>
                       <View style={[styles.field, styles.colQuarter]}>
                         <ReadOnlyField
                           label="Admission Date"
-                          value={selectedHistoryEntry.admissionDate}
+                          value={formatDisplayDate(selectedHistoryEntry.admissionDate)}
                         />
                       </View>
                     </View>

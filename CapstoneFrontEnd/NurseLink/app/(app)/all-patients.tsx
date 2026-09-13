@@ -41,9 +41,11 @@ import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
+import { DatePicker, todayIso } from '../../components/DatePicker';
 import { RiskBadge } from '../../components/RiskBadge';
 import { TaskAssignmentModal } from '../../components/TaskAssignmentModal';
 import { PatientKardexModal } from '../../components/PatientKardexModal';
+import { DischargePlanModal } from '../../components/DischargePlanModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { PatientVisitHistoryModal } from '../../components/PatientVisitHistoryModal';
 import { ReadmitPatientModal } from '../../components/ReadmitPatientModal';
@@ -178,9 +180,9 @@ export default function AllPatientsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<'add' | 'edit'>('add');
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
+  const [dischargeConfirmOpen, setDischargeConfirmOpen] = useState(false);
   const [dischargeOpen, setDischargeOpen] = useState(false);
   const [toDischarge, setToDischarge] = useState<Patient | null>(null);
-  const [discharging, setDischarging] = useState(false);
   const [settingDeptFor, setSettingDeptFor] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyPatient, setHistoryPatient] = useState<Patient | null>(null);
@@ -357,19 +359,20 @@ export default function AllPatientsPage() {
 
         {statusFilter === 'discharged' ? (
           <View style={styles.filterRow}>
-            <Input
+            <DatePicker
               label="Discharged From"
               value={dischargeDateFrom}
-              onChangeText={setDischargeDateFrom}
-              placeholder="YYYY-MM-DD"
-              containerStyle={styles.filterSelect}
+              onChange={setDischargeDateFrom}
+              maxDate={dischargeDateTo || todayIso()}
+              style={styles.filterSelect}
             />
-            <Input
+            <DatePicker
               label="Discharged To"
               value={dischargeDateTo}
-              onChangeText={setDischargeDateTo}
-              placeholder="YYYY-MM-DD"
-              containerStyle={styles.filterSelect}
+              onChange={setDischargeDateTo}
+              minDate={dischargeDateFrom || undefined}
+              maxDate={todayIso()}
+              style={styles.filterSelect}
             />
           </View>
         ) : null}
@@ -805,7 +808,7 @@ export default function AllPatientsPage() {
                           style={styles.actionBtn}
                           onPress={() => {
                             setToDischarge(patient);
-                            setDischargeOpen(true);
+                            setDischargeConfirmOpen(true);
                           }}
                         >
                           <LogOut size={14} color={Colors.white} />
@@ -856,22 +859,38 @@ export default function AllPatientsPage() {
         onSaved={loadPatients}
       />
       <ConfirmDialog
-        open={dischargeOpen}
-        onOpenChange={setDischargeOpen}
+        open={dischargeConfirmOpen}
+        onOpenChange={(next) => {
+          setDischargeConfirmOpen(next);
+          if (!next) setToDischarge(null);
+        }}
         title="Discharge Patient"
         description={
           toDischarge
-            ? `Are you sure you want to discharge ${toDischarge.name}? This action cannot be undone.`
+            ? `Discharge ${toDischarge.name}? You'll complete a Discharge Plan next — the patient isn't marked as discharged until that's submitted.`
             : 'Discharge this patient?'
         }
         confirmLabel="Discharge"
         destructive
-        loading={discharging}
-        onConfirm={async () => {
+        onConfirm={() => {
+          // The patient stays exactly as they are (not discharged) until the
+          // Discharge Plan modal's own "Complete Discharge" actually submits —
+          // this step only decides which patient to open that form for.
+          setDischargeConfirmOpen(false);
+          setDischargeOpen(true);
+        }}
+      />
+      <DischargePlanModal
+        open={dischargeOpen}
+        onOpenChange={(next) => {
+          setDischargeOpen(next);
+          if (!next) setToDischarge(null);
+        }}
+        patient={toDischarge}
+        onConfirm={async (plan) => {
           if (!toDischarge) return;
-          setDischarging(true);
           try {
-            const updated = await dischargePatient(toDischarge.id);
+            const updated = await dischargePatient(toDischarge.id, plan);
             setPatients((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
             toast.success('Patient discharged', {
               description: `${toDischarge.name} has been marked as discharged.`,
@@ -882,8 +901,6 @@ export default function AllPatientsPage() {
             toast.error('Failed to discharge patient', {
               description: error instanceof ApiError ? error.message : 'Please try again.',
             });
-          } finally {
-            setDischarging(false);
           }
         }}
       />

@@ -91,6 +91,32 @@ class IsSupervisorOrReadOnly(BasePermission):
         return True
 
 
+class CanManageReferral(BasePermission):
+    """
+    Referrals (HandoverNote) are nurse-to-nurse only, with no head-nurse
+    approval gate. Any approved nurse or admin may read (list/retrieve) a
+    referral — including head nurses, so they can watch every referral in
+    their department(s) — but creating, editing, or deleting one requires an
+    approved nurse who is NOT a head nurse. Head nurses have view-only
+    access by design: there is no 'approve referral' action to remove
+    because none ever gated this flow (see HandoverViewSet.accept/decline/
+    complete, each of which additionally checks that the acting user is the
+    referral's actual recipient, not just "not a head nurse").
+    """
+
+    def has_permission(self, request, view):
+        if request.user and request.user.is_authenticated and request.user.is_staff:
+            return request.method in SAFE_METHODS
+        if not IsApprovedNurse().has_permission(request, view):
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        if get_user_role(request.user) == 'head_nurse':
+            self.message = 'Head nurses have view-only access to referrals.'
+            return False
+        return True
+
+
 class IsApprovedNurseOrAdminReadOnly(BasePermission):
     """
     Same rules as IsApprovedNurse for a nurse/head nurse. An admin

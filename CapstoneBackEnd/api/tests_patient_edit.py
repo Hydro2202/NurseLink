@@ -107,7 +107,22 @@ class ActivePatientEditTests(PatientEditTestCase):
 class DischargedPatientEditTests(PatientEditTestCase):
     def setUp(self):
         super().setUp()
-        self.client.post(f'/api/patients/{self.patient.patient_code}/discharge/')
+        # DISCHARGE_PLAN_REQUIRED defaults to True (see settings.py) — a full
+        # M.E.T.H.O.D. plan to post alongside /discharge/.
+        self.client.post(
+            f'/api/patients/{self.patient.patient_code}/discharge/',
+            {
+                'dischargePlan': {
+                    'medications': 'Metformin 500mg PO BID.',
+                    'environment': 'Lives with spouse.',
+                    'treatment': 'Continue wound care every other day.',
+                    'healthTeaching': 'Reviewed signs of infection.',
+                    'outpatientReferral': 'Follow-up with Dr. Alvarez 2026-09-20.',
+                    'diet': 'Low-sodium diet.',
+                }
+            },
+            format='json',
+        )
         self.patient.refresh_from_db()
         self.visit = PatientVisit.objects.filter(patient=self.patient).order_by('-discharge_date').first()
 

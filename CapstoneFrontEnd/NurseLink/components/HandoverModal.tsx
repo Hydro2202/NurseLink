@@ -193,7 +193,6 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           recommendation: formData.recommendation,
         },
         unfinishedTasks,
-        status: 'pending',
       });
       onOpenChange(false);
     } catch (error) {

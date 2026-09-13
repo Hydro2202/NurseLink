@@ -41,6 +41,7 @@ import { Card, CardContent } from '../../components/Card';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
+import { DatePicker } from '../../components/DatePicker';
 import { Alert, AlertDescription } from '../../components/Alert';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { DutyAssignmentModal } from '../../components/DutyAssignmentModal';
@@ -684,7 +685,7 @@ export default function DutyRosterPage() {
               style={dateFilter !== 'week' ? { ...styles.filterSelect, ...styles.filterSelectActive } : styles.filterSelect}
             />
             {dateFilter === 'custom' ? (
-              <Input value={customDate} onChangeText={setCustomDate} placeholder="YYYY-MM-DD" containerStyle={styles.customDateInput} />
+              <DatePicker value={customDate} onChange={setCustomDate} style={styles.customDateInput} />
             ) : null}
             <Select
               value={shiftFilter}

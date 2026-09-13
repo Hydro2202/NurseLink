@@ -26,6 +26,7 @@ import {
   CheckCircle2,
   ClipboardList,
   ChevronLeft,
+  LogOut,
 } from 'lucide-react-native';
 import {
   fetchPatients,
@@ -36,6 +37,7 @@ import {
   confirmChartingNote,
   deleteChartingNote,
   structureChartRequest,
+  dischargePatient,
   ApiError,
 } from '../../services/api';
 import type {
@@ -51,11 +53,17 @@ import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
 import { Alert, AlertDescription } from '../../components/Alert';
 import { StructuredNursingNote } from '../../components/StructuredNursingNote';
+import { FDARNursingNote } from '../../components/FDARNursingNote';
+import { DischargePlanModal } from '../../components/DischargePlanModal';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Colors, Radius, Shadows } from '../../constants/colors';
 import {
+  contentFromFDAR,
   contentFromStructured,
+  fdarFromStructured,
+  fdarHasContent,
   formatPatientVitalSigns,
   normalizeStructuredData,
   resolveNoteForDisplay,
@@ -92,6 +100,10 @@ type StructuredData = Required<
     oxygenSaturation: string;
     respiratoryRate: string;
   };
+  focus: string;
+  data: string;
+  action: string;
+  response: string;
 };
 
 export default function ChartingScreen() {
@@ -116,6 +128,10 @@ export default function ChartingScreen() {
   const [editTarget, setEditTarget] = useState<ChartingNote | null>(null);
   const [editContent, setEditContent] = useState('');
   const [editAssessment, setEditAssessment] = useState('');
+  const [editFocus, setEditFocus] = useState('');
+  const [editData, setEditData] = useState('');
+  const [editAction, setEditAction] = useState('');
+  const [editResponse, setEditResponse] = useState('');
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyDates, setHistoryDates] = useState<ChartingHistoryDate[]>([]);
@@ -126,6 +142,8 @@ export default function ChartingScreen() {
   const [historyNotes, setHistoryNotes] = useState<ChartingNote[]>([]);
   const [historyNotesLoading, setHistoryNotesLoading] = useState(false);
   const [historyDateSearch, setHistoryDateSearch] = useState('');
+  const [dischargeConfirmOpen, setDischargeConfirmOpen] = useState(false);
+  const [dischargeModalOpen, setDischargeModalOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,7 +184,8 @@ export default function ChartingScreen() {
   const toPreviewStructured = (
     structured: ChartingStructuredData,
     patient: Patient,
-    nurseInput: string
+    nurseInput: string,
+    fdarFromWorkflow?: { focus?: string; data?: string; action?: string; response?: string }
   ): StructuredData => {
     const now = new Date();
     const patientVitals = formatPatientVitalSigns(patient);
@@ -224,6 +243,15 @@ export default function ChartingScreen() {
       clinicalSummary: structured.clinicalSummary || '',
       plan: structured.plan || '',
       timestamp: structured.timestamp || now.toISOString(),
+      ...(() => {
+        const fallback = fdarFromStructured(structured, 'progress');
+        return {
+          focus: fdarFromWorkflow?.focus?.trim() || fallback.focus,
+          data: fdarFromWorkflow?.data?.trim() || fallback.data,
+          action: fdarFromWorkflow?.action?.trim() || fallback.action,
+          response: fdarFromWorkflow?.response?.trim() || fallback.response,
+        };
+      })(),
     };
   };
 
@@ -254,9 +282,18 @@ export default function ChartingScreen() {
       });
 
       const structured = normalizeStructuredData(res.structured);
-      const preview = toPreviewStructured(structured, patient, inputText);
+      const preview = toPreviewStructured(structured, patient, inputText, {
+        focus: res.focus,
+        data: res.data,
+        action: res.action,
+        response: res.response,
+      });
 
-      if (!structuredHasClinicalContent(preview) && !(res.note || '').trim()) {
+      if (
+        !structuredHasClinicalContent(preview) &&
+        !fdarHasContent(preview) &&
+        !(res.note || '').trim()
+      ) {
         toast.error('Could not generate the note', {
           description:
             'The charting workflow returned no usable clinical content. Please try again.',
@@ -264,9 +301,13 @@ export default function ChartingScreen() {
         return;
       }
 
-      // Prefer workflow narrative; otherwise build from structured sections so
-      // Approve always has something real to persist.
-      setAiGeneratedNote((res.note || '').trim() || contentFromStructured(preview));
+      // Prefer workflow narrative; otherwise build from FDAR/structured
+      // sections so Approve always has something real to persist.
+      setAiGeneratedNote(
+        (res.note || '').trim() ||
+          contentFromFDAR(preview.focus, preview.data, preview.action, preview.response) ||
+          contentFromStructured(preview)
+      );
       setStructuredData(preview);
       setShowPreview(true);
     } catch (error) {
@@ -297,8 +338,14 @@ export default function ChartingScreen() {
     }
 
     const content =
-      (aiGeneratedNote || '').trim() || contentFromStructured(structuredData);
-    if (!content.trim() && !structuredHasClinicalContent(structuredData)) {
+      (aiGeneratedNote || '').trim() ||
+      contentFromFDAR(structuredData.focus, structuredData.data, structuredData.action, structuredData.response) ||
+      contentFromStructured(structuredData);
+    if (
+      !content.trim() &&
+      !structuredHasClinicalContent(structuredData) &&
+      !fdarHasContent(structuredData)
+    ) {
       toast.error('Cannot save an empty chart', {
         description: 'The generated note has no clinical content to persist.',
       });
@@ -318,6 +365,10 @@ export default function ChartingScreen() {
         nurseName: user?.name || 'Unknown Nurse',
         content,
         structured: structuredPayload,
+        focus: structuredData.focus,
+        data: structuredData.data,
+        action: structuredData.action,
+        response: structuredData.response,
         timestamp: structuredData.timestamp || new Date().toISOString(),
         type: 'progress',
         aiGenerated: true,
@@ -388,32 +439,74 @@ export default function ChartingScreen() {
   };
 
   const handleOpenEdit = (note: ChartingNote) => {
-    const structured = normalizeStructuredData(note.structured ?? undefined);
     setEditTarget(note);
-    setEditContent(note.content || contentFromStructured(structured));
-    setEditAssessment(structured.assessment || '');
+    if (note.noteFormat === 'legacy') {
+      const structured = normalizeStructuredData(note.structured ?? undefined);
+      setEditContent(note.content || contentFromStructured(structured));
+      setEditAssessment(structured.assessment || '');
+      return;
+    }
+    setEditFocus(note.focus || '');
+    setEditData(note.data || '');
+    setEditAction(note.action || '');
+    setEditResponse(note.response || '');
   };
 
   const handleSaveEdit = async () => {
     if (!editTarget) return;
-    const content = editContent.trim();
-    if (!content) {
+
+    if (editTarget.noteFormat === 'legacy') {
+      const content = editContent.trim();
+      if (!content) {
+        toast.error('Cannot save an empty chart');
+        return;
+      }
+      const structured = normalizeStructuredData({
+        ...(editTarget.structured ?? {}),
+        assessment: editAssessment.trim() || undefined,
+      });
+      if (editAssessment.trim()) {
+        structured.assessment = editAssessment.trim();
+      }
+
+      setIsSavingEdit(true);
+      try {
+        const updated = await updateChartingNote(editTarget.id, { content, structured });
+        setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+        if (selectedNote?.id === updated.id) setSelectedNote(updated);
+        if (historySelectedDate) {
+          setHistoryNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+        }
+        setEditTarget(null);
+        toast.success('Charting note updated');
+      } catch (error) {
+        toast.error('Could not save edits', {
+          description: error instanceof ApiError ? error.message : 'Please try again.',
+        });
+      } finally {
+        setIsSavingEdit(false);
+      }
+      return;
+    }
+
+    const focus = editFocus.trim();
+    const data = editData.trim();
+    const action = editAction.trim();
+    const response = editResponse.trim();
+    if (!focus && !data && !action && !response) {
       toast.error('Cannot save an empty chart');
       return;
     }
-    const structured = normalizeStructuredData({
-      ...(editTarget.structured ?? {}),
-      assessment: editAssessment.trim() || undefined,
-    });
-    if (editAssessment.trim()) {
-      structured.assessment = editAssessment.trim();
-    }
+    const content = contentFromFDAR(focus, data, action, response);
 
     setIsSavingEdit(true);
     try {
       const updated = await updateChartingNote(editTarget.id, {
+        focus,
+        data,
+        action,
+        response,
         content,
-        structured,
       });
       setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
       if (selectedNote?.id === updated.id) setSelectedNote(updated);
@@ -620,6 +713,19 @@ export default function ChartingScreen() {
             </View>
           ) : null}
 
+          {selectedPatientRecord && selectedPatientRecord.status !== 'discharged' ? (
+            <Button
+              variant="outline"
+              onPress={() => setDischargeConfirmOpen(true)}
+              style={styles.dischargeBtn}
+            >
+              <View style={styles.btnInner}>
+                <LogOut size={16} color={Colors.red600} />
+                <Text style={styles.dischargeBtnText}>Discharge Patient</Text>
+              </View>
+            </Button>
+          ) : null}
+
           <View style={styles.field}>
             <Text style={styles.label}>Assessment & Observations</Text>
             <TextInput
@@ -718,7 +824,7 @@ export default function ChartingScreen() {
               </View>
             ) : (
               structuredData && (
-                <StructuredNursingNote {...structuredData} isDraft={true} />
+                <FDARNursingNote {...structuredData} isDraft={true} />
               )
             )}
 
@@ -830,6 +936,14 @@ export default function ChartingScreen() {
                     </View>
                   </View>
                   <View style={styles.badgeCol}>
+                    {note.noteFormat === 'legacy' ? (
+                      <Badge variant="outline">
+                        <View style={styles.badgeInner}>
+                          <ClipboardList size={12} color={Colors.mutedForeground} />
+                          <Text style={styles.badgeText}>Legacy Note</Text>
+                        </View>
+                      </Badge>
+                    ) : null}
                     {note.confirmed ? (
                       <Badge
                         variant="outline"
@@ -975,6 +1089,14 @@ export default function ChartingScreen() {
               {selectedNote ? (
                 <View style={styles.gap4}>
                   <View style={styles.badgeRow}>
+                    {selectedNote.noteFormat === 'legacy' ? (
+                      <Badge variant="outline">
+                        <View style={styles.badgeInner}>
+                          <ClipboardList size={12} color={Colors.mutedForeground} />
+                          <Text style={styles.badgeText}>Legacy Note</Text>
+                        </View>
+                      </Badge>
+                    ) : null}
                     {selectedNote.confirmed ? (
                       <Badge
                         variant="outline"
@@ -1019,7 +1141,14 @@ export default function ChartingScreen() {
                     ) : null}
                   </View>
 
-                  <StructuredNursingNote {...resolveNoteForDisplay(selectedNote)} />
+                  {(() => {
+                    const resolved = resolveNoteForDisplay(selectedNote);
+                    return resolved.kind === 'legacy' ? (
+                      <StructuredNursingNote {...resolved.view} />
+                    ) : (
+                      <FDARNursingNote {...resolved.view} />
+                    );
+                  })()}
                 </View>
               ) : null}
             </ScrollView>
@@ -1123,32 +1252,85 @@ export default function ChartingScreen() {
               contentContainerStyle={styles.modalScrollContent}
               keyboardShouldPersistTaps="handled"
             >
-              <View style={styles.gap4}>
-                <View style={styles.field}>
-                  <Text style={styles.label}>Assessment</Text>
-                  <TextInput
-                    style={styles.textarea}
-                    value={editAssessment}
-                    onChangeText={setEditAssessment}
-                    multiline
-                    textAlignVertical="top"
-                    placeholder="Assessment & observations from the saved record"
-                    placeholderTextColor={Colors.mutedForeground}
-                  />
+              {editTarget?.noteFormat === 'legacy' ? (
+                <View style={styles.gap4}>
+                  <View style={styles.field}>
+                    <Text style={styles.label}>Assessment</Text>
+                    <TextInput
+                      style={styles.textarea}
+                      value={editAssessment}
+                      onChangeText={setEditAssessment}
+                      multiline
+                      textAlignVertical="top"
+                      placeholder="Assessment & observations from the saved record"
+                      placeholderTextColor={Colors.mutedForeground}
+                    />
+                  </View>
+                  <View style={styles.field}>
+                    <Text style={styles.label}>Full note content</Text>
+                    <TextInput
+                      style={[styles.textarea, { minHeight: 220 }]}
+                      value={editContent}
+                      onChangeText={setEditContent}
+                      multiline
+                      textAlignVertical="top"
+                      placeholder="Saved charting content"
+                      placeholderTextColor={Colors.mutedForeground}
+                    />
+                  </View>
                 </View>
-                <View style={styles.field}>
-                  <Text style={styles.label}>Full note content</Text>
-                  <TextInput
-                    style={[styles.textarea, { minHeight: 220 }]}
-                    value={editContent}
-                    onChangeText={setEditContent}
-                    multiline
-                    textAlignVertical="top"
-                    placeholder="Saved charting content"
-                    placeholderTextColor={Colors.mutedForeground}
-                  />
+              ) : (
+                <View style={styles.gap4}>
+                  <View style={styles.field}>
+                    <Text style={styles.label}>Focus</Text>
+                    <TextInput
+                      style={[styles.textarea, { minHeight: 60 }]}
+                      value={editFocus}
+                      onChangeText={setEditFocus}
+                      multiline
+                      textAlignVertical="top"
+                      placeholder="Primary concern, e.g. Pain management"
+                      placeholderTextColor={Colors.mutedForeground}
+                    />
+                  </View>
+                  <View style={styles.field}>
+                    <Text style={styles.label}>Data</Text>
+                    <TextInput
+                      style={styles.textarea}
+                      value={editData}
+                      onChangeText={setEditData}
+                      multiline
+                      textAlignVertical="top"
+                      placeholder="Subjective and objective findings — vitals, assessment, patient statements"
+                      placeholderTextColor={Colors.mutedForeground}
+                    />
+                  </View>
+                  <View style={styles.field}>
+                    <Text style={styles.label}>Action</Text>
+                    <TextInput
+                      style={styles.textarea}
+                      value={editAction}
+                      onChangeText={setEditAction}
+                      multiline
+                      textAlignVertical="top"
+                      placeholder="Interventions performed"
+                      placeholderTextColor={Colors.mutedForeground}
+                    />
+                  </View>
+                  <View style={styles.field}>
+                    <Text style={styles.label}>Response</Text>
+                    <TextInput
+                      style={styles.textarea}
+                      value={editResponse}
+                      onChangeText={setEditResponse}
+                      multiline
+                      textAlignVertical="top"
+                      placeholder="Patient's outcome or reaction to the action taken"
+                      placeholderTextColor={Colors.mutedForeground}
+                    />
+                  </View>
                 </View>
-              </View>
+              )}
             </ScrollView>
             <View style={styles.modalFooter}>
               <Button
@@ -1318,6 +1500,44 @@ export default function ChartingScreen() {
           </View>
         </View>
       </Modal>
+
+      <ConfirmDialog
+        open={dischargeConfirmOpen}
+        onOpenChange={setDischargeConfirmOpen}
+        title="Discharge Patient"
+        description={
+          selectedPatientRecord
+            ? `Discharge ${selectedPatientRecord.name}? You'll complete a Discharge Plan next — the patient isn't marked as discharged until that's submitted.`
+            : 'Discharge this patient?'
+        }
+        confirmLabel="Discharge"
+        destructive
+        onConfirm={() => {
+          setDischargeConfirmOpen(false);
+          setDischargeModalOpen(true);
+        }}
+      />
+      <DischargePlanModal
+        open={dischargeModalOpen}
+        onOpenChange={setDischargeModalOpen}
+        patient={selectedPatientRecord ?? null}
+        onConfirm={async (plan) => {
+          if (!selectedPatientRecord) return;
+          try {
+            const updated = await dischargePatient(selectedPatientRecord.id, plan);
+            setPatients((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+            toast.success('Patient discharged', {
+              description: `${updated.name} has been marked as discharged.`,
+            });
+            setDischargeModalOpen(false);
+            setSelectedPatient('');
+          } catch (error) {
+            toast.error('Failed to discharge patient', {
+              description: error instanceof ApiError ? error.message : 'Please try again.',
+            });
+          }
+        }}
+      />
     </ScrollView>
   );
 }
@@ -1433,6 +1653,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  dischargeBtn: {
+    borderColor: Colors.red200,
+    backgroundColor: Colors.red50,
+  },
+  dischargeBtnText: {
+    color: Colors.red600,
+    fontWeight: '600',
+    fontSize: 14,
   },
   btnTextWhite: {
     color: Colors.white,

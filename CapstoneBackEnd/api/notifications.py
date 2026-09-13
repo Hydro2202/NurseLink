@@ -17,7 +17,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
 
-from .models import Notification
+from .models import Notification, NurseProfile
 from .realtime import push_notification
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 # that makes a nurse responsible for a patient they have not seen yet.
 HANDOVER_RECEIVED = 'handover_received'
 HANDOVER_ACKNOWLEDGED = 'handover_acknowledged'
+HANDOVER_ACCEPTED = 'handover_accepted'
+HANDOVER_DECLINED = 'handover_declined'
+HANDOVER_COMPLETED = 'handover_completed'
+# Head-nurse oversight only — never actionable, never an approval request.
+# See notify_referral_head_nurse_fyi.
+REFERRAL_HEAD_NURSE_FYI = 'referral_head_nurse_fyi'
 TASK_ASSIGNED = 'task_assigned'
 KARDEX_REVIEWED = 'kardex_reviewed'
 NURSE_REASSIGNED = 'nurse_reassigned'
@@ -260,13 +266,49 @@ def notify_handover_created(handover):
     )
 
 
-def notify_handover_acknowledged(handover, nurse, adopted_tasks):
+def notify_handover_acknowledged(handover, nurse):
     """
-    Tell the outgoing nurse their handover landed.
+    Tell the outgoing nurse their referral was opened/received.
+
+    This is the lightweight "seen it" step — no responsibility has
+    transferred yet and no tasks have moved (that happens on accept, see
+    notify_handover_accepted). Skipped when a nurse acknowledges their own
+    referral, which is just noise.
+    """
+    recipient = handover.created_by
+    if recipient is None or recipient.pk == nurse.pk:
+        return None
+
+    if not wants(recipient, 'handover_notifications'):
+        return None
+
+    nurse_name = nurse.get_full_name().strip() or nurse.username
+    return notify(
+        recipient,
+        notification_type='info',
+        event=HANDOVER_ACKNOWLEDGED,
+        title='Referral received',
+        message=(
+            f'{nurse_name} received your referral for '
+            f'{handover.patient_name or "a patient"} and has not yet accepted it.'
+        ),
+        patient_label=handover.patient_name or '',
+        patient=handover.patient,
+        handover=handover,
+        sender=nurse,
+        action_label='View referral',
+        action_path='/handover',
+        action_highlight_id=handover.handover_code,
+    )
+
+
+def notify_handover_accepted(handover, nurse, adopted_tasks):
+    """
+    Tell the outgoing nurse their referral was accepted.
 
     They are the one person who needs to know the patient is now somebody
-    else's responsibility, and how much of their unfinished work was picked up.
-    Skipped when a nurse acknowledges their own handover, which is just noise.
+    else's responsibility, and how much of their unfinished work was picked
+    up. Skipped when a nurse accepts their own referral, which is just noise.
     """
     recipient = handover.created_by
     if recipient is None or recipient.pk == nurse.pk:
@@ -287,10 +329,10 @@ def notify_handover_acknowledged(handover, nurse, adopted_tasks):
     return notify(
         recipient,
         notification_type='success',
-        event=HANDOVER_ACKNOWLEDGED,
-        title='Referral acknowledged',
+        event=HANDOVER_ACCEPTED,
+        title='Referral accepted',
         message=(
-            f'{nurse_name} acknowledged your referral for '
+            f'{nurse_name} accepted your referral for '
             f'{handover.patient_name or "a patient"}.{tail}'
         ),
         patient_label=handover.patient_name or '',
@@ -301,6 +343,127 @@ def notify_handover_acknowledged(handover, nurse, adopted_tasks):
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )
+
+
+def notify_handover_declined(handover, nurse, reason):
+    """Tell the outgoing nurse their referral was declined, and why, so they
+    can reassign the patient to someone else."""
+    recipient = handover.created_by
+    if recipient is None or recipient.pk == nurse.pk:
+        return None
+
+    if not wants(recipient, 'handover_notifications'):
+        return None
+
+    nurse_name = nurse.get_full_name().strip() or nurse.username
+    tail = f' Reason: {reason}' if reason else ''
+    return notify(
+        recipient,
+        notification_type='warning',
+        event=HANDOVER_DECLINED,
+        title='Referral declined',
+        message=(
+            f'{nurse_name} declined your referral for '
+            f'{handover.patient_name or "a patient"}.{tail}'
+        ),
+        patient_label=handover.patient_name or '',
+        patient=handover.patient,
+        handover=handover,
+        sender=nurse,
+        action_label='View referral',
+        action_path='/handover',
+        action_highlight_id=handover.handover_code,
+    )
+
+
+def notify_handover_completed(handover, nurse):
+    """Tell the outgoing nurse a referral they sent has been marked complete."""
+    recipient = handover.created_by
+    if recipient is None or recipient.pk == nurse.pk:
+        return None
+
+    if not wants(recipient, 'handover_notifications'):
+        return None
+
+    nurse_name = nurse.get_full_name().strip() or nurse.username
+    return notify(
+        recipient,
+        notification_type='success',
+        event=HANDOVER_COMPLETED,
+        title='Referral completed',
+        message=(
+            f'{nurse_name} marked the referral for '
+            f'{handover.patient_name or "a patient"} as completed.'
+        ),
+        patient_label=handover.patient_name or '',
+        patient=handover.patient,
+        handover=handover,
+        sender=nurse,
+        action_label='View referral',
+        action_path='/handover',
+        action_highlight_id=handover.handover_code,
+    )
+
+
+def notify_referral_head_nurse_fyi(handover, verb, detail=''):
+    """
+    Keep the relevant head nurse(s) informed of a referral event — created,
+    accepted, declined, or completed — purely for oversight. Head nurses
+    never approve or act on a referral (see HandoverViewSet.accept/decline/
+    complete, which authorize only the two nurses involved), so this is
+    deliberately not actionable: no action_label/action_path, and the title
+    says "For your information" rather than anything implying a decision is
+    needed.
+
+    Scoped to the head nurse(s) of the sending and/or receiving nurse's
+    department (NurseProfile.department is a plain string, not a relation,
+    so matching is by equal department name — the only scoping this data
+    shape supports today). Falls back to every head nurse when neither the
+    sender nor the recipient has a department set, so oversight coverage
+    never silently drops to zero for referrals with incomplete profile data.
+    """
+    sender_profile = getattr(handover.created_by, 'nurse_profile', None)
+    recipient_profile = getattr(handover.nurse_to_user, 'nurse_profile', None)
+    departments = {
+        (getattr(sender_profile, 'department', '') or '').strip(),
+        (getattr(recipient_profile, 'department', '') or '').strip(),
+    }
+    departments.discard('')
+
+    profiles = NurseProfile.objects.filter(role='head_nurse').select_related('user')
+    if departments:
+        profiles = profiles.filter(department__in=departments)
+
+    patient_name = handover.patient_name or (
+        handover.patient.name if handover.patient_id else 'a patient'
+    )
+    tail = f' {detail}' if detail else ''
+    results = []
+    for profile in profiles:
+        head_nurse = profile.user
+        if head_nurse is None:
+            continue
+        if head_nurse.pk == handover.created_by_id or head_nurse.pk == handover.nurse_to_user_id:
+            continue
+        if not wants(head_nurse, 'handover_notifications'):
+            continue
+        results.append(
+            notify(
+                head_nurse,
+                notification_type='info',
+                event=REFERRAL_HEAD_NURSE_FYI,
+                title=f'Referral {verb} — For your information',
+                message=(
+                    f'Referral for {patient_name} from {handover.nurse_from} to '
+                    f'{handover.nurse_to} was {verb}.{tail}'
+                ),
+                patient_label=handover.patient_name or '',
+                patient=handover.patient,
+                handover=handover,
+                sender=None,
+            )
+        )
+    return results
 
 
 def notify_task_assigned(task, actor=None):

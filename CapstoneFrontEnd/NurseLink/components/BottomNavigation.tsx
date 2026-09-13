@@ -48,6 +48,8 @@ const SUPERVISOR_NAV: NavItem[] = [
   { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, color: Colors.blue600 },
   { name: 'Duty Roster', href: '/(app)/duty-roster', icon: Calendar, color: Colors.teal600 },
   { name: 'Patients', href: '/(app)/all-patients', icon: Users, color: Colors.purple600 },
+  // Read-only department oversight — see handover.tsx's isHeadNurse branch.
+  { name: 'Referral', href: '/(app)/handover', icon: FileText, color: Colors.orange600 },
   { name: 'Analytics', href: '/(app)/analytics', icon: BarChart3, color: Colors.green600 },
   { name: 'Workload', href: '/(app)/workload', icon: BarChart3, color: Colors.orange600 },
   { name: 'Settings', href: '/(app)/settings', icon: Settings, color: Colors.gray600 },

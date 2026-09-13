@@ -242,6 +242,11 @@ N8N_WEBHOOKS = {
     # still separate env vars in case they ever diverge.
     'verify_id': os.environ.get('N8N_VERIFY_ID_PATH', 'identity-verify'),
     'face_verify': os.environ.get('N8N_FACE_VERIFY_PATH', 'identity-verify'),
+    # AI-draft a M.E.T.H.O.D. discharge plan from a patient's charted notes —
+    # see PatientViewSet.generate_discharge_plan. Unlike structure_chart,
+    # this one degrades to a deterministic fallback rather than erroring out
+    # when unset/offline, so it's safe to leave unconfigured.
+    'discharge_plan': os.environ.get('N8N_DISCHARGE_PLAN_PATH', 'discharge-plan'),
 }
 
 # Direct full-URL override for the verify_id webhook specifically, for
@@ -256,6 +261,10 @@ N8N_IDENTITY_VERIFY_WEBHOOK = os.environ.get('N8N_IDENTITY_VERIFY_WEBHOOK', '').
 # traffic to whichever instance identity verification happens to use.
 N8N_AUTO_CHARTING_WEBHOOK_URL = os.environ.get('N8N_AUTO_CHARTING_WEBHOOK_URL', '').strip()
 
+# Full-URL override for the discharge-plan workflow — same reasoning as
+# N8N_AUTO_CHARTING_WEBHOOK_URL above. Leave blank to use the composed URL.
+N8N_DISCHARGE_PLAN_WEBHOOK_URL = os.environ.get('N8N_DISCHARGE_PLAN_WEBHOOK_URL', '').strip()
+
 # n8n workflows that call an LLM or a vision model are slow; a short timeout
 # would abort a run that was going to succeed.
 N8N_TIMEOUT_SECONDS = float(os.environ.get('N8N_TIMEOUT_SECONDS', '60'))
@@ -263,6 +272,11 @@ N8N_TIMEOUT_SECONDS = float(os.environ.get('N8N_TIMEOUT_SECONDS', '60'))
 # Optional shared secret. When set, sent as `X-NurseLink-Token` so the
 # workflow can reject calls that did not come from this backend.
 N8N_WEBHOOK_TOKEN = os.environ.get('N8N_WEBHOOK_TOKEN', '').strip()
+
+# Whether a complete M.E.T.H.O.D. discharge plan is mandatory before
+# PatientViewSet.discharge will finalize a discharge. Configurable per
+# deployment — some facilities may want it optional during rollout.
+DISCHARGE_PLAN_REQUIRED = os.environ.get('DISCHARGE_PLAN_REQUIRED', 'true').strip().lower() != 'false'
 
 # How early a nurse may tap "Start Shift" before their scheduled start —
 # early enough to be realistic (arriving a bit ahead of a shift is normal),

@@ -28,6 +28,37 @@ export type StructuredNursingNoteView = {
   timestamp: string;
 };
 
+export type FDARFields = { focus: string; data: string; action: string; response: string };
+
+export type FDARNoteView = {
+  patientName: string;
+  patientId: string;
+  room: string;
+  date: string;
+  time: string;
+  attendingPhysician: string;
+  nurseName: string;
+  vitalSigns: {
+    heartRate: string;
+    bloodPressure: string;
+    temperature: string;
+    oxygenSaturation: string;
+    respiratoryRate: string;
+  };
+  diagnosis: string;
+  riskLevel: string;
+  allergies: string;
+  medications: string;
+  alerts: string;
+  focus: string;
+  data: string;
+  action: string;
+  response: string;
+  plan: string;
+  clinicalSummary: string;
+  timestamp: string;
+};
+
 function asTrimmedString(value: unknown): string {
   if (value == null) return '';
   return String(value).trim();
@@ -210,11 +241,93 @@ export function contentFromStructured(structured: ChartingStructuredData): strin
   return lines.join('\n').trim();
 }
 
+const NOTE_TYPE_LABELS: Record<string, string> = {
+  progress: 'Progress',
+  assessment: 'Assessment',
+  medication: 'Medication',
+  vital_signs: 'Vital Signs',
+};
+
+function firstClause(text: string, limit = 80): string {
+  if (!text) return '';
+  for (const sep of ['.', ';', '\n']) {
+    const idx = text.indexOf(sep);
+    if (idx > 0 && idx <= limit) return text.slice(0, idx).trim();
+  }
+  return text.length > limit ? `${text.slice(0, limit).trim()}…` : text;
+}
+
 /**
- * Prefer persisted structured data for View Full Note. Fall back to metadata +
- * assessment-from-content only — never invent interventions or clinical facts.
+ * Deterministic Focus/Data/Action/Response derivation from whatever
+ * structured/vitals/assessment/interventions/patientResponse data IS
+ * available — the FDAR analogue of contentFromStructured. Never invents
+ * clinical facts; only reorganizes what's already present. Mirrors the
+ * backend's fdar_from_structured (api/serializers.py) so the client preview
+ * matches what gets persisted.
  */
-export function resolveNoteForDisplay(note: ChartingNote): StructuredNursingNoteView {
+export function fdarFromStructured(structured: ChartingStructuredData, noteType = 'progress'): FDARFields {
+  if (!structuredHasClinicalContent(structured)) {
+    return { focus: '', data: '', action: '', response: '' };
+  }
+
+  const diagnosis = structured.diagnosis?.trim() ?? '';
+  const assessment = structured.assessment?.trim() ?? '';
+  const focus = diagnosis || NOTE_TYPE_LABELS[noteType] || firstClause(assessment) || '';
+
+  const dataLines: string[] = [];
+  const vitals = structured.vitalSigns ?? {};
+  const vitalBits = (
+    [
+      ['HR', vitals.heartRate],
+      ['BP', vitals.bloodPressure],
+      ['Temp', vitals.temperature],
+      ['SpO2', vitals.oxygenSaturation],
+      ['RR', vitals.respiratoryRate],
+    ] as const
+  )
+    .filter(([, v]) => asTrimmedString(v))
+    .map(([label, v]) => `${label} ${v}`);
+  if (vitalBits.length) dataLines.push(`Vital Signs: ${vitalBits.join(', ')}`);
+  if (assessment) dataLines.push(assessment);
+
+  const action = (structured.interventions ?? [])
+    .map((i) => i.trim())
+    .filter(Boolean)
+    .map((i) => `- ${i}`)
+    .join('\n');
+
+  const responseLines: string[] = [];
+  if (structured.patientResponse?.trim()) responseLines.push(structured.patientResponse.trim());
+  if (structured.clinicalSummary?.trim()) responseLines.push(`Clinical Summary: ${structured.clinicalSummary.trim()}`);
+  if (structured.plan?.trim()) responseLines.push(`Plan / Follow-up: ${structured.plan.trim()}`);
+
+  return { focus, data: dataLines.join('\n\n'), action, response: responseLines.join('\n\n') };
+}
+
+export function fdarHasContent(fdar: Partial<FDARFields>): boolean {
+  return Boolean(fdar.focus?.trim() || fdar.data?.trim() || fdar.action?.trim() || fdar.response?.trim());
+}
+
+/** Synthesize a searchable narrative from F/D/A/R for read-compat (list previews, copy, search). */
+export function contentFromFDAR(focus: string, data: string, action: string, response: string): string {
+  const parts: string[] = [];
+  if (focus?.trim()) parts.push(`FOCUS: ${focus.trim()}`);
+  if (data?.trim()) parts.push(`DATA:\n${data.trim()}`);
+  if (action?.trim()) parts.push(`ACTION:\n${action.trim()}`);
+  if (response?.trim()) parts.push(`RESPONSE:\n${response.trim()}`);
+  return parts.join('\n\n');
+}
+
+/**
+ * Prefer persisted structured/FDAR data for View Full Note. Fall back to
+ * metadata + assessment-from-content only — never invent interventions or
+ * clinical facts. Branches on note.noteFormat: 'legacy' notes render via the
+ * original StructuredNursingNote view (unchanged); anything else (including
+ * absent/undefined, the safe default going forward) is FDAR.
+ */
+export function resolveNoteForDisplay(
+  note: ChartingNote
+): { kind: 'legacy'; view: StructuredNursingNoteView } | { kind: 'fdar'; view: FDARNoteView } {
   const structured = normalizeStructuredData(note.structured ?? undefined);
   const stamp = note.timestamp;
   const dateFallback = new Date(stamp).toLocaleDateString('en-US', {
@@ -228,10 +341,75 @@ export function resolveNoteForDisplay(note: ChartingNote): StructuredNursingNote
     minute: '2-digit',
     hour12: true,
   });
+  const vitals = structured.vitalSigns ?? {};
+  const resolvedVitals = {
+    heartRate: vitals.heartRate || '',
+    bloodPressure: vitals.bloodPressure || '',
+    temperature: vitals.temperature || '',
+    oxygenSaturation: vitals.oxygenSaturation || '',
+    respiratoryRate: vitals.respiratoryRate || '',
+  };
 
-  if (structuredHasClinicalContent(structured) || structured.patientName || structured.assessment) {
-    const vitals = structured.vitalSigns ?? {};
+  if (note.noteFormat === 'legacy') {
+    if (structuredHasClinicalContent(structured) || structured.patientName || structured.assessment) {
+      return {
+        kind: 'legacy',
+        view: {
+          patientName: structured.patientName || note.patientName || '',
+          patientId: structured.patientId || note.patientId || '',
+          room: structured.room || '',
+          date: structured.date || dateFallback,
+          time: structured.time || timeFallback,
+          attendingPhysician: structured.attendingPhysician || note.attendingPhysician || '',
+          nurseName: structured.nurseName || note.nurseName || '',
+          vitalSigns: resolvedVitals,
+          assessment: structured.assessment || '',
+          diagnosis: structured.diagnosis || '',
+          riskLevel: structured.riskLevel || '',
+          allergies: structured.allergies || '',
+          medications: structured.medications || '',
+          alerts: structured.alerts || '',
+          interventions: structured.interventions ?? [],
+          patientResponse: structured.patientResponse || '',
+          clinicalSummary: structured.clinicalSummary || '',
+          plan: structured.plan || '',
+          timestamp: structured.timestamp || stamp,
+        },
+      };
+    }
+
+    // Legacy note with no structured data at all: show stored narrative as
+    // assessment; no fabricated sections.
+    const content = (note.content || '').trim();
     return {
+      kind: 'legacy',
+      view: {
+        patientName: note.patientName || '',
+        patientId: note.patientId || '',
+        room: '',
+        date: dateFallback,
+        time: timeFallback,
+        attendingPhysician: note.attendingPhysician || '',
+        nurseName: note.nurseName || '',
+        vitalSigns: { heartRate: '', bloodPressure: '', temperature: '', oxygenSaturation: '', respiratoryRate: '' },
+        assessment: content,
+        diagnosis: '',
+        riskLevel: '',
+        allergies: '',
+        medications: '',
+        alerts: '',
+        interventions: [],
+        patientResponse: '',
+        clinicalSummary: '',
+        plan: '',
+        timestamp: stamp,
+      },
+    };
+  }
+
+  return {
+    kind: 'fdar',
+    view: {
       patientName: structured.patientName || note.patientName || '',
       patientId: structured.patientId || note.patientId || '',
       room: structured.room || '',
@@ -239,55 +417,20 @@ export function resolveNoteForDisplay(note: ChartingNote): StructuredNursingNote
       time: structured.time || timeFallback,
       attendingPhysician: structured.attendingPhysician || note.attendingPhysician || '',
       nurseName: structured.nurseName || note.nurseName || '',
-      vitalSigns: {
-        heartRate: vitals.heartRate || '',
-        bloodPressure: vitals.bloodPressure || '',
-        temperature: vitals.temperature || '',
-        oxygenSaturation: vitals.oxygenSaturation || '',
-        respiratoryRate: vitals.respiratoryRate || '',
-      },
-      assessment: structured.assessment || '',
+      vitalSigns: resolvedVitals,
       diagnosis: structured.diagnosis || '',
       riskLevel: structured.riskLevel || '',
       allergies: structured.allergies || '',
       medications: structured.medications || '',
       alerts: structured.alerts || '',
-      interventions: structured.interventions ?? [],
-      patientResponse: structured.patientResponse || '',
-      clinicalSummary: structured.clinicalSummary || '',
+      focus: note.focus || '',
+      data: note.data || '',
+      action: note.action || '',
+      response: note.response || '',
       plan: structured.plan || '',
+      clinicalSummary: structured.clinicalSummary || '',
       timestamp: structured.timestamp || stamp,
-    };
-  }
-
-  // Legacy notes: show stored narrative as assessment; no fabricated sections.
-  const content = (note.content || '').trim();
-  return {
-    patientName: note.patientName || '',
-    patientId: note.patientId || '',
-    room: '',
-    date: dateFallback,
-    time: timeFallback,
-    attendingPhysician: note.attendingPhysician || '',
-    nurseName: note.nurseName || '',
-    vitalSigns: {
-      heartRate: '',
-      bloodPressure: '',
-      temperature: '',
-      oxygenSaturation: '',
-      respiratoryRate: '',
     },
-    assessment: content,
-    diagnosis: '',
-    riskLevel: '',
-    allergies: '',
-    medications: '',
-    alerts: '',
-    interventions: [],
-    patientResponse: '',
-    clinicalSummary: '',
-    plan: '',
-    timestamp: stamp,
   };
 }
 

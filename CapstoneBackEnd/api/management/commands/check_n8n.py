@@ -47,6 +47,16 @@ PROBES = {
         'idImage': '',
         'probe': True,
     },
+    'discharge_plan': {
+        'patientId': 'PROBE',
+        'patientName': 'Connectivity Probe',
+        'diagnosis': '',
+        'medications': [],
+        'allergies': [],
+        'currentDraft': {},
+        'chartedNotes': [],
+        'probe': True,
+    },
 }
 
 

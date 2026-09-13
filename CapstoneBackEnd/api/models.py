@@ -235,6 +235,21 @@ class PatientVisit(models.Model):
         blank=True,
         related_name='visits_discharged',
     )
+    # Discharge Plan (M.E.T.H.O.D.) — filled in as part of discharging this
+    # visit, so "who/when completed it" reuses discharged_by/discharge_date
+    # above rather than duplicating them; both happen at the same moment (see
+    # PatientViewSet.discharge). Blank on visits with no plan — open visits,
+    # or ones discharged before this feature existed.
+    discharge_plan_medications = models.TextField(blank=True, default='')
+    discharge_plan_environment = models.TextField(blank=True, default='')
+    discharge_plan_treatment = models.TextField(blank=True, default='')
+    discharge_plan_health_teaching = models.TextField(blank=True, default='')
+    discharge_plan_outpatient_referral = models.TextField(blank=True, default='')
+    discharge_plan_diet = models.TextField(blank=True, default='')
+    # Whether the plan text came from the AI-draft (and was then reviewed/
+    # possibly edited) vs typed from scratch — same spirit as
+    # ChartingNote.ai_generated.
+    discharge_plan_ai_generated = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -455,9 +470,18 @@ class HandoverNote(models.Model):
         ('afternoon', 'Afternoon'),
         ('night', 'Night'),
     ]
+    # Nurse-to-nurse only — there is no head-nurse approval gate in this flow.
+    # 'sent' -> 'received' -> 'accepted' | 'declined' -> 'completed'. Head
+    # nurses are notified at every transition (see
+    # api/notifications.py::notify_referral_head_nurse_fyi) and can view
+    # every referral in their department(s), but never act on one — see
+    # HandoverViewSet.accept/decline/complete, which only ever authorize the
+    # sending/receiving nurse.
     STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('acknowledged', 'Acknowledged'),
+        ('sent', 'Sent'),
+        ('received', 'Received'),
+        ('accepted', 'Accepted'),
+        ('declined', 'Declined'),
         ('completed', 'Completed'),
     ]
 
@@ -480,7 +504,7 @@ class HandoverNote(models.Model):
     recommendation = models.TextField(blank=True, default='')
     unfinished_tasks = models.JSONField(default=list, blank=True)
     photos = models.JSONField(default=list, blank=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='sent', db_index=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -510,6 +534,35 @@ class HandoverNote(models.Model):
         blank=True,
         related_name='handovers_acknowledged',
     )
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    accepted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='handovers_accepted',
+    )
+    declined_at = models.DateTimeField(null=True, blank=True)
+    declined_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='handovers_declined',
+    )
+    declined_reason = models.TextField(blank=True, default='')
+    completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='handovers_completed',
+    )
+    # Audit trail for head nurses (view-only — they never act on a referral):
+    # a list of {status, by, byName, at, note} entries, one per transition,
+    # oldest first. Seeded on create with the initial 'sent' entry.
+    status_history = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -519,6 +572,7 @@ class HandoverNote(models.Model):
             models.Index(fields=['date', 'shift']),
             models.Index(fields=['nurse_from']),
             models.Index(fields=['nurse_to']),
+            models.Index(fields=['status']),
         ]
 
     def __str__(self):
@@ -557,6 +611,26 @@ class ChartingNote(models.Model):
     # View Full Note can rehydrate the exact approved chart without regex-parsing
     # free text (and without inventing clinical content that was never saved).
     structured_data = models.JSONField(default=dict, blank=True)
+    FORMAT_CHOICES = [
+        ('fdar', 'FDAR'),
+        ('legacy', 'Legacy'),
+    ]
+    # Legacy notes (created before FDAR support existed) keep using content/
+    # structured_data exactly as before, forever — see the 0038 data
+    # migration, which flips every pre-existing row to 'legacy' once. Every
+    # note created from here on is 'fdar' and populates focus/data/action/
+    # response below; note_format is otherwise immutable post-create (see
+    # ChartingNoteSerializer, where it's read-only).
+    note_format = models.CharField(max_length=10, choices=FORMAT_CHOICES, default='fdar', db_index=True)
+    # FDAR sections — populated only when note_format == 'fdar'. Four
+    # discrete TextFields (not JSON) because FDAR is exactly four fixed
+    # narrative sections, each independently editable in the nurse-facing
+    # UI. Legacy rows leave these blank; content/structured_data remain
+    # their source of truth.
+    focus = models.TextField(blank=True, default='')
+    data = models.TextField(blank=True, default='')
+    action = models.TextField(blank=True, default='')
+    response = models.TextField(blank=True, default='')
     ai_generated = models.BooleanField(default=False)
     edited = models.BooleanField(default=False)
     confirmed = models.BooleanField(default=False)

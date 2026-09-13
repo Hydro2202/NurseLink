@@ -33,7 +33,12 @@ from .models import (
 from .avatar import AvatarError, normalize_avatar
 from .id_field_validation import validate_prc_id_fields
 from .handover_tasks import create_handover_tasks
-from .notifications import notify_handover_created, notify_task_assigned, resolve_nurse
+from .notifications import (
+    notify_handover_created,
+    notify_referral_head_nurse_fyi,
+    notify_task_assigned,
+    resolve_nurse,
+)
 from .utils import next_code
 from .vitals_detection import detect_vital_mentions
 
@@ -666,6 +671,86 @@ def open_patient_visit(patient):
     )
 
 
+# M.E.T.H.O.D. discharge plan — Medications, Environment, Treatment, Health
+# Teaching, Outpatient Referral, Diet. camelCase key -> PatientVisit model
+# field name, shared by the discharge action's request parsing, the AI-draft
+# endpoint's response shape, and PatientVisitSerializer.get_dischargePlan.
+DISCHARGE_PLAN_FIELD_MAP = {
+    'medications': 'discharge_plan_medications',
+    'environment': 'discharge_plan_environment',
+    'treatment': 'discharge_plan_treatment',
+    'healthTeaching': 'discharge_plan_health_teaching',
+    'outpatientReferral': 'discharge_plan_outpatient_referral',
+    'diet': 'discharge_plan_diet',
+}
+
+
+def _discharge_plan_fields(visit) -> dict:
+    return {key: getattr(visit, attr) or '' for key, attr in DISCHARGE_PLAN_FIELD_MAP.items()}
+
+
+def discharge_plan_has_content(plan: dict) -> bool:
+    return any((plan.get(key) or '').strip() for key in DISCHARGE_PLAN_FIELD_MAP)
+
+
+def discharge_plan_from_context(patient) -> dict:
+    """
+    Deterministic Discharge Plan draft built only from what's already on
+    file for this patient — never invents clinical content. Used both as
+    the AI-draft endpoint's fallback when the n8n workflow is unset/
+    unavailable, and to seed whatever fields it doesn't return.
+
+    Medications: the patient's current medications list (Patient.medications).
+    Diet: the most recent Kardex record's diet field, if one exists.
+    Treatment: the most recent charting note's Action/interventions text —
+    what's actually been done for this patient is the closest available
+    proxy for "ongoing treatment".
+    Environment / Health Teaching / Outpatient Referral: no reliable
+    structured source exists in this data model, so these are left blank
+    for the nurse (or the n8n workflow, which sees the same charted notes)
+    to fill in — guessing here would mean inventing clinical content.
+    """
+    medications = ', '.join(str(m).strip() for m in (patient.medications or []) if str(m).strip())
+
+    diet = ''
+    latest_kardex = patient.kardex_records.order_by('-id').first()
+    if latest_kardex is not None:
+        diet = latest_kardex.diet or ''
+
+    treatment = ''
+    latest_note = ChartingNote.objects.filter(patient=patient).order_by('-timestamp').first()
+    if latest_note is not None:
+        if latest_note.note_format == 'fdar':
+            treatment = latest_note.action or ''
+        else:
+            structured = latest_note.structured_data if isinstance(latest_note.structured_data, dict) else {}
+            interventions = structured.get('interventions') or []
+            if isinstance(interventions, list):
+                treatment = '\n'.join(f'- {str(i).strip()}' for i in interventions if str(i).strip())
+
+    return {
+        'medications': medications,
+        'environment': '',
+        'treatment': treatment,
+        'healthTeaching': '',
+        'outpatientReferral': '',
+        'diet': diet,
+    }
+
+
+class DischargePlanInputSerializer(serializers.Serializer):
+    """Request body for PatientViewSet.discharge's dischargePlan field, and
+    the response shape of PatientViewSet.generate_discharge_plan."""
+
+    medications = serializers.CharField(required=False, allow_blank=True, default='')
+    environment = serializers.CharField(required=False, allow_blank=True, default='')
+    treatment = serializers.CharField(required=False, allow_blank=True, default='')
+    healthTeaching = serializers.CharField(required=False, allow_blank=True, default='')
+    outpatientReferral = serializers.CharField(required=False, allow_blank=True, default='')
+    diet = serializers.CharField(required=False, allow_blank=True, default='')
+    aiGenerated = serializers.BooleanField(required=False, default=False)
+
+
 # Fields worth naming in Patient.edit_history when they actually change —
 # demographic/clinical facts a head nurse might correct, not bookkeeping
 # columns like updated_at. Keys are validated_data/model attribute names
@@ -1017,13 +1102,15 @@ class PatientVisitSerializer(serializers.ModelSerializer):
     dischargedByName = serializers.SerializerMethodField()
     vitals = serializers.SerializerMethodField()
     notes = serializers.SerializerMethodField()
+    hasDischargePlan = serializers.SerializerMethodField()
+    dischargePlan = serializers.SerializerMethodField()
 
     class Meta:
         model = PatientVisit
         fields = [
             'id', 'admissionDate', 'dischargeDate', 'isActive', 'diagnosis', 'room',
             'attendingPhysician', 'assignedNurseName', 'medicalTeam', 'dischargedByName',
-            'vitals', 'notes',
+            'vitals', 'notes', 'hasDischargePlan', 'dischargePlan',
         ]
 
     def _is_open(self, obj):
@@ -1086,6 +1173,19 @@ class PatientVisitSerializer(serializers.ModelSerializer):
             }
             for n in qs.order_by('-timestamp')[:50]
         ]
+
+    def get_hasDischargePlan(self, obj):
+        return discharge_plan_has_content(_discharge_plan_fields(obj))
+
+    def get_dischargePlan(self, obj):
+        fields = _discharge_plan_fields(obj)
+        if not discharge_plan_has_content(fields):
+            return None
+        data = dict(fields)
+        data['aiGenerated'] = obj.discharge_plan_ai_generated
+        data['completedByName'] = nurse_display_name(obj.discharged_by) or None
+        data['completedAt'] = obj.discharge_date.isoformat() if obj.discharge_date else None
+        return data
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -1356,7 +1456,15 @@ class HandoverSerializer(serializers.ModelSerializer):
         child=serializers.CharField(), source='unfinished_tasks', required=False
     )
     photos = serializers.ListField(required=False)
-    status = serializers.CharField(required=False)
+    # Never client-writable — a referral only ever moves through
+    # accept/decline/complete (see HandoverViewSet), which authorize only
+    # the two nurses involved. There is no direct-PATCH or approval path.
+    status = serializers.CharField(read_only=True)
+    statusHistory = serializers.ListField(source='status_history', read_only=True)
+    acceptedAt = serializers.DateTimeField(source='accepted_at', read_only=True, allow_null=True)
+    declinedAt = serializers.DateTimeField(source='declined_at', read_only=True, allow_null=True)
+    declinedReason = serializers.CharField(source='declined_reason', read_only=True, allow_blank=True)
+    completedAt = serializers.DateTimeField(source='completed_at', read_only=True, allow_null=True)
     date = serializers.DateField()
 
     class Meta:
@@ -1374,6 +1482,11 @@ class HandoverSerializer(serializers.ModelSerializer):
             'unfinishedTasks',
             'photos',
             'status',
+            'statusHistory',
+            'acceptedAt',
+            'declinedAt',
+            'declinedReason',
+            'completedAt',
         ]
 
     def to_representation(self, instance):
@@ -1449,13 +1562,24 @@ class HandoverSerializer(serializers.ModelSerializer):
         )
         validated_data['handover_code'] = code
         request = self.context.get('request')
+        sender = None
         if request and request.user.is_authenticated:
-            validated_data['created_by'] = request.user
+            sender = request.user
+            validated_data['created_by'] = sender
+        validated_data['status'] = 'sent'
+        validated_data['status_history'] = [{
+            'status': 'sent',
+            'by': sender.pk if sender else None,
+            'byName': validated_data.get('nurse_from', ''),
+            'at': timezone.now().isoformat(),
+            'note': '',
+        }]
         handover = HandoverNote.objects.create(**validated_data)
         # The work is the sender's until somebody accepts it, so it goes on
         # their task list now rather than existing only as text on a card.
         create_handover_tasks(handover)
         notify_handover_created(handover)
+        notify_referral_head_nurse_fyi(handover, 'sent')
         return handover
 
     def _resolve_recipient(self, validated_data):
@@ -1609,6 +1733,111 @@ def structured_has_clinical_content(structured: dict | None) -> bool:
     return False
 
 
+_NOTE_TYPE_LABELS = dict(ChartingNote.TYPE_CHOICES)
+
+
+def _first_clause(text: str, limit: int = 80) -> str:
+    """First sentence/clause of free text, hard-capped — used only as a
+    last-resort Focus when nothing more specific (diagnosis, note type) is
+    available. Deterministic, never invents words."""
+    text = (text or '').strip()
+    if not text:
+        return ''
+    for sep in ('.', ';', '\n'):
+        idx = text.find(sep)
+        if 0 < idx <= limit:
+            return text[:idx].strip()
+    return (text[:limit].strip() + '…') if len(text) > limit else text
+
+
+def fdar_from_structured(structured: dict, note_type: str = 'progress') -> dict:
+    """
+    Deterministic Focus/Data/Action/Response derivation from whatever
+    structured/vitals/assessment/interventions/patientResponse data IS
+    available — the FDAR analogue of content_from_structured. Never invents
+    clinical facts; only reorganizes what's already present.
+
+    Focus priority: diagnosis (already a concise clinical noun-phrase, e.g.
+    "Hypertension") -> note type label (e.g. "Progress") -> first clause of
+    the assessment -> ''. Diagnosis is not removed from the supplementary
+    header display elsewhere — it both stays visible there and seeds Focus
+    here.
+    """
+    if not isinstance(structured, dict):
+        structured = {}
+    # Nothing to derive from — return all-empty rather than synthesizing a
+    # placeholder Focus (e.g. the bare note-type label) out of a genuinely
+    # empty structured payload. Keeps "an empty create is rejected" true for
+    # FDAR the same way it already was for content_from_structured.
+    if not structured_has_clinical_content(structured):
+        return {'focus': '', 'data': '', 'action': '', 'response': ''}
+
+    diagnosis = (structured.get('diagnosis') or '').strip()
+    assessment = (structured.get('assessment') or '').strip()
+    focus = diagnosis or _NOTE_TYPE_LABELS.get(note_type, 'Progress') or _first_clause(assessment)
+    if not focus:
+        focus = _first_clause(assessment)
+
+    data_lines = []
+    vitals = structured.get('vitalSigns') or {}
+    if isinstance(vitals, dict):
+        vital_bits = []
+        for key, label in (
+            ('heartRate', 'HR'), ('bloodPressure', 'BP'), ('temperature', 'Temp'),
+            ('oxygenSaturation', 'SpO2'), ('respiratoryRate', 'RR'),
+        ):
+            val = vitals.get(key)
+            if val is not None and str(val).strip():
+                vital_bits.append(f'{label} {val}')
+        if vital_bits:
+            data_lines.append('Vital Signs: ' + ', '.join(vital_bits))
+    if assessment:
+        data_lines.append(assessment)
+
+    interventions = structured.get('interventions') or []
+    action_lines = [f'- {str(i).strip()}' for i in interventions if str(i).strip()] \
+        if isinstance(interventions, list) else []
+
+    response_lines = []
+    patient_response = (structured.get('patientResponse') or '').strip()
+    if patient_response:
+        response_lines.append(patient_response)
+    # FDAR has no separate "Plan" section — ongoing-care continuity is kept
+    # as a trailing subsection under Response rather than dropped.
+    summary = (structured.get('clinicalSummary') or '').strip()
+    plan = (structured.get('plan') or '').strip()
+    if summary:
+        response_lines.append(f'Clinical Summary: {summary}')
+    if plan:
+        response_lines.append(f'Plan / Follow-up: {plan}')
+
+    return {
+        'focus': focus,
+        'data': '\n\n'.join(data_lines),
+        'action': '\n'.join(action_lines),
+        'response': '\n\n'.join(response_lines),
+    }
+
+
+def fdar_has_content(fdar: dict) -> bool:
+    return any((fdar.get(k) or '').strip() for k in ('focus', 'data', 'action', 'response'))
+
+
+def content_from_fdar(focus: str, data: str, action: str, response: str) -> str:
+    """Synthesize a searchable narrative from F/D/A/R for read-compat (list
+    previews, search, anything still scanning .content directly)."""
+    parts = []
+    if (focus or '').strip():
+        parts.append(f'FOCUS: {focus.strip()}')
+    if (data or '').strip():
+        parts.append(f'DATA:\n{data.strip()}')
+    if (action or '').strip():
+        parts.append(f'ACTION:\n{action.strip()}')
+    if (response or '').strip():
+        parts.append(f'RESPONSE:\n{response.strip()}')
+    return '\n\n'.join(parts)
+
+
 class ChartingNoteSerializer(serializers.ModelSerializer):
     id = serializers.CharField(source='note_code', required=False)
     patientId = serializers.CharField(required=False, allow_blank=True)
@@ -1623,8 +1852,15 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
         source='attending_physician', required=False, allow_blank=True
     )
     editHistory = serializers.ListField(source='edit_history', required=False)
-    content = serializers.CharField(allow_blank=True)
+    content = serializers.CharField(allow_blank=True, required=False)
     structured = serializers.JSONField(source='structured_data', required=False)
+    focus = serializers.CharField(required=False, allow_blank=True)
+    data = serializers.CharField(required=False, allow_blank=True)
+    action = serializers.CharField(required=False, allow_blank=True)
+    response = serializers.CharField(required=False, allow_blank=True)
+    # Never client-writable — always 'fdar' on create, and immutable
+    # afterwards (legacy rows stay 'legacy' forever; see the 0038 migration).
+    noteFormat = serializers.CharField(source='note_format', read_only=True)
     confirmed = serializers.BooleanField(required=False)
     confirmedAt = serializers.DateTimeField(source='confirmed_at', required=False, allow_null=True, read_only=True)
     # Auto-charting — never client-writable, always derived server-side from
@@ -1648,6 +1884,11 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
             'type',
             'content',
             'structured',
+            'focus',
+            'data',
+            'action',
+            'response',
+            'noteFormat',
             'vitalsUpdateStatus',
             'flaggedVitals',
             'aiGenerated',
@@ -1672,25 +1913,51 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         content = (attrs.get('content') if 'content' in attrs else None)
         structured = attrs.get('structured_data') if 'structured_data' in attrs else None
+        fdar_in = {k: attrs.get(k, '') for k in ('focus', 'data', 'action', 'response')}
 
         if self.instance is None:
             # Create: refuse empty charts that would show as successful saves.
-            content_text = (content or '').strip()
             structured_payload = structured if isinstance(structured, dict) else {}
-            if not content_text and not structured_has_clinical_content(structured_payload):
+            # Every create is an FDAR note now. If the caller didn't supply
+            # focus/data/action/response directly (e.g. an older client
+            # still posting only content/structured), derive them
+            # deterministically so storage is FDAR either way.
+            if not fdar_has_content(fdar_in):
+                derived = fdar_from_structured(structured_payload, attrs.get('note_type', 'progress'))
+                for k, v in derived.items():
+                    attrs.setdefault(k, v)
+                fdar_in = {k: attrs.get(k, '') for k in ('focus', 'data', 'action', 'response')}
+
+            content_text = (content or '').strip()
+            # A caller that posted only raw content (no structured payload,
+            # no FDAR fields — e.g. a plain free-text chart) has nothing for
+            # fdar_from_structured to work with. Rather than storing an
+            # "FDAR" note whose sections are all empty, treat that raw text
+            # as the Data section: it's observation/assessment text, which is
+            # exactly what Data means, and it's what auto-charting's vitals-
+            # mention detection needs to scan (see _apply_vitals_flag).
+            if content_text and not fdar_has_content(fdar_in):
+                attrs['data'] = content_text
+                fdar_in['data'] = content_text
+            if not content_text and not fdar_has_content(fdar_in) and not structured_has_clinical_content(structured_payload):
                 raise serializers.ValidationError(
                     {
                         'content': (
-                            'Cannot save an empty charting note. Provide note content '
+                            'Cannot save an empty charting note. Provide FDAR content '
                             'or structured chart data.'
                         )
                     }
                 )
-            if not content_text and structured_payload:
-                attrs['content'] = content_from_structured(structured_payload)
+            if not content_text:
+                attrs['content'] = content_from_fdar(
+                    fdar_in.get('focus', ''), fdar_in.get('data', ''),
+                    fdar_in.get('action', ''), fdar_in.get('response', ''),
+                ) or content_from_structured(structured_payload)
             attrs.setdefault('structured_data', structured_payload)
         else:
-            # Update: if content cleared with no structured clinical body, reject.
+            # Update: unchanged behavior for legacy notes (content/structured
+            # only). FDAR notes being edited go through the same shape —
+            # empty-clear rejection now also considers the FDAR fields.
             next_content = (
                 content if content is not None else (self.instance.content or '')
             )
@@ -1699,16 +1966,27 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
                 if structured is not None
                 else (self.instance.structured_data or {})
             )
-            if not (next_content or '').strip() and not structured_has_clinical_content(
-                next_structured if isinstance(next_structured, dict) else {}
+            next_fdar = {
+                k: (attrs[k] if k in attrs else getattr(self.instance, k, ''))
+                for k in ('focus', 'data', 'action', 'response')
+            }
+            if (
+                not (next_content or '').strip()
+                and not fdar_has_content(next_fdar)
+                and not structured_has_clinical_content(
+                    next_structured if isinstance(next_structured, dict) else {}
+                )
             ):
                 raise serializers.ValidationError(
                     {'content': 'Cannot clear a charting note to an empty record.'}
                 )
-            if content is not None and not (content or '').strip() and isinstance(
-                next_structured, dict
-            ):
-                attrs['content'] = content_from_structured(next_structured)
+            if content is not None and not (content or '').strip():
+                if self.instance.note_format == 'fdar' and fdar_has_content(next_fdar):
+                    attrs['content'] = content_from_fdar(
+                        next_fdar['focus'], next_fdar['data'], next_fdar['action'], next_fdar['response']
+                    )
+                elif isinstance(next_structured, dict):
+                    attrs['content'] = content_from_structured(next_structured)
         return attrs
 
     def _resolve_patient(self, validated_data, patient_id):
@@ -1737,6 +2015,7 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
         validated_data.setdefault('structured_data', {})
         validated_data['confirmed'] = False
         validated_data['confirmed_at'] = None
+        validated_data['note_format'] = 'fdar'
         instance = ChartingNote.objects.create(**validated_data)
         self._apply_vitals_flag(instance)
         return instance
@@ -1754,7 +2033,11 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
             'structured_data' in validated_data
             and validated_data['structured_data'] != (instance.structured_data or {})
         )
-        if content_changed or structured_changed:
+        fdar_changed = any(
+            k in validated_data and validated_data[k] != (getattr(instance, k, '') or '')
+            for k in ('focus', 'data', 'action', 'response')
+        )
+        if content_changed or structured_changed or fdar_changed:
             history = list(instance.edit_history or [])
             editor = ''
             if request and request.user.is_authenticated:
@@ -1771,7 +2054,7 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
-        if content_changed or structured_changed:
+        if content_changed or structured_changed or fdar_changed:
             self._apply_vitals_flag(instance)
         return instance
 
@@ -1789,7 +2072,15 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
         structured = note.structured_data if isinstance(note.structured_data, dict) else {}
         explicit_flag = bool(structured.get('vitalSignChangeNoted'))
         explicit_vitals = structured.get('vitalSignsAffected') or []
-        text = ' '.join(filter(None, [note.content or '', structured.get('assessment') or '']))
+        # FDAR notes: scan Data (assessment/observations) + Action
+        # (interventions) — exactly where a vital-sign mention/change would
+        # appear. Response is about outcome, not a fresh observation, so it's
+        # correctly excluded, same spirit as excluding patientResponse today
+        # for legacy notes.
+        if note.note_format == 'fdar':
+            text = ' '.join(filter(None, [note.data or '', note.action or '']))
+        else:
+            text = ' '.join(filter(None, [note.content or '', structured.get('assessment') or '']))
 
         detected = set(detect_vital_mentions(text))
         if explicit_flag:
@@ -2781,6 +3072,10 @@ class StructureChartResponseSerializer(serializers.Serializer):
     success = serializers.BooleanField()
     note = serializers.CharField(help_text='The generated narrative note.')
     structured = serializers.DictField(help_text='Section-by-section note, as the app renders it.')
+    focus = serializers.CharField(required=False, allow_blank=True, help_text='FDAR Focus section.')
+    data = serializers.CharField(required=False, allow_blank=True, help_text='FDAR Data section.')
+    action = serializers.CharField(required=False, allow_blank=True, help_text='FDAR Action section.')
+    response = serializers.CharField(required=False, allow_blank=True, help_text='FDAR Response section.')
     aiGenerated = serializers.BooleanField()
     saved = serializers.BooleanField(help_text='True when save=true persisted a ChartingNote.')
     noteId = serializers.CharField(required=False, allow_blank=True)

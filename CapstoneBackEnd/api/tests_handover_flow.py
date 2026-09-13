@@ -1,9 +1,11 @@
 """
-Acknowledging a handover moves the work, and tells people about it.
+Accepting a referral moves the work, and tells people about it.
 
-Until a handover is acknowledged its unfinished-task list is only text on a
-card. These tests pin the moment that changes: the incoming nurse ends up with
-real tasks, the outgoing nurse finds out, and doing it twice changes nothing.
+Until a referral is accepted its unfinished-task list is only text on a
+card. Acknowledging ("received") is the lightweight seen-it step and moves
+nothing; accepting is what actually transfers responsibility. These tests
+pin the moment that changes: the incoming nurse ends up with real tasks, the
+outgoing nurse finds out, and doing it twice changes nothing.
 """
 
 import datetime
@@ -24,7 +26,7 @@ def make_nurse(email, first, last):
     return user
 
 
-class HandoverAcknowledgeTests(APITestCase):
+class HandoverAcceptTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.outgoing = make_nurse('out@hospital.com', 'Ana', 'Cruz')
@@ -46,18 +48,18 @@ class HandoverAcknowledgeTests(APITestCase):
             nurse_to='Ben Diaz',
             nurse_to_user=self.incoming,
             unfinished_tasks=unfinished,
-            status='pending',
+            status='sent',
             created_by=self.outgoing,
         )
 
-    def acknowledge(self, handover, user):
+    def accept(self, handover, user):
         self.client.force_authenticate(user=user)
-        return self.client.post('/api/handovers/%s/acknowledge/' % handover.handover_code)
+        return self.client.post('/api/handovers/%s/accept/' % handover.handover_code)
 
     def test_free_text_notes_become_tasks_for_the_incoming_nurse(self):
         handover = self.make_handover(['Recheck IV site at 14:00', 'Chase morning bloods'])
 
-        response = self.acknowledge(handover, self.incoming)
+        response = self.accept(handover, self.incoming)
         self.assertEqual(response.status_code, 200)
 
         tasks = Task.objects.filter(assigned_nurse=self.incoming).order_by('task_code')
@@ -83,7 +85,7 @@ class HandoverAcknowledgeTests(APITestCase):
         )
         handover = self.make_handover(['T500'])
 
-        self.acknowledge(handover, self.incoming)
+        self.accept(handover, self.incoming)
 
         existing.refresh_from_db()
         self.assertEqual(existing.assigned_nurse, self.incoming)
@@ -98,26 +100,26 @@ class HandoverAcknowledgeTests(APITestCase):
         )
         handover = self.make_handover(['T501'])
 
-        self.acknowledge(handover, self.incoming)
+        self.accept(handover, self.incoming)
 
         done.refresh_from_db()
         self.assertEqual(done.assigned_nurse, self.outgoing)
 
-    def test_acknowledging_twice_does_not_duplicate_the_work(self):
+    def test_accepting_twice_does_not_duplicate_the_work(self):
         handover = self.make_handover(['Recheck IV site'])
 
-        self.acknowledge(handover, self.incoming)
-        self.acknowledge(handover, self.incoming)
+        self.accept(handover, self.incoming)
+        self.accept(handover, self.incoming)
 
         self.assertEqual(Task.objects.filter(assigned_nurse=self.incoming).count(), 1)
 
-    def test_the_outgoing_nurse_is_told_it_was_received(self):
+    def test_the_outgoing_nurse_is_told_it_was_accepted(self):
         handover = self.make_handover(['Recheck IV site', 'Chase bloods'])
 
-        self.acknowledge(handover, self.incoming)
+        self.accept(handover, self.incoming)
 
         note = Notification.objects.get(recipient=self.outgoing)
-        self.assertEqual(note.title, 'Referral acknowledged')
+        self.assertEqual(note.title, 'Referral accepted')
         self.assertIn('Ben Diaz', note.message)
         self.assertIn('2 unfinished tasks', note.message)
         self.assertEqual(note.action_highlight_id, 'H500')
@@ -127,10 +129,10 @@ class HandoverAcknowledgeTests(APITestCase):
         self.assertEqual(note.action_path, '/handover')
         self.assertNotIn('(app)', note.action_path)
 
-    def test_acknowledging_your_own_handover_notifies_nobody(self):
+    def test_accepting_your_own_handover_notifies_nobody(self):
         handover = self.make_handover([])
 
-        self.acknowledge(handover, self.outgoing)
+        self.accept(handover, self.outgoing)
 
         self.assertEqual(Notification.objects.filter(recipient=self.outgoing).count(), 0)
 
@@ -143,12 +145,12 @@ class HandoverAcknowledgeTests(APITestCase):
         handover.recommendation = 'Recheck IV site at 14:00. Keep strict fluid balance.'
         handover.save()
 
-        response = self.acknowledge(handover, self.incoming)
+        response = self.accept(handover, self.incoming)
 
         self.assertEqual(response.status_code, 200)
         handover.refresh_from_db()
-        self.assertEqual(handover.status, 'acknowledged')
-        self.assertIsNotNone(handover.acknowledged_at)
+        self.assertEqual(handover.status, 'accepted')
+        self.assertIsNotNone(handover.accepted_at)
 
         task = Task.objects.get(assigned_nurse=self.incoming)
         self.assertEqual(task.title, 'Recheck IV site at 14:00')
@@ -160,7 +162,7 @@ class HandoverAcknowledgeTests(APITestCase):
     def test_a_handover_with_no_recommendation_still_produces_a_named_task(self):
         handover = self.make_handover([])
 
-        self.acknowledge(handover, self.incoming)
+        self.accept(handover, self.incoming)
 
         task = Task.objects.get(assigned_nurse=self.incoming)
         self.assertEqual(task.title, 'Follow up handover for Juan Dela Cruz')
@@ -170,7 +172,7 @@ class HandoverAcknowledgeTests(APITestCase):
         handover.recommendation = 'x' * 400
         handover.save()
 
-        self.acknowledge(handover, self.incoming)
+        self.accept(handover, self.incoming)
 
         task = Task.objects.get(assigned_nurse=self.incoming)
         self.assertLessEqual(len(task.title), 120)
@@ -183,7 +185,7 @@ class HandoverAcknowledgeTests(APITestCase):
         handover.recommendation = 'Monitor closely'
         handover.save()
 
-        self.acknowledge(handover, self.incoming)
+        self.accept(handover, self.incoming)
 
         titles = list(Task.objects.filter(assigned_nurse=self.incoming).values_list('title', flat=True))
         self.assertEqual(titles, ['Recheck IV site'])
@@ -191,7 +193,7 @@ class HandoverAcknowledgeTests(APITestCase):
     def test_response_names_the_tasks_that_moved(self):
         handover = self.make_handover(['Recheck IV site'])
 
-        response = self.acknowledge(handover, self.incoming)
+        response = self.accept(handover, self.incoming)
 
         codes = response.json()['adoptedTasks']
         self.assertEqual(len(codes), 1)
@@ -292,9 +294,9 @@ class HandoverSenderTaskTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.content)
         return response.json()['id']
 
-    def acknowledge(self, code, user):
+    def accept(self, code, user):
         self.client.force_authenticate(user=user)
-        return self.client.post('/api/handovers/%s/acknowledge/' % code)
+        return self.client.post('/api/handovers/%s/accept/' % code)
 
     def test_writing_a_handover_puts_the_work_on_the_senders_list(self):
         self.create_handover()
@@ -314,11 +316,11 @@ class HandoverSenderTaskTests(APITestCase):
         )
         self.assertEqual(titles, {'Recheck IV site', 'Chase bloods'})
 
-    def test_acknowledging_moves_that_same_task_rather_than_copying_it(self):
+    def test_accepting_moves_that_same_task_rather_than_copying_it(self):
         code = self.create_handover()
         task = Task.objects.get(assigned_nurse=self.outgoing)
 
-        self.acknowledge(code, self.incoming)
+        self.accept(code, self.incoming)
 
         task.refresh_from_db()
         self.assertEqual(task.assigned_nurse, self.incoming)
@@ -332,7 +334,7 @@ class HandoverSenderTaskTests(APITestCase):
         task.status = 'completed'
         task.save()
 
-        self.acknowledge(code, self.incoming)
+        self.accept(code, self.incoming)
 
         task.refresh_from_db()
         self.assertEqual(task.assigned_nurse, self.outgoing)
@@ -344,7 +346,7 @@ class HandoverSenderTaskTests(APITestCase):
         task.status = 'in_progress'
         task.save()
 
-        self.acknowledge(code, self.incoming)
+        self.accept(code, self.incoming)
 
         task.refresh_from_db()
         self.assertEqual(task.assigned_nurse, self.incoming)

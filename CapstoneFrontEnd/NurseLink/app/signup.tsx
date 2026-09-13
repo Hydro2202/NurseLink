@@ -44,6 +44,7 @@ import type { UserRole } from '../contexts/AuthContext';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
+import { DatePicker, todayIso } from '../components/DatePicker';
 import { Card, CardContent } from '../components/Card';
 import { Alert, AlertDescription } from '../components/Alert';
 import { CameraPermissionModal, type CameraPurpose } from '../components/CameraPermissionModal';
@@ -248,45 +249,6 @@ const defaultOcrData = {
   email: '',
 };
 
-// The backend sends registrationDate/validUntil as ISO (YYYY-MM-DD) — that's
-// the right format to store and compare, but "May 21, 2005" reads better on
-// Step 2's review screen. Display-only: ocrData itself stays ISO.
-function formatDisplayDate(iso: string): string {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
-  const [year, month, day] = iso.split('-');
-  return `${month}/${day}/${year}`;
-}
-
-/**
- * The reverse of formatDisplayDate: MM/DD/YYYY back to ISO.
- *
- * Returns '' for anything that is not a real calendar date, which is what the
- * review step's validation checks — so 13/40/2025, or a half-typed 12/, never
- * passes as a date. Anything already ISO is returned unchanged, so a value OCR
- * produced and the nurse did not touch survives untouched.
- */
-function parseDisplayDate(text: string): string {
-  const value = (text || '').trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-
-  const match = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/.exec(value);
-  if (!match) return '';
-
-  const [, month, day, year] = match;
-  const monthNumber = Number(month);
-  const dayNumber = Number(day);
-
-  // Round-trip through Date to reject 02/30 and friends, which pass the regex
-  // but are not days that exist. Built with Date.UTC deliberately: parsing
-  // "2025-12-04T00:00:00" treats it as local midnight, so anywhere east of UTC
-  // the date reads back a day earlier and every valid date would be rejected.
-  const parsed = new Date(Date.UTC(Number(year), monthNumber - 1, dayNumber));
-  if (Number.isNaN(parsed.getTime())) return '';
-  if (parsed.getUTCMonth() + 1 !== monthNumber || parsed.getUTCDate() !== dayNumber) return '';
-
-  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-}
-
 /** A PRC registration number is seven digits. */
 function isValidRegistrationNumber(value: string): boolean {
   return /^\d{7}$/.test((value || '').replace(/\s|-/g, ''));
@@ -490,10 +452,6 @@ export default function SignUpPage() {
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
   const [liveCameraActive, setLiveCameraActive] = useState(false);
   const [ocrData, setOcrData] = useState(defaultOcrData);
-  // Dates are stored in ocrData as ISO, but typed as MM/DD/YYYY. Keeping the
-  // raw text separately means a half-finished "12/0" is not thrown away on
-  // every keystroke just because it does not parse yet.
-  const [dateDrafts, setDateDrafts] = useState({ registrationDate: '', validUntil: '' });
   // Per-field messages on the ID Review step, so a correction that fails
   // validation points at the field that needs fixing.
   const [idFieldErrors, setIdFieldErrors] = useState<Record<string, string>>({});
@@ -708,11 +666,6 @@ export default function SignUpPage() {
         department: res.department,
         position: res.position,
         email: res.email,
-      });
-      // Seed the date inputs with what OCR read, in the format the nurse edits.
-      setDateDrafts({
-        registrationDate: formatDisplayDate(res.registrationDate || ''),
-        validUntil: formatDisplayDate(res.validUntil || ''),
       });
       setIdFieldErrors({});
       setOcrStatus('success');
@@ -1307,7 +1260,6 @@ export default function SignUpPage() {
                               setHospitalIdBase64(null);
                               setOcrStatus('idle');
                               setOcrData(defaultOcrData);
-                              setDateDrafts({ registrationDate: '', validUntil: '' });
                               setIdFieldErrors({});
                               setHospitalIdCompleted(false);
                             }}
@@ -1436,27 +1388,26 @@ export default function SignUpPage() {
                       error={idFieldErrors.registrationNumber}
                     />
 
-                    {([
-                      { key: 'registrationDate', label: 'Registration Date' },
-                      { key: 'validUntil', label: 'Valid Until' },
-                    ] as const).map((field) => (
-                      <Input
-                        key={field.key}
-                        label={field.label}
-                        value={dateDrafts[field.key]}
-                        onChangeText={(value) => {
-                          // The typed text is kept as-is so a partly finished
-                          // date is not erased; ocrData only takes it once it
-                          // is a real date, and is cleared while it is not.
-                          setDateDrafts((prev) => ({ ...prev, [field.key]: value }));
-                          setOcrData((prev) => ({ ...prev, [field.key]: parseDisplayDate(value) }));
-                          setIdFieldErrors((prev) => ({ ...prev, [field.key]: '' }));
-                        }}
-                        keyboardType="numbers-and-punctuation"
-                        placeholder="MM/DD/YYYY"
-                        error={idFieldErrors[field.key]}
-                      />
-                    ))}
+                    <DatePicker
+                      label="Registration Date"
+                      value={ocrData.registrationDate}
+                      onChange={(value) => {
+                        setOcrData((prev) => ({ ...prev, registrationDate: value }));
+                        setIdFieldErrors((prev) => ({ ...prev, registrationDate: '' }));
+                      }}
+                      maxDate={todayIso()}
+                      error={idFieldErrors.registrationDate}
+                    />
+                    <DatePicker
+                      label="Valid Until"
+                      value={ocrData.validUntil}
+                      onChange={(value) => {
+                        setOcrData((prev) => ({ ...prev, validUntil: value }));
+                        setIdFieldErrors((prev) => ({ ...prev, validUntil: '' }));
+                      }}
+                      minDate={ocrData.registrationDate || undefined}
+                      error={idFieldErrors.validUntil}
+                    />
                     <Input
                       label="Registered Email Address"
                       value={ocrData.email}
@@ -1493,10 +1444,10 @@ export default function SignUpPage() {
                           fieldErrors.registrationNumber = 'Registration number must be 7 digits.';
                         }
                         if (!ocrData.registrationDate) {
-                          fieldErrors.registrationDate = 'Enter a real date as MM/DD/YYYY.';
+                          fieldErrors.registrationDate = 'Select the registration date.';
                         }
                         if (!ocrData.validUntil) {
-                          fieldErrors.validUntil = 'Enter a real date as MM/DD/YYYY.';
+                          fieldErrors.validUntil = 'Select the valid-until date.';
                         }
                         if (
                           ocrData.registrationDate &&

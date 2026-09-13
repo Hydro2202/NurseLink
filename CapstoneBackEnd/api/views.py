@@ -24,6 +24,7 @@ from drf_spectacular.utils import (
 from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -77,17 +78,22 @@ from .handover_tasks import adopt_handover_tasks
 from .vitals_extraction import extract_vitals_from_text
 from .notifications import (
     notify,
+    notify_handover_accepted,
     notify_handover_acknowledged,
+    notify_handover_completed,
     notify_handover_created,
+    notify_handover_declined,
     notify_kardex_reviewed,
     notify_admin_new_registration,
     notify_nurse_reassigned,
+    notify_referral_head_nurse_fyi,
     notify_task_handover_accepted,
     notify_task_handover_rejected,
     notify_task_handover_verified,
 )
 from .otp_service import OtpCooldownError, OtpDeliveryError, OtpResendLimitError, issue_otp, verify_otp
 from .permissions import (
+    CanManageReferral,
     IsAdmin,
     IsApprovedNurse,
     IsApprovedNurseOrAdmin,
@@ -125,6 +131,7 @@ from .serializers import (
     ChangePasswordSerializer,
     ChartingNoteSerializer,
     DepartmentSerializer,
+    DischargePlanInputSerializer,
     DoctorSerializer,
     DutyAssignmentSerializer,
     FaceVerificationAttemptSerializer,
@@ -155,6 +162,9 @@ from .serializers import (
     UpdateMeSerializer,
     UserPreferencesSerializer,
     UserSerializer,
+    DISCHARGE_PLAN_FIELD_MAP,
+    discharge_plan_from_context,
+    discharge_plan_has_content,
     medical_team_snapshot,
     nurse_display_name,
     open_patient_visit,
@@ -2175,24 +2185,35 @@ class PatientViewSet(viewsets.ModelViewSet):
         # a pending nurse through.
         if self.action in ('create', 'discharge', 'readmit'):
             return [permissions.IsAuthenticated(), IsApprovedNurse(), IsSupervisor()]
+        # Drafting a discharge plan doesn't discharge anyone — any approved
+        # nurse can propose one for a head nurse to review/finalize via
+        # discharge above, which stays head-nurse-only.
+        if self.action == 'generate_discharge_plan':
+            return [permissions.IsAuthenticated(), IsApprovedNurse()]
         # Admin gets list/retrieve here (SAFE_METHODS) for the Admin panel's
         # Patients oversight screen — never write, since discharge/create
         # above already lock write access to a head nurse.
         return [permissions.IsAuthenticated(), IsApprovedNurseOrAdminReadOnly()]
 
     @extend_schema(
-        request=None,
+        request=inline_serializer(
+            name='DischargePatient',
+            fields={'dischargePlan': DischargePlanInputSerializer(required=False)},
+        ),
         responses={200: PatientSerializer},
         summary='Discharge a patient',
         description=(
-            'No request body — the patient is identified by the URL. Head-nurse-only. Sets '
-            'status to discharged, records the discharge timestamp and which head nurse '
-            'performed it (audit trail), ends the patient’s active nurse assignment, and '
-            'clears assignedNurseId — the patient no longer appears as anyone’s actively '
-            'assigned patient. The record itself is never deleted: this admission’s '
-            'PatientVisit is closed out with a snapshot of its final diagnosis/room/attending '
-            'physician/assigned nurse/medical team (see the visits action), not erased. '
-            'Rejected with 400 if already discharged.'
+            'Head-nurse-only. Optional body: {"dischargePlan": {medications, environment, '
+            'treatment, healthTeaching, outpatientReferral, diet}} — the M.E.T.H.O.D. discharge '
+            'plan. Required (all six fields non-blank) unless settings.DISCHARGE_PLAN_REQUIRED is '
+            'False, in which case it is optional. Sets status to discharged, records the '
+            'discharge timestamp and which head nurse performed it (audit trail), ends the '
+            'patient’s active nurse assignment, and clears assignedNurseId — the patient no '
+            'longer appears as anyone’s actively assigned patient. The record itself is never '
+            'deleted: this admission’s PatientVisit is closed out with a snapshot of its final '
+            'diagnosis/room/attending physician/assigned nurse/medical team and the discharge '
+            'plan (see the visits action), not erased. Rejected with 400 if already discharged, '
+            'or if the discharge plan is required and incomplete.'
         ),
     )
     @action(detail=True, methods=['post'])
@@ -2203,6 +2224,26 @@ class PatientViewSet(viewsets.ModelViewSet):
                 {'detail': 'This patient has already been discharged.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        plan_input = request.data.get('dischargePlan') or {}
+        plan_serializer = DischargePlanInputSerializer(data=plan_input)
+        plan_serializer.is_valid(raise_exception=True)
+        plan = plan_serializer.validated_data
+
+        if getattr(settings, 'DISCHARGE_PLAN_REQUIRED', True):
+            missing = [
+                camel for camel in DISCHARGE_PLAN_FIELD_MAP if not (plan.get(camel) or '').strip()
+            ]
+            if missing:
+                return Response(
+                    {
+                        'dischargePlan': (
+                            'A complete M.E.T.H.O.D. discharge plan is required to discharge this '
+                            f'patient. Missing: {", ".join(missing)}.'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         with transaction.atomic():
             # Captured before any field on `patient` is cleared below, so the
@@ -2236,9 +2277,100 @@ class PatientViewSet(viewsets.ModelViewSet):
             visit.assigned_nurse_name = nurse_name
             visit.medical_team = team_snapshot
             visit.discharged_by = request.user
+            for camel, attr in DISCHARGE_PLAN_FIELD_MAP.items():
+                setattr(visit, attr, plan.get(camel) or '')
+            visit.discharge_plan_ai_generated = bool(plan.get('aiGenerated'))
             visit.save()
 
         return Response(PatientSerializer(patient, context=self.get_serializer_context()).data)
+
+    @extend_schema(
+        request=None,
+        responses={200: DischargePlanInputSerializer},
+        summary='AI-draft a Discharge Plan (M.E.T.H.O.D.) from this patient’s charted notes',
+        description=(
+            'No request body. Any approved nurse — not head-nurse-only, since this only drafts a '
+            'proposal for review, it never discharges anyone. Reads the patient’s Medications, '
+            'most recent Kardex diet entry, and most recent charting note’s documented '
+            'interventions, and asks the n8n discharge-plan workflow to turn those (plus the '
+            'patient’s recent charted assessments) into Environment / Health Teaching / '
+            'Outpatient Referral text — the workflow is instructed never to invent facts not '
+            'present in that context. If n8n is unavailable or unconfigured, falls back to a '
+            'deterministic draft built only from the fields above (Environment, Health '
+            'Teaching, and Outpatient Referral are left blank in that case — there is no '
+            'reliable source to draw them from without a model). Either way, the response is '
+            'always a draft: a nurse reviews and edits it before /discharge/ persists anything.'
+        ),
+    )
+    @action(detail=True, methods=['post'], url_path='discharge-plan-generate')
+    def generate_discharge_plan(self, request, patient_code=None):
+        patient = self.get_object()
+        fallback = discharge_plan_from_context(patient)
+
+        recent_notes = ChartingNote.objects.filter(patient=patient).order_by('-timestamp')[:10]
+        notes_context = []
+        for note in recent_notes:
+            if note.note_format == 'fdar':
+                text = '\n'.join(
+                    filter(None, [
+                        f'Focus: {note.focus}' if note.focus else '',
+                        f'Data: {note.data}' if note.data else '',
+                        f'Action: {note.action}' if note.action else '',
+                        f'Response: {note.response}' if note.response else '',
+                    ])
+                )
+            else:
+                text = note.content or ''
+            if text.strip():
+                notes_context.append({'timestamp': note.timestamp.isoformat(), 'text': text.strip()})
+
+        payload = {
+            'patientId': patient.patient_code,
+            'patientName': patient.name,
+            'diagnosis': patient.diagnosis,
+            'medications': list(patient.medications or []),
+            'allergies': list(patient.allergies or []),
+            'currentDraft': fallback,
+            'chartedNotes': notes_context,
+            'instructions': (
+                'Draft a M.E.T.H.O.D. discharge plan (Medications, Environment, Treatment, '
+                'Health Teaching, Outpatient Referral, Diet) as six string fields named '
+                'medications, environment, treatment, healthTeaching, outpatientReferral, diet. '
+                'Use ONLY the medications, diagnosis, allergies, and chartedNotes provided — do '
+                'not invent medications, appointments, contact information, or clinical facts not '
+                'present in that input. currentDraft already has Medications/Treatment/Diet '
+                'filled from the patient record where available; keep those unless chartedNotes '
+                'clearly supersedes them, and focus your own drafting on Environment, Health '
+                'Teaching, and Outpatient Referral, which currentDraft leaves blank. If nothing '
+                'in the input supports a section, return it as an empty string rather than '
+                'inventing content.'
+            ),
+        }
+
+        logger.info('discharge-plan-generate start patient=%s nurse=%s', patient.patient_code, request.user.pk)
+        started = time.monotonic()
+        try:
+            result = call_workflow('discharge_plan', payload)
+        except N8nError as exc:
+            # Unlike chart-note generation, the fallback here is never
+            # fabricated — it's real stored data reorganized — so an n8n
+            # outage degrades to a smaller draft instead of failing the
+            # request outright.
+            logger.warning(
+                'discharge-plan-generate n8n unavailable patient=%s type=%s after=%.2fs: %s — using fallback',
+                patient.patient_code, type(exc).__name__, time.monotonic() - started, exc,
+            )
+            result = {}
+
+        draft = dict(fallback)
+        if isinstance(result, dict):
+            for camel in DISCHARGE_PLAN_FIELD_MAP:
+                value = result.get(camel)
+                if isinstance(value, str) and value.strip():
+                    draft[camel] = value.strip()
+
+        draft['aiGenerated'] = True
+        return Response(draft)
 
     @extend_schema(
         request=inline_serializer(
@@ -2577,52 +2709,230 @@ class TaskViewSet(viewsets.ModelViewSet):
     ),
 )
 class HandoverViewSet(viewsets.ModelViewSet):
+    """
+    Referrals — nurse-to-nurse, no head-nurse approval gate. Status moves
+    sent -> received -> accepted|declined -> completed, driven entirely by
+    the sending nurse (create) and the receiving nurse (acknowledge/accept/
+    decline/complete — see _ensure_recipient). Head nurses can list/retrieve
+    (scoped to their department in get_queryset) but CanManageReferral
+    blocks them from write methods, and every action below additionally
+    checks the acting user is the actual recipient — so there is no path,
+    permission or otherwise, for a head nurse to act on a referral.
+    """
+
     serializer_class = HandoverSerializer
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
+    permission_classes = [permissions.IsAuthenticated, CanManageReferral]
     lookup_field = 'handover_code'
     lookup_url_kwarg = 'handover_code'
 
     def get_queryset(self):
-        qs = HandoverNote.objects.select_related('patient', 'created_by').all()
+        qs = HandoverNote.objects.select_related(
+            'patient', 'created_by', 'nurse_to_user'
+        ).all()
         status_filter = self.request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
+
+        user = self.request.user
+        if user.is_authenticated and get_user_role(user) == 'head_nurse':
+            # Department oversight view: NurseProfile.department is a plain
+            # string (no FK), so this is a string match against whichever
+            # department the sending or receiving nurse's profile carries.
+            # A head nurse with no department set sees every referral rather
+            # than silently seeing none.
+            dept = (getattr(getattr(user, 'nurse_profile', None), 'department', '') or '').strip()
+            if dept:
+                qs = qs.filter(
+                    Q(created_by__nurse_profile__department=dept)
+                    | Q(nurse_to_user__nurse_profile__department=dept)
+                )
         return qs
+
+    def _ensure_recipient(self, handover):
+        """
+        Only the receiving nurse drives a referral through
+        received/accepted/declined/completed. Head nurses are explicitly
+        rejected here even though CanManageReferral already blocks their
+        writes at the viewset level — belt and suspenders, since these are
+        the one set of actions where "not a head nurse" alone would not be
+        enough (a head nurse could otherwise still not be the recipient and
+        this makes that failure mode explicit rather than incidental).
+        """
+        if get_user_role(self.request.user) == 'head_nurse':
+            raise PermissionDenied('Head nurses have view-only access to referrals.')
+        if not handover.nurse_to_user_id or handover.nurse_to_user_id != self.request.user.id:
+            raise PermissionDenied('Only the receiving nurse can update this referral.')
+
+    @staticmethod
+    def _append_status_history(handover, status, user, note=''):
+        history = list(handover.status_history or [])
+        history.append({
+            'status': status,
+            'by': user.pk if user else None,
+            'byName': (user.get_full_name().strip() or user.username) if user else '',
+            'at': timezone.now().isoformat(),
+            'note': note,
+        })
+        handover.status_history = history
 
     @extend_schema(
         request=None,
         responses={200: HandoverSerializer},
-        summary='Acknowledge a referral',
+        summary='Mark a referral received',
         description=(
-            'No request body — the referral is identified by the URL. Accepting a referral '
-            "also moves its unfinished work onto the acknowledging nurse's task list and "
-            'tells the outgoing nurse it was received. Acknowledging twice is a no-op.'
+            'No request body — the referral is identified by the URL. This is the '
+            'lightweight "seen it" step: it does not move any tasks and does not commit '
+            'the receiving nurse to the patient — see /accept/ for that. Calling it again, '
+            'or after the referral has moved past "received", is a no-op.'
         ),
     )
     @action(detail=True, methods=['post'])
     def acknowledge(self, request, handover_code=None):
         handover = self.get_object()
+        self._ensure_recipient(handover)
 
-        # Acknowledging is what actually transfers responsibility, so it has to
-        # be idempotent: a double tap, a retried request on a flaky ward network
-        # or a second nurse opening the same handover must not clone the work.
-        if handover.acknowledged_at:
+        if handover.status != 'sent':
             return Response(HandoverSerializer(handover, context={'request': request}).data)
 
         with transaction.atomic():
-            handover.status = 'acknowledged'
+            handover.status = 'received'
             handover.acknowledged_at = timezone.now()
             handover.acknowledged_by = request.user
+            self._append_status_history(handover, 'received', request.user)
             handover.save(
-                update_fields=['status', 'acknowledged_at', 'acknowledged_by', 'updated_at']
+                update_fields=[
+                    'status', 'acknowledged_at', 'acknowledged_by', 'status_history', 'updated_at',
+                ]
+            )
+
+        notify_handover_acknowledged(handover, request.user)
+        return Response(HandoverSerializer(handover, context={'request': request}).data)
+
+    @extend_schema(
+        request=None,
+        responses={200: HandoverSerializer},
+        summary='Accept a referral',
+        description=(
+            'No request body — the referral is identified by the URL. Accepting moves its '
+            "unfinished work onto the accepting nurse's task list and tells the sending "
+            'nurse it was accepted. Valid from "sent" or "received"; accepting twice is a '
+            'no-op; a declined or completed referral cannot be accepted.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def accept(self, request, handover_code=None):
+        handover = self.get_object()
+        self._ensure_recipient(handover)
+
+        if handover.status == 'accepted':
+            data = HandoverSerializer(handover, context={'request': request}).data
+            data['adoptedTasks'] = []
+            return Response(data)
+        if handover.status not in ('sent', 'received'):
+            return Response(
+                {'detail': f'Cannot accept a referral that is already "{handover.status}".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            now = timezone.now()
+            if handover.status == 'sent':
+                handover.acknowledged_at = handover.acknowledged_at or now
+                handover.acknowledged_by = handover.acknowledged_by or request.user
+                self._append_status_history(handover, 'received', request.user)
+            handover.status = 'accepted'
+            handover.accepted_at = now
+            handover.accepted_by = request.user
+            self._append_status_history(handover, 'accepted', request.user)
+            handover.save(
+                update_fields=[
+                    'status', 'acknowledged_at', 'acknowledged_by', 'accepted_at',
+                    'accepted_by', 'status_history', 'updated_at',
+                ]
             )
             adopted = adopt_handover_tasks(handover, request.user)
 
-        notify_handover_acknowledged(handover, request.user, adopted)
+        notify_handover_accepted(handover, request.user, adopted)
+        notify_referral_head_nurse_fyi(handover, 'accepted')
 
         data = HandoverSerializer(handover, context={'request': request}).data
         data['adoptedTasks'] = [task.task_code for task in adopted]
         return Response(data)
+
+    @extend_schema(
+        request=None,
+        responses={200: HandoverSerializer},
+        summary='Decline a referral',
+        description=(
+            'Optional {"reason": "..."} body. Valid from "sent" or "received"; declining '
+            'twice is a no-op; an accepted or completed referral cannot be declined.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def decline(self, request, handover_code=None):
+        handover = self.get_object()
+        self._ensure_recipient(handover)
+
+        if handover.status == 'declined':
+            return Response(HandoverSerializer(handover, context={'request': request}).data)
+        if handover.status not in ('sent', 'received'):
+            return Response(
+                {'detail': f'Cannot decline a referral that is already "{handover.status}".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = (request.data.get('reason') or '').strip()
+        with transaction.atomic():
+            handover.status = 'declined'
+            handover.declined_at = timezone.now()
+            handover.declined_by = request.user
+            handover.declined_reason = reason
+            self._append_status_history(handover, 'declined', request.user, note=reason)
+            handover.save(
+                update_fields=[
+                    'status', 'declined_at', 'declined_by', 'declined_reason',
+                    'status_history', 'updated_at',
+                ]
+            )
+
+        notify_handover_declined(handover, request.user, reason)
+        notify_referral_head_nurse_fyi(handover, 'declined', detail=reason)
+        return Response(HandoverSerializer(handover, context={'request': request}).data)
+
+    @extend_schema(
+        request=None,
+        responses={200: HandoverSerializer},
+        summary='Mark a referral completed',
+        description=(
+            'No request body — the referral is identified by the URL. Only valid from '
+            '"accepted". Completing twice is a no-op.'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def complete(self, request, handover_code=None):
+        handover = self.get_object()
+        self._ensure_recipient(handover)
+
+        if handover.status == 'completed':
+            return Response(HandoverSerializer(handover, context={'request': request}).data)
+        if handover.status != 'accepted':
+            return Response(
+                {'detail': 'Only an accepted referral can be marked completed.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            handover.status = 'completed'
+            handover.completed_at = timezone.now()
+            handover.completed_by = request.user
+            self._append_status_history(handover, 'completed', request.user)
+            handover.save(
+                update_fields=['status', 'completed_at', 'completed_by', 'status_history', 'updated_at']
+            )
+
+        notify_handover_completed(handover, request.user)
+        notify_referral_head_nurse_fyi(handover, 'completed')
+        return Response(HandoverSerializer(handover, context={'request': request}).data)
 
 
 # A task can be reassigned on handover approval only while it is still open —

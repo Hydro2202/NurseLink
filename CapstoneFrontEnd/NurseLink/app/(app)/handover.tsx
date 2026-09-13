@@ -6,10 +6,14 @@ import {
   StyleSheet,
   Image,
   ActivityIndicator,
+  Modal,
+  Pressable,
+  TextInput,
 } from 'react-native';
 import {
   FileText,
   CheckCircle,
+  XCircle,
   Clock,
   Shield,
   AlertCircle,
@@ -17,11 +21,15 @@ import {
   Search,
   Trash2,
   Image as ImageIcon,
+  Eye,
+  History,
 } from 'lucide-react-native';
 import {
   fetchHandovers,
   createHandover,
-  acknowledgeHandover,
+  acceptHandover,
+  declineHandover,
+  completeHandover,
   deleteHandover,
   ApiError,
 } from '../../services/api';
@@ -55,16 +63,38 @@ const SORT_OPTIONS = [
   { label: 'Status', value: 'status' },
 ];
 
-function isAcknowledged(status: string) {
-  return status === 'acknowledged' || status === 'received' || status === 'completed';
+// Nurse-to-nurse only — no head-nurse approval gate. sent -> received ->
+// accepted | declined -> completed. Action buttons only ever show for the
+// receiving nurse (see renderHandoverCard); head nurses get a read-only
+// view regardless of status (see the isHeadNurse branch below).
+function isActionable(status: string) {
+  return status === 'sent' || status === 'received';
 }
 
 function statusBadgeVariant(
   status: string
 ): 'default' | 'secondary' | 'outline' | 'success' | 'warning' {
-  if (status === 'acknowledged' || status === 'received' || status === 'completed') return 'success';
-  if (status === 'submitted' || status === 'pending') return 'secondary';
+  if (status === 'accepted' || status === 'completed') return 'success';
+  if (status === 'declined') return 'warning';
+  if (status === 'sent' || status === 'received') return 'secondary';
   return 'outline';
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case 'sent':
+      return 'Sent';
+    case 'received':
+      return 'Received';
+    case 'accepted':
+      return 'Accepted';
+    case 'declined':
+      return 'Declined';
+    case 'completed':
+      return 'Completed';
+    default:
+      return status;
+  }
 }
 
 export default function HandoverPage() {
@@ -86,8 +116,15 @@ export default function HandoverPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [handoverToDelete, setHandoverToDelete] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [declineTarget, setDeclineTarget] = useState<string | null>(null);
+  const [declineReason, setDeclineReason] = useState('');
+  const [historyTarget, setHistoryTarget] = useState<HandoverWithMeta | null>(null);
 
   const currentUserName = user?.name || 'You';
+  // Head nurses are FYI observers only — no create/delete/accept/decline/
+  // complete. See CanManageReferral (backend) for the matching write-side
+  // lockout; this only controls what the UI offers.
+  const isHeadNurse = user?.role === 'head_nurse';
 
   const loadHandovers = useCallback(async (options?: { quiet?: boolean }) => {
     try {
@@ -142,7 +179,6 @@ export default function HandoverPage() {
         },
         unfinishedTasks: handoverData.unfinishedTasks || [],
         photos: handoverData.photos || [],
-        status: 'pending',
       });
       setHandovers((prev) => [{ ...newHandover, createdAt: newHandover.date }, ...prev]);
       // Writing a handover also puts its work on this nurse's task list and
@@ -159,22 +195,22 @@ export default function HandoverPage() {
     }
   };
 
-  const handleAcknowledgeHandover = async (handoverId: string) => {
+  const handleAcceptHandover = async (handoverId: string) => {
     setAcknowledgeLoading(handoverId);
     try {
-      const updated = await acknowledgeHandover(handoverId);
+      const updated = await acceptHandover(handoverId);
       setHandovers((prev) =>
         prev.map((h) => (h.id === handoverId ? { ...updated, createdAt: updated.date } : h))
       );
-      // Say what actually happened: acknowledging moves the outgoing nurse's
+      // Say what actually happened: accepting moves the outgoing nurse's
       // unfinished work onto this nurse's list, and they should not have to
       // discover that by wandering over to the Tasks screen.
       const moved = updated.adoptedTasks?.length ?? 0;
-      toast.success('Referral acknowledged!', {
+      toast.success('Referral accepted!', {
         description:
           moved > 0
             ? `${moved} unfinished task${moved > 1 ? 's' : ''} added to your tasks for ${updated.patientName}.`
-            : `You've acknowledged the referral for ${updated.patientName}.`,
+            : `You've accepted the referral for ${updated.patientName}.`,
       });
       // We just changed state other nurses are watching. Poll immediately so
       // this device is consistent at once, rather than briefly showing a list
@@ -182,7 +218,7 @@ export default function HandoverPage() {
       void pollLive();
       void refreshNotifications();
 
-      // Take the nurse to the work they just accepted. Acknowledging is the
+      // Take the nurse to the work they just accepted. Accepting is the
       // point at which the patient becomes theirs, so landing on the task that
       // came with it is more useful than staying on a handover now marked done.
       const firstTask = updated.adoptedTasks?.[0];
@@ -193,7 +229,51 @@ export default function HandoverPage() {
         });
       }
     } catch (error) {
-      toast.error('Failed to acknowledge referral', {
+      toast.error('Failed to accept referral', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setAcknowledgeLoading(null);
+    }
+  };
+
+  const handleDeclineHandover = async (handoverId: string, reason: string) => {
+    setAcknowledgeLoading(handoverId);
+    try {
+      const updated = await declineHandover(handoverId, reason.trim() || undefined);
+      setHandovers((prev) =>
+        prev.map((h) => (h.id === handoverId ? { ...updated, createdAt: updated.date } : h))
+      );
+      toast.success('Referral declined', {
+        description: `The referral for ${updated.patientName} has been declined and the sender notified.`,
+      });
+      void pollLive();
+      void refreshNotifications();
+    } catch (error) {
+      toast.error('Failed to decline referral', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setAcknowledgeLoading(null);
+      setDeclineTarget(null);
+      setDeclineReason('');
+    }
+  };
+
+  const handleCompleteHandover = async (handoverId: string) => {
+    setAcknowledgeLoading(handoverId);
+    try {
+      const updated = await completeHandover(handoverId);
+      setHandovers((prev) =>
+        prev.map((h) => (h.id === handoverId ? { ...updated, createdAt: updated.date } : h))
+      );
+      toast.success('Referral marked completed', {
+        description: `Referral for ${updated.patientName} is closed out.`,
+      });
+      void pollLive();
+      void refreshNotifications();
+    } catch (error) {
+      toast.error('Failed to complete referral', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
@@ -237,11 +317,10 @@ export default function HandoverPage() {
       if (sortBy === 'patient') return a.patientName.localeCompare(b.patientName);
       if (sortBy === 'status') {
         const statusOrder: Record<string, number> = {
-          pending: 0,
-          submitted: 1,
-          draft: 1,
-          acknowledged: 2,
-          received: 2,
+          sent: 0,
+          received: 1,
+          accepted: 2,
+          declined: 2,
           completed: 3,
         };
         return (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
@@ -286,7 +365,17 @@ export default function HandoverPage() {
     [handovers, searchQuery, sortBy, currentUserName]
   );
 
-  const renderHandoverCard = (handover: HandoverWithMeta, type: 'incoming' | 'outgoing') => (
+  // Head-nurse oversight: every referral the backend already scoped to this
+  // head nurse's department (see HandoverViewSet.get_queryset) — no
+  // incoming/outgoing split, since a head nurse is neither sender nor
+  // recipient of any of them.
+  const oversightHandovers = useMemo(
+    () => sortHandovers(handovers.filter(matchesSearch)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [handovers, searchQuery, sortBy]
+  );
+
+  const renderHandoverCard = (handover: HandoverWithMeta, type: 'incoming' | 'outgoing' | 'oversight') => (
     <Card
       key={handover.id}
       // Card takes a single ViewStyle, so merge rather than pass an array.
@@ -305,19 +394,32 @@ export default function HandoverPage() {
               <CardTitle style={styles.cardTitle}>{handover.patientName}</CardTitle>
             </View>
             <CardDescription>
-              {type === 'incoming' ? `From: ${handover.nurseFrom}` : `To: ${handover.nurseTo}`} •{' '}
-              {handover.shift} shift • {handover.date}
+              {type === 'oversight'
+                ? `${handover.nurseFrom} → ${handover.nurseTo}`
+                : type === 'incoming'
+                  ? `From: ${handover.nurseFrom}`
+                  : `To: ${handover.nurseTo}`}{' '}
+              • {handover.shift} shift • {handover.date}
             </CardDescription>
           </View>
           <View style={styles.headerActions}>
-            <Badge variant={statusBadgeVariant(handover.status)}>{handover.status}</Badge>
+            <Badge variant={statusBadgeVariant(handover.status)}>{statusLabel(handover.status)}</Badge>
             <Button
               size="icon-sm"
               variant="ghost"
-              onPress={() => handleDeleteHandover(handover.id)}
+              onPress={() => setHistoryTarget(handover)}
             >
-              <Trash2 size={16} color={Colors.red600} />
+              <History size={16} color={Colors.gray600} />
             </Button>
+            {type !== 'oversight' ? (
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                onPress={() => handleDeleteHandover(handover.id)}
+              >
+                <Trash2 size={16} color={Colors.red600} />
+              </Button>
+            ) : null}
           </View>
         </View>
       </CardHeader>
@@ -391,24 +493,46 @@ export default function HandoverPage() {
           </View>
         ) : null}
 
-        {type === 'incoming' && !isAcknowledged(handover.status) ? (
+        {type === 'incoming' && isActionable(handover.status) ? (
+          <View style={styles.actionButtonsRow}>
+            <Button
+              style={[styles.ackBtn, { flex: 1 }]}
+              onPress={() => handleAcceptHandover(handover.id)}
+              disabled={acknowledgeLoading === handover.id}
+              loading={acknowledgeLoading === handover.id}
+            >
+              {acknowledgeLoading === handover.id ? (
+                <>
+                  <ActivityIndicator size="small" color={Colors.white} />
+                  <Text style={styles.ackBtnText}>Accepting...</Text>
+                </>
+              ) : (
+                <>
+                  <CheckCircle size={16} color={Colors.white} />
+                  <Text style={styles.ackBtnText}>Accept</Text>
+                </>
+              )}
+            </Button>
+            <Button
+              variant="outline"
+              style={{ flex: 1, borderColor: Colors.red200 }}
+              onPress={() => setDeclineTarget(handover.id)}
+              disabled={acknowledgeLoading === handover.id}
+            >
+              <XCircle size={16} color={Colors.red600} />
+              <Text style={{ color: Colors.red600, fontWeight: '600', fontSize: 14 }}>Decline</Text>
+            </Button>
+          </View>
+        ) : null}
+        {type === 'incoming' && handover.status === 'accepted' ? (
           <Button
             style={styles.ackBtn}
-            onPress={() => handleAcknowledgeHandover(handover.id)}
+            onPress={() => handleCompleteHandover(handover.id)}
             disabled={acknowledgeLoading === handover.id}
             loading={acknowledgeLoading === handover.id}
           >
-            {acknowledgeLoading === handover.id ? (
-              <>
-                <ActivityIndicator size="small" color={Colors.white} />
-                <Text style={styles.ackBtnText}>Acknowledging...</Text>
-              </>
-            ) : (
-              <>
-                <CheckCircle size={16} color={Colors.white} />
-                <Text style={styles.ackBtnText}>Acknowledge Referral</Text>
-              </>
-            )}
+            <CheckCircle size={16} color={Colors.white} />
+            <Text style={styles.ackBtnText}>Mark Completed</Text>
           </Button>
         ) : null}
       </CardContent>
@@ -425,13 +549,18 @@ export default function HandoverPage() {
       >
         <View>
           <Text style={styles.title}>Referral</Text>
-          <Text style={styles.subtitle}>SBAR-based digital endorsement</Text>
+          <Text style={styles.subtitle}>
+            {isHeadNurse
+              ? 'Department oversight — view only, for your information'
+              : 'SBAR-based digital endorsement'}
+          </Text>
         </View>
 
         <Alert variant="info">
           <AlertDescription>
-            All referral notes are encrypted and HIPAA-compliant. Only authorized personnel can
-            access this information.
+            {isHeadNurse
+              ? 'Referrals move directly between nurses with no approval step. You can see every referral in your department and its full history here, but cannot accept, decline, or edit one.'
+              : 'All referral notes are encrypted and HIPAA-compliant. Only authorized personnel can access this information.'}
           </AlertDescription>
         </Alert>
 
@@ -452,44 +581,63 @@ export default function HandoverPage() {
             placeholder="Sort by"
             style={styles.sortSelect}
           />
-          <Button onPress={handleCreateHandover} style={styles.newBtn}>
-            <Plus size={16} color={Colors.white} />
-            <Text style={styles.newBtnText}>New Referral</Text>
-          </Button>
+          {!isHeadNurse ? (
+            <Button onPress={handleCreateHandover} style={styles.newBtn}>
+              <Plus size={16} color={Colors.white} />
+              <Text style={styles.newBtnText}>New Referral</Text>
+            </Button>
+          ) : null}
         </View>
 
-        <Tabs
-          value={activeTab}
-          onValueChange={setActiveTab}
-          tabs={[
-            { value: 'incoming', label: 'Incoming', badge: incomingHandovers.length },
-            { value: 'outgoing', label: 'Outgoing', badge: outgoingHandovers.length },
-          ]}
-        />
-
-        <View style={styles.list}>
-          {activeTab === 'incoming' ? (
-            incomingHandovers.length === 0 ? (
+        {isHeadNurse ? (
+          <View style={styles.list}>
+            {oversightHandovers.length === 0 ? (
               <Card>
                 <CardContent style={styles.empty}>
-                  <Clock size={48} color={Colors.gray500} />
-                  <Text style={styles.emptyText}>No incoming referrals</Text>
+                  <Eye size={48} color={Colors.gray500} />
+                  <Text style={styles.emptyText}>No referrals in your department yet</Text>
                 </CardContent>
               </Card>
             ) : (
-              incomingHandovers.map((h) => renderHandoverCard(h, 'incoming'))
-            )
-          ) : outgoingHandovers.length === 0 ? (
-            <Card>
-              <CardContent style={styles.empty}>
-                <FileText size={48} color={Colors.gray500} />
-                <Text style={styles.emptyText}>No outgoing referrals</Text>
-              </CardContent>
-            </Card>
-          ) : (
-            outgoingHandovers.map((h) => renderHandoverCard(h, 'outgoing'))
-          )}
-        </View>
+              oversightHandovers.map((h) => renderHandoverCard(h, 'oversight'))
+            )}
+          </View>
+        ) : (
+          <>
+            <Tabs
+              value={activeTab}
+              onValueChange={setActiveTab}
+              tabs={[
+                { value: 'incoming', label: 'Incoming', badge: incomingHandovers.length },
+                { value: 'outgoing', label: 'Outgoing', badge: outgoingHandovers.length },
+              ]}
+            />
+
+            <View style={styles.list}>
+              {activeTab === 'incoming' ? (
+                incomingHandovers.length === 0 ? (
+                  <Card>
+                    <CardContent style={styles.empty}>
+                      <Clock size={48} color={Colors.gray500} />
+                      <Text style={styles.emptyText}>No incoming referrals</Text>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  incomingHandovers.map((h) => renderHandoverCard(h, 'incoming'))
+                )
+              ) : outgoingHandovers.length === 0 ? (
+                <Card>
+                  <CardContent style={styles.empty}>
+                    <FileText size={48} color={Colors.gray500} />
+                    <Text style={styles.emptyText}>No outgoing referrals</Text>
+                  </CardContent>
+                </Card>
+              ) : (
+                outgoingHandovers.map((h) => renderHandoverCard(h, 'outgoing'))
+              )}
+            </View>
+          </>
+        )}
       </ScrollView>
 
       <HandoverModal
@@ -506,6 +654,94 @@ export default function HandoverPage() {
         title="Delete Referral"
         description="Are you sure you want to delete this referral? This action cannot be undone."
       />
+
+      <Modal
+        visible={Boolean(declineTarget)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeclineTarget(null)}
+      >
+        <Pressable style={styles.backdrop} onPress={() => setDeclineTarget(null)}>
+          <Pressable style={[styles.declineDialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.declineTitle}>Decline Referral</Text>
+            <Text style={styles.declineDescription}>
+              Let the sending nurse know why, so they can reassign the patient.
+            </Text>
+            <TextInput
+              style={styles.declineInput}
+              value={declineReason}
+              onChangeText={setDeclineReason}
+              placeholder="Reason (optional)"
+              placeholderTextColor={Colors.mutedForeground}
+              multiline
+              textAlignVertical="top"
+            />
+            <View style={styles.declineFooter}>
+              <Button
+                variant="outline"
+                style={{ flex: 1 }}
+                onPress={() => {
+                  setDeclineTarget(null);
+                  setDeclineReason('');
+                }}
+                disabled={Boolean(acknowledgeLoading)}
+              >
+                Cancel
+              </Button>
+              <Button
+                style={{ flex: 1, backgroundColor: Colors.red600 }}
+                onPress={() => declineTarget && handleDeclineHandover(declineTarget, declineReason)}
+                disabled={Boolean(acknowledgeLoading)}
+                loading={acknowledgeLoading === declineTarget}
+              >
+                Decline Referral
+              </Button>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={Boolean(historyTarget)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setHistoryTarget(null)}
+      >
+        <Pressable style={styles.backdrop} onPress={() => setHistoryTarget(null)}>
+          <Pressable style={[styles.declineDialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.declineTitle}>Referral History</Text>
+            {historyTarget ? (
+              <Text style={styles.declineDescription}>
+                {historyTarget.patientName} • {historyTarget.nurseFrom} → {historyTarget.nurseTo}
+              </Text>
+            ) : null}
+            <ScrollView style={{ maxHeight: 320 }}>
+              {(historyTarget?.statusHistory ?? []).length === 0 ? (
+                <Text style={styles.emptyText}>No history recorded for this referral.</Text>
+              ) : (
+                (historyTarget?.statusHistory ?? []).map((entry, idx) => (
+                  <View key={idx} style={styles.historyRow}>
+                    <View style={styles.historyDot} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.historyStatus}>{statusLabel(entry.status)}</Text>
+                      <Text style={styles.historyMeta}>
+                        {entry.byName || 'Unknown'}
+                        {entry.at ? ` • ${new Date(entry.at).toLocaleString()}` : ''}
+                      </Text>
+                      {entry.note ? <Text style={styles.historyNote}>{entry.note}</Text> : null}
+                    </View>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+            <View style={styles.declineFooter}>
+              <Button style={{ flex: 1 }} onPress={() => setHistoryTarget(null)}>
+                Close
+              </Button>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -703,5 +939,79 @@ const styles = StyleSheet.create({
     color: Colors.white,
     fontWeight: '600',
     fontSize: 14,
+  },
+  actionButtonsRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  declineDialog: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    padding: 24,
+    width: '100%',
+    maxWidth: 420,
+  },
+  declineTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: Colors.foreground,
+    marginBottom: 8,
+  },
+  declineDescription: {
+    fontSize: 14,
+    color: Colors.mutedForeground,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  declineInput: {
+    borderWidth: 1,
+    borderColor: Colors.gray200,
+    borderRadius: Radius.md,
+    padding: 12,
+    minHeight: 80,
+    fontSize: 14,
+    color: Colors.foreground,
+    marginBottom: 16,
+  },
+  declineFooter: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  historyRow: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.gray100,
+  },
+  historyDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Colors.blue500,
+    marginTop: 6,
+  },
+  historyStatus: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.foreground,
+  },
+  historyMeta: {
+    fontSize: 12,
+    color: Colors.mutedForeground,
+    marginTop: 2,
+  },
+  historyNote: {
+    fontSize: 13,
+    color: Colors.gray700,
+    marginTop: 4,
+    fontStyle: 'italic',
   },
 });

@@ -121,6 +121,8 @@ def webhook_url(workflow: str) -> str:
         return settings.N8N_IDENTITY_VERIFY_WEBHOOK
     if workflow == 'structure_chart' and getattr(settings, 'N8N_AUTO_CHARTING_WEBHOOK_URL', ''):
         return settings.N8N_AUTO_CHARTING_WEBHOOK_URL
+    if workflow == 'discharge_plan' and getattr(settings, 'N8N_DISCHARGE_PLAN_WEBHOOK_URL', ''):
+        return settings.N8N_DISCHARGE_PLAN_WEBHOOK_URL
     path = (settings.N8N_WEBHOOKS or {}).get(workflow, '')
     if not path:
         return ''

@@ -17,6 +17,10 @@ import {
   Building2,
   HeartPulse,
   FileText,
+  ClipboardCheck,
+  ChevronDown,
+  ChevronUp,
+  Sparkles,
 } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Badge } from './Badge';
@@ -45,10 +49,20 @@ function formatDateTime(value: string | null) {
   });
 }
 
+const METHOD_FIELDS: { key: 'medications' | 'environment' | 'treatment' | 'healthTeaching' | 'outpatientReferral' | 'diet'; letter: string; label: string }[] = [
+  { key: 'medications', letter: 'M', label: 'Medications' },
+  { key: 'environment', letter: 'E', label: 'Environment' },
+  { key: 'treatment', letter: 'T', label: 'Treatment' },
+  { key: 'healthTeaching', letter: 'H', label: 'Health Teaching' },
+  { key: 'outpatientReferral', letter: 'O', label: 'Outpatient Referral' },
+  { key: 'diet', letter: 'D', label: 'Diet' },
+];
+
 export function PatientVisitHistoryModal({ open, onOpenChange, patient }: PatientVisitHistoryModalProps) {
   const [visits, setVisits] = useState<PatientVisit[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [expandedPlans, setExpandedPlans] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (!open || !patient) return;
@@ -71,6 +85,15 @@ export function PatientVisitHistoryModal({ open, onOpenChange, patient }: Patien
       cancelled = true;
     };
   }, [open, patient]);
+
+  const togglePlan = (visitId: number) => {
+    setExpandedPlans((prev) => {
+      const next = new Set(prev);
+      if (next.has(visitId)) next.delete(visitId);
+      else next.add(visitId);
+      return next;
+    });
+  };
 
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => onOpenChange(false)}>
@@ -187,6 +210,56 @@ export function PatientVisitHistoryModal({ open, onOpenChange, patient }: Patien
                         Discharged by {visit.dischargedByName}
                       </Text>
                     ) : null}
+
+                    {visit.hasDischargePlan && visit.dischargePlan ? (
+                      <View style={styles.planSection}>
+                        <Pressable
+                          style={styles.planToggle}
+                          onPress={() => togglePlan(visit.id)}
+                          hitSlop={4}
+                        >
+                          <View style={styles.planToggleLeft}>
+                            <ClipboardCheck size={13} color={Colors.blue700} />
+                            <Text style={styles.planToggleText}>Discharge Plan</Text>
+                            {visit.dischargePlan.aiGenerated ? (
+                              <View style={styles.aiBadge}>
+                                <Sparkles size={9} color={Colors.blue700} />
+                                <Text style={styles.aiBadgeText}>AI-assisted</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          {expandedPlans.has(visit.id) ? (
+                            <ChevronUp size={14} color={Colors.mutedForeground} />
+                          ) : (
+                            <ChevronDown size={14} color={Colors.mutedForeground} />
+                          )}
+                        </Pressable>
+
+                        {expandedPlans.has(visit.id) ? (
+                          <View style={styles.planBody}>
+                            {METHOD_FIELDS.map(({ key, letter, label }) => (
+                              <View key={key} style={styles.planField}>
+                                <View style={styles.planFieldLabelRow}>
+                                  <View style={styles.planLetterBadge}>
+                                    <Text style={styles.planLetterBadgeText}>{letter}</Text>
+                                  </View>
+                                  <Text style={styles.planFieldLabel}>{label}</Text>
+                                </View>
+                                <Text style={styles.planFieldValue}>
+                                  {visit.dischargePlan?.[key] || 'Not documented'}
+                                </Text>
+                              </View>
+                            ))}
+                            <Text style={styles.planCompletedText}>
+                              Completed by {visit.dischargePlan.completedByName || 'Unknown'}
+                              {visit.dischargePlan.completedAt
+                                ? ` on ${formatDateTime(visit.dischargePlan.completedAt)}`
+                                : ''}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    ) : null}
                   </View>
                 ))}
               </View>
@@ -265,4 +338,45 @@ const styles = StyleSheet.create({
   latestVitalLabel: { fontSize: 10.5, color: Colors.mutedForeground, fontWeight: '600' },
   latestVitalValue: { fontSize: 12.5, color: Colors.foreground, fontWeight: '600' },
   dischargedByText: { fontSize: 11.5, color: Colors.gray500, fontStyle: 'italic' },
+  planSection: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    marginTop: 4,
+    paddingTop: 8,
+  },
+  planToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  planToggleLeft: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  planToggleText: { fontSize: 12.5, fontWeight: '700', color: Colors.blue700 },
+  aiBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: Colors.blue100,
+    borderRadius: Radius.full,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  aiBadgeText: { fontSize: 9.5, fontWeight: '600', color: Colors.blue700 },
+  planBody: {
+    gap: 10,
+    marginTop: 10,
+  },
+  planField: { gap: 3 },
+  planFieldLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  planLetterBadge: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: Colors.blue100,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  planLetterBadgeText: { fontSize: 9, fontWeight: '700', color: Colors.blue700 },
+  planFieldLabel: { fontSize: 11.5, fontWeight: '600', color: Colors.gray700 },
+  planFieldValue: { fontSize: 12.5, color: Colors.foreground, lineHeight: 17, paddingLeft: 22 },
+  planCompletedText: { fontSize: 11, color: Colors.gray500, fontStyle: 'italic', marginTop: 2 },
 });
