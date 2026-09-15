@@ -290,3 +290,92 @@ class DutyClockInOutTests(APITestCase):
             self.client.post(f'/api/duty-assignments/{self.assignment.pk}/close/')
         note = Notification.objects.filter(recipient=self.nurse, event='duty_closed_by_head_nurse').first()
         self.assertIsNotNone(note)
+
+    # ---- supervisor marking Completed via the plain edit form (PATCH) ----
+    #
+    # The roster's Edit modal sets status through a plain PATCH, not /close/
+    # — this used to leave actual_end_time null and skip the notification
+    # entirely, which is what let a nurse's own device keep showing the
+    # shift as ongoing after a refresh (my-duty.tsx and dashboard.tsx both
+    # read actual_end_time). perform_update keeps the two in sync so either
+    # path produces the same result.
+
+    def test_marking_completed_via_patch_fills_in_the_end_time_like_close_does(self):
+        self.client.force_authenticate(user=self.nurse)
+        with patch('django.utils.timezone.now', return_value=self._at(7, 0)):
+            self.client.post(f'/api/duty-assignments/{self.assignment.pk}/start/')
+
+        self.client.force_authenticate(user=self.supervisor)
+        with patch('django.utils.timezone.now', return_value=self._at(18, 0)):
+            response = self.client.patch(
+                f'/api/duty-assignments/{self.assignment.pk}/', {'status': 'completed'}, format='json',
+            )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.data['status'], 'completed')
+        self.assertIsNotNone(response.data['actualEndTime'])
+        self.assertEqual(response.data['actualEndRecordedBy'], 'Ana Cruz')
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.actual_end_recorded_by, self.supervisor)
+
+    def test_marking_completed_via_patch_notifies_the_nurse(self):
+        self.client.force_authenticate(user=self.nurse)
+        with patch('django.utils.timezone.now', return_value=self._at(7, 0)):
+            self.client.post(f'/api/duty-assignments/{self.assignment.pk}/start/')
+
+        self.client.force_authenticate(user=self.supervisor)
+        with patch('django.utils.timezone.now', return_value=self._at(18, 0)):
+            self.client.patch(
+                f'/api/duty-assignments/{self.assignment.pk}/', {'status': 'completed'}, format='json',
+            )
+        note = Notification.objects.filter(recipient=self.nurse, event='duty_closed_by_head_nurse').first()
+        self.assertIsNotNone(note)
+
+    def test_marking_completed_via_patch_on_a_never_started_shift_does_not_fabricate_an_end_time(self):
+        # No actual_start_time at all — e.g. a supervisor administratively
+        # closing out a no-show. Nothing to close, so this must not invent
+        # attendance data the nurse never actually had.
+        self.client.force_authenticate(user=self.supervisor)
+        response = self.client.patch(
+            f'/api/duty-assignments/{self.assignment.pk}/', {'status': 'completed'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.data['status'], 'completed')
+        self.assertIsNone(response.data['actualEndTime'])
+        self.assertIsNone(response.data['actualEndRecordedBy'])
+        self.assertEqual(Notification.objects.filter(event='duty_closed_by_head_nurse').count(), 0)
+
+    def test_patching_an_already_completed_shift_again_does_not_re_notify(self):
+        self.client.force_authenticate(user=self.nurse)
+        with patch('django.utils.timezone.now', return_value=self._at(7, 0)):
+            self.client.post(f'/api/duty-assignments/{self.assignment.pk}/start/')
+        with patch('django.utils.timezone.now', return_value=self._at(15, 0)):
+            self.client.post(f'/api/duty-assignments/{self.assignment.pk}/end/')
+
+        self.client.force_authenticate(user=self.supervisor)
+        response = self.client.patch(
+            f'/api/duty-assignments/{self.assignment.pk}/', {'notes': 'corrected note'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(Notification.objects.filter(event='duty_closed_by_head_nurse').count(), 0)
+
+    def test_patch_cannot_forge_actual_end_time_the_auto_fill_still_uses_real_now(self):
+        # actualEndTime is read_only on the serializer — a client-supplied
+        # value in the body is silently dropped, not accepted, so
+        # perform_update's auto-fill (real "now") is what actually lands.
+        self.client.force_authenticate(user=self.nurse)
+        with patch('django.utils.timezone.now', return_value=self._at(7, 0)):
+            self.client.post(f'/api/duty-assignments/{self.assignment.pk}/start/')
+
+        self.client.force_authenticate(user=self.supervisor)
+        forged_end = self._at(16, 30).isoformat()
+        with patch('django.utils.timezone.now', return_value=self._at(18, 0)):
+            response = self.client.patch(
+                f'/api/duty-assignments/{self.assignment.pk}/',
+                {'status': 'completed', 'actualEndTime': forged_end}, format='json',
+            )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assignment.refresh_from_db()
+        self.assertIsNotNone(self.assignment.actual_end_time)
+        self.assertNotEqual(self.assignment.actual_end_time.isoformat(), forged_end)
+        self.assertEqual(self.assignment.actual_end_recorded_by, self.supervisor)

@@ -31,6 +31,7 @@ import { Button } from '../../components/Button';
 import { Alert, AlertDescription } from '../../components/Alert';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Colors, Shadows, Radius } from '../../constants/colors';
+import { useLiveRefresh } from '../../contexts/LiveContext';
 
 // Mirrors the backend default (DUTY_START_BUFFER_MINUTES) purely so the
 // button's enabled/disabled state feels right immediately — the backend is
@@ -97,6 +98,15 @@ function scheduledEnd(a: DutyAssignment): Date {
 function computeLiveStatus(a: DutyAssignment, now: Date): LiveStatus {
   if (a.actualEndTime) {
     return a.actualOvertimeHours > 0 ? 'overtime' : 'completed';
+  }
+  // A head nurse can mark a shift Completed without it ever having been
+  // clocked in (e.g. correcting a no-show) — actualStartTime/actualEndTime
+  // stay null in that case (see DutyAssignmentViewSet.perform_update), so
+  // status is the only signal available here; trust it rather than falling
+  // through to the pure schedule-vs-now guess below, which would otherwise
+  // keep reading as "On Duty Now" for the rest of the scheduled window.
+  if (a.status === 'completed') {
+    return 'completed';
   }
   if (a.actualStartTime) {
     return now.getTime() < scheduledEnd(a).getTime() ? 'onduty' : 'overtime';
@@ -200,6 +210,14 @@ export default function MyDutyPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  // A head nurse ending/editing this nurse's shift elsewhere (Close Shift,
+  // or the roster's edit form) has to reach this screen without the nurse
+  // having to leave and come back — this had no refetch trigger at all
+  // beyond the initial mount before.
+  useLiveRefresh('duty', () => {
+    void loadData();
+  });
 
   // Keeps the On Duty Now / Overtime / Completed status honest while the
   // screen stays open across a shift boundary, without re-fetching.

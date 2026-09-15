@@ -852,6 +852,9 @@ export interface LiveState {
   tasks: string;
   handovers: string;
   patients: string;
+  /** A head nurse ending/editing any nurse's shift (Close Shift, or the
+   * roster's edit form) moves this — see DutyAssignmentViewSet. */
+  duty: string;
   /** The signed-in nurse's own department:shift — set by a head nurse via
    * assignNurse, not by this device. Independent of notification
    * preferences, since it's account data, not an alert. */

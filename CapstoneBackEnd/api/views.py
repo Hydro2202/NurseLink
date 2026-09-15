@@ -3770,6 +3770,47 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
         # not a soft-hidden record the API keeps returning under a filter.
         instance.delete()
 
+    def perform_update(self, serializer):
+        previous_status = serializer.instance.status
+        assignment = serializer.save()
+
+        # A head nurse can also mark a shift Completed from the roster's
+        # plain edit form (Status dropdown), not just via /close/. Without
+        # this, that path left actual_end_time null and skipped the
+        # notification entirely — the nurse's own device had no way to
+        # learn the shift had ended, on refresh or otherwise, because
+        # my-duty.tsx derives "still on shift" from actual_start_time/
+        # actual_end_time, not status. Mirror /close/'s own preconditions
+        # (must have actually started, must not already have an end time)
+        # so this can't fabricate a start/end time for a shift nobody
+        # clocked into.
+        if (
+            assignment.status == 'completed'
+            and previous_status != 'completed'
+            and assignment.actual_start_time is not None
+            and assignment.actual_end_time is None
+        ):
+            assignment.actual_end_time = timezone.now()
+            assignment.actual_end_recorded_by = self.request.user
+            assignment.save(
+                update_fields=[
+                    'actual_end_time', 'actual_end_recorded_by',
+                    'actual_worked_hours', 'actual_overtime_hours',
+                ]
+            )
+            notify(
+                assignment.nurse,
+                notification_type='info',
+                event='duty_closed_by_head_nurse',
+                title='Your shift was closed out',
+                message=(
+                    f'{self.request.user.get_full_name().strip() or self.request.user.username} '
+                    f'marked your {assignment.get_shift_display()} shift at '
+                    f'{assignment.department.name} as completed. Contact them if the recorded '
+                    'time looks wrong.'
+                ),
+            )
+
     @extend_schema(
         request=None,
         responses={200: DutyAssignmentSerializer},
@@ -4568,6 +4609,7 @@ class LiveStateView(APIView):
                     'tasks': serializers.CharField(),
                     'handovers': serializers.CharField(),
                     'patients': serializers.CharField(),
+                    'duty': serializers.CharField(),
                     'profile': serializers.CharField(),
                     'unreadCount': serializers.IntegerField(),
                 },
@@ -4617,6 +4659,11 @@ class LiveStateView(APIView):
                 'tasks': self._revision(Task.objects.all()),
                 'handovers': self._revision(HandoverNote.objects.all()),
                 'patients': self._revision(Patient.objects.all()),
+                # A head nurse ending/editing a nurse's shift (Close Shift, or
+                # the roster's Edit form) must reach that nurse's own Duty/
+                # Dashboard screens without waiting for an unrelated task or
+                # patient change to trigger a refetch — see DutyAssignmentViewSet.
+                'duty': self._revision(DutyAssignment.objects.all()),
                 'profile': profile_revision,
                 'unreadCount': inbox['unread'] or 0,
             }

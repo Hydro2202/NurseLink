@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,11 +7,13 @@ import {
   Pressable,
   ScrollView,
   Modal,
+  Animated,
+  Dimensions,
   useWindowDimensions,
   ActivityIndicator,
 } from 'react-native';
 import { Slot, useRouter, usePathname } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   LayoutDashboard,
   ClipboardList,
@@ -136,6 +138,112 @@ function ProfileMenu({
   );
 }
 
+/**
+ * Head nurse's mobile nav — a slide-in drawer from a hamburger button,
+ * replacing the bottom tab bar (which had to fit 7 items and overflowed on
+ * phone width; see the "Mobile: Head Nurse" branch below). Staff nurse and
+ * admin keep BottomNavigation exactly as before — this is head-nurse-only.
+ */
+const HN_MENU_WIDTH = Math.min(Dimensions.get('window').width * 0.8, 320);
+
+function HeadNurseMobileMenu({
+  isOpen,
+  onClose,
+  items,
+  pathname,
+  onNavigate,
+  portalName,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  items: NavItem[];
+  pathname: string;
+  onNavigate: (href: string) => void;
+  portalName: string;
+}) {
+  const styles = useLayoutStyles();
+  const { colors: c } = useTheme();
+  const insets = useSafeAreaInsets();
+  const slideAnim = useRef(new Animated.Value(-HN_MENU_WIDTH)).current;
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setVisible(true);
+      slideAnim.setValue(-HN_MENU_WIDTH);
+      Animated.timing(slideAnim, { toValue: 0, duration: 260, useNativeDriver: true }).start();
+      return;
+    }
+    Animated.timing(slideAnim, { toValue: -HN_MENU_WIDTH, duration: 200, useNativeDriver: true }).start(
+      ({ finished }) => {
+        if (finished) setVisible(false);
+      }
+    );
+  }, [isOpen, slideAnim]);
+
+  if (!visible) return null;
+
+  return (
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
+      <View style={styles.hnMenuRoot}>
+        <Pressable style={styles.hnMenuBackdrop} onPress={onClose} />
+        <Animated.View
+          style={[
+            styles.hnMenuPanel,
+            {
+              width: HN_MENU_WIDTH,
+              paddingTop: insets.top,
+              paddingBottom: insets.bottom,
+              transform: [{ translateX: slideAnim }],
+            },
+            Shadows.xl,
+          ]}
+        >
+          <View style={styles.hnMenuHeader}>
+            <View>
+              <Text style={styles.hnMenuTitle}>Menu</Text>
+              <Text style={styles.hnMenuSubtitle}>{portalName}</Text>
+            </View>
+            <Pressable
+              onPress={onClose}
+              style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Close menu"
+              hitSlop={8}
+            >
+              <X size={20} color={c.gray600} />
+            </Pressable>
+          </View>
+          <ScrollView style={styles.hnMenuList} showsVerticalScrollIndicator={false}>
+            {items.map((item) => {
+              const Icon = item.icon;
+              const active = pathMatches(pathname, item.href, item.exact);
+              return (
+                <Pressable
+                  key={item.name}
+                  onPress={() => onNavigate(item.href)}
+                  style={({ pressed }) => [
+                    styles.hnMenuItem,
+                    active && styles.hnMenuItemActive,
+                    pressed && !active && styles.hnMenuItemPressed,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                >
+                  <Icon size={20} color={active ? c.blue700 : c.gray600} />
+                  <Text style={[styles.hnMenuItemText, active && styles.hnMenuItemTextActive]}>
+                    {item.name}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
 function NotificationBell({
   onPress,
   unreadCount,
@@ -211,6 +319,8 @@ export default function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  // Head nurse mobile only — see HeadNurseMobileMenu.
+  const [hnMenuOpen, setHnMenuOpen] = useState(false);
   // Live: the provider polls and refreshes on app focus, so the badge keeps
   // itself current instead of only reflecting whatever was true at mount.
   const { unreadCount } = useNotifications();
@@ -380,12 +490,25 @@ export default function AppLayout() {
     );
   }
 
-  // Mobile: Head Nurse
+  // Mobile: Head Nurse — a hamburger-triggered slide-in menu instead of the
+  // bottom tab bar. Head nurse has more sections (Dashboard, Referral, Duty
+  // Roster, All Patients, Analytics, Workload, Settings) than fit a phone-
+  // width tab bar without overflowing; see HeadNurseMobileMenu above. Staff
+  // nurse (the branch just above) is untouched — still BottomNavigation.
   if (isSupervisor && !isDesktop) {
     return (
       <SafeAreaView style={styles.mobileRoot} edges={['top']}>
         <View style={[styles.supervisorHeader, Shadows.lg]}>
           <View style={styles.supervisorBrand}>
+            <Pressable
+              onPress={() => setHnMenuOpen(true)}
+              style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Open menu"
+              hitSlop={8}
+            >
+              <Menu size={24} color={c.blue700} />
+            </Pressable>
             <View style={styles.supervisorLogoCircle}>
               <Image
                 source={require('../../assets/images/NurseLinkLogo.png')}
@@ -408,11 +531,21 @@ export default function AppLayout() {
           </View>
         </View>
 
-        <View style={styles.mobileMain}>
+        <View style={[styles.mobileMain, styles.mobileMainNoTabBar]}>
           <Slot />
         </View>
 
-        <BottomNavigation role="head_nurse" activePath={pathname} />
+        <HeadNurseMobileMenu
+          isOpen={hnMenuOpen}
+          onClose={() => setHnMenuOpen(false)}
+          items={navigation}
+          pathname={pathname}
+          portalName={portalName}
+          onNavigate={(href) => {
+            setHnMenuOpen(false);
+            router.push(href as any);
+          }}
+        />
         {logoutDialog}
         {handoverAlert}
         {profileSync}
@@ -697,6 +830,11 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     flex: 1,
     paddingBottom: space(88),
   },
+  // Head nurse has no bottom tab bar (see HeadNurseMobileMenu) — no need to
+  // reserve space for one below the content.
+  mobileMainNoTabBar: {
+    paddingBottom: 0,
+  },
 
   supervisorHeader: {
     flexDirection: 'row',
@@ -737,6 +875,69 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     fontSize: scale(12),
     fontWeight: '700',
     color: c.blue600,
+  },
+
+  hnMenuRoot: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+  },
+  hnMenuBackdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  hnMenuPanel: {
+    height: '100%',
+    backgroundColor: c.white,
+  },
+  hnMenuHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: space(16),
+    paddingVertical: space(12),
+    borderBottomWidth: 2,
+    borderBottomColor: c.blue100,
+  },
+  hnMenuTitle: {
+    fontSize: scale(17),
+    fontWeight: '800',
+    color: c.blue900,
+  },
+  hnMenuSubtitle: {
+    fontSize: scale(11),
+    fontWeight: '600',
+    color: c.blue600,
+    marginTop: 1,
+  },
+  hnMenuList: {
+    flex: 1,
+    paddingHorizontal: space(10),
+    paddingTop: space(10),
+  },
+  hnMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space(14),
+    paddingHorizontal: space(12),
+    paddingVertical: space(13),
+    borderRadius: 12,
+    marginBottom: space(2),
+  },
+  hnMenuItemActive: {
+    backgroundColor: c.blue50,
+  },
+  hnMenuItemPressed: {
+    backgroundColor: c.gray50,
+  },
+  hnMenuItemText: {
+    fontSize: scale(15),
+    fontWeight: '600',
+    color: c.gray700,
+  },
+  hnMenuItemTextActive: {
+    color: c.blue700,
+    fontWeight: '800',
   },
 
   desktopRoot: {

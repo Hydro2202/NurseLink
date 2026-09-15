@@ -15,7 +15,7 @@ from django.test.utils import CaptureQueriesContext
 from django.db import connection
 from rest_framework.test import APITestCase
 
-from .models import HandoverNote, Notification, NurseProfile, Patient, Task
+from .models import Department, DutyAssignment, HandoverNote, Notification, NurseProfile, Patient, Task
 
 
 class LiveStateTests(APITestCase):
@@ -151,6 +151,45 @@ class LiveStateTests(APITestCase):
             room='201-A', diagnosis='CHF', admission_date=datetime.date(2026, 3, 2),
         )
         self.assertNotEqual(before['patients'], self.state()['patients'])
+
+    def test_a_new_duty_assignment_moves_the_duty_revision(self):
+        before = self.state()
+        dept, _ = Department.objects.get_or_create(name='ICU')
+        DutyAssignment.objects.create(
+            nurse=self.user, department=dept, duty_date=datetime.date(2026, 3, 3),
+            shift='morning', start_time=datetime.time(7, 0), end_time=datetime.time(15, 0),
+        )
+        after = self.state()
+
+        self.assertNotEqual(before['duty'], after['duty'])
+        self.assertEqual(before['tasks'], after['tasks'])
+
+    def test_ending_a_shift_moves_the_duty_revision(self):
+        # This is the case the bug report was about: a head nurse ending a
+        # nurse's shift has to move this revision, or the nurse's own
+        # my-duty/dashboard screens have no signal to refetch on.
+        dept, _ = Department.objects.get_or_create(name='ICU')
+        assignment = DutyAssignment.objects.create(
+            nurse=self.user, department=dept, duty_date=datetime.date(2026, 3, 3),
+            shift='morning', start_time=datetime.time(7, 0), end_time=datetime.time(15, 0),
+        )
+        before = self.state()
+
+        assignment.status = 'completed'
+        assignment.save(update_fields=['status', 'updated_at'])
+
+        self.assertNotEqual(before['duty'], self.state()['duty'])
+
+    def test_another_nurses_duty_assignment_still_registers(self):
+        # duty is a system-wide pulse like tasks/handovers/patients, not
+        # scoped to the polling nurse — see LiveStateView._revision.
+        before = self.state()
+        dept, _ = Department.objects.get_or_create(name='ICU')
+        DutyAssignment.objects.create(
+            nurse=self.other, department=dept, duty_date=datetime.date(2026, 3, 3),
+            shift='night', start_time=datetime.time(23, 0), end_time=datetime.time(7, 0),
+        )
+        self.assertNotEqual(before['duty'], self.state()['duty'])
 
     def test_a_department_reassignment_moves_only_the_profile_revision(self):
         before = self.state()

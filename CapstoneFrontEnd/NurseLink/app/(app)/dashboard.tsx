@@ -166,11 +166,16 @@ export default function DashboardPage() {
   }, [loadDashboard]);
 
   // The dashboard counts tasks and patients, both of which change from other
-  // nurses' devices, so it follows the shared live revisions too.
+  // nurses' devices, so it follows the shared live revisions too. duty is
+  // what makes a head nurse ending this nurse's shift show up here without
+  // waiting for an unrelated task/patient change to trigger a refetch.
   useLiveRefresh('tasks', () => {
     void loadDashboard();
   });
   useLiveRefresh('patients', () => {
+    void loadDashboard();
+  });
+  useLiveRefresh('duty', () => {
     void loadDashboard();
   });
 
@@ -224,6 +229,12 @@ export default function DashboardPage() {
       (a) => (a.dutyDate === today || a.dutyDate === yesterday) && a.status !== 'cancelled'
     );
     const active = relevant.find((a) => {
+      // Ended is ended, even if the scheduled window hasn't closed yet — a
+      // head nurse can end a shift early (Close Shift, or marking it
+      // Completed from the roster's edit form), and that must win over the
+      // scheduled start/end times here, not just get overwritten by them on
+      // the next tick.
+      if (a.status === 'completed' || a.actualEndTime) return false;
       const { start, end } = scheduledRange(a);
       return currentTime.getTime() >= start.getTime() && currentTime.getTime() < end.getTime();
     });
