@@ -2,10 +2,10 @@
 node_modules/
 
 # Environment files — never commit real secrets. Templates stay tracked.
-# .env
-# .env.*
-# !.env.example
-# !.env*.example
+.env
+.env.*
+!.env.example
+!.env*.example
 
 # Python
 __pycache__/
