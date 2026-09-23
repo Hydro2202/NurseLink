@@ -216,6 +216,14 @@ export default function NurseTasksPage() {
     { id: 'completed', label: 'Done', count: counts.completed, color: Colors.green600 },
   ];
 
+  if (loading) {
+    return (
+      <View style={[styles.root, { alignItems: 'center', justifyContent: 'center' }]}>
+        <ActivityIndicator size="large" color={Colors.blue600} />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.root}>
       <ScrollView

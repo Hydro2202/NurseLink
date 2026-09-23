@@ -35,7 +35,7 @@ import {
   setPatientAssignedDoctors,
   ApiError,
 } from '../services/api';
-import type { Doctor, Patient } from '../types/domain';
+import type { Doctor, DuplicatePatientMatch, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 import { assessRiskLevel } from '../utils/riskLevel';
 import { RiskBadge } from './RiskBadge';
@@ -46,6 +46,7 @@ export type PatientKardexForm = {
   middleName: string;
   age: string;
   gender: string;
+  birthday: string;
   religion: string;
   room: string;
   bedNumber: string;
@@ -55,6 +56,7 @@ export type PatientKardexForm = {
   admittingDiagnosis: string;
   finalDiagnosis: string;
   diet: string;
+  ivf: string;
   allergies: string[];
   temperature: string;
   pulseRate: string;
@@ -70,6 +72,7 @@ const emptyForm = (): PatientKardexForm => ({
   middleName: '',
   age: '',
   gender: '',
+  birthday: '',
   religion: '',
   room: '',
   bedNumber: '',
@@ -79,6 +82,7 @@ const emptyForm = (): PatientKardexForm => ({
   admittingDiagnosis: '',
   finalDiagnosis: '',
   diet: '',
+  ivf: '',
   allergies: [],
   temperature: '',
   pulseRate: '',
@@ -137,6 +141,7 @@ export function PatientKardexModal({
   const [initialAssignedDoctors, setInitialAssignedDoctors] = useState<Doctor[]>([]);
   const [careTeamValid, setCareTeamValid] = useState(true);
   const [allergyDraft, setAllergyDraft] = useState('');
+  const [duplicateWarning, setDuplicateWarning] = useState<DuplicatePatientMatch[] | null>(null);
 
   const riskLevel = assessRiskLevel({
     temperature: form.temperature,
@@ -189,7 +194,10 @@ export function PatientKardexModal({
   }, [open, mode, patient]);
 
   useEffect(() => {
-    if (!open) setAllergyDraft('');
+    if (!open) {
+      setAllergyDraft('');
+      setDuplicateWarning(null);
+    }
   }, [open]);
 
   const setField = <K extends keyof PatientKardexForm>(key: K, value: PatientKardexForm[K]) => {
@@ -207,7 +215,7 @@ export function PatientKardexModal({
     return errors;
   };
 
-  const handleSave = async () => {
+  const handleSave = async (confirmDuplicate = false) => {
     const errors = validate();
     if (errors.length) {
       toast.error('Missing Required Fields', {
@@ -224,10 +232,11 @@ export function PatientKardexModal({
     setSaving(true);
     try {
       if (mode === 'add') {
-        const created = await createKardexRecord({ ...form });
+        const created = await createKardexRecord({ ...form, confirmDuplicate });
         if (created.patientCode && doctorIds.length > 0) {
           await setPatientAssignedDoctors(created.patientCode, doctorIds);
         }
+        setDuplicateWarning(null);
         toast.success('Patient added', {
           description: 'Patient created from Kardex and added to the patient list.',
         });
@@ -257,6 +266,13 @@ export function PatientKardexModal({
       onOpenChange(false);
       onSaved();
     } catch (error) {
+      if (mode === 'add' && error instanceof ApiError && error.status === 400) {
+        const data = error.data as { possibleDuplicates?: DuplicatePatientMatch[] } | undefined;
+        if (data?.possibleDuplicates?.length) {
+          setDuplicateWarning(data.possibleDuplicates);
+          return;
+        }
+      }
       toast.error(mode === 'add' ? 'Failed to add patient' : 'Failed to update patient', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
@@ -346,6 +362,15 @@ export function PatientKardexModal({
               <View style={[styles.field, styles.colThird]}>
                 <Input label="Religion" value={form.religion} onChangeText={(v) => setField('religion', v)} />
               </View>
+              <View style={[styles.field, styles.colThird]}>
+                <DatePicker
+                  label="Birthday"
+                  value={form.birthday}
+                  onChange={(v) => setField('birthday', v)}
+                  maxDate={todayIso()}
+                  helperText="Cannot be in the future"
+                />
+              </View>
             </View>
 
             <View style={styles.groupDivider} />
@@ -400,6 +425,12 @@ export function PatientKardexModal({
               multiline
             />
             <Input label="Diet" value={form.diet} onChangeText={(v) => setField('diet', v)} />
+            <Input
+              label="IVF"
+              value={form.ivf}
+              onChangeText={(v) => setField('ivf', v)}
+              placeholder="e.g., D5LR 1L @ 80cc/hr"
+            />
 
             <Text style={styles.label}>Allergies</Text>
             <View style={styles.allergyInputRow}>
@@ -441,7 +472,7 @@ export function PatientKardexModal({
               <Text style={styles.section}>Patient Care Team</Text>
             </View>
             <Text style={styles.hint}>
-              Assign the departments and doctors responsible for this patient's care. Add New
+              Assign the departments and doctors responsible for this patient&apos;s care. Add New
               Task can only assign tasks to doctors selected here.
             </Text>
             <PatientCareTeam
@@ -490,7 +521,7 @@ export function PatientKardexModal({
               <Button variant="outline" onPress={() => onOpenChange(false)} style={{ flex: 1 }}>
                 <Text>Cancel</Text>
               </Button>
-              <Button onPress={handleSave} loading={saving} style={{ flex: 1.4 }}>
+              <Button onPress={() => handleSave(false)} loading={saving} style={{ flex: 1.4 }}>
                 <Save size={16} color={Colors.white} />
                 <Text style={{ color: Colors.white, fontWeight: '600' }}>
                   {mode === 'add' ? 'Save Patient' : 'Update'}
@@ -503,6 +534,47 @@ export function PatientKardexModal({
           </View>
         </View>
       </View>
+
+      {duplicateWarning ? (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setDuplicateWarning(null)}>
+          <Pressable style={styles.confirmBackdrop} onPress={() => setDuplicateWarning(null)}>
+            <Pressable style={[styles.confirmSheet, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
+              <Text style={styles.confirmTitle}>Possible Duplicate Patient</Text>
+              <Text style={styles.confirmDesc}>
+                A patient with similar information already exists. Please verify before creating a
+                new patient.
+              </Text>
+              <View style={{ gap: 12 }}>
+                {duplicateWarning.map((match) => (
+                  <View key={match.patientId} style={styles.duplicateMatchBox}>
+                    <Text style={styles.duplicateMatchName}>
+                      {match.name} ({match.patientId})
+                    </Text>
+                    <Text style={styles.duplicateMatchMeta}>
+                      {match.age}y • {match.gender} • Room {match.room}
+                      {match.admissionDate ? ` • Admitted ${match.admissionDate}` : ''}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+              <View style={styles.confirmFooter}>
+                <Button variant="outline" style={{ flex: 1 }} onPress={() => setDuplicateWarning(null)}>
+                  <Text>Back, Let Me Check</Text>
+                </Button>
+                <Button
+                  style={{ flex: 1, backgroundColor: Colors.orange600 }}
+                  loading={saving}
+                  onPress={() => handleSave(true)}
+                >
+                  <Text style={{ color: Colors.white, fontWeight: '600' }}>
+                    Continue, This Is a New Patient
+                  </Text>
+                </Button>
+              </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      ) : null}
     </Modal>
   );
 }
@@ -688,5 +760,51 @@ const styles = StyleSheet.create({
   summaryDivider: {
     fontSize: 12,
     color: Colors.gray400,
+  },
+  confirmBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  confirmSheet: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    padding: 24,
+    width: '100%',
+    maxWidth: 420,
+    gap: 12,
+  },
+  confirmTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: Colors.foreground,
+  },
+  confirmDesc: {
+    fontSize: 14,
+    color: Colors.mutedForeground,
+    lineHeight: 20,
+  },
+  duplicateMatchBox: {
+    backgroundColor: Colors.orange50,
+    borderWidth: 1,
+    borderColor: Colors.orange100,
+    borderRadius: Radius.md,
+    padding: 12,
+    gap: 4,
+  },
+  duplicateMatchName: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.foreground,
+  },
+  duplicateMatchMeta: {
+    fontSize: 13,
+    color: Colors.gray700,
+  },
+  confirmFooter: {
+    flexDirection: 'row',
+    gap: 12,
   },
 });

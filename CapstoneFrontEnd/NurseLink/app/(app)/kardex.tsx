@@ -728,7 +728,7 @@ ${specialEndorsements || 'None'}
             <CardTitle>Patient Care Team</CardTitle>
           </View>
           <CardDescription>
-            Departments and doctors responsible for this patient's care.
+            Departments and doctors responsible for this patient&apos;s care.
           </CardDescription>
         </CardHeader>
         <CardContent>

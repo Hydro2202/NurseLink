@@ -1399,6 +1399,28 @@ class VerifyIdView(APIView):
                 verification_status = 'validation_error'
                 verified = False
                 validation_errors = validation.errors
+                # Without this, a validation_error is undiagnosable from the
+                # logs alone — the response only ever says "Invalid name
+                # value detected." with no way to tell whether the OCR read
+                # was garbled or the validator is being overly strict on a
+                # genuine name. Field values only, at INFO: this is a PRC ID
+                # a nurse is actively registering with, not arbitrary PII
+                # incidentally collected.
+                logger.info(
+                    'verify-id: rejected fields session=%s failed=%s lastName=%r firstName=%r '
+                    'middleName=%r fullName=%r registrationNumber=%r registrationDate=%r validUntil=%r',
+                    session.session_id, sorted(validation_errors.keys()),
+                    fields['lastName'], fields['firstName'], fields['middleName'], fields['fullName'],
+                    fields['registrationNumber'], fields['registrationDate'], fields['validUntil'],
+                )
+                # If a field we need came back empty, the question is always
+                # "did n8n never send it, or send it under a key we don't
+                # alias?" — logging every top-level key the workflow actually
+                # returned answers that outright instead of guessing at
+                # aliases one at a time.
+                logger.info(
+                    'verify-id: raw n8n keys session=%s keys=%s', session.session_id, sorted(lookup.keys()),
+                )
 
         logger.info(
             'verify-id: OCR validation result session=%s status=%s', session.session_id, verification_status

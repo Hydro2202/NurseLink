@@ -26,7 +26,7 @@ interface AssignPatientModalProps {
     assignment: Omit<PatientAssignment, 'id' | 'assignedAt' | 'updatedAt' | 'status'>
   ) => void | Promise<void>;
   editingAssignment?: PatientAssignment | null;
-  availableNurses: Array<{ id: string; name: string; patientCount: number }>;
+  availableNurses: { id: string; name: string; patientCount: number }[];
   allTasks?: Task[];
   allAssignments?: PatientAssignment[];
 }

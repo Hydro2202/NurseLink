@@ -213,7 +213,7 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
               <View style={styles.empty}>
                 <CheckCircle size={48} color={Colors.muted} />
                 <Text style={styles.emptyTitle}>No new notifications</Text>
-                <Text style={styles.emptyDesc}>You're all caught up!</Text>
+                <Text style={styles.emptyDesc}>You&apos;re all caught up!</Text>
               </View>
             ) : (
               notifications.map((notification) => (

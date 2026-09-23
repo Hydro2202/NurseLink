@@ -649,6 +649,14 @@ export default function ChartingScreen() {
 
   const selectedPatientRecord = patients.find((p) => p.id === selectedPatient);
 
+  if (loading) {
+    return (
+      <View style={[styles.screen, { alignItems: 'center', justifyContent: 'center' }]}>
+        <ActivityIndicator size="large" color={Colors.blue600} />
+      </View>
+    );
+  }
+
   return (
     <ScrollView
       style={styles.screen}

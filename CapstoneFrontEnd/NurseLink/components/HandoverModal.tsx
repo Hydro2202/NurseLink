@@ -13,9 +13,8 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Select } from './Select';
 import { Alert, AlertDescription } from './Alert';
-import type { HandoverNote } from '../types/domain';
+import type { HandoverNote, Nurse, Patient } from '../types/domain';
 import { fetchPatients, fetchNurses } from '../services/api';
-import type { Nurse, Patient } from '../types/domain';
 
 interface HandoverModalProps {
   open: boolean;

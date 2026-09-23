@@ -539,6 +539,14 @@ export default function HandoverPage() {
     </Card>
   );
 
+  if (loading) {
+    return (
+      <View style={[styles.root, { alignItems: 'center', justifyContent: 'center' }]}>
+        <ActivityIndicator size="large" color={Colors.blue600} />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.root}>
       <ScrollView

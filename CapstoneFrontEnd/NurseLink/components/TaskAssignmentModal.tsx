@@ -307,7 +307,7 @@ export function TaskAssignmentModal({
               />
 
               <View style={styles.field}>
-                <Text style={styles.label}>Doctor's Order</Text>
+                <Text style={styles.label}>Doctor&apos;s Order</Text>
                 <TextInput
                   style={[styles.textarea, { minHeight: 64 }]}
                   placeholder="Specific orders from the physician..."

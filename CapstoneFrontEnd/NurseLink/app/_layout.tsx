@@ -55,7 +55,7 @@ function RootNavigator() {
     if (!onPublicAuthFlow) {
       router.replace('/login');
     }
-  }, [showSplash, isLoading, isAuthenticated, segments]);
+  }, [showSplash, isLoading, isAuthenticated, segments, router]);
 
   if (showSplash) {
     return <SplashScreen onComplete={() => setShowSplash(false)} />;

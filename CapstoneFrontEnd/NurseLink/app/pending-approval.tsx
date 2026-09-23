@@ -91,8 +91,8 @@ export default function PendingApprovalPage() {
               </View>
               <Text style={styles.infoBody}>
                 An administrator checks the hospital and department details from your
-                registration before your account can sign in. This is usually quick — you'll be
-                able to log in with the email and password you just set as soon as it's approved.
+                registration before your account can sign in. This is usually quick — you&apos;ll be
+                able to log in with the email and password you just set as soon as it&apos;s approved.
               </Text>
             </View>
 

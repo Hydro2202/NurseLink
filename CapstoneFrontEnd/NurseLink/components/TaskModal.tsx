@@ -385,7 +385,7 @@ export function TaskModal({
                 ) : !departmentId ? (
                   <View style={styles.doctorStateBox}>
                     <Text style={styles.doctorStateText}>
-                      Select a department to see this patient's assigned doctor.
+                      Select a department to see this patient&apos;s assigned doctor.
                     </Text>
                   </View>
                 ) : patientDoctors.length === 0 ? (
@@ -405,7 +405,7 @@ export function TaskModal({
                       <CheckCircle2 size={18} color={Colors.green600} />
                     </View>
                     <Text style={styles.hint}>
-                      Doctor is automatically assigned based on the patient's Kardex.
+                      Doctor is automatically assigned based on the patient&apos;s Kardex.
                     </Text>
                   </>
                 ) : (
@@ -451,7 +451,7 @@ export function TaskModal({
               <View style={styles.field}>
                 <View style={styles.labelRow}>
                   <ClipboardList size={16} color={Colors.blue600} />
-                  <Text style={styles.label}>Doctor's Order / Notes</Text>
+                  <Text style={styles.label}>Doctor&apos;s Order / Notes</Text>
                 </View>
                 <TextInput
                   style={styles.textarea}

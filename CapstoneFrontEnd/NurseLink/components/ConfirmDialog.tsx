@@ -5,7 +5,6 @@ import {
   Text,
   StyleSheet,
   Pressable,
-  ActivityIndicator,
 } from 'react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';

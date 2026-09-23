@@ -141,7 +141,7 @@ function OtpDigitsInput({
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
-  const refs = useRef<Array<TextInput | null>>([]);
+  const refs = useRef<(TextInput | null)[]>([]);
   const digits = value.split('');
 
   return (
@@ -215,7 +215,7 @@ const STEP_DESCRIPTIONS = [
   'Set your login credentials to complete registration.',
 ];
 
-const ROLE_OPTIONS: Array<{ label: string; value: UserRole; emoji: string; detail: string }> = [
+const ROLE_OPTIONS: { label: string; value: UserRole; emoji: string; detail: string }[] = [
   {
     label: 'Nurse',
     value: 'staff_nurse',
@@ -247,6 +247,14 @@ const defaultOcrData = {
   position: '',
   hospitalName: '',
   email: '',
+};
+
+const defaultOcrReview = {
+  needsReview: [] as string[],
+  missingRequired: [] as string[],
+  overallConfidence: 0,
+  n8nStatus: '',
+  duplicateScan: false,
 };
 
 /** A PRC registration number is seven digits. */
@@ -458,13 +466,7 @@ export default function SignUpPage() {
   const [ocrStatus, setOcrStatus] = useState<ProcessStatus>('idle');
   // What the backend flagged for human confirmation on Step 2. A low-confidence
   // read is never saved silently — the nurse has to look at it first.
-  const [ocrReview, setOcrReview] = useState<{
-    needsReview: string[];
-    missingRequired: string[];
-    overallConfidence: number;
-    n8nStatus: string;
-    duplicateScan: boolean;
-  }>({ needsReview: [], missingRequired: [], overallConfidence: 0, n8nStatus: '', duplicateScan: false });
+  const [ocrReview, setOcrReview] = useState(defaultOcrReview);
 
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -482,7 +484,7 @@ export default function SignUpPage() {
   const [otpError, setOtpError] = useState('');
   const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null);
   const [otpResendAvailableAt, setOtpResendAvailableAt] = useState<number | null>(null);
-  const [nowTick, setNowTick] = useState(Date.now());
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
@@ -668,6 +670,18 @@ export default function SignUpPage() {
         email: res.email,
       });
       setIdFieldErrors({});
+      // A 'verified' result can still carry fields the backend wants a human
+      // to double-check (low OCR confidence, a field it couldn't read at
+      // all, or a possible duplicate scan) — this is what actually drives
+      // the review banner below; without it, "verified" always looked
+      // fully clean even when the backend had flagged something.
+      setOcrReview({
+        needsReview: res.needsReview || [],
+        missingRequired: res.missingRequired || [],
+        overallConfidence: res.overallConfidence ?? 0,
+        n8nStatus: res.n8nStatus || '',
+        duplicateScan: res.duplicateScan || false,
+      });
       setOcrStatus('success');
       setHospitalIdCompleted(true);
     } catch (err) {
@@ -687,6 +701,10 @@ export default function SignUpPage() {
     setFaceVerificationCompleted(false);
     setRoleSelected(false);
     setRole('');
+    // A new photo means the old review flags (if any) no longer describe
+    // anything on screen — stale flags from the previous scan must not
+    // linger until the next OCR result overwrites them.
+    setOcrReview(defaultOcrReview);
     void clearFaceCycleLocal();
     void runIdVerification(base64);
   };
@@ -1262,6 +1280,7 @@ export default function SignUpPage() {
                               setOcrData(defaultOcrData);
                               setIdFieldErrors({});
                               setHospitalIdCompleted(false);
+                              setOcrReview(defaultOcrReview);
                             }}
                           >
                             <X size={16} color={Colors.gray600} />

@@ -7,7 +7,6 @@ import {
   ActivityIndicator,
   Pressable,
 } from 'react-native';
-import { useRouter } from 'expo-router';
 import {
   Search,
   User,
@@ -17,7 +16,6 @@ import {
   Building2,
   AlertCircle,
   Activity,
-  Eye,
   UserPlus,
   LogOut,
   ArrowUpDown,
@@ -158,7 +156,6 @@ type SortKey = 'name' | 'room' | 'nurse' | 'status';
 type StatusFilter = 'active' | 'admitted' | 'observation' | 'discharged' | 'all';
 
 export default function AllPatientsPage() {
-  const router = useRouter();
   const toast = useToast();
   const { user } = useAuth();
   const isSupervisor = user?.role === 'head_nurse';

@@ -41,9 +41,8 @@ import { AssignPatientModal } from '../../components/AssignPatientModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { NurseAssignModal, type AssignTarget } from '../../components/NurseAssignModal';
 import type { PatientAssignment } from '../../types';
-import { Colors, Radius } from '../../constants/colors';
+import { Colors } from '../../constants/colors';
 import { useToast } from '../../contexts/ToastContext';
-import { useRouter } from 'expo-router';
 
 function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
   return {
@@ -67,7 +66,6 @@ export default function WorkloadPage() {
   const { width } = useWindowDimensions();
   const chartWidth = Math.max(width - 64, 280);
   const toast = useToast();
-  const router = useRouter();
   const [tab, setTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
@@ -223,6 +221,14 @@ export default function WorkloadPage() {
     return styles.riskLow;
   };
 
+  if (loading) {
+    return (
+      <View style={[styles.scroll, { alignItems: 'center', justifyContent: 'center' }]}>
+        <ActivityIndicator size="large" color={Colors.blue600} />
+      </View>
+    );
+  }
+
   return (
     <>
       <ScrollView
@@ -330,7 +336,7 @@ export default function WorkloadPage() {
               <Card>
                 <CardContent style={styles.emptySearch}>
                   <Text style={styles.emptySearchText}>
-                    No nurses match "{nurseSearch}".
+                    No nurses match &quot;{nurseSearch}&quot;.
                   </Text>
                 </CardContent>
               </Card>

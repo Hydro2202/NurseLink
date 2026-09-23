@@ -136,7 +136,7 @@ export function PatientCareTeam({
         <View style={styles.emptyBox}>
           <Text style={styles.emptyTitle}>No care team assigned yet.</Text>
           <Text style={styles.emptyText}>
-            Add a department and assign one or more doctors responsible for this patient's care.
+            Add a department and assign one or more doctors responsible for this patient&apos;s care.
           </Text>
         </View>
       ) : null}

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, View, StyleSheet, Animated } from 'react-native';
+import { Pressable, StyleSheet, Animated } from 'react-native';
 import { Colors } from '../constants/colors';
 
 interface SwitchProps {
