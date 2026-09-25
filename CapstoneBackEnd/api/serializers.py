@@ -1339,6 +1339,21 @@ class TaskSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     'Each checklist item needs "text" and "done".'
                 )
+        # Vital-signs tasks gate their final checklist step behind actually
+        # having recorded readings — see VitalSigns.task — so a nurse can't
+        # tick "done" without doing at least 2 real check-ins. Only fires on
+        # the transition to done, so an already-completed task re-saved
+        # (e.g. editing an earlier field) never gets newly blocked.
+        instance = self.instance
+        if instance is not None and instance.category == 'vital_signs' and value:
+            was_done = bool(instance.checklist) and bool(instance.checklist[-1].get('done'))
+            now_done = bool(value[-1].get('done'))
+            if now_done and not was_done:
+                reading_count = VitalSigns.objects.filter(task=instance).count()
+                if reading_count < 2:
+                    raise serializers.ValidationError(
+                        'Record at least 2 vital sign readings before completing this step.'
+                    )
         return value
 
     def validate_patientId(self, value):
@@ -1439,6 +1454,19 @@ class TaskSerializer(serializers.ModelSerializer):
             actor = request.user if request and request.user.is_authenticated else None
             self._sync_doctors(instance, doctors, actor)
         return instance
+
+    def to_representation(self, instance):
+        # `patientId` above is declared as a plain CharField (no `source=`)
+        # so create()/update() can keep popping it out of validated_data as
+        # flat input — but that means it has no attribute to read on output,
+        # so DRF silently omits it from every response instead of resolving
+        # instance.patient.patient_code. Every reader that displays a task's
+        # patientId (not just patientName) has been getting an empty value
+        # for this from day one; fixed here rather than by changing the
+        # field's source, which would break the create/update pop() above.
+        data = super().to_representation(instance)
+        data['patientId'] = instance.patient.patient_code if instance.patient_id else ''
+        return data
 
 
 class HandoverSerializer(serializers.ModelSerializer):
@@ -2107,11 +2135,16 @@ class VitalSignsSerializer(serializers.ModelSerializer):
     patientId = serializers.SlugRelatedField(
         source='patient', slug_field='patient_code', queryset=Patient.objects.all()
     )
+    taskId = serializers.SlugRelatedField(
+        source='task', slug_field='task_code', queryset=Task.objects.all(),
+        required=False, allow_null=True,
+    )
     heartRate = serializers.IntegerField(source='heart_rate', required=False, allow_null=True)
     bloodPressure = serializers.CharField(source='blood_pressure', required=False, allow_blank=True)
     temperature = serializers.FloatField(required=False, allow_null=True)
     oxygenSaturation = serializers.IntegerField(source='oxygen_saturation', required=False, allow_null=True)
     respiratoryRate = serializers.IntegerField(source='respiratory_rate', required=False, allow_null=True)
+    oxygenUse = serializers.BooleanField(source='oxygen_use', required=False, allow_null=True)
     painScale = serializers.IntegerField(source='pain_scale', required=False, allow_null=True)
     source = serializers.ChoiceField(choices=VitalSigns.SOURCE_CHOICES, required=False)
     # Set from this, not accepted directly from the client — a reading is
@@ -2129,8 +2162,8 @@ class VitalSignsSerializer(serializers.ModelSerializer):
     class Meta:
         model = VitalSigns
         fields = [
-            'id', 'patientId', 'heartRate', 'bloodPressure', 'temperature',
-            'oxygenSaturation', 'respiratoryRate', 'painScale', 'source',
+            'id', 'patientId', 'taskId', 'heartRate', 'bloodPressure', 'temperature',
+            'oxygenSaturation', 'respiratoryRate', 'oxygenUse', 'painScale', 'source',
             'triggeredByNoteId', 'recordedById', 'recordedByName', 'notes',
             'recordedAt', 'createdAt',
         ]

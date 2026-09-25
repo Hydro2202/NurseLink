@@ -6,6 +6,7 @@ import {
   StyleSheet,
   Pressable,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import {
@@ -22,9 +23,13 @@ import {
   ChevronUp,
   Square,
   CheckSquare,
+  Lock,
+  HeartPulse,
+  X,
 } from 'lucide-react-native';
 import {
   fetchTasks,
+  fetchVitalReadings,
   createTask,
   updateTask,
   unassignTask,
@@ -38,6 +43,7 @@ import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
 import { TaskModal } from '../../components/TaskModal';
+import { TaskVitalSignsBars } from '../../components/TaskVitalSignsBars';
 import { DeleteConfirmDialog } from '../../components/ConfirmDialog';
 import { useToast } from '../../contexts/ToastContext';
 import { useLiveRefresh } from '../../contexts/LiveContext';
@@ -45,6 +51,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 
 type SortBy = 'newest' | 'oldest' | 'priority' | 'status';
+
+const VITALS_READINGS_REQUIRED = 2;
 
 const SORT_OPTIONS = [
   { label: 'Newest', value: 'newest' },
@@ -77,6 +85,11 @@ export default function TasksPage() {
   const [completeLoading, setCompleteLoading] = useState<string | null>(null);
   const [expandedChecklistId, setExpandedChecklistId] = useState<string | null>(null);
   const [checklistSaving, setChecklistSaving] = useState<string | null>(null);
+  // Fetched for every vital_signs task right after the task list loads (see
+  // loadTasks), so the checklist's lock state is correct even before the
+  // nurse ever opens the vitals card for that task this session.
+  const [vitalsReadingCounts, setVitalsReadingCounts] = useState<Record<string, number>>({});
+  const [vitalsModalTaskId, setVitalsModalTaskId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('newest');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
@@ -85,6 +98,26 @@ export default function TasksPage() {
     try {
       const data = await fetchTasks({ mine: true });
       setTasks(data);
+      const vitalsTasks = data.filter((t) => t.category === 'vital_signs');
+      if (vitalsTasks.length > 0) {
+        const pairs = await Promise.all(
+          vitalsTasks.map(async (t) => {
+            try {
+              const readings = await fetchVitalReadings({ taskId: t.id });
+              return [t.id, readings.length] as const;
+            } catch {
+              return [t.id, 0] as const;
+            }
+          })
+        );
+        setVitalsReadingCounts((prev) => {
+          const next = { ...prev };
+          pairs.forEach(([id, count]) => {
+            next[id] = count;
+          });
+          return next;
+        });
+      }
     } catch (error) {
       toast.error('Failed to load tasks', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
@@ -251,6 +284,21 @@ export default function TasksPage() {
   };
 
   const handleToggleChecklistItem = async (task: Task, index: number) => {
+    const isLastItem = index === task.checklist.length - 1;
+    const isVitalsTask = task.category === 'vital_signs';
+    const readingCount = vitalsReadingCounts[task.id] ?? 0;
+    if (
+      isVitalsTask &&
+      isLastItem &&
+      !task.checklist[index].done &&
+      readingCount < VITALS_READINGS_REQUIRED
+    ) {
+      toast.error('Vital signs not recorded yet', {
+        description: `Record at least ${VITALS_READINGS_REQUIRED} vital sign readings below before completing this step.`,
+      });
+      return;
+    }
+
     const nextChecklist = task.checklist.map((item, i) =>
       i === index ? { ...item, done: !item.done } : item
     );
@@ -271,6 +319,8 @@ export default function TasksPage() {
       setChecklistSaving(null);
     }
   };
+
+  const vitalsModalTask = tasks.find((t) => t.id === vitalsModalTaskId) || null;
 
   const filteredTasks = tasks
     .filter((task) => {
@@ -545,28 +595,44 @@ export default function TasksPage() {
                               </Pressable>
                               {expandedChecklistId === task.id ? (
                                 <View style={styles.checklistItems}>
-                                  {task.checklist.map((item, index) => (
-                                    <Pressable
-                                      key={index}
-                                      style={styles.checklistItemRow}
-                                      disabled={checklistSaving === task.id}
-                                      onPress={() => handleToggleChecklistItem(task, index)}
-                                    >
-                                      {item.done ? (
-                                        <CheckSquare size={16} color={Colors.green600} />
-                                      ) : (
-                                        <Square size={16} color={Colors.gray400} />
-                                      )}
-                                      <Text
-                                        style={[
-                                          styles.checklistItemText,
-                                          item.done && styles.checklistItemTextDone,
-                                        ]}
+                                  {task.checklist.map((item, index) => {
+                                    const isLastItem = index === task.checklist.length - 1;
+                                    const isVitalsTask = task.category === 'vital_signs';
+                                    const readingCount = vitalsReadingCounts[task.id] ?? 0;
+                                    const isLocked =
+                                      isVitalsTask &&
+                                      isLastItem &&
+                                      !item.done &&
+                                      readingCount < VITALS_READINGS_REQUIRED;
+                                    return (
+                                      <Pressable
+                                        key={index}
+                                        style={styles.checklistItemRow}
+                                        disabled={checklistSaving === task.id}
+                                        onPress={() => handleToggleChecklistItem(task, index)}
                                       >
-                                        {item.text}
-                                      </Text>
-                                    </Pressable>
-                                  ))}
+                                        {item.done ? (
+                                          <CheckSquare size={16} color={Colors.green600} />
+                                        ) : isLocked ? (
+                                          <Lock size={14} color={Colors.gray400} />
+                                        ) : (
+                                          <Square size={16} color={Colors.gray400} />
+                                        )}
+                                        <Text
+                                          style={[
+                                            styles.checklistItemText,
+                                            item.done && styles.checklistItemTextDone,
+                                            isLocked && styles.checklistItemTextLocked,
+                                          ]}
+                                        >
+                                          {item.text}
+                                          {isLocked
+                                            ? ` (record ${VITALS_READINGS_REQUIRED} vitals first)`
+                                            : ''}
+                                        </Text>
+                                      </Pressable>
+                                    );
+                                  })}
                                 </View>
                               ) : null}
                             </View>
@@ -597,6 +663,14 @@ export default function TasksPage() {
                           style={styles.editBtn}
                         >
                           <Edit size={16} color={Colors.blue600} />
+                        </Button>
+                        <Button
+                          size="icon-sm"
+                          variant="outline"
+                          onPress={() => setVitalsModalTaskId(task.id)}
+                          style={styles.vitalsBtn}
+                        >
+                          <HeartPulse size={16} color={Colors.red600} />
                         </Button>
                         {user?.role === 'head_nurse' && task.assignedTo ? (
                           <Button
@@ -637,6 +711,41 @@ export default function TasksPage() {
         title="Unassign Task"
         description="This will remove the assigned nurse and return the task to pending. The task itself is not deleted."
       />
+
+      {vitalsModalTask ? (
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={() => setVitalsModalTaskId(null)}
+        >
+          <Pressable style={styles.vitalsModalBackdrop} onPress={() => setVitalsModalTaskId(null)}>
+            <Pressable style={[styles.vitalsModalCard, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
+              <View style={styles.vitalsModalHeader}>
+                <HeartPulse size={18} color={Colors.red600} />
+                <Text style={styles.vitalsModalTitle}>Vital Signs Check-ins</Text>
+                <Pressable onPress={() => setVitalsModalTaskId(null)} hitSlop={8}>
+                  <X size={20} color={Colors.gray500} />
+                </Pressable>
+              </View>
+              <Text style={styles.vitalsModalSubtitle}>
+                {vitalsModalTask.patientName} ({vitalsModalTask.patientId}) · Room{' '}
+                {vitalsModalTask.patientRoom || '—'}
+              </Text>
+              <ScrollView style={styles.vitalsModalScroll} keyboardShouldPersistTaps="handled">
+                <TaskVitalSignsBars
+                  taskId={vitalsModalTask.id}
+                  patientId={vitalsModalTask.patientId}
+                  readingsRequired={VITALS_READINGS_REQUIRED}
+                  onReadingsChange={(count) =>
+                    setVitalsReadingCounts((prev) => ({ ...prev, [vitalsModalTask.id]: count }))
+                  }
+                />
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      ) : null}
     </View>
   );
 }
@@ -884,6 +993,10 @@ const styles = StyleSheet.create({
     color: Colors.gray400,
     textDecorationLine: 'line-through',
   },
+  checklistItemTextLocked: {
+    color: Colors.gray400,
+    fontStyle: 'italic',
+  },
   actions: {
     gap: 8,
   },
@@ -892,6 +1005,44 @@ const styles = StyleSheet.create({
   },
   editBtn: {
     borderColor: Colors.blue600,
+  },
+  vitalsBtn: {
+    borderColor: Colors.red600,
+  },
+  vitalsModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  vitalsModalCard: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    padding: 20,
+    width: '100%',
+    maxWidth: 760,
+    maxHeight: '88%',
+  },
+  vitalsModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  vitalsModalTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '700',
+    color: Colors.foreground,
+  },
+  vitalsModalSubtitle: {
+    fontSize: 12,
+    color: Colors.gray500,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  vitalsModalScroll: {
+    flexGrow: 0,
   },
   deleteBtn: {
     borderColor: Colors.red600,

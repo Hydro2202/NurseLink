@@ -13,6 +13,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
+import { TimePicker } from './TimePicker';
 import {
   fetchPatients,
   fetchPatientAssignedDoctors,
@@ -293,12 +294,12 @@ export function TaskModal({
                   ]}
                   placeholder="Select priority"
                 />
-                <Input
-                  containerStyle={{ flex: 1 }}
-                  label="Due Time *"
-                  placeholder="HH:MM"
+                <TimePicker
+                  style={{ flex: 1 }}
+                  label="Due Time"
+                  required
                   value={formData.dueTime}
-                  onChangeText={(dueTime) => setFormData({ ...formData, dueTime })}
+                  onChange={(dueTime) => setFormData({ ...formData, dueTime })}
                   error={errors.dueTime}
                 />
               </View>

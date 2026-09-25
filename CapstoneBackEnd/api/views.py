@@ -3564,11 +3564,14 @@ class VitalSignsViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):
-        qs = VitalSigns.objects.select_related('patient', 'recorded_by', 'triggered_by_note').all()
+        qs = VitalSigns.objects.select_related('patient', 'recorded_by', 'triggered_by_note', 'task').all()
         params = self.request.query_params
         patient_id = params.get('patientId')
         if patient_id:
             qs = qs.filter(patient__patient_code=patient_id)
+        task_id = params.get('taskId')
+        if task_id:
+            qs = qs.filter(task__task_code=task_id)
         source = params.get('source')
         if source:
             qs = qs.filter(source=source)

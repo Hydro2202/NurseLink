@@ -369,6 +369,12 @@ class Task(models.Model):
         related_name='tasks',
     )
 
+    #: The mandatory final checklist step on every 'vital_signs' category
+    #: task — TaskSerializer.validate_checklist gates it behind at least 2
+    #: logged VitalSigns rows, so its wording has to actually say what it's
+    #: gating, not a generic "Confirm completion" a nurse could tick blind.
+    VITAL_SIGNS_CHECKLIST_TEXT = 'Vital Signs Check'
+
     def save(self, *args, **kwargs):
         if self.patient and not self.patient_name:
             self.patient_name = self.patient.name
@@ -376,6 +382,13 @@ class Task(models.Model):
             self.patient_room = self.patient.room
         if self.patient and not self.attending_physician:
             self.attending_physician = self.patient.attending_physician
+        if self.category == 'vital_signs':
+            checklist = list(self.checklist or [])
+            if checklist and checklist[-1].get('text') != self.VITAL_SIGNS_CHECKLIST_TEXT:
+                checklist[-1] = {**checklist[-1], 'text': self.VITAL_SIGNS_CHECKLIST_TEXT}
+                self.checklist = checklist
+            elif not checklist:
+                self.checklist = [{'text': self.VITAL_SIGNS_CHECKLIST_TEXT, 'done': False}]
         super().save(*args, **kwargs)
 
 
@@ -698,11 +711,24 @@ class VitalSigns(models.Model):
     patient = models.ForeignKey(
         Patient, on_delete=models.CASCADE, related_name='vital_signs_history',
     )
+    # Set when this reading was taken as one of the timed check-ins on a
+    # 'vital_signs' category Task (see TaskSerializer.validate_checklist) —
+    # null for readings logged outside that flow (Kardex admission vitals,
+    # ad-hoc assessment-triggered ones). This is what lets the task's
+    # checklist gate count "how many readings has this task's nurse actually
+    # done" instead of just "does this patient have vitals history at all".
+    task = models.ForeignKey(
+        Task, on_delete=models.SET_NULL, null=True, blank=True, related_name='vital_signs_readings',
+    )
     heart_rate = models.PositiveIntegerField(null=True, blank=True)
     blood_pressure = models.CharField(max_length=20, blank=True, default='')
     temperature = models.FloatField(null=True, blank=True)
     oxygen_saturation = models.PositiveIntegerField(null=True, blank=True)
     respiratory_rate = models.PositiveIntegerField(null=True, blank=True)
+    # Whether the patient was on supplemental O2 at the time of this reading
+    # — distinct from oxygen_saturation (the SpO2 reading itself). Null means
+    # not recorded, not "no".
+    oxygen_use = models.BooleanField(null=True, blank=True)
     pain_scale = models.PositiveIntegerField(
         null=True, blank=True, validators=[MaxValueValidator(10)]
     )

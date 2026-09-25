@@ -13,6 +13,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
+import { TimePicker } from './TimePicker';
 import { createTask, createAssignment, fetchNurses, ApiError } from '../services/api';
 import type { Nurse, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
@@ -276,12 +277,12 @@ export function TaskAssignmentModal({
                   ]}
                   placeholder="Select priority"
                 />
-                <Input
-                  containerStyle={{ flex: 1 }}
-                  label="Due Time *"
-                  placeholder="HH:MM"
+                <TimePicker
+                  style={{ flex: 1 }}
+                  label="Due Time"
+                  required
                   value={dueTime}
-                  onChangeText={setDueTime}
+                  onChange={setDueTime}
                 />
               </View>
 

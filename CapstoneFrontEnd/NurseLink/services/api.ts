@@ -1085,7 +1085,21 @@ export async function fetchTaskHandovers(): Promise<AdminTaskHandover[]> {
   return apiRequest<AdminTaskHandover[]>('/task-handovers/');
 }
 
-export async function fetchVitalReadings(options?: { patientId?: string }): Promise<AdminVitalReading[]> {
-  const query = options?.patientId ? `?patientId=${encodeURIComponent(options.patientId)}` : '';
+export async function fetchVitalReadings(
+  options?: { patientId?: string; taskId?: string }
+): Promise<AdminVitalReading[]> {
+  const params = new URLSearchParams();
+  if (options?.patientId) params.set('patientId', options.patientId);
+  if (options?.taskId) params.set('taskId', options.taskId);
+  const query = params.toString() ? `?${params.toString()}` : '';
   return apiRequest<AdminVitalReading[]>(`/vital-signs/${query}`);
+}
+
+/** Logs one timestamped vitals reading — insert-only, never edited after
+ * the fact. `recordedAt` is left for the server to stamp as "now" unless
+ * explicitly overridden. */
+export async function createVitalSigns(
+  data: Partial<AdminVitalReading> & { patientId: string }
+): Promise<AdminVitalReading> {
+  return apiRequest<AdminVitalReading>('/vital-signs/', { method: 'POST', body: data });
 }

@@ -14,6 +14,7 @@ import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
 import { DatePicker, todayIso } from './DatePicker';
+import { TimePicker } from './TimePicker';
 import { Alert, AlertDescription } from './Alert';
 import {
   createDutyAssignment,
@@ -359,19 +360,19 @@ export function DutyAssignmentModal({
               />
 
               <View style={styles.row}>
-                <Input
-                  containerStyle={{ flex: 1 }}
-                  label="Start Time *"
+                <TimePicker
+                  style={{ flex: 1 }}
+                  label="Start Time"
+                  required
                   value={startTime}
-                  onChangeText={setStartTime}
-                  placeholder="HH:MM"
+                  onChange={setStartTime}
                 />
-                <Input
-                  containerStyle={{ flex: 1 }}
-                  label="End Time *"
+                <TimePicker
+                  style={{ flex: 1 }}
+                  label="End Time"
+                  required
                   value={endTime}
-                  onChangeText={setEndTime}
-                  placeholder="HH:MM"
+                  onChange={setEndTime}
                 />
               </View>
 
@@ -392,19 +393,17 @@ export function DutyAssignmentModal({
 
               <Text style={styles.sectionLabel}>Overtime (optional)</Text>
               <View style={styles.row}>
-                <Input
-                  containerStyle={{ flex: 1 }}
+                <TimePicker
+                  style={{ flex: 1 }}
                   label="Overtime Start"
                   value={overtimeStart}
-                  onChangeText={setOvertimeStart}
-                  placeholder="HH:MM"
+                  onChange={setOvertimeStart}
                 />
-                <Input
-                  containerStyle={{ flex: 1 }}
+                <TimePicker
+                  style={{ flex: 1 }}
                   label="Overtime End"
                   value={overtimeEnd}
-                  onChangeText={setOvertimeEnd}
-                  placeholder="HH:MM"
+                  onChange={setOvertimeEnd}
                 />
               </View>
 

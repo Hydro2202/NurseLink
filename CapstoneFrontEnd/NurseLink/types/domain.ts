@@ -447,11 +447,18 @@ export interface AdminTaskHandover {
 export interface AdminVitalReading {
   id: number;
   patientId: string;
+  /** Set when this reading was logged as one of the timed check-ins on a
+   * 'vital_signs' category Task — see TaskVitalSignsBars. Null for readings
+   * logged outside that flow (Kardex admission vitals, ad-hoc ones). */
+  taskId?: string | null;
   heartRate: number | null;
   bloodPressure: string;
   temperature: number | null;
   oxygenSaturation: number | null;
   respiratoryRate: number | null;
+  /** On supplemental O2 at the time of this reading. Null means not
+   * recorded, not "no". */
+  oxygenUse: boolean | null;
   painScale: number | null;
   source: string;
   notes: string;
