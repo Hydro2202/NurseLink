@@ -8,7 +8,7 @@ import {
 } from '../api/nurselink';
 import { getToken, setToken } from '../api/client';
 
-export type UserRole = 'staff_nurse' | 'supervisor';
+export type UserRole = 'staff_nurse' | 'head_nurse';
 // The account's actual role, as returned by the server — 'admin' is never a
 // login-button choice (there is no button for it), only something the
 // backend can report back once authenticated (see UserSerializer.get_role).

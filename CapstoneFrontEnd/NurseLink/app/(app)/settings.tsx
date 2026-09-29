@@ -50,6 +50,38 @@ const SECTIONS = {
 
 type SectionName = keyof typeof SECTIONS;
 
+// Module-scope, not defined inside SettingsScreen: a component declared
+// inside another component's render body gets a brand-new identity every
+// render, so React tears down and remounts it on every state change
+// instead of just updating it in place. `styles` is themed per-render (see
+// createStyles below), so it's taken as a prop rather than closed over.
+const ToggleRow = ({
+  styles,
+  label,
+  description,
+  value,
+  onValueChange,
+  showSeparator = true,
+}: {
+  styles: ReturnType<typeof createStyles>;
+  label: string;
+  description: string;
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  showSeparator?: boolean;
+}) => (
+  <View>
+    <View style={styles.toggleRow}>
+      <View style={styles.toggleText}>
+        <Text style={styles.toggleLabel}>{label}</Text>
+        <Text style={styles.toggleDesc}>{description}</Text>
+      </View>
+      <Switch value={value} onValueChange={onValueChange} />
+    </View>
+    {showSeparator ? <View style={styles.separator} /> : null}
+  </View>
+);
+
 export default function SettingsScreen() {
   const { user, logout, updateUser } = useAuth();
   // Rebuilt only when the theme changes, so toggling a switch does not rebuild
@@ -179,31 +211,6 @@ export default function SettingsScreen() {
       }
     : null;
 
-  const ToggleRow = ({
-    label,
-    description,
-    value,
-    onValueChange,
-    showSeparator = true,
-  }: {
-    label: string;
-    description: string;
-    value: boolean;
-    onValueChange: (v: boolean) => void;
-    showSeparator?: boolean;
-  }) => (
-    <View>
-      <View style={styles.toggleRow}>
-        <View style={styles.toggleText}>
-          <Text style={styles.toggleLabel}>{label}</Text>
-          <Text style={styles.toggleDesc}>{description}</Text>
-        </View>
-        <Switch value={value} onValueChange={onValueChange} />
-      </View>
-      {showSeparator ? <View style={styles.separator} /> : null}
-    </View>
-  );
-
   return (
     <ScrollView
       style={styles.screen}
@@ -291,6 +298,7 @@ export default function SettingsScreen() {
           <View style={styles.separator} />
 
           <ToggleRow
+            styles={styles}
             label="Compact View"
             description="Reduce spacing between elements"
             value={compactView}
@@ -330,30 +338,35 @@ export default function SettingsScreen() {
         </CardHeader>
         <CardContent style={styles.gap4}>
           <ToggleRow
+            styles={styles}
             label="Task Notifications"
             description="Get notified about new and updated tasks"
             value={taskNotifications}
             onValueChange={(value) => setLocal({ taskNotifications: value })}
           />
           <ToggleRow
+            styles={styles}
             label="Referral Notifications"
             description="Receive patient referral alerts"
             value={handoverNotifications}
             onValueChange={(value) => setLocal({ handoverNotifications: value })}
           />
           <ToggleRow
+            styles={styles}
             label="Critical Patient Alerts"
             description="Urgent notifications for critical patients"
             value={criticalAlerts}
             onValueChange={(value) => setLocal({ criticalAlerts: value })}
           />
           <ToggleRow
+            styles={styles}
             label="Email Notifications"
             description="Send notifications to your email"
             value={emailNotifications}
             onValueChange={(value) => setLocal({ emailNotifications: value })}
           />
           <ToggleRow
+            styles={styles}
             label="Sound Alerts"
             description="Play sound for notifications"
             value={soundAlerts}
@@ -393,18 +406,21 @@ export default function SettingsScreen() {
         </CardHeader>
         <CardContent style={styles.gap4}>
           <ToggleRow
+            styles={styles}
             label="Auto-Refresh Data"
             description="Automatically update data every 30 seconds"
             value={autoRefresh}
             onValueChange={(value) => setLocal({ autoRefresh: value })}
           />
           <ToggleRow
+            styles={styles}
             label="Show Charts & Graphs"
             description="Display visual data analytics"
             value={showCharts}
             onValueChange={(value) => setLocal({ showCharts: value })}
           />
           <ToggleRow
+            styles={styles}
             label="Background Data Sync"
             description="Sync data in the background"
             value={backgroundSync}

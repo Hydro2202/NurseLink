@@ -9,12 +9,15 @@ outgoing nurse finds out, and doing it twice changes nothing.
 """
 
 import datetime
+from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import HandoverNote, Notification, NurseProfile, Patient, Task
+from .models import Department, DutyAssignment, HandoverNote, Notification, NurseProfile, Patient, Task
 
 
 def make_nurse(email, first, last):
@@ -24,6 +27,26 @@ def make_nurse(email, first, last):
     )
     NurseProfile.objects.create(user=user, role='staff_nurse', department='Med-Surg')
     return user
+
+
+def give_shift_pair(sender, recipient, department):
+    """
+    Duty Roster coverage for the shift-rotation rule (see
+    api/referral_shifts.py): sender on Morning (a wide window, so it covers
+    "now" no matter when the suite actually runs), recipient on Afternoon
+    (the next shift) — both in `department`, since a referral needs both
+    sides on file to succeed via the real create path.
+    """
+    today = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
+    DutyAssignment.objects.create(
+        nurse=sender, department=department, duty_date=today, shift='morning',
+        start_time=datetime.time(0, 0), end_time=datetime.time(23, 59, 59),
+    )
+    DutyAssignment.objects.create(
+        nurse=recipient, department=department, duty_date=today, shift='afternoon',
+        start_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][0],
+        end_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][1],
+    )
 
 
 class HandoverAcceptTests(APITestCase):
@@ -207,6 +230,8 @@ class HandoverCreatedNotificationTests(APITestCase):
         # Two nurses sharing a display name: the reason handovers carry an id.
         self.incoming = make_nurse('ben1@hospital.com', 'Ben', 'Diaz')
         self.twin = make_nurse('ben2@hospital.com', 'Ben', 'Diaz')
+        dept = Department.objects.get_or_create(name='Handover Flow Test Ward')[0]
+        give_shift_pair(self.outgoing, self.incoming, dept)
         self.client.force_authenticate(user=self.outgoing)
 
     def payload(self, **extra):
@@ -273,6 +298,8 @@ class HandoverSenderTaskTests(APITestCase):
         cache.clear()
         self.outgoing = make_nurse('out@hospital.com', 'Ana', 'Cruz')
         self.incoming = make_nurse('in@hospital.com', 'Ben', 'Diaz')
+        dept = Department.objects.get_or_create(name='Handover Flow Test Ward 2')[0]
+        give_shift_pair(self.outgoing, self.incoming, dept)
         self.client.force_authenticate(user=self.outgoing)
 
     def create_handover(self, **extra):

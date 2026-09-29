@@ -524,7 +524,7 @@ export default function TasksPage() {
                     >
                       <Edit className="w-4 h-4" />
                     </Button>
-                    {user?.role === 'supervisor' && task.assignedTo && (
+                    {user?.role === 'head_nurse' && task.assignedTo && (
                       <Button
                         size="sm"
                         variant="outline"

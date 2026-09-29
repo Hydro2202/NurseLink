@@ -41,7 +41,7 @@ export default function SettingsPage() {
   // Profile settings
   const [profileName, setProfileName] = useState(user?.name || '');
   const [profileEmail, setProfileEmail] = useState(user?.email || '');
-  // Department and shift are supervisor-assigned, not self-editable — read
+  // Department and shift are head-nurse-assigned, not self-editable — read
   // straight from the account rather than tracked as editable form state.
   const profileDepartment = user?.department || '';
   const profileShift = user?.shift || '';
@@ -176,16 +176,16 @@ export default function SettingsPage() {
                 <img
                   src={profilePhoto}
                   alt="Profile"
-                  className="w-24 h-24 rounded-full object-cover border-4 border-blue-200"
+                  className="w-24 h-24 rounded-full object-cover border-4 border-primary-light"
                 />
               ) : (
-                <div className="w-24 h-24 rounded-full bg-blue-100 flex items-center justify-center border-4 border-blue-200">
-                  <User className="w-12 h-12 text-blue-600" />
+                <div className="w-24 h-24 rounded-full bg-primary-light flex items-center justify-center border-4 border-primary-light">
+                  <User className="w-12 h-12 text-primary" />
                 </div>
               )}
               <label
                 htmlFor="photo-upload"
-                className="absolute bottom-0 right-0 bg-blue-600 text-white p-2 rounded-full cursor-pointer hover:bg-blue-700 shadow-lg"
+                className="absolute bottom-0 right-0 bg-primary text-white p-2 rounded-full cursor-pointer hover:bg-primary-hover shadow-lg"
               >
                 <Camera className="w-4 h-4" />
                 <input
@@ -202,7 +202,7 @@ export default function SettingsPage() {
                 {profileName}
               </h3>
               <p className="text-sm text-gray-600">
-                {user?.role === 'staff_nurse' ? 'Nurse' : 'Supervisor'}
+                {user?.role === 'staff_nurse' ? 'Nurse' : 'Head Nurse'}
               </p>
               <p className="text-sm text-gray-600">
                 {profileDepartment}
@@ -236,7 +236,7 @@ export default function SettingsPage() {
 
             <div className="p-3 bg-blue-50 rounded-lg space-y-1">
               <p className="text-sm text-gray-700">
-                <strong>Role:</strong> {user?.role === 'staff_nurse' ? 'Nurse' : 'Supervisor'}
+                <strong>Role:</strong> {user?.role === 'staff_nurse' ? 'Nurse' : 'Head Nurse'}
               </p>
               <p className="text-sm text-gray-700">
                 <strong>Department:</strong> {profileDepartment || '—'}
@@ -248,11 +248,11 @@ export default function SettingsPage() {
                   : '—'}
               </p>
               <p className="text-xs mt-1 text-gray-600">
-                Role, department and shift are set by your supervisor. Contact them for changes.
+                Role, department and shift are set by your head nurse. Contact them for changes.
               </p>
             </div>
 
-            <Button onClick={handleSaveProfile} className="w-full bg-blue-600 hover:bg-blue-700">
+            <Button onClick={handleSaveProfile} className="w-full">
               <Save className="w-4 h-4 mr-2" />
               Save Profile
             </Button>
@@ -296,7 +296,7 @@ export default function SettingsPage() {
             <Switch checked={compactView} onCheckedChange={setCompactView} />
           </div>
 
-          <Button onClick={handleSaveAppearance} className="w-full bg-purple-600 hover:bg-purple-700">
+          <Button onClick={handleSaveAppearance} className="w-full">
             <Save className="w-4 h-4 mr-2" />
             Save Appearance
           </Button>
@@ -371,7 +371,7 @@ export default function SettingsPage() {
             <Switch checked={soundEnabled} onCheckedChange={setSoundEnabled} />
           </div>
 
-          <Button onClick={handleSaveNotifications} className="w-full bg-orange-600 hover:bg-orange-700">
+          <Button onClick={handleSaveNotifications} className="w-full">
             <Save className="w-4 h-4 mr-2" />
             Save Notifications
           </Button>
@@ -422,7 +422,7 @@ export default function SettingsPage() {
             <Switch checked={dataSync} onCheckedChange={setDataSync} />
           </div>
 
-          <Button onClick={handleSavePreferences} className="w-full bg-green-600 hover:bg-green-700">
+          <Button onClick={handleSavePreferences} className="w-full">
             <Save className="w-4 h-4 mr-2" />
             Save Preferences
           </Button>

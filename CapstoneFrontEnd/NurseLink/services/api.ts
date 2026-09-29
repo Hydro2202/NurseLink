@@ -14,8 +14,12 @@ import type {
   Department,
   Doctor,
   DutyAssignment,
+  EligibleReferralRecipients,
   HandoverNote,
   KardexHistory,
+  LabEntry,
+  MedicationIntakeEntry,
+  MedicationOrder,
   Nurse,
   Patient,
   PatientAssignmentRecord,
@@ -24,15 +28,43 @@ import type {
   WorkloadData,
 } from '../types/domain';
 
+/**
+ * Coarse category behind an ApiError, for callers that need to branch on
+ * *why* a request failed rather than just catching-and-toasting the message
+ * — e.g. LiveContext treating 'network'/'timeout' as "backend unreachable,
+ * keep polling" instead of a real bug.
+ *
+ *   network         fetch itself never got a response (offline, wrong host/
+ *                    port, CORS preflight rejected) — status 0.
+ *   timeout         the client gave up waiting (AbortController) — status 408.
+ *   auth            401/403 — bad/expired credentials.
+ *   server          5xx — the backend received the request and broke.
+ *   invalid_response the server responded but the body wasn't valid JSON.
+ *   http            any other non-2xx status (4xx validation errors, etc).
+ */
+export type ApiErrorKind = 'network' | 'timeout' | 'auth' | 'server' | 'invalid_response' | 'http';
+
 export class ApiError extends Error {
   status: number;
   data: unknown;
+  kind: ApiErrorKind;
 
-  constructor(message: string, status: number, data?: unknown) {
+  constructor(message: string, status: number, data?: unknown, kind?: ApiErrorKind) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.data = data;
+    this.kind =
+      kind ??
+      (status === 0
+        ? 'network'
+        : status === 408
+          ? 'timeout'
+          : status === 401 || status === 403
+            ? 'auth'
+            : status >= 500
+              ? 'server'
+              : 'http');
   }
 }
 
@@ -64,6 +96,12 @@ type RequestOptions = {
   body?: unknown;
   auth?: boolean;
   timeoutMs?: number;
+  /** For best-effort background calls (the live poll) where the backend
+   * being briefly unreachable is an expected, recoverable state rather than
+   * a bug — skips the console.error noise (which pops Expo's LogBox red
+   * screen on every failed tick) for network/timeout/server failures.
+   * Never suppresses non-401 auth handling. */
+  quiet?: boolean;
 };
 
 // verify-id / verify-prc / face-verification route through the backend's n8n
@@ -85,7 +123,7 @@ function extractDetail(data: unknown, status: number): string {
 
 export async function apiRequest<T>(
   path: string,
-  { method = 'GET', body, auth = true, timeoutMs = 15000 }: RequestOptions = {}
+  { method = 'GET', body, auth = true, timeoutMs = 15000, quiet = false }: RequestOptions = {}
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -111,12 +149,18 @@ export async function apiRequest<T>(
     });
   } catch (error) {
     clearTimeout(timeoutId);
-    // Logged unconditionally, with the real error object — "Failed to fetch"
-    // (the browser's own message for "the request never got a response at
-    // all": server down, wrong host/port, CORS preflight rejected, offline)
-    // is otherwise the only thing anyone ever sees, with no way to tell it
-    // apart from a timeout or any other network failure.
-    console.error(`[NurseLink] API request failed: ${method} ${API_BASE_URL}${path}`, error);
+    // Logged for anything but a quiet (best-effort background) call, with
+    // the real error object — "Failed to fetch" (the browser's own message
+    // for "the request never got a response at all": server down, wrong
+    // host/port, CORS preflight rejected, offline) is otherwise the only
+    // thing anyone ever sees, with no way to tell it apart from a timeout or
+    // any other network failure. A quiet caller (the live poll) already
+    // treats this as an expected, recoverable state — see LiveContext — so
+    // logging it every few seconds while the backend is briefly down would
+    // just be console spam (and pops Expo's LogBox red screen on web).
+    if (!quiet) {
+      console.error(`[NurseLink] API request failed: ${method} ${API_BASE_URL}${path}`, error);
+    }
     if (error instanceof Error && error.name === 'AbortError') {
       throw new ApiError('Request timed out. Is the backend running?', 408);
     }
@@ -148,20 +192,34 @@ export async function apiRequest<T>(
       // page from a 500 that never reached DRF's exception handling, or a
       // proxy/gateway page for the wrong host entirely. Worth its own log
       // line: extractDetail below will still show *something*, but not why.
-      console.error(
-        `[NurseLink] API response was not valid JSON: ${method} ${API_BASE_URL}${path} (status ${response.status})`,
-        parseError,
-        text.slice(0, 500)
-      );
+      if (!quiet) {
+        console.error(
+          `[NurseLink] API response was not valid JSON: ${method} ${API_BASE_URL}${path} (status ${response.status})`,
+          parseError,
+          text.slice(0, 500)
+        );
+      }
       data = text;
     }
   }
 
   if (!response.ok) {
-    console.error(
-      `[NurseLink] API error response: ${method} ${API_BASE_URL}${path} → ${response.status}`,
-      data
-    );
+    // 401 is always an expected, already-handled outcome — either a login
+    // attempt with the wrong email/password (auth: false, no session to
+    // lose), or an existing session that's expired/been revoked (auth:
+    // true, which unauthorizedHandler below already deals with by signing
+    // the nurse out cleanly). Neither is a bug to surface in the console:
+    // in Expo dev mode, console.error pops the red-box overlay, which is
+    // exactly wrong for "you typed the wrong password" — the caller
+    // already catches the thrown ApiError and shows a normal inline
+    // message (see app/login.tsx). Anything else (500s, unexpected 400s,
+    // ...) still logs, since those usually do mean something is broken.
+    if (response.status !== 401 && !quiet) {
+      console.error(
+        `[NurseLink] API error response: ${method} ${API_BASE_URL}${path} → ${response.status}`,
+        data
+      );
+    }
     if (auth && response.status === 401) {
       unauthorizedHandler?.();
     }
@@ -681,6 +739,14 @@ export async function createHandover(data: Partial<HandoverNote>): Promise<Hando
   return apiRequest<HandoverNote>('/handovers/', { method: 'POST', body: data });
 }
 
+/** Who the signed-in nurse may refer to right now — shift-rotation eligible
+ * recipients only (see api/referral_shifts.py). Refetch whenever the
+ * referral form opens, since eligibility depends on the Duty Roster and
+ * the current time, not anything cached client-side. */
+export async function fetchEligibleReferralRecipients(): Promise<EligibleReferralRecipients> {
+  return apiRequest<EligibleReferralRecipients>('/handovers/eligible-recipients/');
+}
+
 export async function updateHandover(
   id: string,
   data: Partial<HandoverNote>
@@ -863,7 +929,10 @@ export interface LiveState {
 }
 
 export async function fetchLiveState(): Promise<LiveState> {
-  return apiRequest<LiveState>('/live/');
+  // quiet: this runs on a background timer (see LiveContext) — the backend
+  // being briefly unreachable (not yet started, mid-restart) is expected and
+  // recoverable, not a bug to pop a console error over on every tick.
+  return apiRequest<LiveState>('/live/', { quiet: true });
 }
 
 export async function fetchNotifications(): Promise<{
@@ -1010,6 +1079,57 @@ export async function reviewKardexRecord(
     method: 'POST',
     body: { decision, notes: notes || '' },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Kardex Laboratories / Medication Intake — separate endpoints from Kardex
+// itself (see api/models.py's KardexLaboratory/KardexMedication/
+// MedicationIntake): these hang off the patient and are added/edited any
+// time, independent of whenever the Kardex form was last saved.
+
+export async function fetchLaboratories(patientId: string): Promise<LabEntry[]> {
+  return apiRequest<LabEntry[]>(`/kardex-laboratories/?patientId=${encodeURIComponent(patientId)}`);
+}
+
+export async function createLaboratory(
+  data: Partial<LabEntry> & { patientId: string }
+): Promise<LabEntry> {
+  return apiRequest<LabEntry>('/kardex-laboratories/', { method: 'POST', body: data });
+}
+
+export async function updateLaboratory(id: number, data: Partial<LabEntry>): Promise<LabEntry> {
+  return apiRequest<LabEntry>(`/kardex-laboratories/${id}/`, { method: 'PATCH', body: data });
+}
+
+export async function deleteLaboratory(id: number): Promise<void> {
+  await apiRequest(`/kardex-laboratories/${id}/`, { method: 'DELETE' });
+}
+
+export async function fetchMedications(patientId: string): Promise<MedicationOrder[]> {
+  return apiRequest<MedicationOrder[]>(`/kardex-medications/?patientId=${encodeURIComponent(patientId)}`);
+}
+
+export async function createMedication(
+  data: Partial<MedicationOrder> & { patientId: string }
+): Promise<MedicationOrder> {
+  return apiRequest<MedicationOrder>('/kardex-medications/', { method: 'POST', body: data });
+}
+
+export async function updateMedication(
+  id: number,
+  data: Partial<MedicationOrder>
+): Promise<MedicationOrder> {
+  return apiRequest<MedicationOrder>(`/kardex-medications/${id}/`, { method: 'PATCH', body: data });
+}
+
+export async function deleteMedication(id: number): Promise<void> {
+  await apiRequest(`/kardex-medications/${id}/`, { method: 'DELETE' });
+}
+
+export async function recordMedicationIntake(
+  data: Partial<MedicationIntakeEntry> & { medicationId: number }
+): Promise<MedicationIntakeEntry> {
+  return apiRequest<MedicationIntakeEntry>('/medication-intakes/', { method: 'POST', body: data });
 }
 
 // ---------------------------------------------------------------------------

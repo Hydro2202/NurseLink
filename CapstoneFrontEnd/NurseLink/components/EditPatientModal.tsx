@@ -10,6 +10,7 @@ import { Alert, AlertDescription } from './Alert';
 import { updatePatient, fetchDepartments, ApiError } from '../services/api';
 import type { Department, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
+import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
 
 interface EditPatientModalProps {
   open: boolean;
@@ -32,6 +33,8 @@ type FormState = {
   bloodPressure: string;
   temperature: string;
   oxygenSaturation: string;
+  heightCm: string;
+  weightKg: string;
 };
 
 function formFromPatient(patient: Patient): FormState {
@@ -50,6 +53,8 @@ function formFromPatient(patient: Patient): FormState {
     temperature: patient.vitalSigns?.temperature != null ? String(patient.vitalSigns.temperature) : '',
     oxygenSaturation:
       patient.vitalSigns?.oxygenSaturation != null ? String(patient.vitalSigns.oxygenSaturation) : '',
+    heightCm: patient.heightCm != null ? String(patient.heightCm) : '',
+    weightKg: patient.weightKg != null ? String(patient.weightKg) : '',
   };
 }
 
@@ -77,10 +82,18 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
   };
 
+  const heightError = form ? validateHeightCm(form.heightCm) : null;
+  const weightError = form ? validateWeightKg(form.weightKg) : null;
+  const liveBmi = form ? computeBmi(form.heightCm, form.weightKg) : null;
+
   const handleSubmit = async () => {
     if (!patient || !form) return;
     if (!form.name.trim() || !form.age || !form.room.trim() || !form.diagnosis.trim()) {
       setError('Name, age, room, and diagnosis are required.');
+      return;
+    }
+    if (heightError || weightError) {
+      setError(heightError || weightError || '');
       return;
     }
     setError('');
@@ -96,6 +109,8 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
         attendingPhysician: form.attendingPhysician.trim(),
         departmentId: form.departmentId ? Number(form.departmentId) : null,
         admissionDate: form.admissionDate,
+        heightCm: form.heightCm ? Number(form.heightCm) : null,
+        weightKg: form.weightKg ? Number(form.weightKg) : null,
         vitalSigns: {
           heartRate: form.heartRate ? Number(form.heartRate) : 0,
           bloodPressure: form.bloodPressure.trim(),
@@ -239,6 +254,30 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
                   </Text>
                 </View>
 
+                <View style={styles.row}>
+                  <Input
+                    label="Height (cm)"
+                    value={form.heightCm}
+                    onChangeText={(v) => setField('heightCm', v)}
+                    keyboardType="decimal-pad"
+                    error={heightError || undefined}
+                    containerStyle={styles.field}
+                  />
+                  <Input
+                    label="Weight (kg)"
+                    value={form.weightKg}
+                    onChangeText={(v) => setField('weightKg', v)}
+                    keyboardType="decimal-pad"
+                    error={weightError || undefined}
+                    containerStyle={styles.field}
+                  />
+                </View>
+                {liveBmi != null ? (
+                  <Text style={styles.bmiPreview}>
+                    BMI: <Text style={styles.bmiPreviewValue}>{liveBmi}</Text> ({bmiCategory(liveBmi)})
+                  </Text>
+                ) : null}
+
                 <Text style={styles.sectionLabel}>
                   {isDischarged ? 'Last Recorded Vitals' : 'Current Vitals'}
                 </Text>
@@ -330,6 +369,8 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 2,
   },
+  bmiPreview: { fontSize: 13, color: Colors.mutedForeground, marginTop: -6 },
+  bmiPreviewValue: { fontWeight: '700', color: Colors.foreground },
   readOnlyLabel: { fontSize: 11, fontWeight: '700', color: Colors.mutedForeground },
   readOnlyValue: { fontSize: 14, fontWeight: '600', color: Colors.foreground },
   readOnlyHint: { fontSize: 11, color: Colors.gray400, marginTop: 2 },

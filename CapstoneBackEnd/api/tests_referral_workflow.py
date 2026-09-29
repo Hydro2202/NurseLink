@@ -6,17 +6,20 @@ These tests pin: the new transitions and their guards, that only the
 receiving nurse can drive them (never the sender, never a head nurse), that
 head nurses get an FYI-only notification (never actionable) on create/
 accept/decline/complete but not on the lightweight "received" step, and that
-head nurses can list/retrieve referrals (scoped to their department when one
-is set) but cannot write to them at all.
+head nurses can list/retrieve every referral regardless of department but
+cannot write to them at all.
 """
 
 import datetime
+from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import HandoverNote, Notification, NurseProfile, Patient
+from .models import Department, DutyAssignment, HandoverNote, Notification, NurseProfile, Patient
 
 
 def make_nurse(email, first, last, *, role='staff_nurse', department='Med-Surg'):
@@ -26,6 +29,20 @@ def make_nurse(email, first, last, *, role='staff_nurse', department='Med-Surg')
     )
     NurseProfile.objects.create(user=user, role=role, department=department)
     return user
+
+
+def give_current_shift(nurse, department, shift='morning'):
+    """
+    A DutyAssignment covering right now, regardless of the real wall clock
+    — the shift-rotation rule (see api/referral_shifts.py) requires the
+    sender to actually be on duty to create a referral at all, which these
+    tests otherwise have no reason to fake the clock for.
+    """
+    today = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
+    return DutyAssignment.objects.create(
+        nurse=nurse, department=department, duty_date=today, shift=shift,
+        start_time=datetime.time(0, 0), end_time=datetime.time(23, 59, 59),
+    )
 
 
 class ReferralWorkflowTests(APITestCase):
@@ -39,6 +56,17 @@ class ReferralWorkflowTests(APITestCase):
             patient_code='P600', name='Juan Dela Cruz', age=61, gender='Male',
             room='204-B', diagnosis='CHF', admission_date=datetime.date(2026, 3, 2),
             risk_level='medium', attending_physician='Dr. Lim',
+        )
+        # Duty Roster coverage for the shift-rotation rule: sender on
+        # Morning (covers "now"), recipient on Afternoon (the next shift) —
+        # both in the same department, per api/referral_shifts.py.
+        self.duty_dept = Department.objects.get_or_create(name='Referral Workflow Test Ward')[0]
+        give_current_shift(self.sender, self.duty_dept, 'morning')
+        today = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
+        DutyAssignment.objects.create(
+            nurse=self.recipient, department=self.duty_dept, duty_date=today, shift='afternoon',
+            start_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][0],
+            end_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][1],
         )
 
     def make_handover(self, **extra):
@@ -172,7 +200,7 @@ class ReferralWorkflowTests(APITestCase):
 
     # --- head-nurse visibility: read-only, FYI notifications --------------
 
-    def test_head_nurse_can_list_referrals_in_their_department(self):
+    def test_head_nurse_can_list_all_referrals(self):
         self.make_handover()
         self.client.force_authenticate(user=self.head_nurse)
         response = self.client.get('/api/handovers/')
@@ -187,13 +215,18 @@ class ReferralWorkflowTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
 
-    def test_head_nurse_of_a_different_department_does_not_see_the_referral(self):
+    def test_head_nurse_of_a_different_department_still_sees_the_referral(self):
+        # Regression test for the bug where a head nurse only saw referrals
+        # whose sender/recipient department string exactly matched their
+        # own — silently hiding every referral for a head nurse with an
+        # admin-only or differently-worded department. Head nurse oversight
+        # is global now, same as the ward roster and Kardex.
         self.make_handover()
         other_dept_head_nurse = make_nurse('head3@hospital.com', 'Far', 'Head', role='head_nurse', department='ER')
         self.client.force_authenticate(user=other_dept_head_nurse)
         response = self.client.get('/api/handovers/')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 0)
+        self.assertEqual(len(response.data), 1)
 
     def test_head_nurse_is_notified_on_create_as_fyi_not_actionable(self):
         self.make_handover()

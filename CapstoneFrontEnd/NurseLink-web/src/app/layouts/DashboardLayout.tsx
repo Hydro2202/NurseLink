@@ -37,7 +37,13 @@ import {
   AlertDialogTitle,
 } from '../components/ui/alert-dialog';
 import { NotificationPanel } from '../components/NotificationPanel';
-import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
+// Tightly cropped to just the circular emblem mark (no "NURSELINK" wordmark,
+// no surrounding empty canvas) — the original figma:asset export is a full
+// lockup on a wide mostly-transparent canvas, which made the mark itself
+// render tiny inside every small logo box here even at 100% container fill.
+// The "NurseLink" text is already rendered separately next to each of these
+// boxes, so the wordmark baked into the original asset was redundant anyway.
+import nurseLinkLogo from '../../assets/branding/nurselink-emblem.png';
 
 export default function DashboardLayout() {
   const { user, logout, isLoading } = useAuth();
@@ -83,7 +89,7 @@ export default function DashboardLayout() {
   }
 
   const isStaffNurse = user?.role === 'staff_nurse';
-  const isSupervisor = user?.role === 'supervisor';
+  const isSupervisor = user?.role === 'head_nurse';
 
   const handleLogout = () => {
     logout();
@@ -102,7 +108,7 @@ export default function DashboardLayout() {
     { name: 'Settings', href: '/settings', icon: Settings, show: true },
   ].filter(item => item.show);
 
-  // Supervisor mobile navigation
+  // Head nurse mobile navigation
   const supervisorMobileNav = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Patients', href: '/all-patients', icon: Users },
@@ -122,7 +128,7 @@ export default function DashboardLayout() {
           <div className="flex items-center gap-2">
             <div className="bg-white rounded-2xl px-3 py-1.5 flex items-center gap-2 shadow-md">
               <div className="w-10 h-10 flex items-center justify-center">
-                <img src={nurseLinkLogo} alt="NurseLink" className="w-full h-full object-contain scale-125" />
+                <img src={nurseLinkLogo} alt="NurseLink" className="w-full h-full object-contain" />
               </div>
               <div>
                 <span className="font-black text-blue-600 text-sm leading-tight block">NurseLink</span>
@@ -250,19 +256,19 @@ export default function DashboardLayout() {
     );
   }
 
-  // Mobile view for supervisors (UNCHANGED)
+  // Mobile view for head nurses (UNCHANGED)
   if (isSupervisor && !isDesktop) {
     return (
       <div className="flex flex-col h-screen bg-gradient-to-br from-blue-50 via-blue-100 to-blue-200">
         {/* Mobile Top Bar */}
         <header className="bg-gradient-to-r from-white via-blue-50 to-blue-100 border-b-4 border-blue-300 px-4 py-3 flex items-center justify-between sticky top-0 z-50 shadow-xl shadow-blue-500/20">
           <div className="flex items-center gap-3">
-            <div className="w-14 h-14 bg-white rounded-full flex items-center justify-center shadow-md p-2.5">
+            <div className="w-14 h-14 bg-white rounded-full flex items-center justify-center shadow-md p-2">
               <img src={nurseLinkLogo} alt="NurseLink" className="w-full h-full object-contain" />
             </div>
             <div>
               <span className="font-black text-transparent bg-gradient-to-r from-blue-700 to-blue-900 bg-clip-text text-xl">NurseLink</span>
-              <p className="text-xs text-blue-600 font-bold">Supervisor Portal</p>
+              <p className="text-xs text-blue-600 font-bold">Head Nurse Portal</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -312,7 +318,7 @@ export default function DashboardLayout() {
           <Outlet />
         </main>
 
-        {/* Supervisor Mobile Bottom Navigation */}
+        {/* Head Nurse Mobile Bottom Navigation */}
         <nav className="fixed bottom-0 left-0 right-0 bg-white border-t-2 border-gray-200 px-1 py-2 z-50 shadow-2xl">
           <div className="flex items-center justify-around max-w-lg mx-auto">
             {supervisorMobileNav.map((item, index) => {
@@ -376,7 +382,7 @@ export default function DashboardLayout() {
     );
   }
 
-  // Desktop/Web view for BOTH Staff Nurses and Supervisors
+  // Desktop/Web view for BOTH Staff Nurses and Head Nurses
   const portalName = isStaffNurse ? 'Staff Portal' : 'Management Portal';
 
   return (

@@ -245,7 +245,7 @@ export default function NurseTasksPage() {
               {selectedTab !== 'all' && ` in ${selectedTab}`}
             </p>
             <p className="text-sm text-blue-600 font-medium mt-1">
-              Supervisor Mode: Edit, delete, or complete tasks on behalf of {nurseName}
+              Head Nurse Mode: Edit, delete, or complete tasks on behalf of {nurseName}
             </p>
           </div>
           <Button

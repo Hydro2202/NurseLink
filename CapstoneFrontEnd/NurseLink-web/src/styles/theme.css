@@ -59,13 +59,15 @@
   --switch-background: #CBD5E0;
   --ring: #3B82F6;
   
-  /* Modern Shadows - Colorful and Soft */
-  --shadow-xs: 0 1px 2px 0 rgba(59, 130, 246, 0.05);
-  --shadow-sm: 0 1px 3px 0 rgba(59, 130, 246, 0.1), 0 1px 2px -1px rgba(59, 130, 246, 0.1);
-  --shadow-md: 0 4px 6px -1px rgba(59, 130, 246, 0.1), 0 2px 4px -2px rgba(59, 130, 246, 0.1);
-  --shadow-lg: 0 10px 15px -3px rgba(59, 130, 246, 0.15), 0 4px 6px -4px rgba(59, 130, 246, 0.1);
-  --shadow-xl: 0 20px 25px -5px rgba(59, 130, 246, 0.2), 0 8px 10px -6px rgba(59, 130, 246, 0.1);
-  --shadow-colored: 0 8px 16px -4px rgba(139, 92, 246, 0.2);
+  /* Modern Shadows - Colorful and Soft. Named --shadow-color-* (not
+   * --shadow-*) so the @theme inline block below can alias them onto
+   * Tailwind's shadow-* namespace without a self-referential var(). */
+  --shadow-color-xs: 0 1px 2px 0 rgba(59, 130, 246, 0.05);
+  --shadow-color-sm: 0 1px 3px 0 rgba(59, 130, 246, 0.1), 0 1px 2px -1px rgba(59, 130, 246, 0.1);
+  --shadow-color-md: 0 4px 6px -1px rgba(59, 130, 246, 0.1), 0 2px 4px -2px rgba(59, 130, 246, 0.1);
+  --shadow-color-lg: 0 10px 15px -3px rgba(59, 130, 246, 0.15), 0 4px 6px -4px rgba(59, 130, 246, 0.1);
+  --shadow-color-xl: 0 20px 25px -5px rgba(59, 130, 246, 0.2), 0 8px 10px -6px rgba(59, 130, 246, 0.1);
+  --shadow-color-colored: 0 8px 16px -4px rgba(139, 92, 246, 0.2);
   
   /* Gradient Definitions */
   --gradient-primary: linear-gradient(135deg, #3B82F6 0%, #8B5CF6 100%);
@@ -110,17 +112,39 @@
   --color-primary-dark: var(--primary-dark);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
+  --color-secondary-hover: var(--secondary-hover);
+  --color-secondary-light: var(--secondary-light);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  --color-accent-purple: var(--accent-purple);
+  --color-accent-pink: var(--accent-pink);
+  --color-accent-teal: var(--accent-teal);
+  --color-accent-orange: var(--accent-orange);
+  --color-accent-indigo: var(--accent-indigo);
   --color-destructive: var(--destructive);
+  --color-destructive-hover: var(--destructive-hover);
+  --color-destructive-light: var(--destructive-light);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-success: var(--success);
+  --color-success-hover: var(--success-hover);
+  --color-success-light: var(--success-light);
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
+  --color-warning-hover: var(--warning-hover);
+  --color-warning-light: var(--warning-light);
   --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-light: var(--info-light);
+  --color-info-foreground: var(--info-foreground);
+  --shadow-xs: var(--shadow-color-xs);
+  --shadow-sm: var(--shadow-color-sm);
+  --shadow-md: var(--shadow-color-md);
+  --shadow-lg: var(--shadow-color-lg);
+  --shadow-xl: var(--shadow-color-xl);
+  --shadow-colored: var(--shadow-color-colored);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-input-background: var(--input-background);

@@ -7,12 +7,15 @@ to be offline when it arrived.
 """
 
 import datetime
+from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import HandoverNote, Notification, NurseProfile, Patient
+from .models import Department, DutyAssignment, HandoverNote, Notification, NurseProfile, Patient
 
 
 def make_nurse(email, first, last):
@@ -35,6 +38,23 @@ class HandoverNotificationTests(APITestCase):
             room='210-A', diagnosis='Pneumonia',
             admission_date=datetime.date(2026, 3, 1), risk_level='medium',
         )
+        # Duty Roster coverage for the shift-rotation rule (see
+        # api/referral_shifts.py): sender on Morning (a wide window, so it
+        # covers "now" regardless of the real wall clock), receiver AND
+        # bystander both on Afternoon (the next shift) — test_two_handovers_
+        # produce_two_notifications sends to both of them in turn.
+        dept = Department.objects.get_or_create(name='Handover Notification Test Ward')[0]
+        today = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
+        DutyAssignment.objects.create(
+            nurse=self.sender, department=dept, duty_date=today, shift='morning',
+            start_time=datetime.time(0, 0), end_time=datetime.time(23, 59, 59),
+        )
+        for nurse in (self.receiver, self.bystander):
+            DutyAssignment.objects.create(
+                nurse=nurse, department=dept, duty_date=today, shift='afternoon',
+                start_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][0],
+                end_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][1],
+            )
         self.client.force_authenticate(user=self.sender)
 
     def payload(self, **extra):
@@ -119,8 +139,17 @@ class HandoverNotificationTests(APITestCase):
         self.client.force_authenticate(user=None)
         self.assertEqual(self.client.get('/api/notifications/').status_code, 401)
 
-    def test_handing_a_patient_to_yourself_notifies_nobody(self):
-        self.create_handover(nurseToId=str(self.sender.pk), nurseTo='Maria Santos')
+    def test_handing_a_patient_to_yourself_is_rejected(self):
+        # Previously this saved silently and just notified nobody; the
+        # shift-rotation rule now rejects a self-referral outright (see
+        # api/referral_shifts.py) — there is no case where 201 is right here.
+        response = self.client.post(
+            '/api/handovers/',
+            self.payload(nurseToId=str(self.sender.pk), nurseTo='Maria Santos'),
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('yourself', response.json()['nurseToId'])
         self.assertEqual(Notification.objects.count(), 0)
 
     # --- exactly once ----------------------------------------------------

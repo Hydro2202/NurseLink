@@ -57,6 +57,68 @@ export interface Doctor {
   status: 'active' | 'inactive';
 }
 
+/** One ordered lab/diagnostic test — see api/models.py's KardexLaboratory.
+ * Linked to the patient (not a single Kardex snapshot) since a lab is
+ * ordered and later comes back Done independently of when the Kardex form
+ * was last saved. */
+export interface LabEntry {
+  id: number;
+  testName: string;
+  dateOrdered: string;
+  dateDone?: string | null;
+  status: 'pending' | 'done' | 'cancelled';
+  result: string;
+  remarks: string;
+  createdByName?: string | null;
+  createdByRole?: string | null;
+  updatedByName?: string | null;
+  updatedByRole?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Server-computed: pending for more than 2 days. */
+  isOverdue: boolean;
+}
+
+/** One actual administration event against a MedicationOrder — insert-only,
+ * see api/models.py's MedicationIntake. */
+export interface MedicationIntakeEntry {
+  id: number;
+  scheduledTime: string;
+  administeredAt?: string | null;
+  status: 'given' | 'held' | 'refused' | 'missed';
+  reason: string;
+  administeredByName?: string | null;
+  administeredByRole?: string | null;
+  createdAt: string;
+}
+
+/** One medication order — see api/models.py's KardexMedication. Linked to
+ * the patient for the same reason LabEntry is. */
+export interface MedicationOrder {
+  id: number;
+  medicationName: string;
+  dose: string;
+  route: 'Oral' | 'IV' | 'IM' | 'SubQ' | 'Topical' | 'Inhalation' | 'Other';
+  frequency: string;
+  startDate: string;
+  endDate?: string | null;
+  isActive: boolean;
+  remarks: string;
+  createdByName?: string | null;
+  createdByRole?: string | null;
+  updatedByName?: string | null;
+  updatedByRole?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Timestamp of the most recent intake (administeredAt, falling back to
+   * scheduledTime), or null if never recorded. */
+  lastGiven?: string | null;
+  intakes: MedicationIntakeEntry[];
+  /** Server-computed from `frequency` — best-effort, null/PRN medications
+   * are never flagged. See api/serializers.py's frequency_interval_hours. */
+  isOverdue: boolean;
+}
+
 export interface Patient {
   id: string;
   name: string;
@@ -76,7 +138,31 @@ export interface Patient {
   allergies: string[];
   medications: string[];
   alerts: string[];
+  /** Anthropometric, not part of vitalSigns above — see api/models.py's
+   * compute_bmi(). null/undefined when not recorded; bmi is server-computed
+   * and read-only. */
+  heightCm?: number | null;
+  weightKg?: number | null;
+  bmi?: number | null;
+  /** Kardex Laboratories / Medication Intake sections — read-only here;
+   * add/edit through the dedicated lab/medication/intake endpoints (see
+   * services/api.ts), not by re-saving the Kardex form. */
+  laboratories?: LabEntry[];
+  medicationOrders?: MedicationOrder[];
   attendingPhysician?: string;
+  /** Registration/demographic detail — see api/models.py's Patient fields
+   * added alongside the 103-patient seed feature. All optional since most
+   * pre-existing patients predate them. */
+  medicalRecordNumber?: string | null;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  dateOfBirth?: string | null;
+  contactNumber?: string;
+  address?: string;
+  emergencyContactName?: string;
+  emergencyContactNumber?: string;
+  bedNumber?: string;
   status?: 'admitted' | 'observation' | 'discharged';
   statusLabel?: string;
   departmentId?: number | null;
@@ -153,12 +239,33 @@ export interface HandoverNote {
   id: string;
   patientId: string;
   patientName: string;
+  /**
+   * The shift the sender filed this referral on — server-derived from
+   * their own current Duty Roster assignment at creation time (see
+   * api/referral_shifts.py), never client-chosen. Read-only.
+   */
   shift: 'morning' | 'afternoon' | 'night';
+  shiftLabel?: string;
+  /** The shift-rotation target this referral was sent to (Morning ->
+   * Afternoon -> Night -> next day's Morning). Read-only. */
+  toShift?: 'morning' | 'afternoon' | 'night' | '';
+  toShiftLabel?: string;
+  /** The target shift's date — equal to `date` except for Night ->
+   * Morning, where it's the next calendar day. Read-only. */
+  shiftDate?: string | null;
+  /** The sender's department at creation time (from their Duty Roster
+   * assignment). Read-only. */
+  departmentId?: number | null;
+  departmentName?: string;
   date: string;
   nurseFrom: string;
   nurseTo: string;
   /** Account id of the receiving nurse. Write-only: sent on create, never returned. */
   nurseToId?: string;
+  /** The receiving nurse's clinical role (RN, LPN, ...), read live off their
+   * NurseProfile — blank for referrals predating nurse_to_user or addressed
+   * to a name that didn't resolve to an account. Read-only. */
+  nurseToRole?: string;
   sbar: {
     situation: string;
     background: string;
@@ -288,6 +395,34 @@ export interface Nurse {
   completedTasks?: number;
 }
 
+/** A candidate recipient for a referral — see EligibleReferralRecipients.
+ * Deliberately a smaller shape than Nurse: every entry here already
+ * matches the signed-in nurse's department and the next shift, so there's
+ * nothing left to filter or display beyond who they are. */
+export interface EligibleReferralRecipient {
+  id: string;
+  name: string;
+  role: string;
+  specialization: string;
+  email: string;
+}
+
+/** GET /handovers/eligible-recipients/ — who the signed-in nurse may refer
+ * to right now, per the shift-rotation rule (see api/referral_shifts.py).
+ * onDuty is false (and recipients empty) when they have no active Duty
+ * Roster shift right now. */
+export interface EligibleReferralRecipients {
+  onDuty: boolean;
+  currentShift: 'morning' | 'afternoon' | 'night' | null;
+  currentShiftLabel: string | null;
+  departmentId: number | null;
+  departmentName: string;
+  nextShift: 'morning' | 'afternoon' | 'night' | null;
+  nextShiftLabel: string | null;
+  nextShiftDate: string | null;
+  recipients: EligibleReferralRecipient[];
+}
+
 export interface AppNotification {
   id: string;
   type: 'critical' | 'warning' | 'info' | 'success';
@@ -375,6 +510,16 @@ export interface KardexHistory {
   middleName: string;
   age: string;
   gender: string;
+  /** String on the wire like every other Kardex form field (age, temperature,
+   * etc.) even though the backend stores/validates them numerically — see
+   * utils/bmi.ts for the shared parse/validate/compute logic. */
+  heightCm?: string;
+  weightKg?: string;
+  bmi?: number | null;
+  /** The linked patient's current labs/medication orders — not a snapshot
+   * of what this particular append-only kardex saw. */
+  laboratories?: LabEntry[];
+  medicationOrders?: MedicationOrder[];
   birthday: string;
   religion: string;
   room: string;

@@ -29,6 +29,7 @@ import {
   MapPin,
   BedDouble,
   Plus,
+  FlaskConical,
 } from 'lucide-react-native';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Button } from '../../components/Button';
@@ -38,6 +39,7 @@ import { DatePicker, todayIso, formatDisplayDate } from '../../components/DatePi
 import { Badge } from '../../components/Badge';
 import { PatientCareTeam } from '../../components/PatientCareTeam';
 import { VitalSignsGrid } from '../../components/VitalSignsGrid';
+import { KardexLabsAndMedications } from '../../components/KardexLabsAndMedications';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Colors, Radius, Shadows } from '../../constants/colors';
@@ -49,6 +51,7 @@ import {
   ApiError,
 } from '../../services/api';
 import type { DuplicatePatientMatch, KardexHistory } from '../../types/domain';
+import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../../utils/bmi';
 
 const STATUS_BADGE: Record<
   KardexHistory['status'],
@@ -69,6 +72,53 @@ const STATUS_ACCENT: Record<KardexHistory['status'], string> = {
   rejected: Colors.red600,
 };
 
+// Module-scope, not defined inside KardexScreen: a component declared
+// inside another component's render body gets a brand-new identity every
+// render, so React tears down and remounts its actual <TextInput> DOM node
+// on every keystroke — the field loses focus and only accepts one letter
+// at a time until clicked again. Keeping these here (they only touch
+// `styles`/`Colors`, no component-local state) keeps the same DOM node,
+// and the same input, across renders.
+const RequiredLabel = ({ text }: { text: string }) => (
+  <Text style={styles.label}>
+    {text} <Text style={styles.required}>*</Text>
+  </Text>
+);
+
+const FieldLabel = ({ text }: { text: string }) => <Text style={styles.label}>{text}</Text>;
+
+const TextArea = ({
+  value,
+  onChangeText,
+  placeholder,
+  minHeight = 72,
+  editable = true,
+}: {
+  value: string;
+  onChangeText?: (v: string) => void;
+  placeholder?: string;
+  minHeight?: number;
+  editable?: boolean;
+}) => (
+  <TextInput
+    style={[styles.textarea, { minHeight }, !editable && styles.readOnlyInput]}
+    value={value}
+    onChangeText={onChangeText}
+    placeholder={placeholder}
+    placeholderTextColor={Colors.mutedForeground}
+    multiline
+    textAlignVertical="top"
+    editable={editable}
+  />
+);
+
+const ReadOnlyField = ({ label, value }: { label: string; value: string }) => (
+  <View style={styles.field}>
+    <FieldLabel text={label} />
+    <TextInput style={[styles.singleInput, styles.readOnlyInput]} value={value} editable={false} />
+  </View>
+);
+
 export default function KardexScreen() {
   const { user } = useAuth();
   const toast = useToast();
@@ -78,6 +128,8 @@ export default function KardexScreen() {
   const [middleName, setMiddleName] = useState('');
   const [age, setAge] = useState('');
   const [gender, setGender] = useState('');
+  const [height, setHeight] = useState('');
+  const [weight, setWeight] = useState('');
   const [birthday, setBirthday] = useState('');
   const [religion, setReligion] = useState('');
   const [room, setRoom] = useState('');
@@ -108,6 +160,12 @@ export default function KardexScreen() {
   const [careTeamResetKey, setCareTeamResetKey] = useState(0);
 
   const [kardexHistory, setKardexHistory] = useState<KardexHistory[]>([]);
+  // Set right after a successful save so Laboratories/Medication Intake can
+  // be added immediately for that patient, without leaving this screen —
+  // cleared by the "Done" action below, not by clearForm() (the fields
+  // reset for the next admission, but this panel should stay put until the
+  // nurse is finished with it).
+  const [savedPatient, setSavedPatient] = useState<{ id: string; name: string } | null>(null);
 
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState<DuplicatePatientMatch[] | null>(null);
@@ -202,6 +260,11 @@ export default function KardexScreen() {
     if (!gender) errors.push('Sex/Gender');
     if (!admissionDate) errors.push('Admission Date');
     if (!room) errors.push('Room');
+    // Height/weight are optional, but if entered they must be in range —
+    // same rule the backend enforces, checked here so a bad value shows up
+    // as a normal "missing/invalid field" rather than a save round-trip.
+    if (validateHeightCm(height)) errors.push('Height');
+    if (validateWeightKg(weight)) errors.push('Weight');
     return errors;
   };
 
@@ -211,6 +274,8 @@ export default function KardexScreen() {
     setMiddleName('');
     setAge('');
     setGender('');
+    setHeight('');
+    setWeight('');
     setBirthday('');
     setReligion('');
     setRoom('');
@@ -261,6 +326,8 @@ export default function KardexScreen() {
         middleName,
         age,
         gender,
+        heightCm: height,
+        weightKg: weight,
         birthday,
         religion,
         room,
@@ -289,6 +356,9 @@ export default function KardexScreen() {
       setKardexHistory((prev) => [newEntry, ...prev]);
       setShowConfirmDialog(false);
       setDuplicateWarning(null);
+      if (newEntry.patientCode) {
+        setSavedPatient({ id: newEntry.patientCode, name: newEntry.patientName || `${firstName} ${lastName}` });
+      }
 
       toast.success('Kardex Saved Successfully!', {
         description: `${firstName} ${lastName} was added to your patient list.`,
@@ -312,10 +382,13 @@ export default function KardexScreen() {
   };
 
   const buildPrintContent = () => {
+    const printBmi = computeBmi(height, weight);
+    const bmiLine = printBmi != null ? `${printBmi} (${bmiCategory(printBmi)})` : 'N/A';
     return `NURSELINK KARDEX
 ================
 Patient: ${firstName} ${middleName} ${lastName}
 Age: ${age} | Sex: ${gender} | Birthday: ${birthday ? formatDisplayDate(birthday) : 'N/A'}
+Height: ${height ? `${height} cm` : 'N/A'} | Weight: ${weight ? `${weight} kg` : 'N/A'} | BMI: ${bmiLine}
 Religion: ${religion || 'N/A'}
 Room: ${room} | Bed: ${bedNumber || 'N/A'}
 Admission Date: ${formatDisplayDate(admissionDate)}
@@ -338,6 +411,55 @@ O2 Sat: ${oxygenSaturation || 'N/A'}%
 SPECIAL ENDORSEMENTS
 ${specialEndorsements || 'None'}
 `;
+  };
+
+  // Labs/active medications, for the saved-record Print action below — the
+  // live draft form above has no patient to read these from yet (a fresh
+  // admission has none), but a saved KardexHistory entry's linked patient
+  // does (see KardexRecordSerializer's nested laboratories/medicationOrders).
+  const buildLabsAndMedicationsPrintSection = (entry: KardexHistory): string => {
+    const labs = entry.laboratories || [];
+    const meds = (entry.medicationOrders || []).filter((m) => m.isActive);
+    const labsText = labs.length
+      ? labs
+          .map((l) => `- ${l.testName} (${l.status}${l.dateDone ? `, done ${formatDisplayDate(l.dateDone)}` : ''})`)
+          .join('\n')
+      : 'None recorded';
+    const medsText = meds.length
+      ? meds
+          .map((m) => {
+            const lastGiven = m.lastGiven
+              ? new Date(m.lastGiven).toLocaleString()
+              : 'not yet given';
+            return `- ${m.medicationName} ${m.dose} ${m.route} ${m.frequency} (last given: ${lastGiven})`;
+          })
+          .join('\n')
+      : 'None active';
+    return `\nLABORATORIES\n${labsText}\n\nACTIVE MEDICATIONS\n${medsText}\n`;
+  };
+
+  const handlePrintHistoryEntry = async (entry: KardexHistory) => {
+    const bmiLine = entry.bmi != null ? `${entry.bmi} (${bmiCategory(entry.bmi)})` : 'N/A';
+    const content = `NURSELINK KARDEX
+================
+Patient: ${entry.firstName} ${entry.middleName} ${entry.lastName}
+Age: ${entry.age} | Sex: ${entry.gender} | Birthday: ${entry.birthday ? formatDisplayDate(entry.birthday) : 'N/A'}
+Height: ${entry.heightCm ? `${entry.heightCm} cm` : 'N/A'} | Weight: ${entry.weightKg ? `${entry.weightKg} kg` : 'N/A'} | BMI: ${bmiLine}
+Room: ${entry.room} | Bed: ${entry.bedNumber || 'N/A'}
+Admission Date: ${formatDisplayDate(entry.admissionDate)}
+
+Attending Physician: ${entry.attendingPhysician || 'N/A'}
+Admitting Diagnosis: ${entry.admittingDiagnosis || 'N/A'}
+Final Diagnosis: ${entry.finalDiagnosis || 'N/A'}
+Allergies: ${entry.allergies?.length ? entry.allergies.join(', ') : 'None known'}
+${buildLabsAndMedicationsPrintSection(entry)}`;
+
+    toast.info('Printing Kardex...', { description: 'Share sheet will open shortly.' });
+    try {
+      await Share.share({ message: content, title: 'NurseLink Kardex' });
+    } catch {
+      toast.error('Failed to open share sheet.');
+    }
   };
 
   const handlePrint = async () => {
@@ -363,56 +485,10 @@ ${specialEndorsements || 'None'}
     }
   };
 
-  const RequiredLabel = ({ text }: { text: string }) => (
-    <Text style={styles.label}>
-      {text} <Text style={styles.required}>*</Text>
-    </Text>
-  );
 
-  const FieldLabel = ({ text }: { text: string }) => (
-    <Text style={styles.label}>{text}</Text>
-  );
-
-  const TextArea = ({
-    value,
-    onChangeText,
-    placeholder,
-    minHeight = 72,
-    editable = true,
-  }: {
-    value: string;
-    onChangeText?: (v: string) => void;
-    placeholder?: string;
-    minHeight?: number;
-    editable?: boolean;
-  }) => (
-    <TextInput
-      style={[
-        styles.textarea,
-        { minHeight },
-        !editable && styles.readOnlyInput,
-      ]}
-      value={value}
-      onChangeText={onChangeText}
-      placeholder={placeholder}
-      placeholderTextColor={Colors.mutedForeground}
-      multiline
-      textAlignVertical="top"
-      editable={editable}
-    />
-  );
-
-  const ReadOnlyField = ({ label, value }: { label: string; value: string }) => (
-    <View style={styles.field}>
-      <FieldLabel text={label} />
-      <TextInput
-        style={[styles.singleInput, styles.readOnlyInput]}
-        value={value}
-        editable={false}
-      />
-    </View>
-  );
-
+  const heightError = validateHeightCm(height);
+  const weightError = validateWeightKg(weight);
+  const liveBmi = computeBmi(height, weight);
 
   const isSupervisor = user?.role === 'head_nurse';
   const pendingReviewCount = kardexHistory.filter((e) => e.status === 'submitted').length;
@@ -558,6 +634,34 @@ ${specialEndorsements || 'None'}
               />
             </View>
           </View>
+
+          <View style={styles.rowWrap}>
+            <View style={[styles.field, styles.colHalf]}>
+              <FieldLabel text="Height (cm)" />
+              <Input
+                value={height}
+                onChangeText={setHeight}
+                placeholder="e.g. 165.0"
+                keyboardType="decimal-pad"
+                error={heightError || undefined}
+              />
+            </View>
+            <View style={[styles.field, styles.colHalf]}>
+              <FieldLabel text="Weight (kg)" />
+              <Input
+                value={weight}
+                onChangeText={setWeight}
+                placeholder="e.g. 62.5"
+                keyboardType="decimal-pad"
+                error={weightError || undefined}
+              />
+            </View>
+          </View>
+          {liveBmi != null ? (
+            <Text style={styles.bmiPreview}>
+              BMI: <Text style={styles.bmiPreviewValue}>{liveBmi}</Text> ({bmiCategory(liveBmi)})
+            </Text>
+          ) : null}
 
           <View style={styles.groupDivider} />
           <Text style={styles.groupHeading}>Admission Information</Text>
@@ -810,6 +914,30 @@ ${specialEndorsements || 'None'}
           </Text>
         </CardContent>
       </Card>
+
+      {/* Laboratories / Medication Intake for the patient just saved */}
+      {savedPatient ? (
+        <Card>
+          <CardHeader>
+            <View style={[styles.titleRow, { justifyContent: 'space-between' }]}>
+              <View style={styles.titleRow}>
+                <FlaskConical size={20} color={Colors.blue600} />
+                <CardTitle>Laboratories &amp; Medication Intake — {savedPatient.name}</CardTitle>
+              </View>
+              <Pressable onPress={() => setSavedPatient(null)} hitSlop={8}>
+                <X size={18} color={Colors.mutedForeground} />
+              </Pressable>
+            </View>
+            <CardDescription>
+              Add labs or medication orders for this patient now, or come back later via Edit or
+              Kardex History.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <KardexLabsAndMedications patientId={savedPatient.id} />
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* Recent Kardex History */}
       {kardexHistory.length > 0 ? (
@@ -1109,6 +1237,30 @@ ${specialEndorsements || 'None'}
                       </View>
                     </View>
                     <View style={[styles.rowWrap, { marginTop: 12 }]}>
+                      <View style={[styles.field, styles.colThird]}>
+                        <ReadOnlyField
+                          label="Height"
+                          value={selectedHistoryEntry.heightCm ? `${selectedHistoryEntry.heightCm} cm` : '—'}
+                        />
+                      </View>
+                      <View style={[styles.field, styles.colThird]}>
+                        <ReadOnlyField
+                          label="Weight"
+                          value={selectedHistoryEntry.weightKg ? `${selectedHistoryEntry.weightKg} kg` : '—'}
+                        />
+                      </View>
+                      <View style={[styles.field, styles.colThird]}>
+                        <ReadOnlyField
+                          label="BMI"
+                          value={
+                            selectedHistoryEntry.bmi != null
+                              ? `${selectedHistoryEntry.bmi} (${bmiCategory(selectedHistoryEntry.bmi)})`
+                              : '—'
+                          }
+                        />
+                      </View>
+                    </View>
+                    <View style={[styles.rowWrap, { marginTop: 12 }]}>
                       <View style={[styles.field, styles.colHalf]}>
                         <ReadOnlyField label="Room" value={selectedHistoryEntry.room} />
                       </View>
@@ -1233,6 +1385,13 @@ ${specialEndorsements || 'None'}
                       minHeight={100}
                     />
                   </View>
+
+                  {selectedHistoryEntry.patientCode ? (
+                    <>
+                      <View style={styles.separator} />
+                      <KardexLabsAndMedications patientId={selectedHistoryEntry.patientCode} />
+                    </>
+                  ) : null}
 
                   {user?.role === 'head_nurse' && selectedHistoryEntry.status === 'submitted' ? (
                     <>
@@ -1415,6 +1574,14 @@ ${specialEndorsements || 'None'}
                   ← Back to List
                 </Button>
               ) : null}
+              {selectedHistoryEntry ? (
+                <Button variant="outline" onPress={() => handlePrintHistoryEntry(selectedHistoryEntry)}>
+                  <View style={styles.btnInner}>
+                    <Printer size={16} color={Colors.foreground} />
+                    <Text style={styles.btnTextDark}>Print</Text>
+                  </View>
+                </Button>
+              ) : null}
               <Button variant="outline" onPress={() => setShowHistoryDialog(false)}>
                 <View style={styles.btnInner}>
                   <X size={16} color={Colors.foreground} />
@@ -1579,6 +1746,15 @@ const styles = StyleSheet.create({
     color: Colors.blue700,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
+  },
+  bmiPreview: {
+    fontSize: 13,
+    color: Colors.mutedForeground,
+    marginTop: -6,
+  },
+  bmiPreviewValue: {
+    fontWeight: '700',
+    color: Colors.foreground,
   },
   groupDivider: {
     height: 1,

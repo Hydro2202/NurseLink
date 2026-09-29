@@ -6,8 +6,13 @@ import type {
   AnalyticsData,
   AppNotification,
   ChartingNote,
+  Department,
+  EligibleReferralRecipients,
   HandoverNote,
   KardexHistory,
+  LabEntry,
+  MedicationIntakeEntry,
+  MedicationOrder,
   Nurse,
   Patient,
   PatientAssignmentRecord,
@@ -76,7 +81,7 @@ export type VerifyIdResponse = {
 
 export async function verifyIdRequest(
   idImage: string,
-  options?: { registrationSessionId?: string | null; expectedRole?: 'staff_nurse' | 'supervisor' | '' }
+  options?: { registrationSessionId?: string | null; expectedRole?: 'staff_nurse' | 'head_nurse' | '' }
 ): Promise<VerifyIdResponse> {
   return apiRequest<VerifyIdResponse>('/auth/verify-id/', {
     method: 'POST',
@@ -302,6 +307,10 @@ export async function fetchPatients(options?: {
   return apiRequest<Patient[]>(`/patients/${query}`);
 }
 
+export async function fetchDepartments(): Promise<Department[]> {
+  return apiRequest<Department[]>('/departments/');
+}
+
 export async function createPatient(data: Partial<Patient>): Promise<Patient> {
   return apiRequest<Patient>('/patients/', { method: 'POST', body: data });
 }
@@ -371,6 +380,26 @@ export async function acknowledgeHandover(id: string): Promise<HandoverNote> {
   return apiRequest<HandoverNote>(`/handovers/${id}/acknowledge/`, { method: 'POST' });
 }
 
+export async function acceptHandover(id: string): Promise<HandoverNote & { adoptedTasks?: string[] }> {
+  return apiRequest(`/handovers/${id}/accept/`, { method: 'POST' });
+}
+
+export async function declineHandover(id: string, reason: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/handovers/${id}/decline/`, { method: 'POST', body: { reason } });
+}
+
+export async function completeHandover(id: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/handovers/${id}/complete/`, { method: 'POST' });
+}
+
+/** Who the signed-in nurse may refer to right now — shift-rotation eligible
+ * recipients only (see api/referral_shifts.py). Refetch whenever the
+ * referral form opens, since eligibility depends on the Duty Roster and
+ * the current time, not anything cached client-side. */
+export async function fetchEligibleReferralRecipients(): Promise<EligibleReferralRecipients> {
+  return apiRequest<EligibleReferralRecipients>('/handovers/eligible-recipients/');
+}
+
 export async function fetchChartingNotes(options?: {
   patientId?: string;
 }): Promise<ChartingNote[]> {
@@ -399,7 +428,7 @@ export async function fetchNurses(): Promise<Nurse[]> {
   return apiRequest<Nurse[]>('/nurses/');
 }
 
-/** Supervisor-only: change a nurse's department and/or shift. */
+/** Head-nurse-only: change a nurse's department and/or shift. */
 export async function assignNurse(
   nurseId: string,
   data: { department?: string; shift?: string }
@@ -496,12 +525,63 @@ export async function reviewKardexRecord(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Kardex Laboratories / Medication Intake — separate endpoints from Kardex
+// itself (see api/models.py's KardexLaboratory/KardexMedication/
+// MedicationIntake): these hang off the patient and are added/edited any
+// time, independent of whenever the Kardex form was last saved.
+
+export async function fetchLaboratories(patientId: string): Promise<LabEntry[]> {
+  return apiRequest<LabEntry[]>(`/kardex-laboratories/?patientId=${encodeURIComponent(patientId)}`);
+}
+
+export async function createLaboratory(
+  data: Partial<LabEntry> & { patientId: string }
+): Promise<LabEntry> {
+  return apiRequest<LabEntry>('/kardex-laboratories/', { method: 'POST', body: data });
+}
+
+export async function updateLaboratory(id: number, data: Partial<LabEntry>): Promise<LabEntry> {
+  return apiRequest<LabEntry>(`/kardex-laboratories/${id}/`, { method: 'PATCH', body: data });
+}
+
+export async function deleteLaboratory(id: number): Promise<void> {
+  await apiRequest(`/kardex-laboratories/${id}/`, { method: 'DELETE' });
+}
+
+export async function fetchMedications(patientId: string): Promise<MedicationOrder[]> {
+  return apiRequest<MedicationOrder[]>(`/kardex-medications/?patientId=${encodeURIComponent(patientId)}`);
+}
+
+export async function createMedication(
+  data: Partial<MedicationOrder> & { patientId: string }
+): Promise<MedicationOrder> {
+  return apiRequest<MedicationOrder>('/kardex-medications/', { method: 'POST', body: data });
+}
+
+export async function updateMedication(
+  id: number,
+  data: Partial<MedicationOrder>
+): Promise<MedicationOrder> {
+  return apiRequest<MedicationOrder>(`/kardex-medications/${id}/`, { method: 'PATCH', body: data });
+}
+
+export async function deleteMedication(id: number): Promise<void> {
+  await apiRequest(`/kardex-medications/${id}/`, { method: 'DELETE' });
+}
+
+export async function recordMedicationIntake(
+  data: Partial<MedicationIntakeEntry> & { medicationId: number }
+): Promise<MedicationIntakeEntry> {
+  return apiRequest<MedicationIntakeEntry>('/medication-intakes/', { method: 'POST', body: data });
+}
+
 // --- Admin interface -----------------------------------------------------
 // All of these require an is_staff account — see AdminUserViewSet/IsAdmin
 // on the backend. A non-admin token gets a 403 from every one of these.
 
 export async function fetchAdminUsers(filters?: {
-  role?: 'staff_nurse' | 'supervisor';
+  role?: 'staff_nurse' | 'head_nurse';
   status?: 'pending' | 'approved' | 'rejected';
 }): Promise<AdminUser[]> {
   const params = new URLSearchParams();

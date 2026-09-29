@@ -38,6 +38,8 @@ import {
 import type { Doctor, DuplicatePatientMatch, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 import { assessRiskLevel } from '../utils/riskLevel';
+import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
+import { KardexLabsAndMedications } from './KardexLabsAndMedications';
 import { RiskBadge } from './RiskBadge';
 
 export type PatientKardexForm = {
@@ -46,6 +48,8 @@ export type PatientKardexForm = {
   middleName: string;
   age: string;
   gender: string;
+  heightCm: string;
+  weightKg: string;
   birthday: string;
   religion: string;
   room: string;
@@ -72,6 +76,8 @@ const emptyForm = (): PatientKardexForm => ({
   middleName: '',
   age: '',
   gender: '',
+  heightCm: '',
+  weightKg: '',
   birthday: '',
   religion: '',
   room: '',
@@ -102,6 +108,8 @@ function patientToForm(patient: Patient): PatientKardexForm {
     middleName: parts.length > 2 ? parts.slice(1, -1).join(' ') : '',
     age: String(patient.age ?? ''),
     gender: patient.gender || '',
+    heightCm: patient.heightCm != null ? String(patient.heightCm) : '',
+    weightKg: patient.weightKg != null ? String(patient.weightKg) : '',
     room: patient.room || '',
     admissionDate: patient.admissionDate || '',
     attendingPhysician: patient.attendingPhysician || '',
@@ -150,6 +158,9 @@ export function PatientKardexModal({
     bloodPressure: form.bloodPressure,
     oxygenSaturation: form.oxygenSaturation,
   });
+  const liveBmi = computeBmi(form.heightCm, form.weightKg);
+  const heightError = validateHeightCm(form.heightCm);
+  const weightError = validateWeightKg(form.weightKg);
 
   const addAllergy = () => {
     const entry = allergyDraft.trim();
@@ -212,6 +223,8 @@ export function PatientKardexModal({
     if (!form.gender) errors.push('Sex/Gender');
     if (!form.admissionDate) errors.push('Admission Date');
     if (!form.room) errors.push('Room');
+    if (validateHeightCm(form.heightCm)) errors.push('Height');
+    if (validateWeightKg(form.weightKg)) errors.push('Weight');
     return errors;
   };
 
@@ -250,6 +263,8 @@ export function PatientKardexModal({
           diagnosis: form.admittingDiagnosis || form.chiefComplaint || patient.diagnosis,
           admissionDate: form.admissionDate,
           attendingPhysician: form.attendingPhysician,
+          heightCm: form.heightCm ? Number(form.heightCm) : null,
+          weightKg: form.weightKg ? Number(form.weightKg) : null,
           vitalSigns: {
             heartRate: Number(form.pulseRate) || 0,
             bloodPressure: form.bloodPressure || '',
@@ -324,6 +339,14 @@ export function PatientKardexModal({
                     </View>
                   </>
                 ) : null}
+                {liveBmi != null ? (
+                  <>
+                    <Text style={styles.summaryDivider}>•</Text>
+                    <Text style={styles.summaryFact}>
+                      BMI {liveBmi} ({bmiCategory(liveBmi)})
+                    </Text>
+                  </>
+                ) : null}
               </View>
             </View>
 
@@ -372,6 +395,33 @@ export function PatientKardexModal({
                 />
               </View>
             </View>
+            <View style={styles.rowWrap}>
+              <View style={[styles.field, styles.colHalf]}>
+                <Input
+                  label="Height (cm)"
+                  value={form.heightCm}
+                  onChangeText={(v) => setField('heightCm', v)}
+                  placeholder="e.g. 165.0"
+                  keyboardType="decimal-pad"
+                  error={heightError || undefined}
+                />
+              </View>
+              <View style={[styles.field, styles.colHalf]}>
+                <Input
+                  label="Weight (kg)"
+                  value={form.weightKg}
+                  onChangeText={(v) => setField('weightKg', v)}
+                  placeholder="e.g. 62.5"
+                  keyboardType="decimal-pad"
+                  error={weightError || undefined}
+                />
+              </View>
+            </View>
+            {liveBmi != null ? (
+              <Text style={styles.bmiPreview}>
+                BMI: <Text style={styles.bmiPreviewValue}>{liveBmi}</Text> ({bmiCategory(liveBmi)})
+              </Text>
+            ) : null}
 
             <View style={styles.groupDivider} />
             <Text style={styles.groupHeading}>Admission Information</Text>
@@ -515,6 +565,13 @@ export function PatientKardexModal({
               placeholderTextColor={Colors.gray400}
               multiline
             />
+
+            {mode === 'edit' && patient ? (
+              <>
+                <View style={styles.groupDivider} />
+                <KardexLabsAndMedications patientId={patient.id} />
+              </>
+            ) : null}
           </ScrollView>
           <View style={styles.footer}>
             <View style={styles.footerButtons}>
@@ -692,6 +749,20 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     flexBasis: '28%',
     minWidth: 130,
+  },
+  colHalf: {
+    flexGrow: 1,
+    flexBasis: '45%',
+    minWidth: 140,
+  },
+  bmiPreview: {
+    fontSize: 13,
+    color: Colors.mutedForeground,
+    marginTop: -6,
+  },
+  bmiPreviewValue: {
+    fontWeight: '700',
+    color: Colors.foreground,
   },
   groupHeading: {
     fontSize: 12,

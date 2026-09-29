@@ -18,7 +18,7 @@ import {
 } from 'lucide-react-native';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useLiveRefresh } from '../../../contexts/LiveContext';
-import { fetchAdminAccounts } from '../../../services/api';
+import { fetchAdminAccounts, fetchPatients } from '../../../services/api';
 import { Card, CardContent } from '../../../components/Card';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 
@@ -54,12 +54,14 @@ export default function AdminIndexPage() {
   const router = useRouter();
   const [pendingCount, setPendingCount] = useState<number | null>(null);
   const [totalAccounts, setTotalAccounts] = useState<number | null>(null);
+  const [totalPatients, setTotalPatients] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const accounts = await fetchAdminAccounts();
+      const [accounts, patients] = await Promise.all([fetchAdminAccounts(), fetchPatients()]);
       setTotalAccounts(accounts.length);
       setPendingCount(accounts.filter((a) => a.approvalStatus === 'pending').length);
+      setTotalPatients(patients.length);
     } catch {
       // Non-critical stat — the section grid below still works without it.
     }
@@ -111,6 +113,12 @@ export default function AdminIndexPage() {
           <CardContent style={styles.statContent}>
             <Text style={styles.statValue}>{pendingCount ?? '—'}</Text>
             <Text style={styles.statLabel}>Pending approval</Text>
+          </CardContent>
+        </Card>
+        <Card style={styles.statCard}>
+          <CardContent style={styles.statContent}>
+            <Text style={styles.statValue}>{totalPatients ?? '—'}</Text>
+            <Text style={styles.statLabel}>Total Patients</Text>
           </CardContent>
         </Card>
       </View>

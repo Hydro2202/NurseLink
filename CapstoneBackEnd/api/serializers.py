@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -11,12 +12,16 @@ from rest_framework import serializers
 
 from .models import (
     ChartingNote,
+    compute_bmi,
     Department,
     Doctor,
     DutyAssignment,
     FaceVerificationAttempt,
     HandoverNote,
+    KardexLaboratory,
+    KardexMedication,
     KardexRecord,
+    MedicationIntake,
     Notification,
     NurseProfile,
     Patient,
@@ -33,6 +38,7 @@ from .models import (
 from .avatar import AvatarError, normalize_avatar
 from .id_field_validation import validate_prc_id_fields
 from .handover_tasks import create_handover_tasks
+from .referral_shifts import SHIFT_LABELS, ReferralShiftError, check_referral_eligibility
 from .notifications import (
     notify_handover_created,
     notify_referral_head_nurse_fyi,
@@ -156,9 +162,17 @@ class SignupSerializer(serializers.Serializer):
     )
 
     def validate_email(self, value):
-        if User.objects.filter(username=value).exists() or User.objects.filter(email=value).exists():
+        # The account is always created with a lowercased username/email
+        # (the return below), and login always lowercases before looking
+        # one up (see LoginView.post) — so the uniqueness check has to
+        # compare against that same lowercased form too, or two accounts
+        # differing only by case (e.g. "A@x.com" then "a@x.com") could both
+        # pass this check and collide at the database's unique constraint
+        # instead of getting this serializer's clear error message.
+        normalized = value.lower()
+        if User.objects.filter(username=normalized).exists() or User.objects.filter(email=normalized).exists():
             raise serializers.ValidationError('A user with this email already exists.')
-        return value.lower()
+        return normalized
 
     def validate_password(self, value):
         validate_password(value)
@@ -657,6 +671,14 @@ def nurse_display_name(user):
     return user.get_full_name().strip() or user.username
 
 
+def editor_role_label(user):
+    """'Staff Nurse' / 'Head Nurse' for whoever created/edited a lab,
+    medication, or intake — the "editor's name and role" the audit trail
+    asked for, alongside nurse_display_name(user) for the name half."""
+    profile = getattr(user, 'nurse_profile', None) if user else None
+    return profile.get_role_display() if profile else ''
+
+
 def open_patient_visit(patient):
     """A fresh PatientVisit for `patient`'s current admission, seeded from
     its current fields — called on Patient.create and PatientViewSet.readmit."""
@@ -763,6 +785,16 @@ PATIENT_EDIT_LOG_LABELS = {
     'diagnosis': 'Diagnosis',
     'risk_level': 'Risk Level',
     'attending_physician': 'Attending Physician',
+    'medical_record_number': 'Medical Record Number',
+    'first_name': 'First Name',
+    'middle_name': 'Middle Name',
+    'last_name': 'Last Name',
+    'date_of_birth': 'Date of Birth',
+    'contact_number': 'Contact Number',
+    'address': 'Address',
+    'emergency_contact_name': 'Emergency Contact',
+    'emergency_contact_number': 'Emergency Contact Number',
+    'bed_number': 'Bed Number',
     'department': 'Department',
     'admission_date': 'Admission Date',
     'heart_rate': 'Heart Rate',
@@ -770,6 +802,8 @@ PATIENT_EDIT_LOG_LABELS = {
     'temperature': 'Temperature',
     'oxygen_saturation': 'Oxygen Saturation',
     'respiratory_rate': 'Respiratory Rate',
+    'height_cm': 'Height',
+    'weight_kg': 'Weight',
 }
 
 
@@ -786,7 +820,41 @@ class PatientSerializer(serializers.ModelSerializer):
     attendingPhysician = serializers.CharField(
         source='attending_physician', required=False, allow_blank=True
     )
+    medicalRecordNumber = serializers.CharField(
+        source='medical_record_number', required=False, allow_null=True
+    )
+    firstName = serializers.CharField(source='first_name', required=False, allow_blank=True)
+    middleName = serializers.CharField(source='middle_name', required=False, allow_blank=True)
+    lastName = serializers.CharField(source='last_name', required=False, allow_blank=True)
+    dateOfBirth = serializers.DateField(source='date_of_birth', required=False, allow_null=True)
+    contactNumber = serializers.CharField(source='contact_number', required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    emergencyContactName = serializers.CharField(
+        source='emergency_contact_name', required=False, allow_blank=True
+    )
+    emergencyContactNumber = serializers.CharField(
+        source='emergency_contact_number', required=False, allow_blank=True
+    )
+    bedNumber = serializers.CharField(source='bed_number', required=False, allow_blank=True)
     vitalSigns = serializers.DictField(required=False)
+    # Anthropometric, not a vital sign — kept as its own top-level field
+    # rather than folded into vitalSigns above, matching how the Kardex UI
+    # displays it as its own item next to age/sex/diagnosis, not grouped
+    # with heart rate/BP/temperature.
+    heightCm = serializers.DecimalField(
+        source='height_cm', max_digits=5, decimal_places=1, required=False, allow_null=True
+    )
+    weightKg = serializers.DecimalField(
+        source='weight_kg', max_digits=5, decimal_places=1, required=False, allow_null=True
+    )
+    bmi = serializers.SerializerMethodField(read_only=True)
+    # Kardex Laboratories / Medication Intake sections — read-only here;
+    # writes go through their own KardexLaboratoryViewSet/
+    # KardexMedicationViewSet/MedicationIntakeViewSet endpoints, not through
+    # a Patient update, same split PatientSerializer already has for e.g.
+    # assignedDoctors.
+    laboratories = serializers.SerializerMethodField(read_only=True)
+    medicationOrders = serializers.SerializerMethodField(read_only=True)
     assignedNurseId = serializers.SerializerMethodField(read_only=True)
     assignedNurseName = serializers.SerializerMethodField(read_only=True)
     assignedBy = serializers.SerializerMethodField(read_only=True)
@@ -826,11 +894,26 @@ class PatientSerializer(serializers.ModelSerializer):
             'status',
             'statusLabel',
             'attendingPhysician',
+            'medicalRecordNumber',
+            'firstName',
+            'middleName',
+            'lastName',
+            'dateOfBirth',
+            'contactNumber',
+            'address',
+            'emergencyContactName',
+            'emergencyContactNumber',
+            'bedNumber',
             'departmentId',
             'departmentName',
             'dischargedAt',
             'dischargedByName',
             'vitalSigns',
+            'heightCm',
+            'weightKg',
+            'bmi',
+            'laboratories',
+            'medicationOrders',
             'allergies',
             'medications',
             'alerts',
@@ -886,6 +969,29 @@ class PatientSerializer(serializers.ModelSerializer):
                 'Use the discharge action to discharge a patient, not a direct status update.'
             )
         return value
+
+    def validate_heightCm(self, value):
+        if value is not None and not (30 <= value <= 250):
+            raise serializers.ValidationError('Height must be between 30 and 250 cm.')
+        return value
+
+    def validate_weightKg(self, value):
+        if value is not None and not (0.5 <= value <= 350):
+            raise serializers.ValidationError('Weight must be between 0.5 and 350 kg.')
+        return value
+
+    def get_bmi(self, obj):
+        return compute_bmi(obj.height_cm, obj.weight_kg)
+
+    def get_laboratories(self, obj):
+        prefetched = getattr(obj, 'prefetched_laboratories', None)
+        labs = prefetched if prefetched is not None else obj.laboratories.ordered_for_display()
+        return KardexLaboratorySerializer(labs, many=True, context=self.context).data
+
+    def get_medicationOrders(self, obj):
+        prefetched = getattr(obj, 'prefetched_medication_orders', None)
+        meds = prefetched if prefetched is not None else obj.medication_orders.all()
+        return KardexMedicationSerializer(meds, many=True, context=self.context).data
 
     def get_assignedDoctors(self, obj):
         """The patient's Kardex care team — see PatientDoctor. Reads the
@@ -1479,6 +1585,13 @@ class HandoverSerializer(serializers.ModelSerializer):
     # so it already knows this; sending it means notifications reach exactly one
     # inbox instead of guessing from a display name several nurses share.
     nurseToId = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    # Read-side counterpart to the write-only nurseToId above — the
+    # receiving nurse's actual clinical role, read live off their
+    # NurseProfile via the stored nurse_to_user FK (never stored redundantly
+    # on HandoverNote itself, so it can't drift if the nurse's role changes
+    # later). Blank for referrals predating nurse_to_user, or one addressed
+    # to a name that didn't resolve to an account.
+    nurseToRole = serializers.SerializerMethodField()
     sbar = serializers.DictField(required=False)
     unfinishedTasks = serializers.ListField(
         child=serializers.CharField(), source='unfinished_tasks', required=False
@@ -1494,6 +1607,18 @@ class HandoverSerializer(serializers.ModelSerializer):
     declinedReason = serializers.CharField(source='declined_reason', read_only=True, allow_blank=True)
     completedAt = serializers.DateTimeField(source='completed_at', read_only=True, allow_null=True)
     date = serializers.DateField()
+    # shift/toShift/shiftDate/department* are all server-derived from the
+    # sender's own DutyAssignment at creation time (see
+    # api/referral_shifts.py and create() below) — never client-writable,
+    # so a nurse can't claim a shift or target they aren't actually
+    # scheduled for.
+    shift = serializers.CharField(read_only=True)
+    shiftLabel = serializers.CharField(source='get_shift_display', read_only=True)
+    toShift = serializers.CharField(source='to_shift', read_only=True)
+    toShiftLabel = serializers.SerializerMethodField()
+    shiftDate = serializers.DateField(source='shift_date', read_only=True, allow_null=True)
+    departmentId = serializers.IntegerField(source='department_id', read_only=True, allow_null=True)
+    departmentName = serializers.CharField(source='department.name', read_only=True, default='')
 
     class Meta:
         model = HandoverNote
@@ -1502,10 +1627,17 @@ class HandoverSerializer(serializers.ModelSerializer):
             'patientId',
             'patientName',
             'shift',
+            'shiftLabel',
+            'toShift',
+            'toShiftLabel',
+            'shiftDate',
+            'departmentId',
+            'departmentName',
             'date',
             'nurseFrom',
             'nurseTo',
             'nurseToId',
+            'nurseToRole',
             'sbar',
             'unfinishedTasks',
             'photos',
@@ -1516,6 +1648,16 @@ class HandoverSerializer(serializers.ModelSerializer):
             'declinedReason',
             'completedAt',
         ]
+
+    def get_toShiftLabel(self, obj):
+        return SHIFT_LABELS.get(obj.to_shift, '') if obj.to_shift else ''
+
+    def get_nurseToRole(self, obj):
+        nurse = obj.nurse_to_user
+        if nurse is None:
+            return ''
+        profile = getattr(nurse, 'nurse_profile', None)
+        return profile.get_clinical_role_display() if profile else ''
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -1554,6 +1696,27 @@ class HandoverSerializer(serializers.ModelSerializer):
         # account is being targeted.
         self._resolve_recipient(validated_data)
 
+        request = self.context.get('request')
+        sender = request.user if request and request.user.is_authenticated else None
+        recipient = validated_data.get('nurse_to_user')
+
+        # Shift-rotation rule: a referral may only go to the next shift in
+        # rotation (Morning -> Afternoon -> Night -> next day's Morning),
+        # same department, never the sender's own shift or the sender
+        # themselves — see api/referral_shifts.py. Never trusts whatever
+        # shift the client claims; this is derived entirely from the
+        # sender's own DutyAssignment right now.
+        if sender is None:
+            raise serializers.ValidationError({'nonFieldErrors': 'You must be signed in to create a referral.'})
+        try:
+            current_shift, to_shift, shift_date = check_referral_eligibility(sender, recipient)
+        except ReferralShiftError as exc:
+            raise serializers.ValidationError({exc.field: str(exc)})
+        validated_data['shift'] = current_shift.shift
+        validated_data['to_shift'] = to_shift
+        validated_data['shift_date'] = shift_date
+        validated_data['department'] = current_shift.department
+
         # A given nurse can only receive one handover for a given patient —
         # once Nurse X has been handed Patient Y, Nurse X is done with that
         # patient's handover history and must not be offered (or accepted)
@@ -1589,11 +1752,7 @@ class HandoverSerializer(serializers.ModelSerializer):
             HandoverNote, 'handover_code', 'H'
         )
         validated_data['handover_code'] = code
-        request = self.context.get('request')
-        sender = None
-        if request and request.user.is_authenticated:
-            sender = request.user
-            validated_data['created_by'] = sender
+        validated_data['created_by'] = sender
         validated_data['status'] = 'sent'
         validated_data['status_history'] = [{
             'status': 'sent',
@@ -2739,6 +2898,255 @@ def assess_risk_level(*, temperature=None, pulse_rate=None, respiratory_rate=Non
     return 'low'
 
 
+class KardexLaboratorySerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(read_only=True)
+    # Write-only: which patient this lab belongs to. Not part of read output
+    # (labs are always read nested under a patient/kardex, which already
+    # says who they belong to) — matches the read/write asymmetry
+    # KardexRecordSerializer uses for patientId.
+    patientId = serializers.SlugRelatedField(
+        source='patient', slug_field='patient_code', queryset=Patient.objects.all(), write_only=True
+    )
+    testName = serializers.CharField(source='test_name')
+    dateOrdered = serializers.DateField(source='date_ordered')
+    dateDone = serializers.DateField(source='date_done', required=False, allow_null=True)
+    status = serializers.ChoiceField(choices=KardexLaboratory.STATUS_CHOICES, required=False, default='pending')
+    result = serializers.CharField(required=False, allow_blank=True)
+    remarks = serializers.CharField(required=False, allow_blank=True)
+    createdByName = serializers.SerializerMethodField(read_only=True)
+    createdByRole = serializers.SerializerMethodField(read_only=True)
+    updatedByName = serializers.SerializerMethodField(read_only=True)
+    updatedByRole = serializers.SerializerMethodField(read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+    isOverdue = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = KardexLaboratory
+        fields = [
+            'id', 'patientId', 'testName', 'dateOrdered', 'dateDone', 'status', 'result', 'remarks',
+            'createdByName', 'createdByRole', 'updatedByName', 'updatedByRole', 'createdAt', 'updatedAt',
+            'isOverdue',
+        ]
+
+    def get_createdByName(self, obj):
+        return nurse_display_name(obj.created_by) if obj.created_by_id else None
+
+    def get_createdByRole(self, obj):
+        return editor_role_label(obj.created_by) if obj.created_by_id else None
+
+    def get_updatedByName(self, obj):
+        return nurse_display_name(obj.updated_by) if obj.updated_by_id else None
+
+    def get_updatedByRole(self, obj):
+        return editor_role_label(obj.updated_by) if obj.updated_by_id else None
+
+    def get_isOverdue(self, obj):
+        # No frequency to compute against, unlike a medication — a pending
+        # lab is simply flagged once it's been waiting more than 2 days.
+        if obj.status != 'pending':
+            return False
+        return (timezone.now().date() - obj.date_ordered).days > 2
+
+    def validate(self, attrs):
+        date_ordered = attrs.get('date_ordered', getattr(self.instance, 'date_ordered', None))
+        date_done = attrs.get('date_done', getattr(self.instance, 'date_done', None))
+        if date_ordered and date_done and date_done < date_ordered:
+            raise serializers.ValidationError({'dateDone': 'Date done cannot be before date ordered.'})
+        status_value = attrs.get('status', getattr(self.instance, 'status', 'pending'))
+        result_value = attrs.get('result', getattr(self.instance, 'result', ''))
+        if status_value == 'done' and not (result_value or '').strip():
+            raise serializers.ValidationError({'result': 'Result is required when status is Done.'})
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
+            validated_data['updated_by'] = request.user
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['updated_by'] = request.user
+        return super().update(instance, validated_data)
+
+
+class MedicationIntakeSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(read_only=True)
+    medicationId = serializers.PrimaryKeyRelatedField(
+        source='medication', queryset=KardexMedication.objects.all(), write_only=True
+    )
+    scheduledTime = serializers.DateTimeField(source='scheduled_time')
+    administeredAt = serializers.DateTimeField(source='administered_at', required=False, allow_null=True)
+    status = serializers.ChoiceField(choices=MedicationIntake.STATUS_CHOICES, required=False, default='given')
+    # Shown and required by the frontend whenever status isn't Given — see
+    # validate() below for the same rule enforced server-side.
+    reason = serializers.CharField(required=False, allow_blank=True)
+    administeredByName = serializers.SerializerMethodField(read_only=True)
+    administeredByRole = serializers.SerializerMethodField(read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+    class Meta:
+        model = MedicationIntake
+        fields = [
+            'id', 'medicationId', 'scheduledTime', 'administeredAt', 'status', 'reason',
+            'administeredByName', 'administeredByRole', 'createdAt',
+        ]
+
+    def get_administeredByName(self, obj):
+        return nurse_display_name(obj.administered_by) if obj.administered_by_id else None
+
+    def get_administeredByRole(self, obj):
+        return editor_role_label(obj.administered_by) if obj.administered_by_id else None
+
+    def validate(self, attrs):
+        status_value = attrs.get('status', 'given')
+        reason = (attrs.get('reason') or '').strip()
+        if status_value != 'given' and not reason:
+            raise serializers.ValidationError(
+                {'reason': 'Reason is required when status is Held, Refused, or Missed.'}
+            )
+        administered_at = attrs.get('administered_at')
+        if administered_at and administered_at > timezone.now():
+            raise serializers.ValidationError({'administeredAt': 'Administered time cannot be in the future.'})
+        medication = attrs.get('medication')
+        if medication is not None and not medication.is_active:
+            raise serializers.ValidationError(
+                {'medicationId': 'Cannot record an intake for a discontinued medication.'}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['administered_by'] = request.user
+        # A "Given" intake with no explicit time defaults to now, matching
+        # the frontend's Record Intake modal default — everything else
+        # (Held/Refused/Missed) leaves administered_at as whatever was sent,
+        # since "not actually given" has no natural "now".
+        if validated_data.get('status', 'given') == 'given' and not validated_data.get('administered_at'):
+            validated_data['administered_at'] = timezone.now()
+        return super().create(validated_data)
+
+
+_FREQUENCY_HOURS = {
+    'OD': 24, 'QD': 24, 'ONCE DAILY': 24, 'DAILY': 24,
+    'BID': 12,
+    'TID': 8,
+    'QID': 6,
+    'HS': 24,
+}
+
+
+def frequency_interval_hours(frequency):
+    """
+    Best-effort hours-between-doses for a frequency string like 'q8h',
+    'BID', 'OD', 'PRN' — used only to flag a medication due/overdue for the
+    Kardex Medication Intake section (the EXTRA "flag pending labs and
+    medications due or overdue" ask), never to change what a nurse is
+    allowed to record. Returns None for anything unparseable (PRN, free
+    text) — those medications are simply never flagged, rather than
+    guessed at.
+    """
+    if not frequency:
+        return None
+    text = frequency.strip().upper()
+    if text in _FREQUENCY_HOURS:
+        return _FREQUENCY_HOURS[text]
+    match = re.match(r'^Q(\d+(?:\.\d+)?)H$', text)
+    return float(match.group(1)) if match else None
+
+
+class KardexMedicationSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(read_only=True)
+    patientId = serializers.SlugRelatedField(
+        source='patient', slug_field='patient_code', queryset=Patient.objects.all(), write_only=True
+    )
+    medicationName = serializers.CharField(source='medication_name')
+    dose = serializers.CharField(required=False, allow_blank=True)
+    route = serializers.ChoiceField(choices=KardexMedication.ROUTE_CHOICES, required=False, default='Oral')
+    frequency = serializers.CharField(required=False, allow_blank=True)
+    startDate = serializers.DateField(source='start_date')
+    endDate = serializers.DateField(source='end_date', required=False, allow_null=True)
+    isActive = serializers.BooleanField(source='is_active', required=False)
+    remarks = serializers.CharField(required=False, allow_blank=True)
+    createdByName = serializers.SerializerMethodField(read_only=True)
+    createdByRole = serializers.SerializerMethodField(read_only=True)
+    updatedByName = serializers.SerializerMethodField(read_only=True)
+    updatedByRole = serializers.SerializerMethodField(read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+    lastGiven = serializers.SerializerMethodField(read_only=True)
+    intakes = serializers.SerializerMethodField(read_only=True)
+    isOverdue = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = KardexMedication
+        fields = [
+            'id', 'patientId', 'medicationName', 'dose', 'route', 'frequency',
+            'startDate', 'endDate', 'isActive', 'remarks',
+            'createdByName', 'createdByRole', 'updatedByName', 'updatedByRole',
+            'createdAt', 'updatedAt', 'lastGiven', 'intakes', 'isOverdue',
+        ]
+
+    def get_createdByName(self, obj):
+        return nurse_display_name(obj.created_by) if obj.created_by_id else None
+
+    def get_createdByRole(self, obj):
+        return editor_role_label(obj.created_by) if obj.created_by_id else None
+
+    def get_updatedByName(self, obj):
+        return nurse_display_name(obj.updated_by) if obj.updated_by_id else None
+
+    def get_updatedByRole(self, obj):
+        return editor_role_label(obj.updated_by) if obj.updated_by_id else None
+
+    def get_lastGiven(self, obj):
+        last = obj.last_intake
+        if last is None:
+            return None
+        return last.administered_at or last.scheduled_time
+
+    def get_intakes(self, obj):
+        intakes = obj.intakes.all()
+        return MedicationIntakeSerializer(intakes, many=True, context=self.context).data
+
+    def get_isOverdue(self, obj):
+        if not obj.is_active:
+            return False
+        interval_hours = frequency_interval_hours(obj.frequency)
+        if interval_hours is None:
+            return False
+        last = obj.last_intake
+        if last is not None:
+            baseline = last.administered_at or last.scheduled_time
+        else:
+            baseline = datetime.combine(obj.start_date, datetime.min.time(), tzinfo=timezone.get_current_timezone())
+        return timezone.now() > baseline + timedelta(hours=interval_hours)
+
+    def validate(self, attrs):
+        start = attrs.get('start_date', getattr(self.instance, 'start_date', None))
+        end = attrs.get('end_date', getattr(self.instance, 'end_date', None))
+        if start and end and end < start:
+            raise serializers.ValidationError({'endDate': 'End date cannot be before start date.'})
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
+            validated_data['updated_by'] = request.user
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['updated_by'] = request.user
+        return super().update(instance, validated_data)
+
+
 class KardexRecordSerializer(serializers.ModelSerializer):
     id = serializers.SerializerMethodField()
     patientName = serializers.SerializerMethodField()
@@ -2751,6 +3159,13 @@ class KardexRecordSerializer(serializers.ModelSerializer):
     middleName = serializers.CharField(source='middle_name', required=False, allow_blank=True)
     age = serializers.CharField(required=False, allow_blank=True)
     gender = serializers.CharField(required=False, allow_blank=True)
+    heightCm = serializers.DecimalField(
+        source='height_cm', max_digits=5, decimal_places=1, required=False, allow_null=True
+    )
+    weightKg = serializers.DecimalField(
+        source='weight_kg', max_digits=5, decimal_places=1, required=False, allow_null=True
+    )
+    bmi = serializers.SerializerMethodField(read_only=True)
     birthday = serializers.CharField(required=False, allow_blank=True)
     religion = serializers.CharField(required=False, allow_blank=True)
     room = serializers.CharField(required=False, allow_blank=True)
@@ -2790,6 +3205,12 @@ class KardexRecordSerializer(serializers.ModelSerializer):
     reviewedBy = serializers.SerializerMethodField()
     reviewedAt = serializers.DateTimeField(source='reviewed_at', read_only=True)
     reviewNotes = serializers.CharField(source='review_notes', read_only=True)
+    # Read-only: the patient's current labs/medication orders, not a
+    # snapshot of what this particular append-only kardex saw — see
+    # KardexLaboratory/KardexMedication's docstrings for why they hang off
+    # Patient rather than this record.
+    laboratories = serializers.SerializerMethodField(read_only=True)
+    medicationOrders = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = KardexRecord
@@ -2803,6 +3224,11 @@ class KardexRecordSerializer(serializers.ModelSerializer):
             'middleName',
             'age',
             'gender',
+            'heightCm',
+            'weightKg',
+            'bmi',
+            'laboratories',
+            'medicationOrders',
             'birthday',
             'religion',
             'room',
@@ -2843,6 +3269,33 @@ class KardexRecordSerializer(serializers.ModelSerializer):
         if obj.reviewed_by_id is None:
             return None
         return obj.reviewed_by.get_full_name().strip() or obj.reviewed_by.username
+
+    def get_bmi(self, obj):
+        return compute_bmi(obj.height_cm, obj.weight_kg)
+
+    def get_laboratories(self, obj):
+        if not obj.patient_id:
+            return []
+        return KardexLaboratorySerializer(
+            obj.patient.laboratories.ordered_for_display(), many=True, context=self.context
+        ).data
+
+    def get_medicationOrders(self, obj):
+        if not obj.patient_id:
+            return []
+        return KardexMedicationSerializer(
+            obj.patient.medication_orders.all(), many=True, context=self.context
+        ).data
+
+    def validate_heightCm(self, value):
+        if value is not None and not (30 <= value <= 250):
+            raise serializers.ValidationError('Height must be between 30 and 250 cm.')
+        return value
+
+    def validate_weightKg(self, value):
+        if value is not None and not (0.5 <= value <= 350):
+            raise serializers.ValidationError('Weight must be between 0.5 and 350 kg.')
+        return value
 
     def create(self, validated_data):
         """
@@ -2940,10 +3393,19 @@ class KardexRecordSerializer(serializers.ModelSerializer):
                 patient.allergies = allergies
                 for k, v in vitals.items():
                     setattr(patient, k, v)
+                # Same "leave it alone if this kardex didn't fill it in"
+                # rule the vitals loop above follows — a blank height/weight
+                # on this save must not erase a value recorded earlier.
+                if validated_data.get('height_cm') is not None:
+                    patient.height_cm = validated_data['height_cm']
+                if validated_data.get('weight_kg') is not None:
+                    patient.weight_kg = validated_data['weight_kg']
                 patient.save()
             else:
                 patient = Patient.objects.create(
                     patient_code=next_code(Patient, 'patient_code', 'P'),
+                    height_cm=validated_data.get('height_cm'),
+                    weight_kg=validated_data.get('weight_kg'),
                     name=full_name,
                     age=age,
                     gender=gender,

@@ -148,7 +148,7 @@ const NURSE_POSITIONS = ['nurse', 'registered nurse', 'staff nurse'];
 const SUPERVISOR_POSITIONS = ['supervisor', 'head nurse', 'nursing supervisor', 'charge nurse'];
 
 type StepNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7;
-type SelectedRole = 'nurse' | 'supervisor' | null;
+type SelectedRole = 'nurse' | 'head_nurse' | null;
 
 type OcrData = {
   fullName: string;
@@ -176,8 +176,8 @@ const roleOptions: Array<{ value: SelectedRole; title: string; detail: string; e
     detail: 'Staff Nurse or Registered Nurse responsible for direct patient care and clinical documentation.',
   },
   {
-    value: 'supervisor',
-    title: 'Supervisor',
+    value: 'head_nurse',
+    title: 'Head Nurse',
     emoji: '👨‍⚕️',
     detail: 'Head Nurse, Nursing Supervisor, or Charge Nurse overseeing nursing staff and patient care operations.',
   },
@@ -1069,7 +1069,7 @@ export default function SignUpPage() {
     const matchesNurse = NURSE_POSITIONS.some((entry) => position.includes(entry));
     const matchesSupervisor = SUPERVISOR_POSITIONS.some((entry) => position.includes(entry));
     if (selectedRole === 'nurse' && matchesNurse) setRoleMatch('matched');
-    else if (selectedRole === 'supervisor' && matchesSupervisor) setRoleMatch('matched');
+    else if (selectedRole === 'head_nurse' && matchesSupervisor) setRoleMatch('matched');
     else setRoleMatch('mismatch');
   }, [ocrData, selectedRole]);
 
@@ -1118,7 +1118,7 @@ export default function SignUpPage() {
         lastName,
         email,
         password,
-        role: selectedRole === 'supervisor' ? 'supervisor' : 'staff_nurse',
+        role: selectedRole === 'head_nurse' ? 'head_nurse' : 'staff_nurse',
         department: ocrData?.department ?? '',
         licenseNumber,
         createdAt: new Date().toISOString(),
@@ -2105,8 +2105,8 @@ export default function SignUpPage() {
                       <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                         <p className="text-xs text-slate-500">Selected Role</p>
                         <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
-                          {selectedRole === 'supervisor' ? '👨‍⚕️' : '👩‍⚕️'}{' '}
-                          {selectedRole === 'supervisor' ? 'Supervisor' : 'Nurse'}
+                          {selectedRole === 'head_nurse' ? '👨‍⚕️' : '👩‍⚕️'}{' '}
+                          {selectedRole === 'head_nurse' ? 'Head Nurse' : 'Nurse'}
                         </p>
                       </div>
                       <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -2129,7 +2129,7 @@ export default function SignUpPage() {
                         <div className="mt-3 space-y-2 rounded-xl border border-green-100 bg-white p-4 text-sm text-slate-700">
                           <div className="flex items-center gap-2">
                             <CheckCircle className="h-4 w-4 text-green-600" />
-                            Selected: <strong>{selectedRole === 'supervisor' ? 'Supervisor' : 'Nurse'}</strong>
+                            Selected: <strong>{selectedRole === 'head_nurse' ? 'Head Nurse' : 'Nurse'}</strong>
                           </div>
                           <div className="flex items-center gap-2">
                             <CheckCircle className="h-4 w-4 text-green-600" />
@@ -2139,7 +2139,7 @@ export default function SignUpPage() {
                         <p className="mt-3 flex items-center gap-2 text-sm font-medium text-green-700">
                           <CheckCircle className="h-4 w-4" />
                           You are authorized to register as a{' '}
-                          {selectedRole === 'supervisor' ? 'Supervisor' : 'Nurse'}.
+                          {selectedRole === 'head_nurse' ? 'Head Nurse' : 'Nurse'}.
                         </p>
                       </div>
                     )}
@@ -2155,7 +2155,7 @@ export default function SignUpPage() {
                         <div className="mt-3 space-y-2 rounded-xl border border-red-100 bg-white p-4 text-sm text-slate-700">
                           <div className="flex items-center gap-2">
                             <XCircle className="h-4 w-4 text-red-600" />
-                            Selected: <strong>{selectedRole === 'supervisor' ? 'Supervisor' : 'Nurse'}</strong>
+                            Selected: <strong>{selectedRole === 'head_nurse' ? 'Head Nurse' : 'Nurse'}</strong>
                           </div>
                           <div className="flex items-center gap-2">
                             <AlertCircle className="h-4 w-4 text-amber-500" />

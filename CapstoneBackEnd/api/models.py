@@ -96,6 +96,20 @@ class NurseProfile(models.Model):
         return self.user.get_full_name().strip() or self.user.username
 
 
+def compute_bmi(height_cm, weight_kg):
+    """weight_kg / (height_cm/100)**2, rounded to 1 decimal — shared by
+    Patient and KardexRecord so the two never disagree on the formula.
+    None whenever either measurement is missing or height is non-positive
+    (a zero/negative height would otherwise divide-by-zero or invert the
+    sign, and there's no such thing as a real Kardex entry with either)."""
+    if height_cm is None or weight_kg is None:
+        return None
+    height_m = float(height_cm) / 100
+    if height_m <= 0:
+        return None
+    return round(float(weight_kg) / (height_m ** 2), 1)
+
+
 class Patient(models.Model):
     """Patient record matching the frontend Patient shape."""
 
@@ -117,6 +131,22 @@ class Patient(models.Model):
 
     patient_code = models.CharField(max_length=20, unique=True, db_index=True)
     name = models.CharField(max_length=200)
+    # Registration/demographic detail beyond `name` — null/blank on every
+    # patient that predates these fields; nullable+unique on
+    # medical_record_number specifically so those pre-existing NULLs never
+    # collide with each other under the unique constraint.
+    medical_record_number = models.CharField(
+        max_length=20, null=True, blank=True, unique=True, db_index=True
+    )
+    first_name = models.CharField(max_length=100, blank=True, default='')
+    middle_name = models.CharField(max_length=100, blank=True, default='')
+    last_name = models.CharField(max_length=100, blank=True, default='')
+    date_of_birth = models.DateField(null=True, blank=True)
+    contact_number = models.CharField(max_length=20, blank=True, default='')
+    address = models.CharField(max_length=255, blank=True, default='')
+    emergency_contact_name = models.CharField(max_length=200, blank=True, default='')
+    emergency_contact_number = models.CharField(max_length=20, blank=True, default='')
+    bed_number = models.CharField(max_length=20, blank=True, default='')
     age = models.PositiveIntegerField(validators=[MaxValueValidator(150)])
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
     room = models.CharField(max_length=50, db_index=True)
@@ -154,6 +184,13 @@ class Patient(models.Model):
     oxygen_saturation = models.PositiveIntegerField(default=0)
     respiratory_rate = models.PositiveIntegerField(default=0)
 
+    # Nullable — most existing patients predate this field, and a Kardex
+    # save only sets these when the nurse actually filled them in (same
+    # "leave what wasn't provided alone" convention KardexRecordSerializer.
+    # create() already uses for the vitals snapshot above).
+    height_cm = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    weight_kg = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+
     allergies = models.JSONField(default=list, blank=True)
     medications = models.JSONField(default=list, blank=True)
     alerts = models.JSONField(default=list, blank=True)
@@ -184,6 +221,10 @@ class Patient(models.Model):
 
     def __str__(self):
         return f'{self.patient_code} — {self.name}'
+
+    @property
+    def bmi(self):
+        return compute_bmi(self.height_cm, self.weight_kg)
 
 
 class PatientVisit(models.Model):
@@ -487,9 +528,9 @@ class HandoverNote(models.Model):
     # 'sent' -> 'received' -> 'accepted' | 'declined' -> 'completed'. Head
     # nurses are notified at every transition (see
     # api/notifications.py::notify_referral_head_nurse_fyi) and can view
-    # every referral in their department(s), but never act on one — see
-    # HandoverViewSet.accept/decline/complete, which only ever authorize the
-    # sending/receiving nurse.
+    # every referral, but never act on one — see HandoverViewSet.accept/
+    # decline/complete, which only ever authorize the sending/receiving
+    # nurse.
     STATUS_CHOICES = [
         ('sent', 'Sent'),
         ('received', 'Received'),
@@ -507,8 +548,32 @@ class HandoverNote(models.Model):
         blank=True,
     )
     patient_name = models.CharField(max_length=200, blank=True, default='')
+    # The shift the *sender* filed this referral on — server-derived from
+    # their own current DutyAssignment as of HandoverSerializer.create()
+    # (see api/referral_shifts.py), never a client-chosen value, so it
+    # always matches a real roster entry. to_shift/shift_date/department
+    # below are the shift-rotation rule's target: a referral may only go to
+    # the next shift in rotation (Morning -> Afternoon -> Night -> next
+    # day's Morning), in the same department as `shift`/`date` below.
     shift = models.CharField(max_length=20, choices=SHIFT_CHOICES, default='morning')
     date = models.DateField()
+    to_shift = models.CharField(max_length=20, choices=SHIFT_CHOICES, blank=True, default='')
+    # The target shift's date — equal to `date` for Morning->Afternoon and
+    # Afternoon->Night, but the *next* calendar day for Night->Morning
+    # (see get_next_shift). Nullable only for referrals created before this
+    # field existed; every new referral has one.
+    shift_date = models.DateField(null=True, blank=True)
+    # The referring nurse's department at creation time (from their
+    # DutyAssignment, not the free-text NurseProfile.department — see
+    # HandoverViewSet.get_queryset's docstring for why that field is
+    # unreliable). Nullable for the same reason shift_date is.
+    department = models.ForeignKey(
+        Department,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='referrals',
+    )
     nurse_from = models.CharField(max_length=200)
     nurse_to = models.CharField(max_length=200)
     situation = models.TextField(blank=True, default='')
@@ -1147,6 +1212,11 @@ class KardexRecord(models.Model):
     middle_name = models.CharField(max_length=100, blank=True, default='')
     age = models.CharField(max_length=20, blank=True, default='')
     gender = models.CharField(max_length=20, blank=True, default='')
+    # Numeric (unlike the free-text fields around them) so validation and
+    # the bmi property below can actually do arithmetic on them. Nullable —
+    # a nurse who didn't measure either leaves the Kardex save unaffected.
+    height_cm = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    weight_kg = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
     # Free text, not a DateField — same convention as admission_date below:
     # this is a manually-filled Kardex form field, not a system date the app
     # computes anything from, so it stays exactly what the nurse typed.
@@ -1204,9 +1274,192 @@ class KardexRecord(models.Model):
         return f'{self.last_name}, {self.first_name}'
 
     @property
+    def bmi(self):
+        return compute_bmi(self.height_cm, self.weight_kg)
+
+    @property
     def patient_name(self):
         parts = [self.first_name, self.middle_name, self.last_name]
         return ' '.join(p for p in parts if p).strip()
+
+
+def _lab_status_order():
+    """Pending-first, then Done, then Cancelled — the display order the
+    Laboratories section wants, which alphabetic status values don't give
+    for free (cancelled < done < pending). Used by
+    KardexLaboratoryQuerySet.ordered_for_display() below."""
+    return models.Case(
+        models.When(status='pending', then=models.Value(0)),
+        models.When(status='done', then=models.Value(1)),
+        models.When(status='cancelled', then=models.Value(2)),
+        default=models.Value(3),
+        output_field=models.IntegerField(),
+    )
+
+
+class KardexLaboratoryQuerySet(models.QuerySet):
+    def ordered_for_display(self):
+        """Pending first, then by date_ordered (most recent within each
+        status group) — every read path that lists labs for the
+        Laboratories section uses this instead of Meta.ordering, since the
+        priority-by-status sort isn't expressible as a plain field list."""
+        return self.annotate(_status_order=_lab_status_order()).order_by('_status_order', '-date_ordered')
+
+
+class KardexLaboratory(models.Model):
+    """
+    One ordered lab/diagnostic test for a patient (CBC, Urinalysis, Chest
+    X-ray, ...). Linked to Patient — the current-snapshot side of the
+    Patient/KardexRecord split (see Patient's docstring) — rather than to a
+    single KardexRecord snapshot, since a lab is ordered and later comes
+    back as Done independently of whenever the Kardex form was last saved;
+    tying it to one append-only KardexRecord row would orphan it the next
+    time that Kardex is re-saved.
+
+    Editable in place (unlike KardexRecord itself): a lab naturally moves
+    Pending -> Done as the result comes back, so this is not append-only.
+    """
+
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('done', 'Done'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='laboratories')
+    test_name = models.CharField(max_length=200)
+    date_ordered = models.DateField()
+    date_done = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
+    result = models.TextField(blank=True, default='')
+    remarks = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='laboratories_created',
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='laboratories_updated',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = KardexLaboratoryQuerySet.as_manager()
+
+    class Meta:
+        # Plain fallback (e.g. Django admin) — the Laboratories section
+        # itself reads via objects.ordered_for_display() instead.
+        ordering = ['-date_ordered']
+        indexes = [
+            models.Index(fields=['patient', 'status']),
+        ]
+
+    def __str__(self):
+        return f'{self.test_name} ({self.get_status_display()}) — {self.patient_id}'
+
+
+class KardexMedication(models.Model):
+    """
+    One medication order for a patient (drug, dose, route, frequency).
+    Linked to Patient for the same reason KardexLaboratory is — see its
+    docstring. `is_active=False` is how a nurse "discontinues" an order
+    without deleting it (deletion is head-nurse-only, per the Kardex
+    permission split); its intake history stays intact either way.
+    """
+
+    ROUTE_CHOICES = [
+        ('Oral', 'Oral'),
+        ('IV', 'IV'),
+        ('IM', 'IM'),
+        ('SubQ', 'SubQ'),
+        ('Topical', 'Topical'),
+        ('Inhalation', 'Inhalation'),
+        ('Other', 'Other'),
+    ]
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='medication_orders')
+    medication_name = models.CharField(max_length=200)
+    dose = models.CharField(max_length=100, blank=True, default='')
+    route = models.CharField(max_length=20, choices=ROUTE_CHOICES, default='Oral')
+    frequency = models.CharField(max_length=100, blank=True, default='')
+    start_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    remarks = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='medications_created',
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='medications_updated',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-is_active', '-start_date']
+        indexes = [
+            models.Index(fields=['patient', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f'{self.medication_name} {self.dose} ({self.patient_id})'
+
+    @property
+    def last_intake(self):
+        return self.intakes.order_by('-scheduled_time').first()
+
+
+class MedicationIntake(models.Model):
+    """
+    One actual administration event against a KardexMedication order —
+    insert-only, like VitalSigns: a recorded intake is never edited or
+    un-recorded, only superseded by the next scheduled dose.
+    """
+
+    STATUS_CHOICES = [
+        ('given', 'Given'),
+        ('held', 'Held'),
+        ('refused', 'Refused'),
+        ('missed', 'Missed'),
+    ]
+
+    medication = models.ForeignKey(KardexMedication, on_delete=models.CASCADE, related_name='intakes')
+    scheduled_time = models.DateTimeField()
+    administered_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='given', db_index=True)
+    #: Required by the serializer whenever status isn't 'given'.
+    reason = models.TextField(blank=True, default='')
+    administered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='medication_intakes',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-scheduled_time']
+        indexes = [
+            models.Index(fields=['medication', '-scheduled_time']),
+        ]
+
+    def __str__(self):
+        return f'{self.medication_id} @ {self.scheduled_time:%Y-%m-%d %H:%M} ({self.get_status_display()})'
 
 
 class RegistrationSession(models.Model):

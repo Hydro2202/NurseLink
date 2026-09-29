@@ -8,17 +8,20 @@ delivered never costs the database row behind it.
 """
 
 import datetime
+from zoneinfo import ZoneInfo
 
 from channels.db import database_sync_to_async
 from channels.layers import get_channel_layer
 from channels.testing import WebsocketCommunicator
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.test import TransactionTestCase
+from django.utils import timezone
 from rest_framework.authtoken.models import Token
 
 from CapstoneBackEnd.asgi import application
 
-from .models import HandoverNote, Notification, NurseProfile, Patient
+from .models import Department, DutyAssignment, HandoverNote, Notification, NurseProfile, Patient
 from .notifications import notify_handover_created
 
 
@@ -48,6 +51,25 @@ def make_handover(patient, sender, receiver):
         shift='morning', date=datetime.date(2026, 3, 3),
         nurse_from=sender.get_full_name(), nurse_to=receiver.get_full_name(),
         nurse_to_user=receiver, created_by=sender, status='pending',
+    )
+
+
+@database_sync_to_async
+def give_shift_pair(sender, receiver):
+    """Duty Roster coverage for the shift-rotation rule (see
+    api/referral_shifts.py): sender on Morning (a wide window, so it
+    covers "now" regardless of the real wall clock), receiver on
+    Afternoon (the next shift) — same department."""
+    dept = Department.objects.get_or_create(name='Realtime Test Ward')[0]
+    today = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
+    DutyAssignment.objects.create(
+        nurse=sender, department=dept, duty_date=today, shift='morning',
+        start_time=datetime.time(0, 0), end_time=datetime.time(23, 59, 59),
+    )
+    DutyAssignment.objects.create(
+        nurse=receiver, department=dept, duty_date=today, shift='afternoon',
+        start_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][0],
+        end_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][1],
     )
 
 
@@ -234,6 +256,7 @@ class HandoverApiPushTests(TransactionTestCase):
     async def test_posting_a_handover_pushes_to_the_receiving_nurses_socket(self):
         sender, sender_token = await make_nurse('maria@hospital.com', 'Maria', 'Santos')
         receiver, receiver_token = await make_nurse('ben@hospital.com', 'Ben', 'Diaz')
+        await give_shift_pair(sender, receiver)
         patient = await make_patient()
 
         communicator, connected = await connect(receiver_token)

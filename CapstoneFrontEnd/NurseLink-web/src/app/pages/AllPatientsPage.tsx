@@ -125,7 +125,7 @@ export default function AllPatientsPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">All Patients</h1>
           <p className="text-gray-600">
-            Supervisor view - {filteredPatients.length} of {patients.length} patients
+            Head Nurse view - {filteredPatients.length} of {patients.length} patients
             {loadingPatients ? ' (loading...)' : ''}
           </p>
         </div>
@@ -400,10 +400,7 @@ export default function AllPatientsPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmDelete}
-              className="bg-red-600 hover:bg-red-700"
-            >
+            <AlertDialogAction onClick={confirmDelete} variant="destructive">
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>

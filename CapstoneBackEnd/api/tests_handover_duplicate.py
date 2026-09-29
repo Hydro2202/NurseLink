@@ -7,12 +7,15 @@ earlier handover for that patient is still unacknowledged.
 """
 
 import datetime
+from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import HandoverNote, NurseProfile, Patient
+from .models import Department, DutyAssignment, HandoverNote, NurseProfile, Patient
 
 
 def make_nurse(email, first, last):
@@ -22,6 +25,24 @@ def make_nurse(email, first, last):
     )
     NurseProfile.objects.create(user=user, role='staff_nurse', department='Med-Surg')
     return user
+
+
+def give_shift_pair(sender, recipients, department):
+    """Duty Roster coverage for the shift-rotation rule (see
+    api/referral_shifts.py): `sender` on Morning (a wide window, so it
+    covers "now" regardless of the real wall clock), every `recipients` on
+    Afternoon (the next shift) — all in `department`."""
+    today = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
+    DutyAssignment.objects.create(
+        nurse=sender, department=department, duty_date=today, shift='morning',
+        start_time=datetime.time(0, 0), end_time=datetime.time(23, 59, 59),
+    )
+    for recipient in recipients:
+        DutyAssignment.objects.create(
+            nurse=recipient, department=department, duty_date=today, shift='afternoon',
+            start_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][0],
+            end_time=DutyAssignment.SHIFT_DEFAULT_TIMES['afternoon'][1],
+        )
 
 
 class HandoverDuplicateTests(APITestCase):
@@ -35,6 +56,8 @@ class HandoverDuplicateTests(APITestCase):
             room='204-B', diagnosis='CHF', admission_date=datetime.date(2026, 3, 2),
             risk_level='medium', attending_physician='Dr. Lim',
         )
+        dept = Department.objects.get_or_create(name='Handover Duplicate Test Ward')[0]
+        give_shift_pair(self.sender, [self.receiver, self.third], dept)
         self.client.force_authenticate(user=self.sender)
 
     def create_handover(self, nurse_to='Ben Diaz', nurse_to_id=None):
@@ -130,6 +153,8 @@ class NurseListExcludeForPatientTests(APITestCase):
             room='205-A', diagnosis='Pneumonia', admission_date=datetime.date(2026, 3, 2),
             risk_level='low', attending_physician='Dr. Lim',
         )
+        dept = Department.objects.get_or_create(name='Nurse Exclude Test Ward')[0]
+        give_shift_pair(self.sender, [self.receiver], dept)
         self.client.force_authenticate(user=self.sender)
 
     def test_a_nurse_who_received_the_patient_is_excluded(self):

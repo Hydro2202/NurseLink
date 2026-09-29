@@ -1,5 +1,10 @@
+// Backend runs on 8010, not Django's default 8000 — on this machine Windows
+// reserves 8000 dynamically for Hyper-V/WSL2, which makes `runserver` fail
+// with WinError 10048 even though no visible process owns the port (see
+// CapstoneFrontEnd/NurseLink/services/config.ts, which documents the same
+// move on the mobile side). Override with VITE_API_URL for a staging server.
 const API_BASE_URL =
-  import.meta.env.VITE_API_URL?.replace(/\/$/, '') || 'http://127.0.0.1:8000/api';
+  import.meta.env.VITE_API_URL?.replace(/\/$/, '') || 'http://127.0.0.1:8010/api';
 
 const TOKEN_KEY = 'nurselink_token';
 

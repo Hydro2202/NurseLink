@@ -97,6 +97,38 @@ function statusLabel(status: string): string {
   }
 }
 
+/**
+ * The nurse/shift line under the patient name. Previously this always
+ * showed the *sender's* shift (`handover.shift`), even for an outgoing
+ * referral where what actually matters is the shift the receiving nurse
+ * (`handover.nurseTo`) is assigned to — so "Assigned Shift" never appeared
+ * for the two most common views (only the head-nurse oversight branch used
+ * toShiftLabel at all). Fixed to show the real assigned nurse + shift for
+ * each view, using the same toShiftLabel/nurseToRole the API already
+ * returns — falls back to "Not assigned" rather than hiding the line
+ * whenever a referral predates these fields.
+ */
+function describeHandover(handover: HandoverNote, type: 'incoming' | 'outgoing' | 'oversight'): string {
+  if (type === 'oversight') {
+    const who = `${handover.nurseFrom} → ${handover.nurseTo}`;
+    const shifts =
+      handover.shiftLabel && handover.toShiftLabel
+        ? `${handover.shiftLabel} → ${handover.toShiftLabel} shift${
+            handover.shiftDate ? ` • ${handover.shiftDate}` : ''
+          }`
+        : `${handover.shift} shift • ${handover.date}`;
+    return `${who} • ${shifts}`;
+  }
+  if (type === 'outgoing') {
+    const who = `To: ${handover.nurseTo}${handover.nurseToRole ? `, ${handover.nurseToRole}` : ''}`;
+    const shift = handover.toShiftLabel
+      ? `Assigned shift: ${handover.toShiftLabel}${handover.shiftDate ? ` (${handover.shiftDate})` : ''}`
+      : 'Assigned shift: Not assigned';
+    return `${who} • ${shift}`;
+  }
+  return `From: ${handover.nurseFrom} • ${handover.shiftLabel || handover.shift} shift • ${handover.date}`;
+}
+
 export default function HandoverPage() {
   const { user } = useAuth();
   const router = useRouter();
@@ -113,6 +145,8 @@ export default function HandoverPage() {
   const [acknowledgeLoading, setAcknowledgeLoading] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('newest');
+  // Head-nurse oversight only — filters by the referral's FROM shift.
+  const [shiftFilter, setShiftFilter] = useState('');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [handoverToDelete, setHandoverToDelete] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -163,7 +197,9 @@ export default function HandoverPage() {
       const newHandover = await createHandover({
         patientId: handoverData.patientId || '',
         patientName: handoverData.patientName || '',
-        shift: handoverData.shift || 'morning',
+        // shift/toShift/shiftDate/department are all server-derived from
+        // the sender's own Duty Roster shift now — nothing to send here,
+        // see api/referral_shifts.py.
         date: new Date().toISOString().slice(0, 10),
         nurseFrom: currentUserName,
         nurseTo: handoverData.nurseTo || '',
@@ -365,14 +401,17 @@ export default function HandoverPage() {
     [handovers, searchQuery, sortBy, currentUserName]
   );
 
-  // Head-nurse oversight: every referral the backend already scoped to this
-  // head nurse's department (see HandoverViewSet.get_queryset) — no
+  // Head-nurse oversight: every referral (see HandoverViewSet.get_queryset,
+  // which returns all of them to a head nurse, unfiltered) — no
   // incoming/outgoing split, since a head nurse is neither sender nor
   // recipient of any of them.
   const oversightHandovers = useMemo(
-    () => sortHandovers(handovers.filter(matchesSearch)),
+    () =>
+      sortHandovers(
+        handovers.filter((h) => matchesSearch(h) && (!shiftFilter || h.shift === shiftFilter))
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [handovers, searchQuery, sortBy]
+    [handovers, searchQuery, sortBy, shiftFilter]
   );
 
   const renderHandoverCard = (handover: HandoverWithMeta, type: 'incoming' | 'outgoing' | 'oversight') => (
@@ -393,14 +432,7 @@ export default function HandoverPage() {
               <FileText size={20} color={Colors.blue600} />
               <CardTitle style={styles.cardTitle}>{handover.patientName}</CardTitle>
             </View>
-            <CardDescription>
-              {type === 'oversight'
-                ? `${handover.nurseFrom} → ${handover.nurseTo}`
-                : type === 'incoming'
-                  ? `From: ${handover.nurseFrom}`
-                  : `To: ${handover.nurseTo}`}{' '}
-              • {handover.shift} shift • {handover.date}
-            </CardDescription>
+            <CardDescription>{describeHandover(handover, type)}</CardDescription>
           </View>
           <View style={styles.headerActions}>
             <Badge variant={statusBadgeVariant(handover.status)}>{statusLabel(handover.status)}</Badge>
@@ -559,7 +591,7 @@ export default function HandoverPage() {
           <Text style={styles.title}>Referral</Text>
           <Text style={styles.subtitle}>
             {isHeadNurse
-              ? 'Department oversight — view only, for your information'
+              ? 'Referral oversight — view only, for your information'
               : 'SBAR-based digital endorsement'}
           </Text>
         </View>
@@ -567,7 +599,7 @@ export default function HandoverPage() {
         <Alert variant="info">
           <AlertDescription>
             {isHeadNurse
-              ? 'Referrals move directly between nurses with no approval step. You can see every referral in your department and its full history here, but cannot accept, decline, or edit one.'
+              ? 'Referrals move directly between nurses with no approval step. You can see every referral and its full history here, but cannot accept, decline, or edit one.'
               : 'All referral notes are encrypted and HIPAA-compliant. Only authorized personnel can access this information.'}
           </AlertDescription>
         </Alert>
@@ -589,6 +621,20 @@ export default function HandoverPage() {
             placeholder="Sort by"
             style={styles.sortSelect}
           />
+          {isHeadNurse ? (
+            <Select
+              value={shiftFilter}
+              onValueChange={setShiftFilter}
+              options={[
+                { label: 'All shifts', value: '' },
+                { label: 'From Morning', value: 'morning' },
+                { label: 'From Afternoon', value: 'afternoon' },
+                { label: 'From Night', value: 'night' },
+              ]}
+              placeholder="Filter by shift"
+              style={styles.sortSelect}
+            />
+          ) : null}
           {!isHeadNurse ? (
             <Button onPress={handleCreateHandover} style={styles.newBtn}>
               <Plus size={16} color={Colors.white} />
@@ -603,7 +649,7 @@ export default function HandoverPage() {
               <Card>
                 <CardContent style={styles.empty}>
                   <Eye size={48} color={Colors.gray500} />
-                  <Text style={styles.emptyText}>No referrals in your department yet</Text>
+                  <Text style={styles.emptyText}>No referrals yet</Text>
                 </CardContent>
               </Card>
             ) : (

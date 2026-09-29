@@ -153,7 +153,7 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
 
           <div className="p-4 bg-muted/50 rounded-lg border border-border/50">
             <p className="text-sm text-foreground mb-1">
-              <strong>Role:</strong> {user?.role === 'staff_nurse' ? 'Nurse' : 'Supervisor'}
+              <strong>Role:</strong> {user?.role === 'staff_nurse' ? 'Nurse' : 'Head Nurse'}
             </p>
             <p className="text-xs text-muted-foreground">
               Role cannot be changed. Contact your administrator for role updates.

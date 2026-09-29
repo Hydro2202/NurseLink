@@ -3,12 +3,15 @@ import {
   View,
   Text,
   Image,
+  ImageBackground,
   StyleSheet,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   useWindowDimensions,
+  ViewStyle,
+  ImageStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Link, useRouter } from 'expo-router';
@@ -127,7 +130,16 @@ export default function LoginPage() {
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+    <ImageBackground
+      source={require('../assets/images/hospital-bg.jpg')}
+      style={styles.bg}
+      resizeMode="cover"
+    >
+      {/* Subtle NurseLink-blue tint over the photo, not a heavy darken —
+          the photo stays bright and clear, this just ties it to the brand
+          color and keeps the white card from floating on top of it. */}
+      <View style={[StyleSheet.absoluteFill, styles.overlay]} pointerEvents="none" />
+      <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -138,7 +150,22 @@ export default function LoginPage() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.inner}>
+            {/* No container/pill anymore — the logo sits directly on the
+                photo. The bloom view behind it and the drop-shadow on the
+                image itself are what create the glow; there's no box. */}
             <View style={styles.logoWrap}>
+              {Platform.OS === 'web' ? (
+                <View style={styles.logoBloom} pointerEvents="none" />
+              ) : (
+                // No gradient primitive on native without an extra
+                // dependency — three concentric, decreasingly-opaque
+                // circles approximate the same soft radial falloff.
+                <View style={styles.logoBloomNativeWrap} pointerEvents="none">
+                  <View style={[styles.logoBloomRing, styles.logoBloomRingOuter]} />
+                  <View style={[styles.logoBloomRing, styles.logoBloomRingMid]} />
+                  <View style={[styles.logoBloomRing, styles.logoBloomRingInner]} />
+                </View>
+              )}
               <Image
                 source={require('../assets/images/NurseLinkLogo.png')}
                 style={styles.logo}
@@ -341,14 +368,26 @@ export default function LoginPage() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
+  bg: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
+  // NurseLink blue600 (#2563EB) at a stronger opacity per the last round of
+  // feedback ("make the blue transparency more blue") — the photo still
+  // reads clearly underneath, just with a more pronounced brand tint.
+  overlay: {
+    backgroundColor: 'rgba(37, 99, 235, 0.38)',
+  },
   safe: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: 'transparent',
   },
   flex: { flex: 1 },
   scroll: {
@@ -361,16 +400,79 @@ const styles = StyleSheet.create({
     maxWidth: 420,
     alignSelf: 'center',
   },
+  // No background/padding/border/shadow here on purpose — the container
+  // itself is invisible. `isolate` (web) keeps the bloom's negative
+  // z-index scoped to this box instead of fighting the card below it.
   logoWrap: {
     alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 24,
+    alignSelf: 'center',
+    position: 'relative',
+    ...(Platform.OS === 'web' ? ({ isolation: 'isolate' } as ViewStyle) : null),
   },
-  logo: {
+  // Soft "lit from behind" bloom, centered behind the logo. Web gets a
+  // literal radial-gradient (exact match to the design); native has no
+  // gradient primitive without an extra dependency, so it falls back to
+  // stacked semi-transparent circles that approximate the same falloff.
+  logoBloom: {
+    position: 'absolute',
+    width: 130,
+    height: 130,
+    borderRadius: 65,
+    // react-native-web's recognized property for a CSS gradient is
+    // `backgroundImage`, not the `background` shorthand — that shorthand
+    // rendered correctly (browsers don't care) but tripped RN's own style
+    // validator into a visible dev-mode warning on screen.
+    backgroundImage:
+      'radial-gradient(circle, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.2) 40%, transparent 70%)',
+    filter: 'blur(6px)',
+    zIndex: -1,
+  } as unknown as ViewStyle,
+  logoBloomNativeWrap: {
+    position: 'absolute',
+    width: 130,
+    height: 130,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: -1,
+  },
+  logoBloomRing: {
+    position: 'absolute',
+    borderRadius: 999,
+  },
+  logoBloomRingOuter: {
+    width: 130,
+    height: 130,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  logoBloomRingMid: {
+    width: 90,
+    height: 90,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+  },
+  logoBloomRingInner: {
+    width: 52,
+    height: 52,
+    backgroundColor: 'rgba(255,255,255,0.35)',
+  },
+  logo: ({
     width: 256,
     height: 120,
-  },
+    ...(Platform.OS === 'web'
+      ? {
+          filter:
+            'drop-shadow(0 0 6px rgba(255,255,255,0.9)) drop-shadow(0 0 14px rgba(255,255,255,0.6)) drop-shadow(0 0 28px rgba(255,255,255,0.35))',
+        }
+      : {
+          shadowColor: '#FFFFFF',
+          shadowOffset: { width: 0, height: 0 },
+          shadowOpacity: 0.9,
+          shadowRadius: 14,
+        }),
+  } as unknown) as ImageStyle,
   card: {
-    ...Shadows.sm,
+    ...Shadows.lg,
   },
   cardHeader: {
     paddingBottom: 8,

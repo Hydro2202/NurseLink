@@ -396,7 +396,7 @@ export default function TasksPage() {
   const filterTabs = [
     { id: 'all', label: 'All', count: counts.all, color: Colors.blue600 },
     { id: 'urgent', label: 'Urgent', count: counts.urgent, color: Colors.red600 },
-    { id: 'routine', label: 'Routine', count: counts.routine, color: '#CA8A04' },
+    { id: 'routine', label: 'Routine', count: counts.routine, color: Colors.yellow700 },
     { id: 'overdue', label: 'Overdue', count: counts.overdue, color: Colors.orange600 },
     { id: 'completed', label: 'Done', count: counts.completed, color: Colors.green600 },
   ];

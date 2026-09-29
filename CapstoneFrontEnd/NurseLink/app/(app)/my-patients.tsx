@@ -21,6 +21,7 @@ import {
   Edit2,
   Trash2,
   Building2,
+  FlaskConical,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { fetchPatients, deletePatient, ApiError } from '../../services/api';
@@ -32,6 +33,7 @@ import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
 import { RiskBadge } from '../../components/RiskBadge';
 import { PatientKardexModal } from '../../components/PatientKardexModal';
+import { LabsAndMedicationsModal } from '../../components/LabsAndMedicationsModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Colors, Radius } from '../../constants/colors';
 import { useToast } from '../../contexts/ToastContext';
@@ -69,6 +71,8 @@ export default function MyPatientsPage() {
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [toDelete, setToDelete] = useState<Patient | null>(null);
+  const [labsMedsOpen, setLabsMedsOpen] = useState(false);
+  const [labsMedsPatient, setLabsMedsPatient] = useState<Patient | null>(null);
 
   const loadPatients = async () => {
     try {
@@ -309,6 +313,18 @@ export default function MyPatientsPage() {
                   <Trash2 size={14} color={Colors.red600} />
                   <Text style={[styles.actionText, { color: Colors.red600 }]}>Delete</Text>
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  style={styles.actionBtn}
+                  onPress={() => {
+                    setLabsMedsPatient(patient);
+                    setLabsMedsOpen(true);
+                  }}
+                >
+                  <FlaskConical size={14} color={Colors.blue700} />
+                  <Text style={styles.actionText}>Labs &amp; Meds</Text>
+                </Button>
                 <Pressable
                   style={styles.viewTasksBtn}
                   onPress={() =>
@@ -332,6 +348,11 @@ export default function MyPatientsPage() {
         mode="edit"
         patient={editingPatient}
         onSaved={loadPatients}
+      />
+      <LabsAndMedicationsModal
+        open={labsMedsOpen}
+        onOpenChange={setLabsMedsOpen}
+        patient={labsMedsPatient}
       />
       <ConfirmDialog
         open={deleteOpen}

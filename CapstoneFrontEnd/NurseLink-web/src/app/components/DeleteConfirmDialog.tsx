@@ -42,7 +42,7 @@ export function DeleteConfirmDialog({
               onConfirm();
             }}
             disabled={loading}
-            className="bg-red-600 hover:bg-red-700"
+            variant="destructive"
           >
             {loading ? (
               <>

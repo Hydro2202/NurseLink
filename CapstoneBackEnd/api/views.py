@@ -61,7 +61,10 @@ from .models import (
     IdScanAttempt,
     FaceVerificationAttempt,
     HandoverNote,
+    KardexLaboratory,
+    KardexMedication,
     KardexRecord,
+    MedicationIntake,
     Notification,
     NurseProfile,
     Patient,
@@ -75,6 +78,7 @@ from .models import (
     PatientVisit,
 )
 from .handover_tasks import adopt_handover_tasks
+from .referral_shifts import SHIFT_LABELS, get_eligible_recipients
 from .vitals_extraction import extract_vitals_from_text
 from .notifications import (
     notify,
@@ -145,7 +149,10 @@ from .serializers import (
     FaceVerificationSerializer,
     FaceVerificationStatusSerializer,
     HandoverSerializer,
+    KardexLaboratorySerializer,
+    KardexMedicationSerializer,
     KardexRecordSerializer,
+    MedicationIntakeSerializer,
     LoginSerializer,
     NotificationSerializer,
     NurseAssignmentSerializer,
@@ -2143,6 +2150,20 @@ class PatientViewSet(viewsets.ModelViewSet):
                 .select_related('doctor', 'doctor__department'),
                 to_attr='active_doctor_assignments',
             ),
+            # Laboratories/medication orders sections — same one-extra-query
+            # reasoning as the two prefetches above, now that every patient
+            # row also renders these.
+            Prefetch(
+                'laboratories',
+                queryset=KardexLaboratory.objects.select_related('created_by', 'updated_by').ordered_for_display(),
+                to_attr='prefetched_laboratories',
+            ),
+            Prefetch(
+                'medication_orders',
+                queryset=KardexMedication.objects.select_related('created_by', 'updated_by')
+                .prefetch_related('intakes__administered_by'),
+                to_attr='prefetched_medication_orders',
+            ),
         ).all()
         mine = self.request.query_params.get('mine')
         search = self.request.query_params.get('search')
@@ -2736,10 +2757,10 @@ class HandoverViewSet(viewsets.ModelViewSet):
     sent -> received -> accepted|declined -> completed, driven entirely by
     the sending nurse (create) and the receiving nurse (acknowledge/accept/
     decline/complete — see _ensure_recipient). Head nurses can list/retrieve
-    (scoped to their department in get_queryset) but CanManageReferral
-    blocks them from write methods, and every action below additionally
-    checks the acting user is the actual recipient — so there is no path,
-    permission or otherwise, for a head nurse to act on a referral.
+    every referral (see get_queryset) but CanManageReferral blocks them from
+    write methods, and every action below additionally checks the acting
+    user is the actual recipient — so there is no path, permission or
+    otherwise, for a head nurse to act on a referral.
     """
 
     serializer_class = HandoverSerializer
@@ -2749,25 +2770,26 @@ class HandoverViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = HandoverNote.objects.select_related(
-            'patient', 'created_by', 'nurse_to_user'
+            'patient', 'created_by', 'nurse_to_user', 'nurse_to_user__nurse_profile', 'department'
         ).all()
         status_filter = self.request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
 
-        user = self.request.user
-        if user.is_authenticated and get_user_role(user) == 'head_nurse':
-            # Department oversight view: NurseProfile.department is a plain
-            # string (no FK), so this is a string match against whichever
-            # department the sending or receiving nurse's profile carries.
-            # A head nurse with no department set sees every referral rather
-            # than silently seeing none.
-            dept = (getattr(getattr(user, 'nurse_profile', None), 'department', '') or '').strip()
-            if dept:
-                qs = qs.filter(
-                    Q(created_by__nurse_profile__department=dept)
-                    | Q(nurse_to_user__nurse_profile__department=dept)
-                )
+        # A head nurse gets every referral, unfiltered — same "oversight
+        # sees everything, no silo" rule PatientViewSet (the ward roster)
+        # and KardexViewSet already use for head nurses. This used to be
+        # scoped by matching NurseProfile.department (a free-text field set
+        # later by a head nurse, never validated against anything) between
+        # the head nurse's own profile and the referral's sender/recipient.
+        # That silently hid every referral whenever the strings didn't
+        # match exactly — a head nurse with an admin-only department like
+        # "Nursing Administration" that no staff nurse shares saw zero
+        # referrals ever, and even a real ward match ("ICU" vs "Intensive
+        # Care Unit (ICU)") could fail on a wording difference alone. A
+        # staff nurse's own visibility is unaffected: CanManageReferral and
+        # _ensure_recipient still mean they only ever create/act on their
+        # own referrals; this only changes what a head nurse can *see*.
         return qs
 
     def _ensure_recipient(self, handover):
@@ -2784,6 +2806,76 @@ class HandoverViewSet(viewsets.ModelViewSet):
             raise PermissionDenied('Head nurses have view-only access to referrals.')
         if not handover.nurse_to_user_id or handover.nurse_to_user_id != self.request.user.id:
             raise PermissionDenied('Only the receiving nurse can update this referral.')
+
+    @extend_schema(
+        responses={200: inline_serializer(
+            name='EligibleReferralRecipients',
+            fields={
+                'onDuty': serializers.BooleanField(),
+                'currentShift': serializers.CharField(allow_null=True),
+                'currentShiftLabel': serializers.CharField(allow_null=True),
+                'departmentId': serializers.IntegerField(allow_null=True),
+                'departmentName': serializers.CharField(allow_blank=True),
+                'nextShift': serializers.CharField(allow_null=True),
+                'nextShiftLabel': serializers.CharField(allow_null=True),
+                'nextShiftDate': serializers.DateField(allow_null=True),
+                'recipients': inline_serializer(
+                    name='EligibleReferralRecipient',
+                    fields={
+                        'id': serializers.CharField(),
+                        'name': serializers.CharField(),
+                        'role': serializers.CharField(),
+                        'specialization': serializers.CharField(),
+                        'email': serializers.CharField(),
+                    },
+                    many=True,
+                ),
+            },
+        )},
+        summary='Who the signed-in nurse may refer to right now',
+        description=(
+            'Shift-rotation eligible recipients: every approved, active staff nurse in the '
+            "same department, scheduled for the next shift in rotation (Morning -> "
+            "Afternoon -> Night -> next day's Morning) from the signed-in nurse's own "
+            'current DutyAssignment — never a static profile default. `onDuty` is false '
+            '(and `recipients` empty) when the signed-in nurse has no active shift right now.'
+        ),
+    )
+    @action(detail=False, methods=['get'], url_path='eligible-recipients')
+    def eligible_recipients(self, request):
+        current, next_shift, next_date, recipients = get_eligible_recipients(request.user)
+        if current is None:
+            return Response({
+                'onDuty': False,
+                'currentShift': None,
+                'currentShiftLabel': None,
+                'departmentId': None,
+                'departmentName': '',
+                'nextShift': None,
+                'nextShiftLabel': None,
+                'nextShiftDate': None,
+                'recipients': [],
+            })
+        return Response({
+            'onDuty': True,
+            'currentShift': current.shift,
+            'currentShiftLabel': SHIFT_LABELS.get(current.shift, current.shift),
+            'departmentId': current.department_id,
+            'departmentName': current.department.name,
+            'nextShift': next_shift,
+            'nextShiftLabel': SHIFT_LABELS.get(next_shift, next_shift),
+            'nextShiftDate': next_date,
+            'recipients': [
+                {
+                    'id': str(nurse.pk),
+                    'name': nurse.get_full_name().strip() or nurse.username,
+                    'role': nurse.nurse_profile.clinical_role or 'RN',
+                    'specialization': nurse.nurse_profile.specialization or '',
+                    'email': nurse.email,
+                }
+                for nurse in recipients
+            ],
+        })
 
     @staticmethod
     def _append_status_history(handover, status, user, note=''):
@@ -3360,9 +3452,33 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 'diagnosis': patient.diagnosis,
                 'riskLevel': patient.risk_level,
                 'attendingPhysician': patient.attending_physician,
+                'heightCm': patient.height_cm,
+                'weightKg': patient.weight_kg,
+                'bmi': patient.bmi,
                 'allergies': patient.allergies or [],
                 'medications': patient.medications or [],
                 'alerts': patient.alerts or [],
+                # Kardex Laboratories/Medication Intake context — pending
+                # labs and currently-active medication orders only, so the
+                # AI sees what's outstanding without being handed a full
+                # done/cancelled/discontinued history it has no use for.
+                'pendingLabs': [
+                    {'testName': lab.test_name, 'dateOrdered': lab.date_ordered.isoformat()}
+                    for lab in patient.laboratories.filter(status='pending')
+                ],
+                'activeMedications': [
+                    {
+                        'medicationName': med.medication_name,
+                        'dose': med.dose,
+                        'route': med.route,
+                        'frequency': med.frequency,
+                        'lastGiven': (
+                            (med.last_intake.administered_at or med.last_intake.scheduled_time).isoformat()
+                            if med.last_intake else None
+                        ),
+                    }
+                    for med in patient.medication_orders.filter(is_active=True)
+                ],
             },
             # Sent only as a manual override hint when the caller actually
             # supplied one — never the patient's stored snapshot.
@@ -3377,8 +3493,8 @@ class ChartingViewSet(viewsets.ModelViewSet):
             # Explicit contract for the workflow: never invent clinical facts.
             'instructions': (
                 'Structure a nursing progress note using ONLY (1) the nurse assessment '
-                'text, (2) the patient demographics/allergies/medications/alerts provided, '
-                'and (3) the vitalSigns manual override, if one was provided (otherwise none '
+                'text, (2) the patient demographics/allergies/medications/alerts/pendingLabs/'
+                'activeMedications provided, and (3) the vitalSigns manual override, if one was provided (otherwise none '
                 'was, and vitals must come from (1) alone). Do not invent symptoms, '
                 'diagnoses, medications, interventions, vital signs, or observations that are '
                 'not present in those inputs.\n\n'
@@ -4091,6 +4207,122 @@ class KardexViewSet(viewsets.ModelViewSet):
         notify_kardex_reviewed(kardex, request.user)
 
         return Response(KardexRecordSerializer(kardex, context={'request': request}).data)
+
+
+def _check_patient_care_scope(request, patient, action_noun):
+    """
+    Same rule PatientViewSet.update()/destroy() already enforce: a staff
+    nurse may only act on a patient assigned to them; a head nurse, any
+    patient. Shared here so the three Kardex sub-resource viewsets below
+    (labs, medications, intakes) don't each re-derive it.
+    """
+    role = get_user_role(request.user)
+    if role != 'head_nurse' and patient.assigned_nurse_id != request.user.id:
+        raise PermissionDenied(f'You can only {action_noun} for patients assigned to you.')
+
+
+class KardexLaboratoryViewSet(viewsets.ModelViewSet):
+    """
+    Lab orders for a patient's Kardex Laboratories section — see
+    KardexLaboratory's docstring for why these hang off Patient rather than
+    a single KardexRecord snapshot. Deleting is head-nurse-only; a staff
+    nurse cancels a lab instead (status='cancelled' via a normal update).
+    """
+
+    serializer_class = KardexLaboratorySerializer
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
+
+    def get_queryset(self):
+        qs = KardexLaboratory.objects.select_related('patient', 'created_by', 'updated_by').ordered_for_display()
+        patient_id = self.request.query_params.get('patientId')
+        if patient_id:
+            qs = qs.filter(patient__patient_code=patient_id)
+        return qs
+
+    def perform_create(self, serializer):
+        patient = serializer.validated_data.get('patient')
+        _check_patient_care_scope(self.request, patient, 'add labs')
+        serializer.save()
+
+    def perform_update(self, serializer):
+        _check_patient_care_scope(self.request, serializer.instance.patient, 'update labs')
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if get_user_role(self.request.user) != 'head_nurse':
+            raise PermissionDenied('Only a head nurse can delete a lab entry. Cancel it instead.')
+        instance.delete()
+
+
+class KardexMedicationViewSet(viewsets.ModelViewSet):
+    """
+    Medication orders for a patient's Kardex Medication Intake section.
+    Deleting is head-nurse-only; a staff nurse discontinues a medication
+    instead (isActive=false via a normal update) — its intake history is
+    unaffected either way.
+    """
+
+    serializer_class = KardexMedicationSerializer
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
+
+    def get_queryset(self):
+        qs = (
+            KardexMedication.objects.select_related('patient', 'created_by', 'updated_by')
+            .prefetch_related('intakes__administered_by')
+            .all()
+        )
+        patient_id = self.request.query_params.get('patientId')
+        if patient_id:
+            qs = qs.filter(patient__patient_code=patient_id)
+        is_active = self.request.query_params.get('isActive')
+        if is_active in ('1', 'true', 'True'):
+            qs = qs.filter(is_active=True)
+        elif is_active in ('0', 'false', 'False'):
+            qs = qs.filter(is_active=False)
+        return qs
+
+    def perform_create(self, serializer):
+        patient = serializer.validated_data.get('patient')
+        _check_patient_care_scope(self.request, patient, 'add medications')
+        serializer.save()
+
+    def perform_update(self, serializer):
+        _check_patient_care_scope(self.request, serializer.instance.patient, 'update medications')
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if get_user_role(self.request.user) != 'head_nurse':
+            raise PermissionDenied('Only a head nurse can delete a medication order. Discontinue it instead.')
+        instance.delete()
+
+
+class MedicationIntakeViewSet(viewsets.ModelViewSet):
+    """
+    One recorded administration against a KardexMedication order —
+    insert-only, like VitalSignsViewSet: a recorded intake is never edited
+    or deleted, only superseded by the next one.
+    """
+
+    serializer_class = MedicationIntakeSerializer
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        qs = MedicationIntake.objects.select_related(
+            'medication', 'medication__patient', 'administered_by'
+        ).all()
+        medication_id = self.request.query_params.get('medicationId')
+        if medication_id:
+            qs = qs.filter(medication_id=medication_id)
+        patient_id = self.request.query_params.get('patientId')
+        if patient_id:
+            qs = qs.filter(medication__patient__patient_code=patient_id)
+        return qs
+
+    def perform_create(self, serializer):
+        medication = serializer.validated_data.get('medication')
+        _check_patient_care_scope(self.request, medication.patient, 'record intakes')
+        serializer.save()
 
 
 class NurseViewSet(viewsets.ViewSet):

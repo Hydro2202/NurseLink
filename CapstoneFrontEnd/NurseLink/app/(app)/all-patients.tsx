@@ -25,6 +25,7 @@ import {
   Heart,
   Thermometer,
   Droplet,
+  FlaskConical,
 } from 'lucide-react-native';
 import {
   fetchPatients,
@@ -48,9 +49,11 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { PatientVisitHistoryModal } from '../../components/PatientVisitHistoryModal';
 import { ReadmitPatientModal } from '../../components/ReadmitPatientModal';
 import { EditPatientModal } from '../../components/EditPatientModal';
+import { LabsAndMedicationsModal } from '../../components/LabsAndMedicationsModal';
 import { Colors, Radius, Shadows } from '../../constants/colors';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { bmiCategory } from '../../utils/bmi';
 
 function getAttendingPhysician(patient: Patient) {
   return patient.attendingPhysician || 'Not Assigned';
@@ -187,6 +190,8 @@ export default function AllPatientsPage() {
   const [readmitTarget, setReadmitTarget] = useState<Patient | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Patient | null>(null);
+  const [labsMedsOpen, setLabsMedsOpen] = useState(false);
+  const [labsMedsPatient, setLabsMedsPatient] = useState<Patient | null>(null);
 
   const loadPatients = async () => {
     try {
@@ -574,6 +579,17 @@ export default function AllPatientsPage() {
                         <Edit2 size={15} color={Colors.blue700} />
                       </Pressable>
                     ) : null}
+                    <Pressable
+                      onPress={() => {
+                        setLabsMedsPatient(patient);
+                        setLabsMedsOpen(true);
+                      }}
+                      style={styles.iconBtn}
+                      hitSlop={6}
+                      accessibilityLabel={`Labs and medication intake for ${patient.name}`}
+                    >
+                      <FlaskConical size={15} color={Colors.blue700} />
+                    </Pressable>
                   </View>
                 </View>
 
@@ -755,6 +771,14 @@ export default function AllPatientsPage() {
                   })}
                 </View>
 
+                {patient.heightCm != null || patient.weightKg != null ? (
+                  <Text style={styles.heightWeightLine}>
+                    Height: {patient.heightCm != null ? `${patient.heightCm} cm` : '—'} · Weight:{' '}
+                    {patient.weightKg != null ? `${patient.weightKg} kg` : '—'}
+                    {patient.bmi != null ? ` · BMI: ${patient.bmi} (${bmiCategory(patient.bmi)})` : ''}
+                  </Text>
+                ) : null}
+
                 {patient.alerts.length > 0 ? (
                   <View style={styles.alerts}>
                     {patient.alerts.map((alert, idx) => (
@@ -854,6 +878,11 @@ export default function AllPatientsPage() {
         mode={formMode}
         patient={editingPatient}
         onSaved={loadPatients}
+      />
+      <LabsAndMedicationsModal
+        open={labsMedsOpen}
+        onOpenChange={setLabsMedsOpen}
+        patient={labsMedsPatient}
       />
       <ConfirmDialog
         open={dischargeConfirmOpen}
@@ -1072,6 +1101,7 @@ const styles = StyleSheet.create({
   vitalIconRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   vitalLabel: { fontSize: 10.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.2 },
   vitalValue: { fontSize: 13.5, fontWeight: '800' },
+  heightWeightLine: { fontSize: 12, color: Colors.gray600, marginTop: 2 },
 
   alerts: { gap: 6 },
   alertChip: {

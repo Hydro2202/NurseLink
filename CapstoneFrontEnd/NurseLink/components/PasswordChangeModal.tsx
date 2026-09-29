@@ -19,6 +19,17 @@ interface PasswordChangeModalProps {
   onSave: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
+// Module-scope, not defined inside PasswordChangeModal: a component
+// declared inside another component's render body gets a brand-new
+// identity every render, so React tears down and remounts it every time —
+// here that's only the eye icon, but the same mistake elsewhere is what
+// makes a real <TextInput> lose focus after every keystroke.
+const EyeToggle = ({ show, onToggle }: { show: boolean; onToggle: () => void }) => (
+  <Pressable onPress={onToggle} hitSlop={8}>
+    {show ? <EyeOff size={16} color={Colors.mutedForeground} /> : <Eye size={16} color={Colors.mutedForeground} />}
+  </Pressable>
+);
+
 export function PasswordChangeModal({ open, onOpenChange, onSave }: PasswordChangeModalProps) {
   const [loading, setLoading] = useState(false);
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
@@ -128,22 +139,6 @@ export function PasswordChangeModal({ open, onOpenChange, onSave }: PasswordChan
       label: 'Contains special characters',
     },
   ];
-
-  const EyeToggle = ({
-    show,
-    onToggle,
-  }: {
-    show: boolean;
-    onToggle: () => void;
-  }) => (
-    <Pressable onPress={onToggle} hitSlop={8}>
-      {show ? (
-        <EyeOff size={16} color={Colors.mutedForeground} />
-      ) : (
-        <Eye size={16} color={Colors.mutedForeground} />
-      )}
-    </Pressable>
-  );
 
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => onOpenChange(false)}>

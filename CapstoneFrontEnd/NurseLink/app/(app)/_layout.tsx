@@ -34,6 +34,7 @@ import {
   type LucideIcon,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
+import { useLive } from '../../contexts/LiveContext';
 import { Button } from '../../components/Button';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { NotificationPanel } from '../../components/NotificationPanel';
@@ -269,6 +270,25 @@ function NotificationBell({
   );
 }
 
+/**
+ * Small, unobtrusive indicator for the live-poll safety net being unable to
+ * reach the backend — see LiveContext's connectionStatus. Renders nothing
+ * while connected, so it never adds visual noise to the normal case; no
+ * popup, no dialog, just a quiet pill next to the bell that clears itself
+ * the moment a poll succeeds again.
+ */
+function LiveStatusIndicator() {
+  const styles = useLayoutStyles();
+  const { connectionStatus } = useLive();
+  if (connectionStatus === 'connected') return null;
+  return (
+    <View style={styles.liveOfflinePill} accessibilityLabel="Backend offline, retrying">
+      <View style={styles.liveOfflineDot} />
+      <Text style={styles.liveOfflineText}>Offline</Text>
+    </View>
+  );
+}
+
 function ProfileAvatar({
   avatar,
   size = 28,
@@ -370,9 +390,9 @@ export default function AppLayout() {
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, show: true },
     { name: 'Tasks', href: '/(app)/tasks', icon: ClipboardList, show: isStaffNurse },
-    // Head nurses get a read-only oversight view of every referral in their
-    // department — see handover.tsx's isHeadNurse branch — never an approval
-    // gate, so this is the same screen, not a separate one.
+    // Head nurses get a read-only oversight view of every referral — see
+    // handover.tsx's isHeadNurse branch — never an approval gate, so this
+    // is the same screen, not a separate one.
     { name: 'Referral', href: '/(app)/handover', icon: FileText, show: isStaffNurse || isSupervisor },
     { name: 'My Duty', href: '/(app)/my-duty', icon: Stethoscope, show: isStaffNurse },
     { name: 'Duty Roster', href: '/(app)/duty-roster', icon: Calendar, show: isSupervisor },
@@ -459,8 +479,16 @@ export default function AppLayout() {
         <View style={[styles.mobileHeader, Shadows.md]}>
           <View style={styles.brandPill}>
             <View style={styles.brandLogoWrap}>
+              {/* nurselink-emblem.png is a tight crop of just the circular
+                  mark from the original NurseLinkLogo.png lockup — that file
+                  also bakes in the "NURSELINK" wordmark plus a lot of
+                  transparent canvas around it, which made the mark render
+                  tiny inside every small logo box here even at full
+                  container size. The wordmark is redundant anyway since the
+                  text below is already rendered separately. Same asset used
+                  everywhere else in this file, below. */}
               <Image
-                source={require('../../assets/images/NurseLinkLogo.png')}
+                source={require('../../assets/images/nurselink-emblem.png')}
                 style={styles.brandLogo}
                 resizeMode="contain"
               />
@@ -471,6 +499,7 @@ export default function AppLayout() {
             </View>
           </View>
           <View style={styles.headerActions}>
+            <LiveStatusIndicator />
             <NotificationBell unreadCount={unreadCount} onPress={() => setNotificationPanelOpen(true)} />
             <ProfileAvatar avatar={user.avatar} onPress={() => setProfileMenuOpen(true)} />
           </View>
@@ -511,7 +540,7 @@ export default function AppLayout() {
             </Pressable>
             <View style={styles.supervisorLogoCircle}>
               <Image
-                source={require('../../assets/images/NurseLinkLogo.png')}
+                source={require('../../assets/images/nurselink-emblem.png')}
                 style={styles.supervisorLogo}
                 resizeMode="contain"
               />
@@ -522,6 +551,7 @@ export default function AppLayout() {
             </View>
           </View>
           <View style={styles.headerActions}>
+            <LiveStatusIndicator />
             <NotificationBell unreadCount={unreadCount} onPress={() => setNotificationPanelOpen(true)} />
             <ProfileAvatar
               avatar={user.avatar}
@@ -564,7 +594,7 @@ export default function AppLayout() {
           <View style={styles.brandPill}>
             <View style={styles.brandLogoWrap}>
               <Image
-                source={require('../../assets/images/NurseLinkLogo.png')}
+                source={require('../../assets/images/nurselink-emblem.png')}
                 style={styles.brandLogo}
                 resizeMode="contain"
               />
@@ -575,6 +605,7 @@ export default function AppLayout() {
             </View>
           </View>
           <View style={styles.headerActions}>
+            <LiveStatusIndicator />
             <NotificationBell unreadCount={unreadCount} onPress={() => setNotificationPanelOpen(true)} />
             <ProfileAvatar avatar={user.avatar} onPress={() => setProfileMenuOpen(true)} />
           </View>
@@ -603,7 +634,7 @@ export default function AppLayout() {
             <View style={styles.sidebarLogo}>
               <View style={styles.sidebarLogoBox}>
                 <Image
-                  source={require('../../assets/images/NurseLinkLogo.png')}
+                  source={require('../../assets/images/nurselink-emblem.png')}
                   style={styles.sidebarLogoImg}
                   resizeMode="contain"
                 />
@@ -702,7 +733,8 @@ export default function AppLayout() {
               </View>
             </View>
             <View style={styles.headerActions}>
-              <NotificationBell unreadCount={unreadCount} onPress={() => setNotificationPanelOpen(true)} />
+              <LiveStatusIndicator />
+            <NotificationBell unreadCount={unreadCount} onPress={() => setNotificationPanelOpen(true)} />
               <ProfileAvatar
                 avatar={user.avatar}
                 size={36}
@@ -794,6 +826,28 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     alignItems: 'center',
     gap: space(6),
   },
+  liveOfflinePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space(4),
+    paddingHorizontal: space(8),
+    paddingVertical: space(4),
+    borderRadius: 999,
+    backgroundColor: c.orange50,
+    borderWidth: 1,
+    borderColor: c.orange300,
+  },
+  liveOfflineDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: c.orange600,
+  },
+  liveOfflineText: {
+    fontSize: scale(10.5),
+    fontWeight: '700',
+    color: c.orange700,
+  },
   iconBtn: {
     width: 36,
     height: 36,
@@ -859,7 +913,7 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     backgroundColor: c.white,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: space(10),
+    padding: space(8),
     ...Shadows.sm,
   },
   supervisorLogo: {

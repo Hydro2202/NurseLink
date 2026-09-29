@@ -61,12 +61,14 @@ const SHIFT_COLORS: Record<string, { color: string; bg: string; border: string; 
   afternoon: { color: Colors.purple600, bg: Colors.purple50, border: Colors.purple100, icon: Moon },
   night: { color: Colors.blue900, bg: Colors.blue50, border: Colors.blue200, icon: MoonStar },
 };
-// Same status vocabulary as the rest of NurseLink (scheduled=blue,
-// completed=gray, cancelled=red), extended with in-progress=green.
+// Same status vocabulary as the rest of NurseLink (completed=success/green,
+// in-progress=warning/amber, matching dashboard.tsx's task-status colors),
+// plus scheduled=blue and cancelled=red for the shift-lifecycle states that
+// have no task-status equivalent.
 const STATUS_COLORS: Record<string, { color: string; bg: string }> = {
   scheduled: { color: Colors.blue700, bg: Colors.blue50 },
-  in_progress: { color: Colors.green700, bg: Colors.green50 },
-  completed: { color: Colors.gray600, bg: Colors.gray100 },
+  in_progress: { color: Colors.warningHover, bg: Colors.warningLight },
+  completed: { color: Colors.green700, bg: Colors.green50 },
   cancelled: { color: Colors.red700, bg: Colors.red50 },
 };
 

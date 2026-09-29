@@ -7,7 +7,7 @@ import React, {
   useState,
 } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
-import { fetchLiveState, type LiveState } from '../services/api';
+import { fetchLiveState, ApiError, type LiveState } from '../services/api';
 import { useAuth } from './AuthContext';
 import { useRealtime } from './RealtimeContext';
 import { usePreferences } from './PreferencesContext';
@@ -64,11 +64,22 @@ const EMPTY: LiveState = {
   unreadCount: 0,
 };
 
+/** Whether the live poll is currently reaching the backend at all — for a
+ * small, unobtrusive status indicator (e.g. the app header), not for
+ * gating functionality. Screens keep working from their last-known data
+ * either way; this is purely informational. */
+export type LiveConnectionStatus = 'connected' | 'offline';
+
 interface LiveContextType {
   /** Revision strings; compare, never parse. */
   revisions: LiveState;
   /** Ask the server immediately, e.g. straight after an action of your own. */
   poll: () => Promise<void>;
+  /** 'offline' once a poll fails to reach the backend at all (network/
+   * timeout/server error) — flips back to 'connected' the moment a poll
+   * succeeds again. Unrelated to the WebSocket's own `connected` (see
+   * RealtimeContext) — this tracks the polling safety net specifically. */
+  connectionStatus: LiveConnectionStatus;
 }
 
 const LiveContext = createContext<LiveContextType | undefined>(undefined);
@@ -79,6 +90,11 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const { preferences } = usePreferences();
   const { autoRefresh, backgroundSync } = preferences;
   const [revisions, setRevisions] = useState<LiveState>(EMPTY);
+  const [connectionStatus, setConnectionStatus] = useState<LiveConnectionStatus>('connected');
+  const connectionStatusRef = useRef(connectionStatus);
+  useEffect(() => {
+    connectionStatusRef.current = connectionStatus;
+  }, [connectionStatus]);
 
   // Guards against overlapping polls on a slow connection, where a request can
   // still be in flight when the next tick fires.
@@ -90,9 +106,26 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
     inFlight.current = true;
     try {
       const next = await fetchLiveState();
-      if (mounted.current) setRevisions(next);
-    } catch {
-      // A dropped poll is not worth surfacing — the next tick recovers.
+      if (mounted.current) {
+        setRevisions(next);
+        if (connectionStatusRef.current === 'offline') {
+          console.info('[NurseLink] Live connection restored.');
+          setConnectionStatus('connected');
+        }
+      }
+    } catch (error) {
+      // Only a genuine connectivity problem (unreachable/timed out/the
+      // server itself erroring) counts as "offline" — an HTTP 4xx or an
+      // auth failure means the backend was reached and responded, so it's
+      // not a connection issue (401 already triggers a sign-out elsewhere).
+      // Logged once on the transition, not every tick, so a real outage
+      // doesn't spam the console while the next tick keeps quietly retrying.
+      const kind = error instanceof ApiError ? error.kind : 'network';
+      const isConnectivityIssue = kind === 'network' || kind === 'timeout' || kind === 'server';
+      if (isConnectivityIssue && mounted.current && connectionStatusRef.current === 'connected') {
+        console.warn('[NurseLink] Live connection unavailable — will keep retrying.', error);
+        setConnectionStatus('offline');
+      }
     } finally {
       inFlight.current = false;
     }
@@ -108,6 +141,7 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     if (!user) {
       setRevisions(EMPTY);
+      setConnectionStatus('connected');
       return;
     }
 
@@ -118,12 +152,14 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Auto-Refresh Data off means exactly that — no repeating timer at all.
     // The socket still delivers, and returning to the app still reconciles, so
     // turning this off reduces background work rather than freezing the app.
+    // While offline, back off to the slower cadence too — no point hammering
+    // a backend that just told us it's unreachable.
     const timer = autoRefresh
       ? setInterval(
           () => {
             void poll();
           },
-          connected ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS
+          connected || connectionStatus === 'offline' ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS
         )
       : null;
 
@@ -141,7 +177,7 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (timer) clearInterval(timer);
       subscription.remove();
     };
-  }, [user, poll, connected, autoRefresh, backgroundSync]);
+  }, [user, poll, connected, connectionStatus, autoRefresh, backgroundSync]);
 
   // A socket that just came back may have missed events while it was down, so
   // reconcile against the server rather than trusting the gap was empty.
@@ -149,7 +185,11 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (user && connected) void poll();
   }, [connected, user, poll]);
 
-  return <LiveContext.Provider value={{ revisions, poll }}>{children}</LiveContext.Provider>;
+  return (
+    <LiveContext.Provider value={{ revisions, poll, connectionStatus }}>
+      {children}
+    </LiveContext.Provider>
+  );
 };
 
 export function useLive(): LiveContextType {

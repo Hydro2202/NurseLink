@@ -1,5 +1,5 @@
-// User Roles and Hierarchy
-export type UserRole = 'chief_nurse' | 'supervisor' | 'head_nurse' | 'oic' | 'staff_nurse';
+// User Roles and Hierarchy — matches NurseProfile.ROLE_CHOICES on the backend.
+export type UserRole = 'staff_nurse' | 'head_nurse';
 
 export interface User {
   id: string;

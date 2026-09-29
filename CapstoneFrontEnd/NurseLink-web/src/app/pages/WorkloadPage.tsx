@@ -826,7 +826,7 @@ export default function WorkloadPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDelete} className="bg-red-600 hover:bg-red-700">
+            <AlertDialogAction onClick={confirmDelete} variant="destructive">
               Remove Assignment
             </AlertDialogAction>
           </AlertDialogFooter>

@@ -9,7 +9,10 @@ from .models import (
     DutyAssignment,
     FaceVerificationAttempt,
     HandoverNote,
+    KardexLaboratory,
+    KardexMedication,
     KardexRecord,
+    MedicationIntake,
     Notification,
     NurseProfile,
     Patient,
@@ -219,6 +222,27 @@ class KardexRecordAdmin(admin.ModelAdmin):
     list_display = ('last_name', 'first_name', 'room', 'status', 'saved_by_name', 'reviewed_by', 'saved_at')
     list_filter = ('status',)
     search_fields = ('last_name', 'first_name', 'room')
+
+
+@admin.register(KardexLaboratory)
+class KardexLaboratoryAdmin(admin.ModelAdmin):
+    list_display = ('test_name', 'patient', 'status', 'date_ordered', 'date_done', 'updated_by')
+    list_filter = ('status',)
+    search_fields = ('test_name', 'patient__name', 'patient__patient_code')
+
+
+@admin.register(KardexMedication)
+class KardexMedicationAdmin(admin.ModelAdmin):
+    list_display = ('medication_name', 'dose', 'route', 'patient', 'is_active', 'start_date', 'end_date')
+    list_filter = ('route', 'is_active')
+    search_fields = ('medication_name', 'patient__name', 'patient__patient_code')
+
+
+@admin.register(MedicationIntake)
+class MedicationIntakeAdmin(admin.ModelAdmin):
+    list_display = ('medication', 'scheduled_time', 'administered_at', 'status', 'administered_by')
+    list_filter = ('status',)
+    search_fields = ('medication__medication_name',)
 
 
 @admin.register(RegistrationSession)

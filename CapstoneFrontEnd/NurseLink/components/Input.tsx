@@ -75,7 +75,10 @@ const styles = StyleSheet.create({
     borderColor: Colors.destructive,
   },
   input: {
-    height: 40,
+    // 44px, not web's 36px (h-9) — meets the 44x44 minimum touch target
+    // size for a mobile input; web's own input is below that minimum,
+    // which isn't worth reproducing here just for pixel parity.
+    height: 44,
     paddingHorizontal: 12,
     fontSize: 14,
     color: Colors.foreground,

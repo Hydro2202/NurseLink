@@ -16,6 +16,7 @@ import {
 } from '../../../services/api';
 import { Input } from '../../../components/Input';
 import { Badge } from '../../../components/Badge';
+import { Select, type SelectOption } from '../../../components/Select';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'info' | 'outline';
@@ -41,12 +42,24 @@ interface DetailField {
   multiline?: boolean;
 }
 
+interface SectionFilter {
+  key: string;
+  label: string;
+  options: SelectOption[];
+  match: (raw: any, value: string) => boolean;
+}
+
 interface SectionConfig {
   title: string;
   description: string;
   fetch: () => Promise<unknown[]>;
   toRow: (item: any) => Omit<Row, 'raw'>;
   detailFields?: (item: any) => DetailField[];
+  /** Optional structured filters (dropdowns above search) — computed from
+   * the loaded rows' raw data so option lists (e.g. nurse names) stay real,
+   * not hardcoded. Only `patients` sets this; every other section renders
+   * exactly as before (search-only). */
+  filters?: (raws: any[]) => SectionFilter[];
 }
 
 function fmtDate(iso: string | null | undefined): string {
@@ -121,6 +134,57 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Last edited by', value: p.lastEditedByName || '—' },
       { label: 'Last edited at', value: p.lastEditedAt ? fmtDate(p.lastEditedAt) : '—' },
     ],
+    filters: (raws) => {
+      const nurseNames = Array.from(
+        new Set(raws.map((p) => p.assignedNurseName).filter(Boolean))
+      ).sort() as string[];
+      const deptNames = Array.from(
+        new Set(raws.map((p) => p.departmentName).filter(Boolean))
+      ).sort() as string[];
+      return [
+        {
+          key: 'nurse',
+          label: 'Assigned Nurse',
+          options: [
+            { label: 'All Nurses', value: 'all' },
+            ...nurseNames.map((n) => ({ label: n, value: n })),
+          ],
+          match: (p, v) => v === 'all' || p.assignedNurseName === v,
+        },
+        {
+          key: 'department',
+          label: 'Department',
+          options: [
+            { label: 'All Departments', value: 'all' },
+            ...deptNames.map((n) => ({ label: n, value: n })),
+          ],
+          match: (p, v) => v === 'all' || p.departmentName === v,
+        },
+        {
+          key: 'risk',
+          label: 'Risk Level',
+          options: [
+            { label: 'All Risk Levels', value: 'all' },
+            { label: 'Low', value: 'low' },
+            { label: 'Medium', value: 'medium' },
+            { label: 'High', value: 'high' },
+            { label: 'Critical', value: 'critical' },
+          ],
+          match: (p, v) => v === 'all' || p.riskLevel === v,
+        },
+        {
+          key: 'status',
+          label: 'Status',
+          options: [
+            { label: 'All Statuses', value: 'all' },
+            { label: 'Admitted', value: 'admitted' },
+            { label: 'Observation', value: 'observation' },
+            { label: 'Discharged', value: 'discharged' },
+          ],
+          match: (p, v) => v === 'all' || p.status === v,
+        },
+      ];
+    },
   },
   tasks: {
     title: 'Tasks',
@@ -360,6 +424,7 @@ export default function AdminGenericSectionPage() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Row | null>(null);
+  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     if (!config) return;
@@ -377,13 +442,26 @@ export default function AdminGenericSectionPage() {
 
   useEffect(() => {
     void load();
+    setFilterValues({});
   }, [load]);
+
+  const activeFilters = useMemo(
+    () => (config?.filters ? config.filters(rows.map((r) => r.raw)) : []),
+    [config, rows]
+  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((r) => r.search.toLowerCase().includes(q));
-  }, [rows, search]);
+    let result = rows;
+    for (const f of activeFilters) {
+      const value = filterValues[f.key] ?? 'all';
+      if (value !== 'all') {
+        result = result.filter((r) => f.match(r.raw, value));
+      }
+    }
+    if (!q) return result;
+    return result.filter((r) => r.search.toLowerCase().includes(q));
+  }, [rows, search, activeFilters, filterValues]);
 
   if (!config) {
     return (
@@ -407,6 +485,16 @@ export default function AdminGenericSectionPage() {
           onChangeText={setSearch}
           leftIcon={<Search size={16} color={Colors.gray400} />}
         />
+
+        {activeFilters.map((f) => (
+          <Select
+            key={f.key}
+            label={f.label}
+            value={filterValues[f.key] ?? 'all'}
+            onValueChange={(v) => setFilterValues((prev) => ({ ...prev, [f.key]: v }))}
+            options={f.options}
+          />
+        ))}
 
         {loading ? (
           <ActivityIndicator style={{ marginTop: 24 }} color={Colors.blue600} />

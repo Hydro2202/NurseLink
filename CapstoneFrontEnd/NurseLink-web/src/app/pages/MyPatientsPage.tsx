@@ -506,7 +506,7 @@ export default function MyPatientsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-red-600 hover:bg-red-700"
+              variant="destructive"
               onClick={async () => {
                 if (!toDelete) return;
                 try {

@@ -41,29 +41,32 @@ export function CardContent({ children, style }: CardProps) {
 
 const styles = StyleSheet.create({
   card: {
+    // Matches web's card.tsx (rounded-xl, px/py-6 header+content padding,
+    // h4 title, text-sm description) — the web app is this project's
+    // design reference.
     backgroundColor: Colors.card,
-    borderRadius: Radius.lg,
+    borderRadius: Radius.xl,
     borderWidth: 1,
     borderColor: Colors.border,
     overflow: 'hidden',
     ...Shadows.sm,
   },
   header: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
+    paddingHorizontal: 24,
+    paddingTop: 24,
     paddingBottom: 8,
   },
   title: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '600',
     color: Colors.foreground,
   },
   description: {
-    fontSize: 13,
+    fontSize: 14,
     color: Colors.mutedForeground,
     marginTop: 4,
   },
   content: {
-    padding: 16,
+    padding: 24,
   },
 });

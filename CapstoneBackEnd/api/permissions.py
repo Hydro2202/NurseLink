@@ -95,10 +95,10 @@ class CanManageReferral(BasePermission):
     """
     Referrals (HandoverNote) are nurse-to-nurse only, with no head-nurse
     approval gate. Any approved nurse or admin may read (list/retrieve) a
-    referral — including head nurses, so they can watch every referral in
-    their department(s) — but creating, editing, or deleting one requires an
-    approved nurse who is NOT a head nurse. Head nurses have view-only
-    access by design: there is no 'approve referral' action to remove
+    referral — including head nurses, so they can watch every referral,
+    department notwithstanding — but creating, editing, or deleting one
+    requires an approved nurse who is NOT a head nurse. Head nurses have
+    view-only access by design: there is no 'approve referral' action to remove
     because none ever gated this flow (see HandoverViewSet.accept/decline/
     complete, each of which additionally checks that the acting user is the
     referral's actual recipient, not just "not a head nurse").

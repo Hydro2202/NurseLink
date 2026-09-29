@@ -35,9 +35,9 @@ const RISK_CONFIG: Record<
     label: 'High Risk',
     description: 'Requires increased monitoring.',
     icon: AlertTriangle,
-    bg: '#FFEDD5',
-    border: '#FDBA74',
-    text: '#C2410C',
+    bg: Colors.orange100,
+    border: Colors.orange300,
+    text: Colors.orange700,
   },
   critical: {
     // Solid, not just an outline — this is the one risk level that should

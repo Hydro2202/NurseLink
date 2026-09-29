@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Modal,
   View,
@@ -8,13 +8,14 @@ import {
   Pressable,
   TextInput,
 } from 'react-native';
-import { Shield, User, Plus, X } from 'lucide-react-native';
+import { Shield, User, Plus, X, Clock } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Select } from './Select';
 import { Alert, AlertDescription } from './Alert';
-import type { HandoverNote, Nurse, Patient } from '../types/domain';
-import { fetchPatients, fetchNurses } from '../services/api';
+import type { EligibleReferralRecipients, HandoverNote, Patient } from '../types/domain';
+import { fetchPatients, fetchEligibleReferralRecipients, ApiError } from '../services/api';
+import { bmiCategory } from '../utils/bmi';
 
 interface HandoverModalProps {
   open: boolean;
@@ -25,7 +26,6 @@ interface HandoverModalProps {
 export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps) {
   const [loading, setLoading] = useState(false);
   const [patients, setPatients] = useState<Patient[]>([]);
-  const [nurses, setNurses] = useState<Nurse[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState('');
   const [selectedNurseId, setSelectedNurseId] = useState('');
   // Work the outgoing nurse could not finish. On acknowledgement the API turns
@@ -35,7 +35,6 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   const [taskDraft, setTaskDraft] = useState('');
   const [formData, setFormData] = useState({
     patientName: '',
-    shift: 'morning' as 'morning' | 'afternoon' | 'night',
     nurseTo: '',
     situation: '',
     background: '',
@@ -45,7 +44,13 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const [nursesLoading, setNursesLoading] = useState(false);
+  // Shift-rotation eligibility — who the signed-in nurse may refer to right
+  // now, per the Duty Roster (see api/referral_shifts.py). There is no
+  // manual "Shift" field any more: which shift this referral is on, and
+  // who's eligible to receive it, is entirely server-derived.
+  const [eligibility, setEligibility] = useState<EligibleReferralRecipients | null>(null);
+  const [eligibilityLoading, setEligibilityLoading] = useState(false);
+  const [eligibilityError, setEligibilityError] = useState('');
 
   useEffect(() => {
     if (!open) {
@@ -55,7 +60,6 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       setTaskDraft('');
       setFormData({
         patientName: '',
-        shift: 'morning',
         nurseTo: '',
         situation: '',
         background: '',
@@ -64,6 +68,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         attendingPhysician: '',
       });
       setErrors({});
+      setEligibility(null);
+      setEligibilityError('');
       return;
     }
     let cancelled = false;
@@ -80,39 +86,45 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     };
   }, [open]);
 
-  // Same-shift nurses only (from the Duty Roster, not a static profile
-  // default) — re-fetched whenever the Shift field or selected patient
-  // changes, so the list never keeps stale results from a previous shift.
+  // Refetched every time the form opens — eligibility depends on the Duty
+  // Roster and the current time, both of which can have changed since the
+  // last time this modal was open.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     (async () => {
-      setNursesLoading(true);
+      setEligibilityLoading(true);
+      setEligibilityError('');
       try {
-        const nurseData = await fetchNurses({
-          shift: formData.shift,
-          ...(selectedPatientId ? { excludeForPatient: selectedPatientId } : null),
-        });
+        const data = await fetchEligibleReferralRecipients();
         if (!cancelled) {
-          setNurses(nurseData);
-          // The previously selected nurse may no longer be eligible for the
-          // newly selected shift/patient — clear it rather than silently
-          // submitting a stale choice.
+          setEligibility(data);
           setSelectedNurseId((prev) =>
-            prev && !nurseData.some((n) => n.id === prev) ? '' : prev
+            prev && !data.recipients.some((n) => n.id === prev) ? '' : prev
           );
         }
-      } catch {
-        if (!cancelled) setNurses([]);
+      } catch (err) {
+        if (!cancelled) {
+          setEligibility(null);
+          setEligibilityError(
+            err instanceof ApiError ? err.message : 'Failed to load eligible recipients.'
+          );
+        }
       } finally {
-        if (!cancelled) setNursesLoading(false);
+        if (!cancelled) setEligibilityLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [open, selectedPatientId, formData.shift]);
+  }, [open]);
 
+  const nurses = useMemo(() => eligibility?.recipients ?? [], [eligibility]);
+  const onDuty = eligibility?.onDuty ?? false;
+  const noNursesReason =
+    !eligibilityLoading && eligibility && onDuty && nurses.length === 0
+      ? `No nurses are assigned to the ${eligibility.nextShiftLabel} shift yet. Ask your Head Nurse to update the Duty Roster.`
+      : '';
   useEffect(() => {
     if (selectedNurseId) {
       const nurse = nurses.find((n) => n.id === selectedNurseId);
@@ -126,12 +138,6 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     acc[n.name] = (acc[n.name] || 0) + 1;
     return acc;
   }, {});
-  const noNursesReason =
-    !nursesLoading && nurses.length === 0
-      ? selectedPatientId
-        ? 'No nurses assigned to this shift today, or all have already received this patient.'
-        : 'No nurses assigned to this shift today.'
-      : '';
 
   useEffect(() => {
     if (selectedPatientId) {
@@ -139,7 +145,32 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       if (patient) {
         const situation = `${patient.name} is a ${patient.age}-year-old ${patient.gender.toLowerCase()} admitted on ${patient.admissionDate} with ${patient.diagnosis}. Currently in ${patient.room}. Risk level: ${patient.riskLevel}.`;
         const background = `Diagnosis: ${patient.diagnosis}\nAllergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}\nCurrent Medications: ${patient.medications.join(', ')}\nAdmission Date: ${patient.admissionDate}`;
-        const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min\n\nAlerts: ${patient.alerts.join('; ')}`;
+        const heightWeightLine =
+          patient.heightCm != null || patient.weightKg != null
+            ? `\nHeight: ${patient.heightCm != null ? `${patient.heightCm} cm` : 'N/A'} | Weight: ${
+                patient.weightKg != null ? `${patient.weightKg} kg` : 'N/A'
+              } | BMI: ${patient.bmi != null ? `${patient.bmi} (${bmiCategory(patient.bmi)})` : 'N/A'}`
+            : '';
+        const pendingLabs = (patient.laboratories || []).filter((l) => l.status === 'pending');
+        const activeMeds = (patient.medicationOrders || []).filter((m) => m.isActive);
+        const labsAndMedsLine =
+          pendingLabs.length > 0 || activeMeds.length > 0
+            ? `\n\nPending Labs: ${
+                pendingLabs.length > 0 ? pendingLabs.map((l) => l.testName).join(', ') : 'None'
+              }\nActive Medications: ${
+                activeMeds.length > 0
+                  ? activeMeds
+                      .map(
+                        (m) =>
+                          `${m.medicationName} ${m.dose} ${m.route} ${m.frequency}${
+                            m.lastGiven ? ` (last given ${new Date(m.lastGiven).toLocaleString()})` : ' (not yet given)'
+                          }`
+                      )
+                      .join('; ')
+                  : 'None'
+              }`
+            : '';
+        const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min${heightWeightLine}${labsAndMedsLine}\n\nAlerts: ${patient.alerts.join('; ')}`;
 
         setFormData((prev) => ({
           ...prev,
@@ -155,6 +186,9 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
+    if (!onDuty) {
+      newErrors.form = "You are not on duty right now, so you can't create a referral.";
+    }
     if (!selectedPatientId) newErrors.patient = 'Please select a patient';
     if (!selectedNurseId) newErrors.nurse = 'Please select a receiving nurse';
     if (!formData.recommendation.trim()) newErrors.recommendation = 'Recommendation is required';
@@ -180,7 +214,6 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       await onSave({
         patientId: selectedPatientId,
         patientName: formData.patientName,
-        shift: formData.shift,
         nurseTo: formData.nurseTo,
         // Sent alongside the name so the API can notify exactly this nurse —
         // display names are not unique on this ward.
@@ -196,6 +229,33 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       onOpenChange(false);
     } catch (error) {
       console.error('Error saving handover:', error);
+      // The shift-rotation rule (and the duplicate-recipient check) is
+      // enforced server-side — never trust the eligible-recipients list
+      // alone, since the roster or the clock may have moved since it was
+      // fetched. Map the field the backend rejected onto the matching
+      // form field instead of a generic failure toast.
+      if (error instanceof ApiError && error.data && typeof error.data === 'object') {
+        const data = error.data as Record<string, unknown>;
+        const messageFor = (field: string): string => {
+          const value = data[field];
+          if (Array.isArray(value) && value.length) return String(value[0]);
+          if (typeof value === 'string') return value;
+          return '';
+        };
+        const nurseToIdMessage = messageFor('nurseToId');
+        const nonFieldMessage = messageFor('nonFieldErrors');
+        setErrors((prev) => ({
+          ...prev,
+          ...(nurseToIdMessage ? { nurse: nurseToIdMessage } : {}),
+          ...(nonFieldMessage
+            ? { form: nonFieldMessage }
+            : nurseToIdMessage
+              ? {}
+              : { form: error.message }),
+        }));
+      } else {
+        setErrors((prev) => ({ ...prev, form: 'Failed to save the referral. Please try again.' }));
+      }
     } finally {
       setLoading(false);
     }
@@ -246,46 +306,64 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 </View>
               ) : null}
 
-              <View style={styles.row}>
-                <Select
-                  style={{ flex: 1 }}
-                  label="Shift *"
-                  value={formData.shift}
-                  onValueChange={(value) =>
-                    setFormData({
-                      ...formData,
-                      shift: value as 'morning' | 'afternoon' | 'night',
-                    })
-                  }
-                  options={[
-                    { label: '☀️ Morning (07:00-15:00)', value: 'morning' },
-                    { label: '🌤️ Afternoon (15:00-23:00)', value: 'afternoon' },
-                    { label: '🌙 Night (23:00-07:00)', value: 'night' },
-                  ]}
-                  placeholder="Select shift"
-                />
-                <Select
-                  style={{ flex: 1 }}
-                  label="Receiving Nurse *"
-                  value={selectedNurseId}
-                  onValueChange={setSelectedNurseId}
-                  options={nurses.map((n) => ({
-                    // Two nurses can share a display name — disambiguate with
-                    // email only when this list actually has a collision, so
-                    // the common case stays a clean single label.
-                    label: `${n.name}${nurseNameCounts[n.name] > 1 && n.email ? ` (${n.email})` : ''} • ${n.role}${n.specialization ? ` (${n.specialization})` : ''}`,
-                    value: n.id,
-                    keywords: `${n.email || ''} ${n.department || ''}`,
-                  }))}
-                  placeholder={nursesLoading ? 'Loading nurses...' : noNursesReason || 'Choose a nurse'}
-                  searchable
-                  searchPlaceholder="Search by name, username, or email..."
-                  emptyMessage={noNursesReason || 'No nurses found.'}
-                  error={errors.nurse}
-                />
-              </View>
+              {errors.form ? (
+                <Alert variant="destructive">
+                  <AlertDescription>{errors.form}</AlertDescription>
+                </Alert>
+              ) : null}
 
-              {!nursesLoading && nurses.length === 0 ? (
+              {eligibilityError ? (
+                <Alert variant="destructive">
+                  <AlertDescription>{eligibilityError}</AlertDescription>
+                </Alert>
+              ) : eligibilityLoading ? (
+                <View style={styles.shiftInfoLine}>
+                  <Clock size={14} color={Colors.mutedForeground} />
+                  <Text style={styles.shiftInfoText}>Checking your shift...</Text>
+                </View>
+              ) : !onDuty ? (
+                <Alert variant="warning">
+                  <AlertDescription>
+                    You are not on duty right now, so you can&apos;t create a referral.
+                  </AlertDescription>
+                </Alert>
+              ) : (
+                <View style={styles.shiftInfoLine}>
+                  <Clock size={14} color={Colors.blue600} />
+                  <Text style={styles.shiftInfoText}>
+                    You are on {eligibility?.currentShiftLabel} shift. Referring to:{' '}
+                    <Text style={styles.shiftInfoBold}>
+                      {eligibility?.nextShiftLabel} shift
+                      {eligibility?.nextShiftDate ? ` (${eligibility.nextShiftDate})` : ''}
+                    </Text>
+                    .
+                  </Text>
+                </View>
+              )}
+
+              <Select
+                label="Receiving Nurse *"
+                value={selectedNurseId}
+                onValueChange={setSelectedNurseId}
+                options={nurses.map((n) => ({
+                  // Two nurses can share a display name — disambiguate with
+                  // email only when this list actually has a collision, so
+                  // the common case stays a clean single label. The shift
+                  // shown here is real, not a placeholder: every eligible
+                  // recipient is, by the shift-rotation rule itself, on the
+                  // exact same next shift (eligibility.nextShiftLabel).
+                  label: `${n.name}${nurseNameCounts[n.name] > 1 && n.email ? ` (${n.email})` : ''} • ${n.role}${n.specialization ? ` (${n.specialization})` : ''}${eligibility?.nextShiftLabel ? ` • ${eligibility.nextShiftLabel} shift` : ''}`,
+                  value: n.id,
+                  keywords: `${n.email || ''}`,
+                }))}
+                placeholder={eligibilityLoading ? 'Checking your shift...' : noNursesReason || 'Choose a nurse'}
+                searchable
+                searchPlaceholder="Search by name, username, or email..."
+                emptyMessage={noNursesReason || 'No nurses found.'}
+                error={errors.nurse}
+              />
+
+              {!eligibilityLoading && onDuty && nurses.length === 0 ? (
                 <Alert variant="warning">
                   <AlertDescription>{noNursesReason}</AlertDescription>
                 </Alert>
@@ -420,7 +498,12 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
             >
               Cancel
             </Button>
-            <Button onPress={handleSubmit} disabled={loading} loading={loading} style={{ flex: 1 }}>
+            <Button
+              onPress={handleSubmit}
+              disabled={loading || !onDuty || eligibilityLoading}
+              loading={loading}
+              style={{ flex: 1 }}
+            >
               {loading ? 'Submitting...' : 'Submit Referral'}
             </Button>
           </View>
@@ -507,6 +590,23 @@ const styles = StyleSheet.create({
   hipaaAlert: {
     backgroundColor: Colors.blue50,
     borderLeftColor: Colors.blue200,
+  },
+  shiftInfoLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: Colors.blue50,
+    borderRadius: Radius.md,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  shiftInfoText: {
+    fontSize: 13,
+    color: Colors.foreground,
+    flex: 1,
+  },
+  shiftInfoBold: {
+    fontWeight: '700',
   },
   physicianBox: {
     backgroundColor: Colors.blue50,

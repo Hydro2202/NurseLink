@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Eye, EyeOff, Loader2, User, Lock, AlertCircle } from 'lucide-react';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
+import hospitalBg from '../../assets/branding/hospital-bg.jpg';
 import { ApiError } from '../api/nurselink';
 
 export default function LoginPage() {
@@ -16,7 +17,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [selectedRole, setSelectedRole] = useState<'staff_nurse' | 'supervisor'>('staff_nurse');
+  const [selectedRole, setSelectedRole] = useState<'staff_nurse' | 'head_nurse'>('staff_nurse');
   const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -31,7 +32,7 @@ export default function LoginPage() {
 
     try {
       const loggedInUser = await login(email, password, selectedRole);
-      // An admin account has no real nurse/supervisor role — it always
+      // An admin account has no real nurse/head-nurse role — it always
       // lands on the admin interface regardless of which button was
       // selected above (see LoginView on the backend for why that's safe).
       navigate(loggedInUser.isAdmin ? '/admin' : '/dashboard');
@@ -41,14 +42,43 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        {/* Logo */}
-        <div className="text-center mb-6">
-          <img 
-            src={nurseLinkLogo} 
-            alt="NurseLink Logo" 
-            className="w-64 mx-auto object-contain"
+    <div
+      className="min-h-screen flex items-center justify-center p-4 relative bg-cover bg-center"
+      style={{ backgroundImage: `url(${hospitalBg})` }}
+    >
+      {/* Subtle NurseLink-blue tint over the photo, not a heavy darken — the
+          photo stays bright and clear, this just ties it to the brand color
+          and keeps the white card from floating on top of it. Same tint as
+          the mobile app's login screen (app/login.tsx's `overlay` style). */}
+      <div className="absolute inset-0 bg-[rgba(37,99,235,0.38)] pointer-events-none" />
+      <div className="w-full max-w-md relative">
+        {/* Logo — no container/pill, it sits directly on the photo. The
+            bloom behind it and the drop-shadow on the image itself create
+            the glow; there's no box. Matches the mobile app's login screen
+            exactly (same gradient/blur/shadow values). */}
+        <div
+          className="mb-6 relative flex items-center justify-center"
+          style={{ isolation: 'isolate' }}
+        >
+          <div
+            className="absolute rounded-full pointer-events-none"
+            style={{
+              width: 130,
+              height: 130,
+              backgroundImage:
+                'radial-gradient(circle, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.2) 40%, transparent 70%)',
+              filter: 'blur(6px)',
+              zIndex: -1,
+            }}
+          />
+          <img
+            src={nurseLinkLogo}
+            alt="NurseLink Logo"
+            className="w-64 object-contain relative"
+            style={{
+              filter:
+                'drop-shadow(0 0 6px rgba(255,255,255,0.9)) drop-shadow(0 0 14px rgba(255,255,255,0.6)) drop-shadow(0 0 28px rgba(255,255,255,0.35))',
+            }}
           />
         </div>
 
@@ -83,7 +113,7 @@ export default function LoginPage() {
                     variant={selectedRole === 'staff_nurse' ? 'default' : 'outline'}
                     className={`w-full h-10 font-medium text-sm rounded-md transition-all ${
                       selectedRole === 'staff_nurse'
-                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        ? 'bg-primary hover:bg-primary-hover text-white'
                         : 'border hover:bg-muted'
                     }`}
                     onClick={() => setSelectedRole('staff_nurse')}
@@ -92,15 +122,15 @@ export default function LoginPage() {
                   </Button>
                   <Button
                     type="button"
-                    variant={selectedRole === 'supervisor' ? 'default' : 'outline'}
+                    variant={selectedRole === 'head_nurse' ? 'default' : 'outline'}
                     className={`w-full h-10 font-medium text-sm rounded-md transition-all ${
-                      selectedRole === 'supervisor'
-                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                      selectedRole === 'head_nurse'
+                        ? 'bg-primary hover:bg-primary-hover text-white'
                         : 'border hover:bg-muted'
                     }`}
-                    onClick={() => setSelectedRole('supervisor')}
+                    onClick={() => setSelectedRole('head_nurse')}
                   >
-                    Supervisor
+                    Head Nurse
                   </Button>
                 </div>
               </div>
@@ -118,7 +148,7 @@ export default function LoginPage() {
                     placeholder="Enter your email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="pl-10 h-10 text-sm border focus:border-blue-500"
+                    className="pl-10 h-10 text-sm border"
                   />
                 </div>
               </div>
@@ -136,7 +166,7 @@ export default function LoginPage() {
                     placeholder="Enter your password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="pl-10 pr-10 h-10 text-sm border focus:border-blue-500"
+                    className="pl-10 pr-10 h-10 text-sm border"
                   />
                   <button
                     type="button"
@@ -155,7 +185,7 @@ export default function LoginPage() {
               {/* Submit Button */}
               <Button
                 type="submit"
-                className="w-full h-10 bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm transition-all mt-2"
+                className="w-full h-10 bg-primary hover:bg-primary-hover text-white font-medium text-sm transition-all mt-2"
                 disabled={isLoading}
               >
                 {isLoading ? (
@@ -174,7 +204,7 @@ export default function LoginPage() {
                   Don't have an account?{' '}
                   <Link
                     to="/signup"
-                    className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium hover:underline"
+                    className="text-primary hover:text-primary-hover font-medium hover:underline"
                   >
                     Sign Up
                   </Link>

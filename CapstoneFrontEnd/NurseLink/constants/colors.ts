@@ -44,6 +44,7 @@ export const Colors = {
   yellow50: '#FEFCE8',
   yellow100: '#FEF9C3',
   yellow200: '#FDE68A',
+  yellow700: '#CA8A04',
   orange50: '#FFF7ED',
   orange100: '#FFEDD5',
   orange300: '#FDBA74',
@@ -128,10 +129,14 @@ export const Shadows = {
   },
 };
 
+// Matches the web app's actual computed scale (styles/theme.css: --radius:
+// 16px is the base "md", sm/lg/xl are +/-2px steps from it) — the web app
+// is this project's design reference, so these are its real numbers, not
+// independently chosen ones.
 export const Radius = {
-  sm: 8,
-  md: 12,
-  lg: 16,
+  sm: 14,
+  md: 16,
+  lg: 18,
   xl: 20,
   '2xl': 24,
   full: 9999,

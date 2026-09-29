@@ -26,6 +26,7 @@ import type { AdminAccount } from '../../../types/domain';
 import { Input } from '../../../components/Input';
 import { Badge } from '../../../components/Badge';
 import { Button } from '../../../components/Button';
+import { Select, type SelectOption } from '../../../components/Select';
 import { Tabs, type TabItem } from '../../../components/Tabs';
 import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
@@ -45,6 +46,22 @@ const STATUS_VARIANT: Record<AdminAccount['approvalStatus'], 'warning' | 'succes
   rejected: 'destructive',
 };
 
+// 'default' (solid primary), not Badge's 'secondary' variant, for Head Nurse
+// — mobile's 'secondary' is an intentionally muted/subtle gray (see
+// Badge.tsx), which reads as de-emphasized rather than the emphasis this
+// role distinction needs. 'info' (soft primary chip) for Nurse keeps both
+// within the existing primary color family — no new color introduced.
+const ROLE_BADGE: Record<AdminAccount['role'], { label: string; variant: 'info' | 'default' }> = {
+  staff_nurse: { label: 'Nurse', variant: 'info' },
+  head_nurse: { label: 'Head Nurse', variant: 'default' },
+};
+
+const ROLE_FILTER_OPTIONS: SelectOption[] = [
+  { label: 'All Roles', value: 'all' },
+  { label: 'Nurse', value: 'staff_nurse' },
+  { label: 'Head Nurse', value: 'head_nurse' },
+];
+
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
@@ -57,6 +74,7 @@ export default function AdminAccountsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState((params.status as string) || 'all');
+  const [roleFilter, setRoleFilter] = useState('all');
   const [selected, setSelected] = useState<AdminAccount | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
@@ -93,10 +111,11 @@ export default function AdminAccountsPage() {
     const q = search.trim().toLowerCase();
     return accounts.filter((a) => {
       if (statusFilter !== 'all' && a.approvalStatus !== statusFilter) return false;
+      if (roleFilter !== 'all' && a.role !== roleFilter) return false;
       if (!q) return true;
       return a.name.toLowerCase().includes(q) || a.email.toLowerCase().includes(q);
     });
-  }, [accounts, search, statusFilter]);
+  }, [accounts, search, statusFilter, roleFilter]);
 
   const refreshSelected = (updated: AdminAccount) => {
     setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
@@ -178,6 +197,12 @@ export default function AdminAccountsPage() {
           leftIcon={<Search size={16} color={Colors.gray400} />}
         />
         <Tabs value={statusFilter} onValueChange={setStatusFilter} tabs={STATUS_TABS} />
+        <Select
+          label="Role"
+          value={roleFilter}
+          onValueChange={setRoleFilter}
+          options={ROLE_FILTER_OPTIONS}
+        />
 
         {loading ? (
           <ActivityIndicator style={{ marginTop: 24 }} color={Colors.blue600} />
@@ -194,13 +219,13 @@ export default function AdminAccountsPage() {
                       <Badge variant={STATUS_VARIANT[account.approvalStatus]}>
                         {account.approvalStatus}
                       </Badge>
+                      <Badge variant={ROLE_BADGE[account.role].variant}>
+                        {ROLE_BADGE[account.role].label}
+                      </Badge>
                       {!account.isActiveStaff ? <Badge variant="secondary">deactivated</Badge> : null}
                     </View>
                     <Text style={styles.rowMeta}>{account.email}</Text>
-                    <Text style={styles.rowMeta}>
-                      {account.role === 'head_nurse' ? 'Head Nurse' : 'Staff Nurse'}
-                      {account.department ? ` · ${account.department}` : ''}
-                    </Text>
+                    {account.department ? <Text style={styles.rowMeta}>{account.department}</Text> : null}
                   </View>
                 </View>
               </Pressable>
@@ -234,7 +259,7 @@ export default function AdminAccountsPage() {
                 </View>
                 <View style={styles.badgeRow}>
                   <Badge variant={STATUS_VARIANT[selected.approvalStatus]}>{selected.approvalStatus}</Badge>
-                  <Badge variant="outline">{selected.role === 'head_nurse' ? 'Head Nurse' : 'Staff Nurse'}</Badge>
+                  <Badge variant={ROLE_BADGE[selected.role].variant}>{ROLE_BADGE[selected.role].label}</Badge>
                   <Badge variant={selected.isActiveStaff ? 'outline' : 'secondary'}>
                     {selected.isActiveStaff ? 'active' : 'deactivated'}
                   </Badge>

@@ -24,7 +24,9 @@ const variantBg: Record<BadgeVariant, string> = {
   destructive: Colors.destructive,
   success: Colors.success,
   warning: Colors.warning,
-  info: Colors.info,
+  // Soft/light, not solid — matches web's badge.tsx ("info" is a light
+  // primary chip, not a solid teal one; Colors.info is unused here now).
+  info: Colors.primaryLight,
   outline: Colors.white,
 };
 
@@ -33,8 +35,10 @@ const variantText: Record<BadgeVariant, string> = {
   secondary: Colors.foreground,
   destructive: Colors.white,
   success: Colors.white,
-  warning: Colors.white,
-  info: Colors.white,
+  // Dark text on the amber background for contrast — matches web, which
+  // uses text-foreground (not white) for this variant specifically.
+  warning: Colors.foreground,
+  info: Colors.primary,
   outline: Colors.foreground,
 };
 
@@ -62,15 +66,17 @@ export function Badge({ children, variant = 'default', style, textStyle }: Badge
 
 const styles = StyleSheet.create({
   badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: Radius.sm,
+    // Matches web's badge.tsx (px-2.5 py-0.5 rounded-md, text-xs font-
+    // semibold) — the web app is this project's design reference.
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: Radius.md,
     alignSelf: 'flex-start',
     alignItems: 'center',
     justifyContent: 'center',
   },
   text: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

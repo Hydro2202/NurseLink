@@ -18,11 +18,11 @@ import {
   SelectValue,
 } from './ui/select';
 import { Textarea } from './ui/textarea';
-import { Loader2, Shield, User } from 'lucide-react';
-import { HandoverNote } from '../types';
+import { Loader2, Shield, User, Clock } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
-import type { Nurse, Patient } from '../types/domain';
-import { fetchPatients, fetchNurses } from '../api/nurselink';
+import type { EligibleReferralRecipients, HandoverNote, Patient } from '../types/domain';
+import { fetchPatients, fetchEligibleReferralRecipients, ApiError } from '../api/nurselink';
+import { bmiCategory } from '../utils/bmi';
 
 interface HandoverModalProps {
   open: boolean;
@@ -32,13 +32,11 @@ interface HandoverModalProps {
 
 export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps) {
   const [patients, setPatients] = useState<Patient[]>([]);
-  const [nurses, setNurses] = useState<Nurse[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedPatientId, setSelectedPatientId] = useState<string>('');
   const [selectedNurseId, setSelectedNurseId] = useState<string>('');
   const [formData, setFormData] = useState({
     patientName: '',
-    shift: 'morning' as 'morning' | 'afternoon' | 'night',
     nurseTo: '',
     situation: '',
     background: '',
@@ -49,13 +47,20 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  // Shift-rotation eligibility — who the signed-in nurse may refer to right
+  // now, per the Duty Roster (see api/referral_shifts.py). There is no
+  // manual "Shift" field any more: which shift this referral is on, and
+  // who's eligible to receive it, is entirely server-derived.
+  const [eligibility, setEligibility] = useState<EligibleReferralRecipients | null>(null);
+  const [eligibilityLoading, setEligibilityLoading] = useState(false);
+  const [eligibilityError, setEligibilityError] = useState('');
+
   useEffect(() => {
     if (!open) {
       setSelectedPatientId('');
       setSelectedNurseId('');
       setFormData({
         patientName: '',
-        shift: 'morning',
         nurseTo: '',
         situation: '',
         background: '',
@@ -64,15 +69,48 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         attendingPhysician: '',
       });
       setErrors({});
+      setEligibility(null);
+      setEligibilityError('');
       return;
     }
-    Promise.all([fetchPatients(), fetchNurses()])
-      .then(([plist, nlist]) => {
-        setPatients(plist);
-        setNurses(nlist);
-      })
+    fetchPatients()
+      .then(setPatients)
       .catch(() => {});
   }, [open]);
+
+  // Refetched every time the modal opens — eligibility depends on the Duty
+  // Roster and the current time, both of which can have changed since the
+  // last time it was open.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setEligibilityLoading(true);
+    setEligibilityError('');
+    fetchEligibleReferralRecipients()
+      .then((data) => {
+        if (cancelled) return;
+        setEligibility(data);
+        setSelectedNurseId((prev) => (prev && !data.recipients.some((n) => n.id === prev) ? '' : prev));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setEligibility(null);
+        setEligibilityError(err instanceof ApiError ? err.message : 'Failed to load eligible recipients.');
+      })
+      .finally(() => {
+        if (!cancelled) setEligibilityLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const nurses = eligibility?.recipients ?? [];
+  const onDuty = eligibility?.onDuty ?? false;
+  const noNursesReason =
+    !eligibilityLoading && eligibility && onDuty && nurses.length === 0
+      ? `No nurses are assigned to the ${eligibility.nextShiftLabel} shift yet. Ask your Head Nurse to update the Duty Roster.`
+      : '';
 
   // Update nurseTo when a nurse is selected
   useEffect(() => {
@@ -94,7 +132,32 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       if (patient) {
         const situation = `${patient.name} is a ${patient.age}-year-old ${patient.gender.toLowerCase()} admitted on ${patient.admissionDate} with ${patient.diagnosis}. Currently in ${patient.room}. Risk level: ${patient.riskLevel}.`;
         const background = `Diagnosis: ${patient.diagnosis}\nAllergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}\nCurrent Medications: ${patient.medications.join(', ')}\nAdmission Date: ${patient.admissionDate}`;
-        const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min\n\nAlerts: ${patient.alerts.join('; ')}`;
+        const heightWeightLine =
+          patient.heightCm != null || patient.weightKg != null
+            ? `\nHeight: ${patient.heightCm != null ? `${patient.heightCm} cm` : 'N/A'} | Weight: ${
+                patient.weightKg != null ? `${patient.weightKg} kg` : 'N/A'
+              } | BMI: ${patient.bmi != null ? `${patient.bmi} (${bmiCategory(patient.bmi)})` : 'N/A'}`
+            : '';
+        const pendingLabs = (patient.laboratories || []).filter((l) => l.status === 'pending');
+        const activeMeds = (patient.medicationOrders || []).filter((m) => m.isActive);
+        const labsAndMedsLine =
+          pendingLabs.length > 0 || activeMeds.length > 0
+            ? `\n\nPending Labs: ${
+                pendingLabs.length > 0 ? pendingLabs.map((l) => l.testName).join(', ') : 'None'
+              }\nActive Medications: ${
+                activeMeds.length > 0
+                  ? activeMeds
+                      .map(
+                        (m) =>
+                          `${m.medicationName} ${m.dose} ${m.route} ${m.frequency}${
+                            m.lastGiven ? ` (last given ${new Date(m.lastGiven).toLocaleString()})` : ' (not yet given)'
+                          }`
+                      )
+                      .join('; ')
+                  : 'None'
+              }`
+            : '';
+        const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min${heightWeightLine}${labsAndMedsLine}\n\nAlerts: ${patient.alerts.join('; ')}`;
 
         setFormData((prev) => ({
           ...prev,
@@ -110,6 +173,10 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
+
+    if (!onDuty) {
+      newErrors.form = "You are not on duty right now, so you can't create a referral.";
+    }
 
     if (!selectedPatientId) {
       newErrors.patient = 'Please select a patient';
@@ -140,8 +207,10 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       await onSave({
         patientId: selectedPatientId,
         patientName: formData.patientName,
-        shift: formData.shift,
         nurseTo: formData.nurseTo,
+        // Sent alongside the name so the API can notify exactly this nurse —
+        // display names are not unique on this ward.
+        nurseToId: selectedNurseId,
         sbar: {
           situation: formData.situation,
           background: formData.background,
@@ -149,11 +218,33 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           recommendation: formData.recommendation,
         },
         unfinishedTasks: [],
-        status: 'pending',
       });
       onOpenChange(false);
     } catch (error) {
       console.error('Error saving handover:', error);
+      // The shift-rotation rule (and the duplicate-recipient check) is
+      // enforced server-side — never trust the eligible-recipients list
+      // alone, since the roster or the clock may have moved since it was
+      // fetched. Map the field the backend rejected onto the matching
+      // form field instead of a generic failure toast.
+      if (error instanceof ApiError && error.data && typeof error.data === 'object') {
+        const data = error.data as Record<string, unknown>;
+        const messageFor = (field: string): string => {
+          const value = data[field];
+          if (Array.isArray(value) && value.length) return String(value[0]);
+          if (typeof value === 'string') return value;
+          return '';
+        };
+        const nurseToIdMessage = messageFor('nurseToId');
+        const nonFieldMessage = messageFor('nonFieldErrors');
+        setErrors((prev) => ({
+          ...prev,
+          ...(nurseToIdMessage ? { nurse: nurseToIdMessage } : {}),
+          ...(nonFieldMessage ? { form: nonFieldMessage } : nurseToIdMessage ? {} : { form: error.message }),
+        }));
+      } else {
+        setErrors((prev) => ({ ...prev, form: 'Failed to save the referral. Please try again.' }));
+      }
     } finally {
       setLoading(false);
     }
@@ -165,20 +256,26 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Shield className="w-5 h-5 text-primary" />
-            Create Handover Note
+            Create Referral Note
           </DialogTitle>
           <DialogDescription>
-            Complete the SBAR form to submit a secure handover note to the incoming nurse.
+            Complete the SBAR form to submit a secure referral note to the incoming nurse.
           </DialogDescription>
         </DialogHeader>
-        
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <Alert className="bg-blue-50 border-blue-200">
             <Shield className="h-4 w-4 text-blue-600" />
             <AlertDescription className="text-blue-900">
-              All handover notes are encrypted and comply with HIPAA security standards.
+              All referral notes are encrypted and comply with HIPAA security standards.
             </AlertDescription>
           </Alert>
+
+          {errors.form && (
+            <Alert variant="destructive">
+              <AlertDescription>{errors.form}</AlertDescription>
+            </Alert>
+          )}
 
           <div className="space-y-4">
             <div className="space-y-2">
@@ -216,38 +313,46 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="shift">Shift *</Label>
-                <Select
-                  value={formData.shift}
-                  onValueChange={(value: 'morning' | 'afternoon' | 'night') =>
-                    setFormData({ ...formData, shift: value })
-                  }
-                >
-                  <SelectTrigger id="shift">
-                    <SelectValue placeholder="Select shift" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="morning">☀️ Morning (07:00-15:00)</SelectItem>
-                    <SelectItem value="afternoon">🌤️ Afternoon (15:00-23:00)</SelectItem>
-                    <SelectItem value="night">🌙 Night (23:00-07:00)</SelectItem>
-                  </SelectContent>
-                </Select>
+            {eligibilityError ? (
+              <Alert variant="destructive">
+                <AlertDescription>{eligibilityError}</AlertDescription>
+              </Alert>
+            ) : eligibilityLoading ? (
+              <div className="flex items-center gap-2 bg-blue-50 rounded-lg px-3 py-2">
+                <Clock className="w-3.5 h-3.5 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">Checking your shift...</span>
               </div>
+            ) : !onDuty ? (
+              <Alert variant="warning">
+                <AlertDescription>You are not on duty right now, so you can't create a referral.</AlertDescription>
+              </Alert>
+            ) : (
+              <div className="flex items-center gap-2 bg-blue-50 rounded-lg px-3 py-2">
+                <Clock className="w-3.5 h-3.5 text-blue-600" />
+                <span className="text-sm">
+                  You are on {eligibility?.currentShiftLabel} shift. Referring to:{' '}
+                  <strong>
+                    {eligibility?.nextShiftLabel} shift{eligibility?.nextShiftDate ? ` (${eligibility.nextShiftDate})` : ''}
+                  </strong>
+                  .
+                </span>
+              </div>
+            )}
 
-              <div className="space-y-2">
-                <Label htmlFor="nurseTo">Receiving Nurse *</Label>
-                <Select
-                  value={selectedNurseId}
-                  onValueChange={setSelectedNurseId}
-                >
-                  <SelectTrigger id="nurseTo" className={errors.nurse ? 'border-red-500' : ''}>
-                    <SelectValue placeholder="Choose a nurse" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-[300px]">
-                    {nurses.map((nurse) => (
-                      <SelectItem key={nurse.id} value={nurse.id}>
+            <div className="space-y-2">
+              <Label htmlFor="nurseTo">Receiving Nurse *</Label>
+              <Select
+                value={selectedNurseId}
+                onValueChange={setSelectedNurseId}
+                disabled={eligibilityLoading || !onDuty}
+              >
+                <SelectTrigger id="nurseTo" className={errors.nurse ? 'border-red-500' : ''}>
+                  <SelectValue placeholder={eligibilityLoading ? 'Checking your shift...' : noNursesReason || 'Choose a nurse'} />
+                </SelectTrigger>
+                <SelectContent className="max-h-[300px]">
+                  {nurses.map((nurse) => (
+                    <SelectItem key={nurse.id} value={nurse.id}>
+                      <div className="flex flex-col">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{nurse.name}</span>
                           <span className="text-muted-foreground">• {nurse.role}</span>
@@ -255,14 +360,26 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                             <span className="text-xs text-muted-foreground">({nurse.specialization})</span>
                           )}
                         </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {errors.nurse && (
-                  <p className="text-sm text-red-500">{errors.nurse}</p>
-                )}
-              </div>
+                        {/* Every eligible recipient is, by the shift-rotation rule
+                            itself, on the exact same next shift — so this is the
+                            real assigned shift for this nurse, not a placeholder. */}
+                        {eligibility?.nextShiftLabel && (
+                          <span className="text-xs text-muted-foreground">
+                            {eligibility.nextShiftLabel} shift
+                            {eligibility.nextShiftDate ? ` (${eligibility.nextShiftDate})` : ''}
+                          </span>
+                        )}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {errors.nurse && (
+                <p className="text-sm text-red-500">{errors.nurse}</p>
+              )}
+              {!eligibilityLoading && onDuty && nurses.length === 0 && (
+                <p className="text-sm text-amber-600">{noNursesReason}</p>
+              )}
             </div>
           </div>
 

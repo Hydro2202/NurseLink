@@ -40,6 +40,8 @@ import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { createKardexRecord, fetchKardexRecords, reviewKardexRecord, ApiError } from '../api/nurselink';
 import type { DuplicatePatientMatch, KardexHistory } from '../types/domain';
+import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
+import { KardexLabsAndMedications } from '../components/KardexLabsAndMedications';
 
 const STATUS_BADGE: Record<
   KardexHistory['status'],
@@ -60,6 +62,8 @@ export default function KardexPage() {
   const [middleName, setMiddleName] = useState('');
   const [age, setAge] = useState('');
   const [gender, setGender] = useState('');
+  const [heightCm, setHeightCm] = useState('');
+  const [weightKg, setWeightKg] = useState('');
   const [religion, setReligion] = useState('');
   const [room, setRoom] = useState('');
   const [bedNumber, setBedNumber] = useState('');
@@ -163,6 +167,8 @@ export default function KardexPage() {
     if (!gender) errors.push('Sex/Gender');
     if (!admissionDate) errors.push('Admission Date');
     if (!room) errors.push('Room');
+    if (validateHeightCm(heightCm)) errors.push('Height');
+    if (validateWeightKg(weightKg)) errors.push('Weight');
 
     return errors;
   };
@@ -191,6 +197,8 @@ export default function KardexPage() {
         middleName,
         age,
         gender,
+        heightCm,
+        weightKg,
         religion,
         room,
         bedNumber,
@@ -258,6 +266,8 @@ export default function KardexPage() {
     setMiddleName('');
     setAge('');
     setGender('');
+    setHeightCm('');
+    setWeightKg('');
     setReligion('');
     setRoom('');
     setBedNumber('');
@@ -274,6 +284,10 @@ export default function KardexPage() {
     setOxygenSaturation('');
     setSpecialEndorsements('');
   };
+
+  const heightError = validateHeightCm(heightCm);
+  const weightError = validateWeightKg(weightKg);
+  const liveBmi = computeBmi(heightCm, weightKg);
 
   return (
     <div className="p-4 pb-24 space-y-6 max-w-5xl mx-auto">
@@ -374,6 +388,40 @@ export default function KardexPage() {
               />
             </div>
           </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="heightCm">Height (cm)</Label>
+              <Input
+                id="heightCm"
+                type="number"
+                step="0.1"
+                value={heightCm}
+                onChange={(e) => setHeightCm(e.target.value)}
+                placeholder="e.g. 165.0"
+                aria-invalid={!!heightError}
+              />
+              {heightError && <p className="text-sm text-red-600">{heightError}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="weightKg">Weight (kg)</Label>
+              <Input
+                id="weightKg"
+                type="number"
+                step="0.1"
+                value={weightKg}
+                onChange={(e) => setWeightKg(e.target.value)}
+                placeholder="e.g. 62.5"
+                aria-invalid={!!weightError}
+              />
+              {weightError && <p className="text-sm text-red-600">{weightError}</p>}
+            </div>
+          </div>
+          {liveBmi != null && (
+            <p className="text-sm text-muted-foreground -mt-2">
+              BMI: <strong className="text-foreground">{liveBmi}</strong> ({bmiCategory(liveBmi)})
+            </p>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -674,6 +722,9 @@ export default function KardexPage() {
               <div className="bg-blue-50 p-4 rounded-lg border border-blue-200 space-y-2">
                 <p className="text-sm"><strong>Patient:</strong> {firstName} {lastName}</p>
                 <p className="text-sm"><strong>Age:</strong> {age} | <strong>Sex:</strong> {gender}</p>
+                {liveBmi != null && (
+                  <p className="text-sm"><strong>BMI:</strong> {liveBmi} ({bmiCategory(liveBmi)})</p>
+                )}
                 <p className="text-sm"><strong>Room:</strong> {room}</p>
                 <p className="text-sm"><strong>Admission Date:</strong> {admissionDate}</p>
               </div>
@@ -797,6 +848,37 @@ export default function KardexPage() {
                   </div>
                 </div>
 
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4">
+                  <div className="space-y-2">
+                    <Label>Height</Label>
+                    <Input
+                      value={selectedHistoryEntry.heightCm ? `${selectedHistoryEntry.heightCm} cm` : '—'}
+                      readOnly
+                      className="bg-gray-50"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Weight</Label>
+                    <Input
+                      value={selectedHistoryEntry.weightKg ? `${selectedHistoryEntry.weightKg} kg` : '—'}
+                      readOnly
+                      className="bg-gray-50"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>BMI</Label>
+                    <Input
+                      value={
+                        selectedHistoryEntry.bmi != null
+                          ? `${selectedHistoryEntry.bmi} (${bmiCategory(selectedHistoryEntry.bmi)})`
+                          : '—'
+                      }
+                      readOnly
+                      className="bg-gray-50"
+                    />
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                   <div className="space-y-2">
                     <Label>Room</Label>
@@ -810,6 +892,13 @@ export default function KardexPage() {
               </div>
 
               <Separator />
+
+              {selectedHistoryEntry.patientCode && (
+                <>
+                  <KardexLabsAndMedications patientId={selectedHistoryEntry.patientCode} />
+                  <Separator />
+                </>
+              )}
 
               {/* Medical Information Section */}
               <div>
@@ -889,13 +978,13 @@ export default function KardexPage() {
                 />
               </div>
 
-              {user?.role === 'supervisor' && selectedHistoryEntry.status === 'submitted' && (
+              {user?.role === 'head_nurse' && selectedHistoryEntry.status === 'submitted' && (
                 <>
                   <Separator />
                   <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-4">
                     <h3 className="text-lg font-bold text-gray-900 mb-3 flex items-center gap-2">
                       <FileText className="w-5 h-5 text-purple-600" />
-                      Supervisor Review
+                      Head Nurse Review
                     </h3>
                     {reviewActionPending ? (
                       <div className="space-y-3">

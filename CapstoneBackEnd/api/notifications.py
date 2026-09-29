@@ -407,7 +407,7 @@ def notify_handover_completed(handover, nurse):
 
 def notify_referral_head_nurse_fyi(handover, verb, detail=''):
     """
-    Keep the relevant head nurse(s) informed of a referral event — created,
+    Keep every head nurse informed of a referral event — created,
     accepted, declined, or completed — purely for oversight. Head nurses
     never approve or act on a referral (see HandoverViewSet.accept/decline/
     complete, which authorize only the two nurses involved), so this is
@@ -415,24 +415,15 @@ def notify_referral_head_nurse_fyi(handover, verb, detail=''):
     says "For your information" rather than anything implying a decision is
     needed.
 
-    Scoped to the head nurse(s) of the sending and/or receiving nurse's
-    department (NurseProfile.department is a plain string, not a relation,
-    so matching is by equal department name — the only scoping this data
-    shape supports today). Falls back to every head nurse when neither the
-    sender nor the recipient has a department set, so oversight coverage
-    never silently drops to zero for referrals with incomplete profile data.
+    Every head nurse gets this, same as HandoverViewSet.get_queryset() now
+    lets every head nurse list every referral — no department silo. This
+    used to filter to head nurse(s) whose own NurseProfile.department
+    string exactly equaled the sender's or recipient's, which meant a head
+    nurse got zero of these the moment their department string didn't
+    match (an admin-only department, a differently-worded ward name, or a
+    referral between two nurses with no department set at all).
     """
-    sender_profile = getattr(handover.created_by, 'nurse_profile', None)
-    recipient_profile = getattr(handover.nurse_to_user, 'nurse_profile', None)
-    departments = {
-        (getattr(sender_profile, 'department', '') or '').strip(),
-        (getattr(recipient_profile, 'department', '') or '').strip(),
-    }
-    departments.discard('')
-
     profiles = NurseProfile.objects.filter(role='head_nurse').select_related('user')
-    if departments:
-        profiles = profiles.filter(department__in=departments)
 
     patient_name = handover.patient_name or (
         handover.patient.name if handover.patient_id else 'a patient'
