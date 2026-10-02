@@ -277,6 +277,8 @@ export type FaceVerificationResponse = {
   message?: string;
   reset?: boolean;
   countable?: boolean;
+  /** False once the lifetime face-attempt budget is spent; only Email OTP remains. */
+  retryAvailable?: boolean;
 };
 
 export type FaceVerificationStatusResponse = {
@@ -292,6 +294,7 @@ export type FaceVerificationStatusResponse = {
   verificationMethod?: string | null;
   status: string;
   registeredEmail?: string | null;
+  retryAvailable?: boolean;
 };
 
 /**
@@ -813,6 +816,9 @@ export type StructureChartResponse = {
   action?: string;
   response?: string;
   aiGenerated: boolean;
+  /** True when n8n returned nothing usable and the backend organised the nurse's own text instead. */
+  fallback?: boolean;
+  warning?: string;
   saved: boolean;
   noteId?: string;
 };

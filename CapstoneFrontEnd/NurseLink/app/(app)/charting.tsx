@@ -310,6 +310,13 @@ export default function ChartingScreen() {
       );
       setStructuredData(preview);
       setShowPreview(true);
+      if (res.fallback) {
+        toast.warning('AI charting unavailable', {
+          description:
+            res.warning ||
+            'The note was organised from your own text. Review it before approving.',
+        });
+      }
     } catch (error) {
       // 503 means the n8n workflow is not listening. Surface that plainly
       // rather than leaving the nurse staring at a spinner.

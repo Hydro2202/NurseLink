@@ -190,7 +190,9 @@ class ReferralWorkflowTests(APITestCase):
 
     def test_status_cannot_be_set_by_direct_patch(self):
         handover = self.make_handover()
-        self.client.force_authenticate(user=self.recipient)
+        # Only the sender may edit a referral at all, and even they cannot
+        # move its status: only accept/decline/complete may change it.
+        self.client.force_authenticate(user=self.sender)
         response = self.client.patch(
             f'/api/handovers/{handover.handover_code}/', {'status': 'accepted'}, format='json',
         )
@@ -198,6 +200,15 @@ class ReferralWorkflowTests(APITestCase):
         handover.refresh_from_db()
         self.assertEqual(handover.status, 'sent', 'status is read-only; only accept/decline/complete may change it')
 
+    def test_receiving_nurse_cannot_edit_referral_directly(self):
+        handover = self.make_handover()
+        self.client.force_authenticate(user=self.recipient)
+        response = self.client.patch(
+            f'/api/handovers/{handover.handover_code}/', {'status': 'accepted'}, format='json',
+        )
+        self.assertEqual(response.status_code, 403, response.content)
+        handover.refresh_from_db()
+        self.assertEqual(handover.status, 'sent')
     # --- head-nurse visibility: read-only, FYI notifications --------------
 
     def test_head_nurse_can_list_all_referrals(self):

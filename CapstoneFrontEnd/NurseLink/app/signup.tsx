@@ -439,7 +439,7 @@ export default function SignUpPage() {
   const [faceVerificationCompleted, setFaceVerificationCompleted] = useState(false);
   const [roleSelected, setRoleSelected] = useState(false);
 
-  const [email, setEmail] = useState('');
+  const [typedEmail, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [role, setRole] = useState<UserRole | ''>('');
@@ -460,6 +460,11 @@ export default function SignUpPage() {
   const [faceStatus, setFaceStatus] = useState<ProcessStatus>('idle');
   const [liveCameraActive, setLiveCameraActive] = useState(false);
   const [ocrData, setOcrData] = useState(defaultOcrData);
+  // The login email must be the one registered (and, for Email OTP, verified)
+  // on Step 2 — the server rejects any other. Use it and lock the field;
+  // the typed value is only a fallback for a session without one.
+  const registeredEmail = (ocrData.email || '').trim();
+  const email = registeredEmail || typedEmail;
   // Per-field messages on the ID Review step, so a correction that fails
   // validation points at the field that needs fixing.
   const [idFieldErrors, setIdFieldErrors] = useState<Record<string, string>>({});
@@ -475,6 +480,9 @@ export default function SignUpPage() {
   const [faceAttemptsUsed, setFaceAttemptsUsed] = useState(0);
   const [faceMaxAttempts, setFaceMaxAttempts] = useState(MAX_FACE_ATTEMPTS);
   const [faceLocked, setFaceLocked] = useState(false);
+  // False once the server says the lifetime face-attempt budget is spent:
+  // only Email OTP is left, so the Retry button is hidden.
+  const [faceRetryAvailable, setFaceRetryAvailable] = useState(true);
   const [faceResetPending, setFaceResetPending] = useState(false);
   const [faceResuming, setFaceResuming] = useState(true);
   const [showOtpPanel, setShowOtpPanel] = useState(false);
@@ -562,6 +570,7 @@ export default function SignUpPage() {
         setFaceMaxAttempts(resolveMaxAttempts(res));
         setFaceAttemptsUsed(resolveAttemptsUsed(res, faceAttemptsUsed));
         setFaceLocked(Boolean(res.locked));
+        if (res.retryAvailable === false) setFaceRetryAvailable(false);
         if (res.faceVerified) {
           setFaceStatus('success');
           setFaceVerificationCompleted(true);
@@ -881,7 +890,9 @@ export default function SignUpPage() {
         setFaceStatus('failed');
         setError(res.message || 'Face verification failed. Please position your face correctly and try again.');
         // Fallback UI only after backend confirms all attempts are used.
-        setFaceLocked(Boolean(res.locked) && attempts >= maxAttempts);
+        const retryLeft = res.retryAvailable !== false;
+        setFaceRetryAvailable(retryLeft);
+        setFaceLocked(Boolean(res.locked) && (attempts >= maxAttempts || !retryLeft));
       } catch (err) {
         setFaceStatus('failed');
         if (err instanceof ApiError) {
@@ -892,12 +903,15 @@ export default function SignUpPage() {
             attemptsRemaining?: number;
             maxAttempts?: number;
             locked?: boolean;
+            retryAvailable?: boolean;
           } | undefined;
+          const retryLeft = data?.retryAvailable !== false;
+          setFaceRetryAvailable(retryLeft);
           if (data?.registrationSessionId) {
             setRegistrationSessionId(data.registrationSessionId);
             const maxAttempts = resolveMaxAttempts(data);
             const attempts = resolveAttemptsUsed(data, faceAttemptsUsed);
-            const locked = Boolean(data.locked) && attempts >= maxAttempts;
+            const locked = Boolean(data.locked) && (attempts >= maxAttempts || !retryLeft);
             setFaceMaxAttempts(maxAttempts);
             setFaceAttemptsUsed(Math.min(maxAttempts, Math.max(0, attempts)));
             setFaceLocked(locked);
@@ -905,7 +919,7 @@ export default function SignUpPage() {
           }
           const maxAttempts = resolveMaxAttempts(data ?? {});
           const attempts = resolveAttemptsUsed(data ?? {});
-          const locked = Boolean(data?.locked) && attempts >= maxAttempts;
+          const locked = Boolean(data?.locked) && (attempts >= maxAttempts || !retryLeft);
           setError(locked
             ? data?.message || `You've used all ${maxAttempts} face verification attempts. Choose Retry Face Verification or Verify Using Email OTP.`
             : extractErrorMessage(err, 'Face verification failed. Please try again.'));
@@ -965,6 +979,9 @@ export default function SignUpPage() {
       resetOtpState();
       await openLiveCamera();
     } catch (err) {
+      if (err instanceof ApiError && (err.data as { retryAvailable?: boolean } | undefined)?.retryAvailable === false) {
+        setFaceRetryAvailable(false);
+      }
       setError(extractErrorMessage(err, 'Could not reset verification. Please try again.'));
     } finally {
       setFaceResetPending(false);
@@ -1678,7 +1695,7 @@ export default function SignUpPage() {
                       </>
                     )}
 
-                    {faceLocked && faceAttemptsUsed >= faceMaxAttempts && !showOtpPanel && (
+                    {faceLocked && (faceAttemptsUsed >= faceMaxAttempts || !faceRetryAvailable) && !showOtpPanel && (
                       <View style={styles.verificationWarningCard}>
                         <View style={styles.verificationWarningHeader}>
                           <View style={styles.warningIconCircle}>
@@ -1699,6 +1716,8 @@ export default function SignUpPage() {
                               <Text style={styles.errorBoxText}>{otpError}</Text>
                             </View>
                           ) : null}
+                          {faceRetryAvailable ? (
+                            <>
                           <Button
                             variant="outline"
                             size="lg"
@@ -1715,6 +1734,8 @@ export default function SignUpPage() {
                             </Text>
                           </Button>
                           <Text style={styles.otpDividerText}>or</Text>
+                            </>
+                          ) : null}
                           <Button size="lg" onPress={handleOpenOtp} disabled={otpStatus === 'sending' || faceResetPending}>
                             <Mail size={16} color={Colors.white} />
                             <Text style={navStyles.btnText}>Verify Using Email OTP</Text>
@@ -1936,6 +1957,7 @@ export default function SignUpPage() {
                       placeholder="you@example.com"
                       value={email}
                       onChangeText={setEmail}
+                      editable={!registeredEmail}
                       keyboardType="email-address"
                       autoCapitalize="none"
                       error={fieldErrors.email}

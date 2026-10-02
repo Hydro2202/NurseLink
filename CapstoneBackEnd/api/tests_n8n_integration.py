@@ -143,6 +143,31 @@ class VerifyIdEndpointTests(TestCase):
             self.assertNotIn(dropped, res.data)
 
     @patch('api.views.call_workflow')
+    def test_raw_text_overrides_misaligned_workflow_fields(self, mock_call):
+        # Shape seen live: n8n shifted every value by one label on a card
+        # whose two date labels are stacked above their values.
+        mock_call.return_value = {
+            'success': True,
+            'lastName': '12/27/2025',
+            'firstName': '06/29/2029',
+            'middleName': 'NURSE',
+            'rawText': 'Republic of the Philippines\nPROFESSIONAL REGULATION COMMISSION\nPROFESSIONAL IDENTIFICATION CARD\nLAST NAME\n• VILLAPANDO\nFIRST NAME\n• RAIDEN\nMIDDLE NAME\nNA\nREGISTRATION NO.\n• 0987654\nREGISTRATION DATE\nVALID UNTIL\n12/27/2025\n06/29/2029\nNURSE',
+        }
+
+        res = self.client.post(
+            '/api/auth/verify-id/', {'idImage': 'data:image/jpeg;base64,AAAA'}, format='json'
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['verified'], res.data)
+        self.assertEqual(res.data['lastName'], 'VILLAPANDO')
+        self.assertEqual(res.data['firstName'], 'RAIDEN')
+        self.assertEqual(res.data['middleName'], '')
+        self.assertEqual(res.data['registrationNumber'], '0987654')
+        self.assertEqual(res.data['registrationDate'], '2025-12-27')
+        self.assertEqual(res.data['validUntil'], '2029-06-29')
+
+    @patch('api.views.call_workflow')
     def test_maps_prc_style_name_and_licence_fields_for_step_2(self, mock_call):
         """
         Step 2 (ID Review) shows Last/First/Middle name, Registration No.,
@@ -909,13 +934,44 @@ class StructureChartEndpointTests(TestCase):
         self.assertEqual(vitals['bloodPressure'], '120/80')
 
     @patch('api.views.call_workflow')
-    def test_empty_workflow_output_is_reported_not_silently_saved(self, mock_call):
+    def test_empty_workflow_output_falls_back_but_is_not_silently_saved(self, mock_call):
         mock_call.return_value = {}
 
         res = self._post(save=True)
 
-        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['fallback'])
+        self.assertFalse(res.data['aiGenerated'])
+        self.assertFalse(res.data['saved'])
+        self.assertTrue(res.data['warning'])
         self.assertEqual(ChartingNote.objects.count(), 0)
+
+    @patch('api.views.call_workflow')
+    def test_unusable_workflow_output_is_structured_from_nurse_text(self, mock_call):
+        # Shape seen live from the structure-chart webhook.
+        mock_call.return_value = {
+            'title': 'Empty Chart', 'category': 'General',
+            'summary': 'No data was provided for chart creation.', 'data': [], 'status': 'completed',
+        }
+
+        res = self._post(
+            assessment=(
+                'Data:\nHeadache 4/10. BP 160/100.\n\n'
+                'Action:\nAssisted patient to a comfortable position. Encouraged rest.\n\n'
+                'Response:\nHeadache decreased to 2/10.'
+            ),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        structured = res.data['structured']
+        self.assertTrue(res.data['fallback'])
+        self.assertEqual(structured['assessment'], 'Headache 4/10. BP 160/100.')
+        self.assertEqual(
+            structured['interventions'],
+            ['Assisted patient to a comfortable position.', 'Encouraged rest.'],
+        )
+        self.assertEqual(structured['patientResponse'], 'Headache decreased to 2/10.')
+        self.assertEqual(structured['vitalSigns']['bloodPressure'], '160/100')
 
     @patch('api.views.call_workflow', side_effect=N8nWorkflowOffline(workflow='structure_chart'))
     def test_offline_workflow_returns_503(self, _mock_call):

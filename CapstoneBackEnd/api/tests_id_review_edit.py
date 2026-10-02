@@ -22,8 +22,9 @@ def make_session(**extra):
     """A session as it stands after a successful scan on Step 1."""
     fields = dict(
         session_id=uuid.uuid4(),
-        # is_verified is derived from these two, not settable directly.
-        face_verified=True,
+        # Step 2 (ID Review) runs before Step 3 (face/OTP), so a session being
+        # reviewed is not verified yet — once it is, Step 2 is locked.
+        face_verified=False,
         id_verification_status='verified',
         verification_method='face',
         # What OCR read — deliberately wrong, so a correction is visible.
@@ -199,6 +200,9 @@ class CorrectedFieldsReachTheAccountTests(APITestCase):
             },
             format='json',
         )
+
+        # Step 3: face verification passes.
+        RegistrationSession.objects.filter(pk=self.session.pk).update(face_verified=True)
 
         # Step 5: the account is created from the reviewed values.
         response = self.client.post(

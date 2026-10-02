@@ -704,3 +704,61 @@ def scan_prc_license(image_data: str) -> PrcScanResult:
         matched_markers=matched,
         report=report,
     )
+
+
+# --- label/value line parsing (n8n raw OCR text) ---------------------------
+
+# PRC card OCR, one label or value per line. The two dates are printed side
+# by side under their labels, so OCR often emits both labels first and both
+# values after ("REGISTRATION DATE / VALID UNTIL / 12/27/2025 / 06/29/2029").
+# Pairing values with pending labels in order handles both that stacked
+# layout and the simple label-then-value one.
+_LINE_LABELS = (
+    ('lastName', re.compile(r'^(?:LAST\s*NAME|SURNAME)\b', re.IGNORECASE)),
+    ('firstName', re.compile(r'^(?:FIRST\s*NAME|GIVEN\s*NAME)\b', re.IGNORECASE)),
+    ('middleName', re.compile(r'^MIDDLE\s*NAME\b', re.IGNORECASE)),
+    ('registrationNumber', re.compile(r'^REG(?:ISTRATION)?\.?\s*(?:NO\b\.?|NUMBER\b|#)', re.IGNORECASE)),
+    ('registrationDate', re.compile(r'^REG(?:ISTRATION)?\.?\s*DATE\b|^DATE\s*(?:OF\s*)?(?:REGISTRATION|ISSUE)', re.IGNORECASE)),
+    ('validUntil', re.compile(r'^VALID\s*(?:UNTIL|THRU|TO)\b|^EXPIR', re.IGNORECASE)),
+)
+_BULLET = re.compile(r'^[\s\u2022\u00b7*\-\u2013\u25cf>]+')
+_EMPTY_NAME = {'NA', 'N/A', 'N.A.', 'NONE', '-', '--'}
+
+
+def _line_value(key: str, value: str) -> str:
+    value = _BULLET.sub('', value).strip(' :.,')
+    if key in ('lastName', 'firstName', 'middleName'):
+        return '' if value.upper() in _EMPTY_NAME else re.sub(r'\s+', ' ', value)
+    if key == 'registrationNumber':
+        digits = re.sub(r'\D', '', value.translate(_DIGIT_FIXES))
+        return digits
+    return _normalize_date(value) or value
+
+
+def parse_labelled_lines(text: str) -> dict:
+    """
+    Fields read from OCR text laid out as label lines followed by value lines.
+
+    Returns only the fields whose label was found, so a caller can tell
+    "label present, value empty" (e.g. middle name NA -> '') from "label not
+    on the card". Values are never guessed from position alone.
+    """
+    found: dict[str, str] = {}
+    pending: list[str] = []
+    for raw in (text or '').splitlines():
+        line = _BULLET.sub('', raw).strip()
+        if not line:
+            continue
+        key = next((k for k, pattern in _LINE_LABELS if pattern.match(line)), None)
+        if key:
+            pattern = dict(_LINE_LABELS)[key]
+            inline = pattern.sub('', line, count=1).strip(' :.-')
+            if inline:
+                found[key] = _line_value(key, inline)
+            else:
+                pending.append(key)
+            continue
+        if pending:
+            target = pending.pop(0)
+            found[target] = _line_value(target, line)
+    return found

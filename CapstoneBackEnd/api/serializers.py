@@ -194,6 +194,18 @@ class SignupSerializer(serializers.Serializer):
             )
         return session
 
+    def validate(self, attrs):
+        # The account must belong to the identity that was verified. The
+        # registered email is the one Step 2 stored on the session (and the
+        # one Email OTP proved ownership of), so the login email must be it.
+        session = attrs['registrationSessionId']
+        registered = (session.email or '').strip().lower()
+        if registered and attrs['email'] != registered:
+            raise serializers.ValidationError({
+                'email': f'Use the email you registered and verified ({registered}).',
+            })
+        return attrs
+
     def create(self, validated_data):
         email = validated_data['email']
         first_name = validated_data.get('firstName') or ''
@@ -206,6 +218,18 @@ class SignupSerializer(serializers.Serializer):
             first_name = parts[0]
             if len(parts) > 1 and not last_name:
                 last_name = parts[1]
+
+        # The verified PRC fields (scanned, then confirmed on ID Review) are
+        # the identity. Form values are only a fallback for an old session
+        # that has none, so a verified applicant cannot sign up as someone else.
+        middle_name = validated_data.get('middleName') or ''
+        license_number = validated_data.get('licenseNumber') or ''
+        if session.id_first_name or session.id_last_name:
+            first_name = session.id_first_name
+            last_name = session.id_last_name
+            middle_name = session.id_middle_name
+        if session.id_registration_no:
+            license_number = session.id_registration_no
 
         role = validated_data.get('role', 'staff_nurse')
         # Left blank unless the signup form explicitly supplied one — a new
@@ -232,8 +256,8 @@ class SignupSerializer(serializers.Serializer):
                 # unassigned account look scheduled. Left blank until a
                 # head nurse sets a real one via the assign action.
                 shift='',
-                license_number=validated_data.get('licenseNumber') or '',
-                middle_name=validated_data.get('middleName') or '',
+                license_number=license_number,
+                middle_name=middle_name,
                 # Identity is established by the time we get here — the
                 # Hospital ID was scanned and OCR'd, a portrait was confirmed
                 # on it, and the applicant passed either face matching against
@@ -3572,6 +3596,11 @@ class StructureChartResponseSerializer(serializers.Serializer):
     action = serializers.CharField(required=False, allow_blank=True, help_text='FDAR Action section.')
     response = serializers.CharField(required=False, allow_blank=True, help_text='FDAR Response section.')
     aiGenerated = serializers.BooleanField()
+    fallback = serializers.BooleanField(
+        required=False,
+        help_text='True when n8n returned nothing usable and the note was organised from the nurse’s own text.',
+    )
+    warning = serializers.CharField(required=False, allow_blank=True)
     saved = serializers.BooleanField(help_text='True when save=true persisted a ChartingNote.')
     noteId = serializers.CharField(required=False, allow_blank=True)
 

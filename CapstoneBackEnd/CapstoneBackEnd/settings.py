@@ -327,6 +327,11 @@ FACE_MATCH_THRESHOLD = float(os.environ.get('FACE_MATCH_THRESHOLD', '0.363'))
 # Face verification attempt cap before Email OTP is offered as a fallback.
 MAX_FACE_VERIFICATION_ATTEMPTS = int(os.environ.get('MAX_FACE_VERIFICATION_ATTEMPTS', '3'))
 
+# How many times "Retry Face Verification" may start a fresh set of attempts.
+# The total is capped per PRC licence across every session (see
+# api/views.py FACE_LIFETIME_ATTEMPT_BUDGET); after that only Email OTP is left.
+MAX_FACE_VERIFICATION_RETRY_CYCLES = int(os.environ.get('MAX_FACE_VERIFICATION_RETRY_CYCLES', '1'))
+
 # Registration OTP lifecycle (api/otp_service.py).
 OTP_EXPIRATION_MINUTES = int(os.environ.get('OTP_EXPIRATION_MINUTES', '5'))
 OTP_RESEND_COOLDOWN_SECONDS = int(os.environ.get('OTP_RESEND_COOLDOWN_SECONDS', '60'))

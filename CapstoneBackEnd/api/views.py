@@ -52,7 +52,13 @@ from .n8n_client import (
 # assumed to be the same one prc_ocr raises.
 from .id_photo_check import InvalidImageError as PortraitImageError, check_id_has_portrait
 from .id_field_validation import validate_prc_id_fields
-from .prc_ocr import InvalidImageError, PrcOcrError, scan_id_fields, scan_prc_license
+from .prc_ocr import (
+    InvalidImageError,
+    PrcOcrError,
+    parse_labelled_lines,
+    scan_id_fields,
+    scan_prc_license,
+)
 from .models import (
     ChartingNote,
     Department,
@@ -79,6 +85,7 @@ from .models import (
 )
 from .handover_tasks import adopt_handover_tasks
 from .referral_shifts import SHIFT_LABELS, get_eligible_recipients
+from .chart_fallback import structure_from_assessment
 from .vitals_extraction import extract_vitals_from_text
 from .notifications import (
     notify,
@@ -253,6 +260,35 @@ def _face_session_status(session: RegistrationSession) -> str:
     return 'idle'
 
 
+#: Failed face comparisons allowed per PRC licence across every session and
+#: every "Retry Face Verification" reset: the first set of MAX_FACE_ATTEMPTS
+#: plus MAX_FACE_VERIFICATION_RETRY_CYCLES more sets. Without a lifetime cap
+#: the 3-strike lockout could be cleared forever, by the reset flag or by
+#: simply starting a new session.
+FACE_LIFETIME_ATTEMPT_BUDGET = MAX_FACE_ATTEMPTS * (
+    1 + max(0, getattr(settings, 'MAX_FACE_VERIFICATION_RETRY_CYCLES', 1))
+)
+
+FACE_BUDGET_SPENT_MESSAGE = (
+    'Face verification is no longer available for this registration after too many '
+    'failed attempts. Please verify using Email OTP.'
+)
+
+
+def _lifetime_failed_face_attempts(session: RegistrationSession) -> int:
+    """Failed comparisons logged for this session, its PRC licence, or its email."""
+    scope = Q(session=session)
+    if session.id_registration_no:
+        scope |= Q(session__id_registration_no=session.id_registration_no)
+    if session.email:
+        scope |= Q(session__email__iexact=session.email)
+    return FaceVerificationAttempt.objects.filter(scope, countable=True, matched=False).count()
+
+
+def _face_retry_available(session: RegistrationSession) -> bool:
+    return _lifetime_failed_face_attempts(session) < FACE_LIFETIME_ATTEMPT_BUDGET
+
+
 def _face_session_payload(session: RegistrationSession, **extra):
     attempts_used = min(MAX_FACE_ATTEMPTS, session.face_attempts)
     status_value = _face_session_status(session)
@@ -271,6 +307,9 @@ def _face_session_payload(session: RegistrationSession, **extra):
         'max_attempts': MAX_FACE_ATTEMPTS,
         'verification_status': status_value,
         'registeredEmail': session.email or None,
+        # False once the lifetime budget is spent: the app should hide
+        # "Retry Face Verification" and offer Email OTP only.
+        'retryAvailable': _face_retry_available(session),
     }
     payload.update(extra)
     return payload
@@ -616,7 +655,39 @@ class RegistrationEmailView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        session.email = data['email'].lower().strip()
+        new_email = data['email'].lower().strip()
+        cleaned = data.get('cleanedIdFields')
+
+        # Once face or OTP verification has passed, the identity it proved is
+        # fixed: changing the email or ID fields now would detach the account
+        # from what was verified. Re-sending identical values (the app going
+        # back and forward through Step 2) is still accepted.
+        if session.is_verified:
+            unchanged = new_email == (session.email or '').lower() and (
+                not cleaned
+                or (
+                    cleaned['last_name'] == session.id_last_name
+                    and cleaned['first_name'] == session.id_first_name
+                    and cleaned['middle_name'] == session.id_middle_name
+                    and cleaned['registration_no'] == session.id_registration_no
+                    and parse_date(cleaned['registration_date']) == session.id_registration_date
+                    and parse_date(cleaned['valid_until']) == session.id_valid_until
+                )
+            )
+            if not unchanged:
+                return Response(
+                    {
+                        'success': False,
+                        'message': (
+                            'Your identity is already verified, so the email and ID details can no '
+                            'longer be changed. Restart registration to use different details.'
+                        ),
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            return Response({'success': True, 'registrationSessionId': str(session.session_id)})
+
+        session.email = new_email
         updated = ['email', 'updated_at']
 
         # The nurse reviewed the scanned fields and may have corrected an OCR
@@ -625,7 +696,6 @@ class RegistrationEmailView(APIView):
         # creation, licence expiry) uses the corrected data without needing to
         # know a correction happened. The raw scan is still on record in
         # IdScanAttempt, so what OCR actually read remains auditable.
-        cleaned = data.get('cleanedIdFields')
         if cleaned:
             session.id_last_name = cleaned['last_name']
             session.id_first_name = cleaned['first_name']
@@ -700,6 +770,16 @@ class FaceVerificationView(APIView):
                 return Response(
                     {'success': False, 'message': 'Registration session not found. Please restart verification.'},
                     status=status.HTTP_404_NOT_FOUND,
+                )
+            if not _face_retry_available(session):
+                session.face_locked = True
+                session.save(update_fields=['face_locked', 'updated_at'])
+                return Response(
+                    _face_session_payload(
+                        session, matched=False, confidence=0, reason=None,
+                        message=FACE_BUDGET_SPENT_MESSAGE,
+                    ),
+                    status=status.HTTP_403_FORBIDDEN,
                 )
             session.face_attempts = 0
             session.face_locked = False
@@ -788,6 +868,17 @@ class FaceVerificationView(APIView):
                         "You've reached the maximum number of face verification attempts. "
                         'Choose Retry Face Verification or Verify Using Email OTP.'
                     ),
+                ),
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not _face_retry_available(session):
+            session.face_locked = True
+            session.save(update_fields=['face_locked', 'updated_at'])
+            return Response(
+                _face_session_payload(
+                    session, matched=False, confidence=0, reason=None,
+                    message=FACE_BUDGET_SPENT_MESSAGE,
                 ),
                 status=status.HTTP_403_FORBIDDEN,
             )
@@ -899,6 +990,7 @@ class FaceVerificationView(APIView):
                 message = (
                     "You've reached the maximum number of face verification attempts. "
                     'Choose Retry Face Verification or Verify Using Email OTP.'
+                    if _face_retry_available(session) else FACE_BUDGET_SPENT_MESSAGE
                 )
 
             return Response(
@@ -1351,6 +1443,21 @@ class VerifyIdView(APIView):
         fields = {
             name: self._pick(lookup, aliases) for name, aliases in self._FIELD_ALIASES.items()
         }
+        # n8n's own field assignment has been seen shifting every value by
+        # one label on a stacked-layout card (lastName "12/27/2025",
+        # firstName "06/29/2029", middleName "NURSE") while its rawText was
+        # read perfectly. When the raw OCR text is present, read the labelled
+        # values from it ourselves and let those win for every label found.
+        raw_text = lookup.get('rawText') or lookup.get('raw_text') or ''
+        raw_lines = lookup.get('lines')
+        if not raw_text and isinstance(raw_lines, list):
+            raw_text = '\n'.join(str(line) for line in raw_lines)
+        if isinstance(raw_text, str) and raw_text.strip():
+            from_text = parse_labelled_lines(raw_text)
+            if from_text:
+                fields.update(from_text)
+                if any(k in from_text for k in ('lastName', 'firstName', 'middleName')):
+                    fields['fullName'] = ''
         # A workflow returning discrete name parts but no combined fullName
         # (the shape a PRC-style OCR naturally gives) still needs one for
         # anything downstream that only reads fullName.
@@ -2510,8 +2617,38 @@ class PatientViewSet(viewsets.ModelViewSet):
                 {'detail': 'You can only delete patients assigned to you.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        # Deleting cascades to the patient's whole history. A staff nurse may
+        # still undo a mistaken entry (e.g. a wrong Kardex admission), but
+        # once real care is on file it is a medical record: discharge it
+        # instead, or have a head nurse delete it.
+        if role != 'head_nurse':
+            recorded = self._recorded_care(patient)
+            if recorded:
+                return Response(
+                    {
+                        'detail': (
+                            'This patient already has ' + ', '.join(recorded) + ' on file, so it '
+                            'cannot be deleted. Discharge the patient instead, or ask a head nurse.'
+                        ),
+                        'recordedCare': recorded,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         # Related tasks/assignments/kardex cascade or are cleaned via FK rules
         return super().destroy(request, *args, **kwargs)
+
+    @staticmethod
+    def _recorded_care(patient):
+        """Labels for each kind of clinical record this patient already has."""
+        checks = (
+            ('charting notes', ChartingNote.objects.filter(patient=patient)),
+            ('vital signs', VitalSigns.objects.filter(patient=patient)),
+            ('referrals', HandoverNote.objects.filter(patient=patient)),
+            ('medication records', MedicationIntake.objects.filter(medication__patient=patient)),
+            ('completed tasks', Task.objects.filter(patient=patient, status='completed')),
+            ('past visits', patient.visits.filter(discharge_date__isnull=False)),
+        )
+        return [label for label, qs in checks if qs.exists()]
 
     @extend_schema(
         request=inline_serializer(
@@ -2791,6 +2928,23 @@ class HandoverViewSet(viewsets.ModelViewSet):
         # _ensure_recipient still mean they only ever create/act on their
         # own referrals; this only changes what a head nurse can *see*.
         return qs
+
+    def update(self, request, *args, **kwargs):
+        # Covers PUT and PATCH. A referral's content (SBAR, recipient) is the
+        # sender's statement; nobody else may rewrite it. Without this, any
+        # approved staff nurse could edit any referral in the ward.
+        handover = self.get_object()
+        if handover.created_by_id != request.user.id:
+            raise PermissionDenied('Only the nurse who sent this referral can edit it.')
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        # Sender and receiver both see a delete button in the app; anyone
+        # else in the ward must not be able to remove a referral.
+        handover = self.get_object()
+        if request.user.id not in (handover.created_by_id, handover.nurse_to_user_id):
+            raise PermissionDenied('Only the sending or receiving nurse can delete this referral.')
+        return super().destroy(request, *args, **kwargs)
 
     def _ensure_recipient(self, handover):
         """
@@ -3546,24 +3700,20 @@ class ChartingViewSet(viewsets.ModelViewSet):
         if not isinstance(structured, dict):
             structured = {}
 
+        # The workflow sometimes answers 200 with nothing usable (seen live:
+        # {"title": "Empty Chart", "summary": "No data was provided...",
+        # "data": []}). Failing the nurse's charting on that is worse than
+        # useless, so fall back to organising their own text by its section
+        # headings — see api/chart_fallback.py. Nothing is invented; the
+        # response says plainly that the AI step did not run.
+        used_fallback = False
         if not note_text and not structured:
-            logger.error(
-                'autochart invalid response patient=%s keys=%s',
+            logger.warning(
+                'autochart unusable workflow response patient=%s keys=%s; using local fallback',
                 patient.patient_code, sorted(result.keys()) if result else '(empty body)',
             )
-            return Response(
-                {
-                    'success': False,
-                    'detail': (
-                        'The structure-chart workflow returned no note. Check that its final '
-                        'node responds with a "note" or "structured" field.'
-                    ),
-                    'source': 'n8n',
-                    'workflow': 'structure_chart',
-                    'raw': result,
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            structured = structure_from_assessment(nurse_assessment)
+            used_fallback = True
 
         # Authoritative patient context wins over anything the workflow invents
         # for identity/demographic fields. Assessment keeps the nurse's typed
@@ -3634,7 +3784,9 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 structured[key] = ''
 
         saved_id = ''
-        if data.get('save'):
+        # A fallback note is never auto-saved: the AI step did not run, so the
+        # nurse must look at it before it becomes part of the chart.
+        if data.get('save') and not used_fallback:
             # Persist structured alongside narrative so View Full Note can
             # rehydrate the exact approved chart (no empty template / no invention).
             note_serializer = ChartingNoteSerializer(
@@ -3656,7 +3808,13 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 'success': True,
                 'note': note_text,
                 'structured': structured,
-                'aiGenerated': True,
+                'aiGenerated': not used_fallback,
+                'fallback': used_fallback,
+                'warning': (
+                    'The AI charting workflow returned no note, so this note was organised '
+                    'from your own text. Review it before approving.'
+                    if used_fallback else ''
+                ),
                 'saved': bool(saved_id),
                 'noteId': saved_id,
             }
