@@ -29,7 +29,7 @@ Branch: `fix/overnight-sweep` (created from `main`, never merged/pushed — see 
 | Backend | `python manage.py check` | clean | clean |
 | Backend | `python manage.py check --deploy` | 2 warnings (weak temp SECRET_KEY used for the check itself, HSTS_PRELOAD not set) | unchanged — both pre-existing, neither touched tonight |
 | Backend | `python manage.py makemigrations --check --dry-run` | no changes detected | no changes detected (none of tonight's fixes needed a migration) |
-| Backend | `python manage.py test api` (full suite) | exit 0 | re-run after every fix tonight, exit 0 each time *(the one full-suite confirmation launched after the IDOR/checklist fixes was still running as this report was written — see the note at the very end of §6; every individual affected test file was re-run directly and passed)* |
+| Backend | `python manage.py test api` (full suite) | exit 0 | exit 0 — re-run after every fix tonight, and once more as the very last step after the IDOR/checklist commit; all green |
 | Backend | `bandit -r api CapstoneBackEnd` | 3 findings (2 medium-confidence `urllib.urlopen` on hardcoded trusted URLs, already `# noqa`'d; 1 low-confidence SQL-injection false positive on an f-string building a human error message, not SQL) | unchanged — none were real, none touched |
 | Backend | `pip-audit` | ~40 findings, but this machine's Python has **no project-specific virtualenv** (it's the global Windows Python install) — most flagged packages (`pyjwt`, `werkzeug`, `python-socketio`, `mako`, `marshmallow`, `pip`/`setuptools`/`wheel`) belong to **other, unrelated projects** installed on this machine (confirmed via `pip show --Required-by`: `werkzeug`→Flask, `mako`→alembic, etc. — zero imports of any of these anywhere in this repo). The one real, relevant finding is Pillow (see §7). | unchanged — no global packages touched (see §7 for why) |
 | Web | `npx tsc --noEmit` | clean | clean |
@@ -125,7 +125,7 @@ One thing the smoke test caught that **wasn't a code bug**: the local dev databa
 
 **Web app**: not opened in a browser tonight — `npm run build` succeeds and `npx tsc --noEmit` is clean, but I didn't click through it live. **Mobile app**: lint/typecheck/export all clean; not opened in an emulator (no real ID/face photos available to test the signup flow, same limitation as the backend smoke test).
 
-**Outstanding**: the one full `python manage.py test api` run launched after tonight's final two fixes (the IDOR/checklist commit) was still running in the background as this report was being written — it had not failed at any point, and every individual test file touched by those fixes was re-run directly and passed (`tests_kardex_care_scope`, `tests_kardex_review`, `tests_kardex_birthday_ivf`, `tests_kardex_risk`, `tests_duplicate_patient`, `tests_task_assignment`, `tests_task_checklist`, `tests_task_doctors` — 56 tests across those 8 files, all passing). If you see this note still here, re-run `python manage.py test api` once to get the final all-green confirmation — I'd bet on it, but "bet on it" isn't the same as "confirmed," so I'm saying so plainly rather than rounding up.
+**Closed out**: the one full `python manage.py test api` run launched after tonight's final two fixes (the IDOR/checklist commit) finished after this report was first drafted — exit code 0, full suite green. (Every individual test file touched by those fixes had already been re-run directly and passed in the meantime: `tests_kardex_care_scope`, `tests_kardex_review`, `tests_kardex_birthday_ivf`, `tests_kardex_risk`, `tests_duplicate_patient`, `tests_task_assignment`, `tests_task_checklist`, `tests_task_doctors` — 56 tests across those 8 files.)
 
 ---
 
@@ -166,7 +166,7 @@ One thing the smoke test caught that **wasn't a code bug**: the local dev databa
 **Steps you need to take:**
 1. Nothing is required to deploy what's here — it's all backward-compatible, additive, or a tightening of an existing rule.
 2. If you want the abandoned-registration cleanup to run automatically rather than manually: add `python manage.py cleanup_abandoned_registrations` to whatever cron/scheduled-task mechanism you use (there's no Celery in this project — confirmed during tonight's mapping pass — so this has to be external cron, not a Celery beat schedule).
-3. Before merging `fix/overnight-sweep` into `main`: re-run the full backend test suite once more yourself (see §9) to get the all-green confirmation the one still-running background job didn't quite finish in time for this report (see the end of §6).
+3. Review the branch (`git log fix/overnight-sweep`, or diff against `main`) and merge it yourself when you're satisfied — I didn't merge or push it, per the safety rules.
 4. Read §7 items 1 and 2 (CORS/CSRF, Pillow) — both need a small decision/action from you, not just a merge.
 
 ---
