@@ -295,11 +295,20 @@ REST_FRAMEWORK = {
     },
 }
 
-# Face verification sends the selfie and Hospital ID photo as base64 in a
-# single JSON body (up to ~10MB each pre-encoding, ~33% larger once base64
-# encoded). Django's 2.5MB default would reject legitimate photos before
-# they ever reach our own friendly "file too large" validation.
-DATA_UPLOAD_MAX_MEMORY_SIZE = 30 * 1024 * 1024
+# Issue 15: was 30MB with no per-file ceiling behind it — a single request
+# could carry a full 30MB before any of our own validation ran. Each
+# identity-verification endpoint now rejects any individual image over 5MB
+# (api/face_match.py MAX_IMAGE_BYTES, api/prc_ocr.py MAX_IMAGE_BYTES,
+# VerifyIdView._MAX_IMAGE_BYTES), and two of those can legitimately land in
+# one JSON body at once (face-verification sends the selfie + Hospital ID
+# together; PRC-licence verification sends the licence + selfie together):
+# 5MB raw -> ~6.7MB base64 each -> ~13.4MB combined. 15MB leaves headroom for
+# that plus JSON structure overhead, while still cutting the old ceiling in
+# half. Mobile also now downsizes photos before upload (1600px/~0.75 quality,
+# see services/imageCompression.ts), so a normal sign-up's real payload sits
+# at a few hundred KB — this limit is sized for the worst case, not the
+# common one.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 15 * 1024 * 1024
 
 # --- Email (registration OTP delivery) ---------------------------------
 # Real SMTP is required for Email OTP. Set EMAIL_* in CapstoneBackEnd/.env

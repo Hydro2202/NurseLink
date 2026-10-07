@@ -33,7 +33,15 @@ from django.conf import settings
 # attempt cap and the match threshold live in exactly one place — see
 # MAX_FACE_VERIFICATION_ATTEMPTS / FACE_MATCH_THRESHOLD in settings.py.
 MAX_FACE_ATTEMPTS = settings.MAX_FACE_VERIFICATION_ATTEMPTS
-MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB, matches the documented upload limit
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — matches VerifyIdView's own multipart check,
+# so a base64 upload can't be allowed twice the size of a multipart one for
+# the exact same endpoint. See DATA_UPLOAD_MAX_MEMORY_SIZE in settings.py for
+# why that global ceiling is sized against this number.
+# A phone photo rarely exceeds ~5000px on its long side. Anything past this is
+# either a crafted decompression-bomb-style image (small on disk, enormous
+# once decoded — cv2.imdecode has already allocated the full decoded buffer
+# by the time we can check this) or not a real camera photo either way.
+MAX_IMAGE_DIMENSION = 6000
 
 MODEL_DIR = Path(__file__).resolve().parent / 'ml_models'
 YUNET_PATH = MODEL_DIR / 'face_detection_yunet_2023mar.onnx'
@@ -109,11 +117,15 @@ class ImageTooSmallError(InvalidImageError):
 
 
 class ImageTooLargeError(InvalidImageError):
-    default_detail = 'Image is too large. Maximum file size is 10 MB.'
+    default_detail = 'Image is too large. Maximum file size is 5 MB.'
 
 
 class ImageDecodeError(InvalidImageError):
     default_detail = 'Could not decode image. Please upload a valid JPG or PNG.'
+
+
+class ImageDimensionsTooLargeError(InvalidImageError):
+    default_detail = 'Image dimensions are too large. Please upload a standard photo.'
 
 
 def _ensure_model(path: Path, url: str) -> None:
@@ -177,12 +189,18 @@ def _decode_image(image_data: str, *, allow_pdf_hint: bool = False) -> np.ndarra
     if len(raw) < 500:
         raise ImageTooSmallError('Image data is too small to be a valid photo.')
     if len(raw) > MAX_IMAGE_BYTES:
-        raise ImageTooLargeError('Image is too large. Maximum file size is 10 MB.')
+        raise ImageTooLargeError('Image is too large. Maximum file size is 5 MB.')
 
     array = np.frombuffer(raw, dtype=np.uint8)
     img = cv2.imdecode(array, cv2.IMREAD_COLOR)
     if img is None:
         raise ImageDecodeError('Could not decode image. Please upload a valid JPG or PNG.')
+
+    height, width = img.shape[:2]
+    if height > MAX_IMAGE_DIMENSION or width > MAX_IMAGE_DIMENSION:
+        raise ImageDimensionsTooLargeError(
+            f'Image dimensions are too large ({width}x{height}). Please upload a standard photo.'
+        )
     return img
 
 

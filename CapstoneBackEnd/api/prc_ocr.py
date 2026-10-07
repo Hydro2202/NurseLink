@@ -46,7 +46,13 @@ from pytesseract import TesseractNotFoundError
 
 logger = logging.getLogger(__name__)
 
-MAX_IMAGE_BYTES = 10 * 1024 * 1024  # matches the documented upload limit
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # matches the other two identity-verification
+# endpoints' per-file limit (api/face_match.py, VerifyIdView) — see
+# DATA_UPLOAD_MAX_MEMORY_SIZE in settings.py for how the global ceiling is
+# sized against this number.
+# Same reasoning as face_match.py's MAX_IMAGE_DIMENSION — a phone photo rarely
+# exceeds ~5000px on its long side; anything past this is not a real photo.
+MAX_IMAGE_DIMENSION = 6000
 
 # Both must be present. These are printed on every PRC professional ID.
 REQUIRED_MARKERS = (
@@ -124,7 +130,7 @@ class EmptyPrcImageError(InvalidImageError):
 
 
 class PrcImageTooLargeError(InvalidImageError):
-    default_detail = 'Image is larger than 10MB.'
+    default_detail = 'Image is larger than 5MB.'
 
 
 class PdfNotSupportedPrcImageError(InvalidImageError):
@@ -133,6 +139,10 @@ class PdfNotSupportedPrcImageError(InvalidImageError):
 
 class PrcImageDecodeError(InvalidImageError):
     default_detail = 'Image could not be decoded. Please retake the photo.'
+
+
+class PrcImageDimensionsTooLargeError(InvalidImageError):
+    default_detail = 'Image dimensions are too large. Please upload a standard photo.'
 
 
 @dataclass
@@ -200,13 +210,19 @@ def _decode_image(image_data: str) -> np.ndarray:
     if not raw:
         raise EmptyPrcImageError('Image is empty.')
     if len(raw) > MAX_IMAGE_BYTES:
-        raise PrcImageTooLargeError('Image is larger than 10MB.')
+        raise PrcImageTooLargeError('Image is larger than 5MB.')
     if raw[:4] == b'%PDF':
         raise PdfNotSupportedPrcImageError('PDF uploads cannot be scanned. Please upload a JPG or PNG photo.')
 
     image = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise PrcImageDecodeError('Image could not be decoded. Please retake the photo.')
+
+    height, width = image.shape[:2]
+    if height > MAX_IMAGE_DIMENSION or width > MAX_IMAGE_DIMENSION:
+        raise PrcImageDimensionsTooLargeError(
+            f'Image dimensions are too large ({width}x{height}). Please upload a standard photo.'
+        )
     return image
 
 
