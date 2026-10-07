@@ -9,6 +9,16 @@ from django.db import models
 from django.utils import timezone
 
 
+class ClinicalRole(models.TextChoices):
+    """The only clinical roles an account may hold. Used by the model, the
+    serializers and the admin — never a free-text value."""
+
+    RN = 'RN', 'RN'
+    LPN = 'LPN', 'LPN'
+    CHARGE_NURSE = 'Charge Nurse', 'Charge Nurse'
+    CLINICAL_NURSE_SPECIALIST = 'Clinical Nurse Specialist', 'Clinical Nurse Specialist'
+
+
 class NurseProfile(models.Model):
     """Extra nurse info linked 1-to-1 with Django's built-in User."""
 
@@ -20,12 +30,7 @@ class NurseProfile(models.Model):
         ('FACE', 'Face Verification'),
         ('EMAIL_OTP', 'Email OTP'),
     ]
-    CLINICAL_ROLE_CHOICES = [
-        ('RN', 'RN'),
-        ('LPN', 'LPN'),
-        ('Charge Nurse', 'Charge Nurse'),
-        ('Clinical Nurse Specialist', 'Clinical Nurse Specialist'),
-    ]
+    CLINICAL_ROLE_CHOICES = ClinicalRole.choices
     SHIFT_CHOICES = [
         ('morning', 'Morning'),
         ('afternoon', 'Afternoon'),
@@ -80,6 +85,18 @@ class NurseProfile(models.Model):
     prc_verified_at = models.DateTimeField(null=True, blank=True)
     prc_license_expiry = models.CharField(max_length=20, blank=True, default='')
     prc_profession = models.CharField(max_length=120, blank=True, default='')
+    # What an applicant asked for at signup. A request only — it grants no
+    # permission. Head nurse is granted by an admin via
+    # AdminUserViewSet.grant_role, which also records who did it and when.
+    requested_role = models.CharField(max_length=20, blank=True, default='')
+    role_granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='roles_granted',
+    )
+    role_granted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [
@@ -1083,6 +1100,30 @@ class DutyAssignment(models.Model):
             naive += timedelta(days=1)
         return timezone.make_aware(naive, timezone=ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
 
+    def schedule_status_at(self, now):
+        """'upcoming' / 'current' / 'past' against the real start and end instants."""
+        if now < self.scheduled_start_datetime():
+            return 'upcoming'
+        if now < self.scheduled_end_datetime():
+            return 'current'
+        return 'past'
+
+    def schedule_window_label(self):
+        """
+        "Oct 2, 11:00 PM – Oct 3, 7:00 AM" in the hospital's timezone — the one
+        place this text is built, so the roster, notifications and exports
+        all show the same window (see Night shifts in the roster legend).
+        """
+        local = ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)
+
+        def fmt(moment):
+            moment = moment.astimezone(local)
+            hour12 = moment.hour % 12 or 12
+            meridiem = 'PM' if moment.hour >= 12 else 'AM'
+            return f'{moment:%b} {moment.day}, {hour12}:{moment:%M} {meridiem}'
+
+        return f'{fmt(self.scheduled_start_datetime())} – {fmt(self.scheduled_end_datetime())}'
+
     def save(self, *args, **kwargs):
         self.regular_hours = self.duration_hours(self.start_time, self.end_time)
         self.overtime_hours = (
@@ -1476,6 +1517,17 @@ class RegistrationSession(models.Model):
     session_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, db_index=True)
     email = models.EmailField(blank=True, default='')
     face_attempts = models.PositiveSmallIntegerField(default=0)
+    # Time-based lockout: set when the attempts run out. Ends by itself at
+    # face_locked_until; each new lockout on the same identity is longer
+    # (settings.FACE_LOCKOUT_MINUTES). Unlocking early is admin-only.
+    face_locked_until = models.DateTimeField(null=True, blank=True)
+    face_lock_count = models.PositiveSmallIntegerField(default=0)
+    face_unlocked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='face_lockouts_cleared',
+    )
+    face_unlocked_at = models.DateTimeField(null=True, blank=True)
+    face_unlock_reason = models.TextField(blank=True, default='')
     face_verified = models.BooleanField(default=False)
     face_locked = models.BooleanField(default=False)
     otp_verified = models.BooleanField(default=False)
@@ -1504,6 +1556,10 @@ class RegistrationSession(models.Model):
     id_registration_date = models.DateField(null=True, blank=True)
     id_valid_until = models.DateField(null=True, blank=True)
     id_verification_status = models.CharField(max_length=20, blank=True, default='')
+    # The PRC card image exactly as scanned (data URI). Stored server-side and
+    # never returned to clients: face verification matches the selfie against
+    # this, not against an image the client sends. See VerifyIdView.
+    id_portrait = models.TextField(blank=True, default='')
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -1760,3 +1816,64 @@ class UserPreferences(models.Model):
 
     def __str__(self):
         return 'Preferences for %s' % self.user.username
+
+
+class AuthSession(models.Model):
+    """
+    One API token per login. Replaces DRF's authtoken Token for request auth,
+    because Token.user is one-to-one: a second login on another device would
+    hand back the same key, and logging out on one device would revoke both.
+    Revoking a session deletes only that row; the user's other sessions stay.
+    """
+
+    key = models.CharField(max_length=40, unique=True, db_index=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='auth_sessions',
+    )
+    created = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'Session for {self.user_id} ({self.created:%Y-%m-%d %H:%M})'
+
+
+class EmailChangeRequest(models.Model):
+    """
+    A pending login-email change. The code is sent to the NEW address and is
+    only stored as a hash; the email changes only when it is confirmed.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='email_change_requests',
+    )
+    old_email = models.EmailField(max_length=254)
+    new_email = models.EmailField(max_length=254)
+    code_hash = models.CharField(max_length=64)
+    attempts = models.PositiveIntegerField(default=0)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created = models.DateTimeField(auto_now_add=True)
+
+
+class CorrectionRequest(models.Model):
+    """
+    A nurse's request to change a verified identity field. Changes nothing
+    until an admin approves it (AdminCorrectionViewSet).
+    """
+
+    STATUS_CHOICES = [('pending', 'Pending'), ('approved', 'Approved'), ('rejected', 'Rejected')]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='correction_requests',
+    )
+    requested = models.JSONField(default=dict)
+    reason = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
+    created = models.DateTimeField(auto_now_add=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='corrections_reviewed',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.TextField(blank=True, default='')

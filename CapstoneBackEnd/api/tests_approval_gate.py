@@ -13,7 +13,7 @@ import datetime
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from rest_framework.authtoken.models import Token
+from .auth_sessions import issue_session
 from rest_framework.test import APITestCase
 
 from .models import NurseProfile, Patient
@@ -98,7 +98,7 @@ class ApprovedNurseApiPermissionTests(APITestCase):
 
     def test_pending_nurse_with_a_token_still_cannot_reach_patients(self):
         user = make_profile('stillpending@hospital.com', 'Gia', 'Lim', approval_status='pending')
-        Token.objects.get_or_create(user=user)
+        issue_session(user)
         self.client.force_authenticate(user=user)
 
         response = self.client.get('/api/patients/')
@@ -111,11 +111,12 @@ class ApprovedNurseApiPermissionTests(APITestCase):
         response = self.client.get('/api/patients/')
         self.assertEqual(response.status_code, 200)
 
-    def test_me_endpoint_still_works_while_pending(self):
-        # The pending-approval screen needs this to show real status —
-        # it must not be gated the same way protected records are.
+    def test_me_endpoint_refuses_a_pending_account_with_its_status_code(self):
+        # A pending account may not use the app at all. Its status reaches the
+        # pending screen through the login refusal (account_pending), not /me.
         user = make_profile('checkmyownstatus@hospital.com', 'Ivy', 'Reyes', approval_status='pending')
         self.client.force_authenticate(user=user)
 
         response = self.client.get('/api/auth/me/')
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data['code'], 'account_pending')

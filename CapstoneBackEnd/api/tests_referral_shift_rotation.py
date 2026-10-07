@@ -42,7 +42,9 @@ def make_shift(nurse, department, duty_date, shift, *, status='scheduled'):
     )
 
 
-class ReferralShiftRotationTests(APITestCase):
+class ReferralShiftTestBase(APITestCase):
+    """Shared fixture for both ReferralShiftRotationTests and ReferralEmptyReasonTests."""
+
     def setUp(self):
         cache.clear()
         self.dept = Department.objects.get_or_create(name='Shift Rotation Test Ward')[0]
@@ -58,6 +60,8 @@ class ReferralShiftRotationTests(APITestCase):
     def _now_at(self, date, hour, minute=0):
         return datetime.datetime(date.year, date.month, date.day, hour, minute, tzinfo=MANILA)
 
+
+class ReferralShiftRotationTests(ReferralShiftTestBase):
     def _refer(self, sender, recipient, patient=None):
         self.client.force_authenticate(user=sender)
         return self.client.post('/api/handovers/', {
@@ -249,3 +253,88 @@ class ReferralShiftRotationTests(APITestCase):
         self.assertEqual(list_response.status_code, 200)
         codes = [h['id'] for h in list_response.data]
         self.assertIn(response.data['id'], codes)
+
+
+class ReferralEmptyReasonTests(ReferralShiftTestBase):
+    """
+    emptyReason on GET /handovers/eligible-recipients/: why the recipients
+    list came back empty. Reuses ReferralShiftRotationTests' setUp (self.dept,
+    self.day, self.next_day) and helpers (make_nurse, make_shift).
+    """
+
+    def test_normal_case_has_no_empty_reason(self):
+        morning = make_nurse('reason_morning1')
+        afternoon = make_nurse('reason_afternoon1')
+        make_shift(morning, self.dept, self.day, 'morning')
+        make_shift(afternoon, self.dept, self.day, 'afternoon')
+
+        with patch('api.referral_shifts.timezone.now', return_value=self._now_at(self.day, 10)):
+            self.client.force_authenticate(user=morning)
+            response = self.client.get('/api/handovers/eligible-recipients/')
+        self.assertTrue(response.data['recipients'])
+        self.assertIsNone(response.data['emptyReason'])
+
+    def test_user_off_duty_empty_reason(self):
+        unscheduled = make_nurse('reason_offduty1')
+
+        with patch('api.referral_shifts.timezone.now', return_value=self._now_at(self.day, 10)):
+            self.client.force_authenticate(user=unscheduled)
+            response = self.client.get('/api/handovers/eligible-recipients/')
+        self.assertFalse(response.data['onDuty'])
+        self.assertEqual(response.data['recipients'], [])
+        self.assertEqual(response.data['emptyReason'], 'user_off_duty')
+
+    def test_no_next_shift_staff_empty_reason(self):
+        # On duty, but literally nobody — in any department — is scheduled
+        # for the next shift.
+        morning = make_nurse('reason_morning2')
+        make_shift(morning, self.dept, self.day, 'morning')
+
+        with patch('api.referral_shifts.timezone.now', return_value=self._now_at(self.day, 10)):
+            self.client.force_authenticate(user=morning)
+            response = self.client.get('/api/handovers/eligible-recipients/')
+        self.assertTrue(response.data['onDuty'])
+        self.assertEqual(response.data['recipients'], [])
+        self.assertEqual(response.data['emptyReason'], 'no_next_shift_staff')
+
+    def test_only_self_scheduled_empty_reason(self):
+        # Double-booked: on duty for the current (morning) shift, and also
+        # the only one scheduled for the department's next (afternoon) shift.
+        morning = make_nurse('reason_morning3')
+        make_shift(morning, self.dept, self.day, 'morning')
+        make_shift(morning, self.dept, self.day, 'afternoon')
+
+        with patch('api.referral_shifts.timezone.now', return_value=self._now_at(self.day, 10)):
+            self.client.force_authenticate(user=morning)
+            response = self.client.get('/api/handovers/eligible-recipients/')
+        self.assertTrue(response.data['onDuty'])
+        self.assertEqual(response.data['recipients'], [])
+        self.assertEqual(response.data['emptyReason'], 'only_self_scheduled')
+
+    def test_no_eligible_nurse_empty_reason_when_only_head_nurse_scheduled(self):
+        # Someone else IS scheduled for the next shift, but they're a head
+        # nurse — not a valid referral recipient.
+        morning = make_nurse('reason_morning4')
+        afternoon_head = make_nurse('reason_afternoon_head', role='head_nurse')
+        make_shift(morning, self.dept, self.day, 'morning')
+        make_shift(afternoon_head, self.dept, self.day, 'afternoon')
+
+        with patch('api.referral_shifts.timezone.now', return_value=self._now_at(self.day, 10)):
+            self.client.force_authenticate(user=morning)
+            response = self.client.get('/api/handovers/eligible-recipients/')
+        self.assertTrue(response.data['onDuty'])
+        self.assertEqual(response.data['recipients'], [])
+        self.assertEqual(response.data['emptyReason'], 'no_eligible_nurse_on_next_shift')
+
+    def test_no_eligible_nurse_empty_reason_when_scheduled_nurse_not_approved(self):
+        morning = make_nurse('reason_morning5')
+        afternoon_pending = make_nurse('reason_afternoon_pending')
+        NurseProfile.objects.filter(user=afternoon_pending).update(approval_status='pending')
+        make_shift(morning, self.dept, self.day, 'morning')
+        make_shift(afternoon_pending, self.dept, self.day, 'afternoon')
+
+        with patch('api.referral_shifts.timezone.now', return_value=self._now_at(self.day, 10)):
+            self.client.force_authenticate(user=morning)
+            response = self.client.get('/api/handovers/eligible-recipients/')
+        self.assertEqual(response.data['recipients'], [])
+        self.assertEqual(response.data['emptyReason'], 'no_eligible_nurse_on_next_shift')

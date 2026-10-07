@@ -25,7 +25,7 @@ def make_session(**extra):
         # Step 2 (ID Review) runs before Step 3 (face/OTP), so a session being
         # reviewed is not verified yet — once it is, Step 2 is locked.
         face_verified=False,
-        id_verification_status='verified',
+        id_verification_status='verified', id_portrait='data:image/jpeg;base64,PORTRAIT',
         verification_method='face',
         # What OCR read — deliberately wrong, so a correction is visible.
         id_last_name='SITERAKAS',
@@ -74,18 +74,24 @@ class ReviewedIdFieldTests(APITestCase):
         self.assertEqual(self.session.id_last_name, 'CORTEZ')
         self.assertNotEqual(self.session.id_last_name, 'SITERAKAS')
 
-    def test_corrected_dates_replace_what_ocr_read(self):
-        self.post(**self.corrected(registrationDate='2024-01-15', validUntil='2028-01-15'))
+    def test_card_dates_cannot_be_corrected_to_other_dates(self):
+        # Policy: only names are correctable. Dates come from the card.
+        response = self.post(**self.corrected(registrationDate='2024-01-15', validUntil='2028-01-15'))
 
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()['code'], 'card_field_not_editable')
         self.session.refresh_from_db()
-        self.assertEqual(self.session.id_registration_date, datetime.date(2024, 1, 15))
-        self.assertEqual(self.session.id_valid_until, datetime.date(2028, 1, 15))
+        self.assertEqual(self.session.id_registration_date, datetime.date(2025, 12, 4))
+        self.assertEqual(self.session.id_valid_until, datetime.date(2029, 6, 29))
 
-    def test_a_corrected_registration_number_replaces_what_ocr_read(self):
-        self.post(**self.corrected(registrationNumber='7654321'))
+    def test_the_registration_number_cannot_be_corrected(self):
+        # Policy: a licence typed in Step 2 could belong to someone else.
+        response = self.post(**self.corrected(registrationNumber='7654321'))
 
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()['fields'], ['registrationNumber'])
         self.session.refresh_from_db()
-        self.assertEqual(self.session.id_registration_no, '7654321')
+        self.assertEqual(self.session.id_registration_no, '2223332')
 
     def test_the_email_is_still_saved_alongside_the_corrections(self):
         self.post(**self.corrected())
@@ -196,7 +202,7 @@ class CorrectedFieldsReachTheAccountTests(APITestCase):
                 'middleName': 'KELEMEN',
                 'registrationNumber': '2223332',
                 'registrationDate': '2025-12-04',
-                'validUntil': '2030-06-29',
+                'validUntil': '2029-06-29',
             },
             format='json',
         )
@@ -229,6 +235,5 @@ class CorrectedFieldsReachTheAccountTests(APITestCase):
         profile = NurseProfile.objects.get(user=user)
         self.assertEqual(profile.middle_name, 'KELEMEN')
         self.assertEqual(profile.license_number, '2223332')
-        # Licence expiry is read from the session, which now holds the
-        # reviewed date rather than the scanned one.
-        self.assertEqual(profile.prc_license_expiry, '06/29/2030')
+        # Licence expiry comes from the scanned card date (dates are not correctable).
+        self.assertEqual(profile.prc_license_expiry, '06/29/2029')

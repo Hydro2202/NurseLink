@@ -12,6 +12,7 @@ from rest_framework import serializers
 
 from .models import (
     ChartingNote,
+    ClinicalRole,
     compute_bmi,
     Department,
     Doctor,
@@ -127,23 +128,6 @@ class UserSerializer(serializers.ModelSerializer):
         return profile.specialization if profile else ''
 
 
-class NurseListSerializer(serializers.Serializer):
-    """Matches frontend Nurse / workload nurse list shape."""
-
-    id = serializers.CharField()
-    name = serializers.CharField()
-    role = serializers.CharField()
-    shift = serializers.CharField()
-    specialization = serializers.CharField(required=False, allow_blank=True)
-    email = serializers.EmailField(required=False)
-    department = serializers.CharField(required=False, allow_blank=True)
-    burnoutRisk = serializers.CharField(required=False)
-    overtimeHours = serializers.FloatField(required=False)
-    patientCount = serializers.IntegerField(required=False)
-    taskCount = serializers.IntegerField(required=False)
-    completedTasks = serializers.IntegerField(required=False)
-
-
 class SignupSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, min_length=6)
@@ -151,9 +135,14 @@ class SignupSerializer(serializers.Serializer):
     middleName = serializers.CharField(required=False, allow_blank=True, default='')
     lastName = serializers.CharField(required=False, allow_blank=True, default='')
     name = serializers.CharField(required=False, allow_blank=True, default='')
-    role = serializers.ChoiceField(
+    # A request, never a grant: every account is created as a staff nurse.
+    # Head nurse is given only by an admin (AdminUserViewSet.grant_role). Any
+    # `role` key a client sends is ignored outright, not read.
+    requestedRole = serializers.ChoiceField(
         choices=['staff_nurse', 'head_nurse'],
-        default='staff_nurse',
+        required=False,
+        allow_blank=True,
+        default='',
     )
     department = serializers.CharField(required=False, allow_blank=True, default='')
     licenseNumber = serializers.CharField(required=False, allow_blank=True, default='')
@@ -192,6 +181,12 @@ class SignupSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 'PRC ID verification has not been completed. Please scan your PRC nursing license first.'
             )
+        # The account's identity is the scanned card. A session without those
+        # fields has no identity to bind to, so it cannot create an account.
+        if not (session.id_first_name or session.id_last_name) or not session.id_registration_no:
+            raise serializers.ValidationError(
+                'PRC ID verification has not been completed. Please scan your PRC nursing license first.'
+            )
         return session
 
     def validate(self, attrs):
@@ -199,11 +194,44 @@ class SignupSerializer(serializers.Serializer):
         # registered email is the one Step 2 stored on the session (and the
         # one Email OTP proved ownership of), so the login email must be it.
         session = attrs['registrationSessionId']
+        from .identity import blocked_name_terms
+
+        verified_name = ' '.join(
+            part for part in (session.id_first_name, session.id_middle_name, session.id_last_name) if part
+        )
+        blocked = blocked_name_terms(verified_name)
+        if blocked:
+            from .identity import coded_400
+
+            raise coded_400(
+                'This name contains a role word and needs administrator review. Contact an administrator.',
+                'name_blocked',
+                terms=blocked,
+            )
         registered = (session.email or '').strip().lower()
         if registered and attrs['email'] != registered:
             raise serializers.ValidationError({
                 'email': f'Use the email you registered and verified ({registered}).',
             })
+
+        # Reject, don't overwrite: the form must describe the card that was verified.
+        from .identity import coded_400, identity_mismatches
+
+        mismatched = identity_mismatches(session, attrs)
+        if mismatched:
+            raise coded_400(
+                'These details do not match the PRC ID you verified. Check the name and licence number, '
+                'or scan your card again.',
+                'identity_mismatch',
+                fields=mismatched,
+            )
+
+        licence = session.id_registration_no
+        if NurseProfile.objects.filter(license_number__iexact=licence).exists():
+            raise coded_400(
+                'An account already exists for this PRC licence number. Contact an administrator.',
+                'licence_already_registered',
+            )
         return attrs
 
     def create(self, validated_data):
@@ -231,7 +259,7 @@ class SignupSerializer(serializers.Serializer):
         if session.id_registration_no:
             license_number = session.id_registration_no
 
-        role = validated_data.get('role', 'staff_nurse')
+        requested_role = validated_data.get('requestedRole') or ''
         # Left blank unless the signup form explicitly supplied one — a new
         # account has no real ward assignment yet, and silently defaulting
         # to a made-up department ("Medical-Surgical Unit") looked like a
@@ -249,7 +277,8 @@ class SignupSerializer(serializers.Serializer):
             )
             NurseProfile.objects.create(
                 user=user,
-                role=role,
+                role='staff_nurse',
+                requested_role=requested_role,
                 department=department,
                 # Same reasoning as department above: the signup form never
                 # asks for a shift, so defaulting to 'morning' here made an
@@ -517,6 +546,44 @@ class UpdateMeSerializer(serializers.Serializer):
     # now set exclusively by a head nurse.
     clinicalRole = serializers.CharField(required=False, allow_blank=True, max_length=40)
     specialization = serializers.CharField(required=False, allow_blank=True, max_length=120)
+
+    def validate(self, attrs):
+        # Verified identity is locked for self-service. A request that names a
+        # locked field with a different value is refused, not silently dropped,
+        # so the app can explain what happened (see identity.py).
+        user = self.instance
+        profile = getattr(user, 'nurse_profile', None) if user else None
+        if profile is None:
+            # Admin accounts have no nurse profile and no sign-up verification,
+            # so there is no verified identity to protect for them.
+            return attrs
+        current = {
+            'name': user.get_full_name().strip() if user else '',
+            'firstName': user.first_name if user else '',
+            'lastName': user.last_name if user else '',
+            'middleName': profile.middle_name if profile else '',
+            'email': (user.email or '').lower() if user else '',
+            'licenseNumber': profile.license_number if profile else '',
+            'clinicalRole': profile.clinical_role if profile else '',
+        }
+        locked = []
+        for field, stored in current.items():
+            if field not in attrs:
+                continue
+            requested = (attrs[field] or '').strip()
+            if field == 'email':
+                requested = requested.lower()
+            if requested != (stored or '').strip():
+                locked.append(field)
+        if locked:
+            from .identity import coded_400
+
+            raise coded_400(
+                'These fields are verified and locked. Request a correction or change your email with the verification code.',
+                'field_locked',
+                fields=locked,
+            )
+        return attrs
 
     def validate_avatar(self, value):
         try:
@@ -2640,6 +2707,13 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
     # Present only when a head nurse closed this shift out rather than the
     # nurse ending it themselves — see DutyAssignmentViewSet.close.
     actualEndRecordedBy = serializers.SerializerMethodField()
+    # Real instants in the hospital's timezone, plus where that moment sits
+    # against right now — computed here, so no screen re-derives shift timing
+    # from the device's own clock or timezone.
+    scheduledStartAt = serializers.SerializerMethodField()
+    scheduledEndAt = serializers.SerializerMethodField()
+    scheduleStatus = serializers.SerializerMethodField()
+    scheduleWindowLabel = serializers.SerializerMethodField()
 
     class Meta:
         model = DutyAssignment
@@ -2650,8 +2724,21 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
             'totalHours', 'status', 'statusLabel', 'notes',
             'actualStartTime', 'actualEndTime', 'actualWorkedHours', 'actualOvertimeHours',
             'actualEndRecordedBy',
+            'scheduledStartAt', 'scheduledEndAt', 'scheduleStatus', 'scheduleWindowLabel',
             'createdBy', 'createdAt', 'updatedAt',
         ]
+
+    def get_scheduledStartAt(self, obj):
+        return obj.scheduled_start_datetime().isoformat()
+
+    def get_scheduledEndAt(self, obj):
+        return obj.scheduled_end_datetime().isoformat()
+
+    def get_scheduleStatus(self, obj):
+        return obj.schedule_status_at(timezone.now())
+
+    def get_scheduleWindowLabel(self, obj):
+        return obj.schedule_window_label()
 
     def get_nurseName(self, obj):
         return obj.nurse.get_full_name().strip() or obj.nurse.username
@@ -3766,3 +3853,49 @@ class RegistrationSessionSerializer(serializers.ModelSerializer):
 
     def get_userEmail(self, obj):
         return obj.user.email if obj.user_id else ''
+
+
+CORRECTABLE_FIELDS = ('firstName', 'middleName', 'lastName', 'licenseNumber', 'clinicalRole')
+
+
+class CorrectionRequestSerializer(serializers.Serializer):
+    firstName = serializers.CharField(required=False, allow_blank=False, max_length=150)
+    middleName = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    lastName = serializers.CharField(required=False, allow_blank=False, max_length=150)
+    licenseNumber = serializers.CharField(required=False, allow_blank=False, max_length=50)
+    clinicalRole = serializers.ChoiceField(choices=ClinicalRole.choices, required=False)
+    reason = serializers.CharField(min_length=10, max_length=1000)
+
+    def validate(self, attrs):
+        from .identity import blocked_name_terms
+
+        from .identity import coded_400
+
+        requested = {k: attrs[k] for k in CORRECTABLE_FIELDS if k in attrs}
+        if not requested:
+            raise coded_400('Request at least one correction.', 'nothing_requested')
+
+        user = self.context['request'].user
+        profile = getattr(user, 'nurse_profile', None)
+        new_first = attrs.get('firstName', user.first_name)
+        new_middle = attrs.get('middleName', profile.middle_name if profile else '')
+        new_last = attrs.get('lastName', user.last_name)
+        if any(k in requested for k in ('firstName', 'middleName', 'lastName')):
+            blocked = blocked_name_terms(' '.join(p for p in (new_first, new_middle, new_last) if p))
+            if blocked:
+                raise coded_400(
+                    'This name contains a role word and needs administrator review.',
+                    'name_blocked',
+                    terms=blocked,
+                )
+        attrs['requested'] = requested
+        return attrs
+
+
+class EmailChangeStartSerializer(serializers.Serializer):
+    newEmail = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
+
+
+class EmailChangeConfirmSerializer(serializers.Serializer):
+    code = serializers.CharField(min_length=6, max_length=6)

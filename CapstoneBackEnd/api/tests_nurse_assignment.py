@@ -46,10 +46,18 @@ class NurseSelfEditCannotChangeAssignmentTests(APITestCase):
         self.assertEqual(self.nurse.nurse_profile.shift, 'morning')
 
     def test_other_self_edit_fields_still_work(self):
-        response = self.client.patch('/api/auth/me/', {'licenseNumber': 'RN-12345'}, format='json')
+        response = self.client.patch('/api/auth/me/', {'specialization': 'Cardiac'}, format='json')
         self.assertEqual(response.status_code, 200)
         self.nurse.nurse_profile.refresh_from_db()
-        self.assertEqual(self.nurse.nurse_profile.license_number, 'RN-12345')
+        self.assertEqual(self.nurse.nurse_profile.specialization, 'Cardiac')
+
+    def test_licence_number_is_locked_for_self_edit(self):
+        before = self.nurse.nurse_profile.license_number
+        response = self.client.patch('/api/auth/me/', {'licenseNumber': 'RN-12345'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['code'], 'field_locked')
+        self.nurse.nurse_profile.refresh_from_db()
+        self.assertEqual(self.nurse.nurse_profile.license_number, before)
 
 
 class NurseAssignmentTests(APITestCase):

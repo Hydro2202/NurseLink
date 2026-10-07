@@ -21,6 +21,7 @@ router.register(r'nurses', views.NurseViewSet, basename='nurse')
 router.register(r'departments', views.DepartmentViewSet, basename='department')
 router.register(r'doctors', views.DoctorViewSet, basename='doctor')
 router.register(r'admin/users', views.AdminUserViewSet, basename='admin-user')
+router.register(r'admin/corrections', views.AdminCorrectionViewSet, basename='admin-correction')
 router.register(
     r'admin/registration-sessions', views.RegistrationSessionViewSet, basename='admin-registration-session'
 )
@@ -57,6 +58,12 @@ urlpatterns = [
     path('auth/login/', views.LoginView.as_view(), name='login'),
     path('auth/token/', views.OAuthTokenView.as_view(), name='oauth-token'),
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
+    path('auth/logout-all/', views.LogoutAllView.as_view(), name='logout-all'),
+    path('auth/ws-ticket/', views.WsTicketView.as_view(), name='ws-ticket'),
+    path('auth/email-change/', views.EmailChangeView.as_view(), name='email-change'),
+    path('auth/email-change/confirm/', views.EmailChangeConfirmView.as_view(), name='email-change-confirm'),
+    path('auth/corrections/', views.CorrectionRequestView.as_view(), name='correction-request'),
+    path('admin/face-unlock/', views.AdminFaceUnlockView.as_view(), name='admin-face-unlock'),
     path('auth/me/', views.MeView.as_view(), name='me'),
     path('auth/change-password/', views.ChangePasswordView.as_view(), name='change-password'),
     path('workload/', views.WorkloadView.as_view(), name='workload'),

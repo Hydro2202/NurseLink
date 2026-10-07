@@ -17,7 +17,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.test import TransactionTestCase
 from django.utils import timezone
-from rest_framework.authtoken.models import Token
+from .auth_sessions import issue_session
 
 from CapstoneBackEnd.asgi import application
 
@@ -32,7 +32,7 @@ def make_nurse(email, first, last):
         first_name=first, last_name=last,
     )
     NurseProfile.objects.create(user=user, role='staff_nurse')
-    return user, Token.objects.create(user=user).key
+    return user, issue_session(user).key
 
 
 @database_sync_to_async

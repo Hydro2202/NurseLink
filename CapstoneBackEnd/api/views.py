@@ -7,10 +7,12 @@ import re
 from datetime import date, timedelta
 
 from django.conf import settings
+from django.core.mail import send_mail
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.core.cache import cache
 from django.db.models import Count, Max, Prefetch, Q
 from django.utils import timezone
 from zoneinfo import ZoneInfo
@@ -22,7 +24,8 @@ from drf_spectacular.utils import (
     inline_serializer,
 )
 from rest_framework import permissions, serializers, status, viewsets
-from rest_framework.authtoken.models import Token
+from .auth_sessions import issue_session, revoke_all_sessions, revoke_session
+from .ws_tickets import issue_ticket as issue_ws_ticket
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
@@ -59,7 +62,10 @@ from .prc_ocr import (
     scan_id_fields,
     scan_prc_license,
 )
+from .access import filter_nurse_fields
+from .utils import parse_user_date
 from .models import (
+    AuthSession,
     ChartingNote,
     Department,
     Doctor,
@@ -85,6 +91,7 @@ from .models import (
 )
 from .handover_tasks import adopt_handover_tasks
 from .referral_shifts import SHIFT_LABELS, get_eligible_recipients
+from . import login_throttle
 from .chart_fallback import structure_from_assessment
 from .vitals_extraction import extract_vitals_from_text
 from .notifications import (
@@ -104,6 +111,7 @@ from .notifications import (
 )
 from .otp_service import OtpCooldownError, OtpDeliveryError, OtpResendLimitError, issue_otp, verify_otp
 from .permissions import (
+    IsApprovedActiveUser,
     CanManageReferral,
     IsAdmin,
     IsApprovedNurse,
@@ -140,6 +148,9 @@ from .schema_examples import (
 )
 from .serializers import (
     ChangePasswordSerializer,
+    CorrectionRequestSerializer,
+    EmailChangeConfirmSerializer,
+    EmailChangeStartSerializer,
     ChartingNoteSerializer,
     DepartmentSerializer,
     DischargePlanInputSerializer,
@@ -208,6 +219,23 @@ OAuthTokenResponseSerializer = inline_serializer(
 )
 
 
+def _login_blocked_response(seconds: int, *, oauth: bool) -> Response:
+    """
+    429 for a throttled login. Identical whether or not the account exists:
+    it is decided before any user lookup, and says nothing about the account.
+    """
+    message = login_throttle.BLOCKED_MESSAGE
+    body = (
+        {'error': 'too_many_requests', 'error_description': message}
+        if oauth else {'detail': message}
+    )
+    return Response(
+        body,
+        status=status.HTTP_429_TOO_MANY_REQUESTS,
+        headers={'Retry-After': str(max(1, seconds))},
+    )
+
+
 def _authenticate_credentials(email: str, password: str):
     """Resolve user from email/username + password."""
     user = authenticate(username=email, password=password)
@@ -222,6 +250,9 @@ def _authenticate_credentials(email: str, password: str):
 
 class SignupView(APIView):
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
 
     @extend_schema(
         request=SignupSerializer,
@@ -239,13 +270,18 @@ class SignupView(APIView):
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        token, _ = Token.objects.get_or_create(user=user)
         # Outside the transaction SignupSerializer.create() already
         # committed in — this fans out to every admin and can email/push,
         # neither of which belongs inside a DB write's lock.
         notify_admin_new_registration(user)
+        # No token: a pending applicant cannot use the app until an admin
+        # approves the registration, so none is issued here.
         return Response(
-            {'token': token.key, 'user': UserSerializer(user).data},
+            {
+                'detail': 'Application received. It is waiting for administrator approval.',
+                'approvalStatus': 'pending',
+                'user': UserSerializer(user).data,
+            },
             status=status.HTTP_201_CREATED,
         )
 
@@ -287,6 +323,74 @@ def _lifetime_failed_face_attempts(session: RegistrationSession) -> int:
 
 def _face_retry_available(session: RegistrationSession) -> bool:
     return _lifetime_failed_face_attempts(session) < FACE_LIFETIME_ATTEMPT_BUDGET
+
+
+def _face_rate_limited(ip: str, email: str) -> bool:
+    """Outer per-IP and per-applicant-email limits on the face endpoint."""
+    checks = [(f'face:ip:{ip}', settings.FACE_RATE_LIMIT_PER_IP_PER_HOUR)]
+    if email:
+        checks.append((f'face:email:{email}', settings.FACE_RATE_LIMIT_PER_EMAIL_PER_HOUR))
+    for key, limit in checks:
+        cache.add(key, 0, 3600)
+        if cache.incr(key) > limit:
+            return True
+    return False
+
+
+def _lockout_minutes(count: int) -> int:
+    minutes = settings.FACE_LOCKOUT_MINUTES
+    return minutes[min(count, len(minutes)) - 1]
+
+
+def _start_lockout(session: RegistrationSession) -> None:
+    session.face_lock_count += 1
+    session.face_locked = True
+    if _face_retry_available(session):
+        session.face_locked_until = timezone.now() + timedelta(minutes=_lockout_minutes(session.face_lock_count))
+    else:
+        # Lifetime budget spent: no retry will ever come, so no end time.
+        session.face_locked_until = None
+    logger.warning(
+        'Face lockout started: session=%s count=%s until=%s',
+        session.session_id, session.face_lock_count, session.face_locked_until.isoformat() if session.face_locked_until else 'no end (budget spent)',
+    )
+
+
+def _expire_lock_if_due(session: RegistrationSession) -> None:
+    """A timed lockout ends by itself. A permanent (budget-spent) one has no end time."""
+    if session.face_locked and session.face_locked_until and timezone.now() >= session.face_locked_until:
+        session.face_locked = False
+        session.face_locked_until = None
+        session.face_attempts = 0
+        session.save(update_fields=['face_locked', 'face_locked_until', 'face_attempts', 'updated_at'])
+        logger.info('Face lockout ended on its own: session=%s', session.session_id)
+
+
+def _active_lock_for_email(email: str):
+    """Any still-active lockout for this applicant email. A new session must not get past it."""
+    now = timezone.now()
+    return (
+        RegistrationSession.objects.filter(email__iexact=email, face_locked=True)
+        .filter(Q(face_locked_until__gt=now) | Q(face_locked_until__isnull=True))
+        .order_by('-updated_at')
+        .first()
+    )
+
+
+def _locked_response(session: RegistrationSession, message: str) -> Response:
+    retry_after = 0
+    if session.face_locked_until:
+        retry_after = max(0, int((session.face_locked_until - timezone.now()).total_seconds()))
+    response = Response(
+        _face_session_payload(
+            session, matched=False, confidence=0, reason=None, message=message,
+            retryAfterSeconds=retry_after,
+        ),
+        status=423,
+    )
+    if retry_after:
+        response['Retry-After'] = str(retry_after)
+    return response
 
 
 def _face_session_payload(session: RegistrationSession, **extra):
@@ -576,6 +680,9 @@ class FaceVerificationStatusView(APIView):
     """Return the server-side face/OTP verification state for session resume."""
 
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'face_verification'
 
@@ -624,6 +731,22 @@ class FaceVerificationStatusView(APIView):
         return Response(_face_session_payload(session, success=True))
 
 
+def _alnum_upper(value):
+    return re.sub(r'[^A-Z0-9]', '', (value or '').upper())
+
+
+def _card_fields_not_matching_scan(session, cleaned, reg_date, valid_until):
+    """Client names of card-issued fields (licence, dates) that differ from the scanned card."""
+    mismatched = []
+    if _alnum_upper(cleaned.get('registration_no')) != _alnum_upper(session.id_registration_no):
+        mismatched.append('registrationNumber')
+    if reg_date != session.id_registration_date:
+        mismatched.append('registrationDate')
+    if valid_until != session.id_valid_until:
+        mismatched.append('validUntil')
+    return mismatched
+
+
 class RegistrationEmailView(APIView):
     """
     Persists the registered email collected on Step 2 (ID Review) to
@@ -634,6 +757,9 @@ class RegistrationEmailView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'registration_otp_send'
 
@@ -662,6 +788,12 @@ class RegistrationEmailView(APIView):
         # fixed: changing the email or ID fields now would detach the account
         # from what was verified. Re-sending identical values (the app going
         # back and forward through Step 2) is still accepted.
+        # Dates the applicant typed: a malformed or impossible one is a 400, not a 500.
+        cleaned_reg_date = cleaned_valid_until = None
+        if cleaned:
+            cleaned_reg_date = parse_user_date(cleaned.get('registration_date'), 'registration_date')
+            cleaned_valid_until = parse_user_date(cleaned.get('valid_until'), 'valid_until')
+
         if session.is_verified:
             unchanged = new_email == (session.email or '').lower() and (
                 not cleaned
@@ -670,8 +802,8 @@ class RegistrationEmailView(APIView):
                     and cleaned['first_name'] == session.id_first_name
                     and cleaned['middle_name'] == session.id_middle_name
                     and cleaned['registration_no'] == session.id_registration_no
-                    and parse_date(cleaned['registration_date']) == session.id_registration_date
-                    and parse_date(cleaned['valid_until']) == session.id_valid_until
+                    and cleaned_reg_date == session.id_registration_date
+                    and cleaned_valid_until == session.id_valid_until
                 )
             )
             if not unchanged:
@@ -690,29 +822,31 @@ class RegistrationEmailView(APIView):
         session.email = new_email
         updated = ['email', 'updated_at']
 
-        # The nurse reviewed the scanned fields and may have corrected an OCR
-        # misread. Their confirmed values replace what OCR guessed, having
-        # passed the same validation gate — so everything downstream (account
-        # creation, licence expiry) uses the corrected data without needing to
-        # know a correction happened. The raw scan is still on record in
-        # IdScanAttempt, so what OCR actually read remains auditable.
+        # The applicant may correct the NAMES (OCR misreads them). The licence
+        # number and the two dates come from the card itself: they must match
+        # what was scanned exactly. Allowing those to be typed would let someone
+        # attach another person's licence to their own card and face.
         if cleaned:
+            card_fields = _card_fields_not_matching_scan(session, cleaned, cleaned_reg_date, cleaned_valid_until)
+            if card_fields:
+                return Response(
+                    {
+                        'success': False,
+                        'code': 'card_field_not_editable',
+                        'fields': card_fields,
+                        'message': (
+                            'The PRC licence number and dates come from your card and cannot be edited. '
+                            'Rescan the card if they are wrong.'
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             session.id_last_name = cleaned['last_name']
             session.id_first_name = cleaned['first_name']
             session.id_middle_name = cleaned['middle_name']
-            session.id_registration_no = cleaned['registration_no']
-            session.id_registration_date = parse_date(cleaned['registration_date'])
-            session.id_valid_until = parse_date(cleaned['valid_until'])
-            updated += [
-                'id_last_name',
-                'id_first_name',
-                'id_middle_name',
-                'id_registration_no',
-                'id_registration_date',
-                'id_valid_until',
-            ]
+            updated += ['id_last_name', 'id_first_name', 'id_middle_name']
             logger.info(
-                'Registration session %s: ID fields confirmed by the applicant.',
+                'Registration session %s: name fields corrected by the applicant.',
                 session.session_id,
             )
 
@@ -741,6 +875,9 @@ class FaceVerificationView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'face_verification'
 
@@ -765,33 +902,31 @@ class FaceVerificationView(APIView):
         if session_id:
             session = RegistrationSession.objects.filter(session_id=session_id).first()
 
+        limit_email = (data.get('registeredEmail') or (session.email if session else '') or '').lower()
+        if _face_rate_limited(login_throttle.client_ip(request), limit_email):
+            response = Response(
+                {'success': False, 'code': 'too_many_requests',
+                 'message': 'Too many face verification attempts. Try again later.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+            response['Retry-After'] = '3600'
+            return response
+
         if data.get('reset'):
-            if session is None:
-                return Response(
-                    {'success': False, 'message': 'Registration session not found. Please restart verification.'},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-            if not _face_retry_available(session):
-                session.face_locked = True
-                session.save(update_fields=['face_locked', 'updated_at'])
-                return Response(
-                    _face_session_payload(
-                        session, matched=False, confidence=0, reason=None,
-                        message=FACE_BUDGET_SPENT_MESSAGE,
-                    ),
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-            session.face_attempts = 0
-            session.face_locked = False
-            session.save(update_fields=['face_attempts', 'face_locked', 'updated_at'])
+            # Never honoured: an anonymous caller must not be able to clear
+            # their own lockout. Logged so attempts to use it stay visible.
+            logger.warning(
+                'Face reset flag refused: session=%s ip=%s',
+                session_id, login_throttle.client_ip(request),
+            )
             return Response(
-                _face_session_payload(
-                    session,
-                    matched=False,
-                    confidence=0,
-                    reason=None,
-                    reset=True,
-                )
+                {
+                    'success': False,
+                    'code': 'reset_not_allowed',
+                    'message': 'A face verification lockout cannot be cleared from here. '
+                               'Wait for it to end, or verify with Email OTP.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if session is None:
@@ -811,6 +946,13 @@ class FaceVerificationView(APIView):
                 .first()
             )
             if session is None:
+                blocking = _active_lock_for_email(registered_email)
+                if blocking is not None:
+                    return _locked_response(
+                        blocking,
+                        message=("You've reached the maximum number of face verification attempts. "
+                                 'Wait for the lockout to end, or verify with Email OTP.'),
+                    )
                 # No resumable session — but this email may already have
                 # completed Step 1 under a prior (e.g. locked) session, and
                 # is only starting a fresh attempt cycle for face matching,
@@ -830,6 +972,7 @@ class FaceVerificationView(APIView):
                     id_registration_no=prior.id_registration_no if prior else '',
                     id_registration_date=prior.id_registration_date if prior else None,
                     id_valid_until=prior.id_valid_until if prior else None,
+                    id_portrait=prior.id_portrait if prior else '',
                 )
 
         # Face verification compares the selfie against the Step-1 ID photo
@@ -857,19 +1000,33 @@ class FaceVerificationView(APIView):
                 )
             )
 
-        if session.face_locked:
+        if not session.id_portrait:
+            # Nothing scanned to match against (session predates the stored card,
+            # or the card was never scanned). Refuse rather than fall back to a client image.
             return Response(
-                _face_session_payload(
-                    session,
-                    matched=False,
-                    confidence=0,
-                    reason=None,
-                    message=(
-                        "You've reached the maximum number of face verification attempts. "
-                        'Choose Retry Face Verification or Verify Using Email OTP.'
-                    ),
-                ),
-                status=status.HTTP_403_FORBIDDEN,
+                {
+                    'success': False,
+                    'code': 'id_scan_required',
+                    'message': 'Scan your PRC card again before face verification.',
+                    'registrationSessionId': str(session.session_id),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        _expire_lock_if_due(session)
+        if not session.face_locked and session.email:
+            blocking = _active_lock_for_email(session.email)
+            if blocking is not None:
+                return _locked_response(
+                    blocking,
+                    message=("You've reached the maximum number of face verification attempts. "
+                             'Wait for the lockout to end, or verify with Email OTP.'),
+                )
+        if session.face_locked:
+            return _locked_response(
+                session,
+                message=("You've reached the maximum number of face verification attempts. "
+                         'Wait for the lockout to end, or verify with Email OTP.'),
             )
 
         if not _face_retry_available(session):
@@ -884,7 +1041,9 @@ class FaceVerificationView(APIView):
             )
 
         try:
-            result = _run_face_match(data['image'], data['idImage'], session=session)
+            # Match against the card scanned for THIS session, never a client-sent
+            # image: a client-chosen photo would let anyone pass with their own face.
+            result = _run_face_match(data['image'], session.id_portrait, session=session)
         except N8nError as exc:
             # The workflow never rendered a verdict, so this is not a completed
             # validation attempt and must not consume one of the three tries.
@@ -919,17 +1078,10 @@ class FaceVerificationView(APIView):
                     _face_session_payload(session, matched=True, confidence=100.0, reason=None)
                 )
             if session.face_locked:
-                return Response(
-                    _face_session_payload(
-                        session,
-                        matched=False,
-                        confidence=0,
-                        message=(
-                            "You've reached the maximum number of face verification attempts. "
-                            'Choose Retry Face Verification or Verify Using Email OTP.'
-                        ),
-                    ),
-                    status=status.HTTP_403_FORBIDDEN,
+                return _locked_response(
+                    session,
+                    message=("You've reached the maximum number of face verification attempts. "
+                             'Wait for the lockout to end, or verify with Email OTP.'),
                 )
 
             FaceVerificationAttempt.objects.create(
@@ -981,8 +1133,10 @@ class FaceVerificationView(APIView):
 
             # The counter was already advanced above; this only decides lockout.
             if comparison_completed:
-                session.face_locked = session.face_attempts >= MAX_FACE_ATTEMPTS
-                session.save(update_fields=['face_attempts', 'face_locked', 'updated_at'])
+                if session.face_attempts >= MAX_FACE_ATTEMPTS and not session.face_locked:
+                    _start_lockout(session)
+                session.save(update_fields=['face_attempts', 'face_locked', 'face_locked_until',
+                                            'face_lock_count', 'updated_at'])
 
             _record_face_outcome(session, matched=False, confidence=result.confidence)
             message = _face_failure_message(result, session)
@@ -1098,6 +1252,9 @@ class VerifyIdView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'face_verification'
 
@@ -1555,10 +1712,14 @@ class VerifyIdView(APIView):
             session.id_registration_date = date.fromisoformat(fields['registrationDate'])
             session.id_valid_until = date.fromisoformat(fields['validUntil'])
             session.id_verification_status = verification_status
+            # Keep the card the face check will be matched against. Only the
+            # server-side copy is used later — see FaceVerificationView.
+            session.id_portrait = id_image_data_uri
             session.save(
                 update_fields=[
                     'id_last_name', 'id_first_name', 'id_middle_name', 'id_registration_no',
-                    'id_registration_date', 'id_valid_until', 'id_verification_status', 'updated_at',
+                    'id_registration_date', 'id_valid_until', 'id_verification_status', 'id_portrait',
+                    'updated_at',
                 ]
             )
 
@@ -1614,6 +1775,9 @@ class VerifyPrcLicenseView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'face_verification'
 
@@ -1740,6 +1904,9 @@ class VerifyPrcLicenseView(APIView):
 
 class SendRegistrationOtpView(APIView):
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'registration_otp_send'
 
@@ -1800,6 +1967,9 @@ class SendRegistrationOtpView(APIView):
 
 class ResendRegistrationOtpView(APIView):
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'registration_otp_send'
 
@@ -1862,6 +2032,9 @@ class ResendRegistrationOtpView(APIView):
 
 class VerifyRegistrationOtpView(APIView):
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'registration_otp_verify'
 
@@ -1906,6 +2079,9 @@ class VerifyRegistrationOtpView(APIView):
 
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
 
     @extend_schema(
         request=LoginSerializer,
@@ -1947,9 +2123,17 @@ class LoginView(APIView):
         password = serializer.validated_data['password']
         requested_role = serializer.validated_data.get('role')
 
+        # Brute-force gate, before the password is checked. Shared with
+        # OAuthTokenView (same keys), so switching endpoints gains nothing.
+        ip = login_throttle.client_ip(request)
+        wait = login_throttle.blocked_for(email, ip)
+        if wait:
+            return _login_blocked_response(wait, oauth=False)
+
         user = _authenticate_credentials(email, password)
 
         if user is None:
+            login_throttle.register_failure(email, ip)
             return Response(
                 {'detail': 'Invalid email or password.'},
                 status=status.HTTP_401_UNAUTHORIZED,
@@ -1978,7 +2162,7 @@ class LoginView(APIView):
         # subsequent call.
         if profile and not profile.is_active_staff:
             return Response(
-                {'detail': 'This account has been deactivated. Contact an administrator.'},
+                {'detail': 'This account has been deactivated. Contact an administrator.', 'code': 'account_deactivated'},
                 status=status.HTTP_403_FORBIDDEN,
             )
         if profile and profile.approval_status == 'pending':
@@ -1989,6 +2173,7 @@ class LoginView(APIView):
                         'in once an administrator approves your registration.'
                     ),
                     'approvalStatus': 'pending',
+                    'code': 'account_pending',
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
@@ -2000,11 +2185,13 @@ class LoginView(APIView):
                         or 'Your registration was rejected. Contact an administrator for details.'
                     ),
                     'approvalStatus': 'rejected',
+                    'code': 'account_rejected',
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        token, _ = Token.objects.get_or_create(user=user)
+        login_throttle.register_success(email)
+        token = issue_session(user)
         return Response({'token': token.key, 'user': UserSerializer(user).data})
 
 
@@ -2019,6 +2206,9 @@ class OAuthTokenView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration/login). A stale token from a blocked
+    # account must not be able to refuse these, so no authentication runs here.
+    authentication_classes = []
 
     @extend_schema(
         request=inline_serializer(
@@ -2096,8 +2286,14 @@ class OAuthTokenView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        ip = login_throttle.client_ip(request)
+        wait = login_throttle.blocked_for(email, ip)
+        if wait:
+            return _login_blocked_response(wait, oauth=True)
+
         user = _authenticate_credentials(email, password)
         if user is None:
+            login_throttle.register_failure(email, ip)
             return Response(
                 {
                     'error': 'invalid_grant',
@@ -2139,7 +2335,8 @@ class OAuthTokenView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        token, _ = Token.objects.get_or_create(user=user)
+        login_throttle.register_success(email)
+        token = issue_session(user)
         return Response(
             {
                 'access_token': token.key,
@@ -2151,7 +2348,7 @@ class OAuthTokenView(APIView):
 
 
 class MeView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
 
     @extend_schema(responses={200: UserSerializer}, tags=['Auth'], summary='Current user')
     def get(self, request):
@@ -2166,14 +2363,16 @@ class MeView(APIView):
         examples=UPDATE_ME_EXAMPLES,
     )
     def patch(self, request):
-        serializer = UpdateMeSerializer(data=request.data, partial=True, context={'request': request})
+        serializer = UpdateMeSerializer(
+            request.user, data=request.data, partial=True, context={'request': request}
+        )
         serializer.is_valid(raise_exception=True)
         user = serializer.update(request.user, serializer.validated_data)
         return Response(UserSerializer(user).data)
 
 
 class ChangePasswordView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
 
     @extend_schema(
         request=ChangePasswordSerializer,
@@ -2190,13 +2389,13 @@ class ChangePasswordView(APIView):
         serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        Token.objects.filter(user=request.user).delete()
-        token = Token.objects.create(user=request.user)
+        revoke_all_sessions(request.user)
+        token = issue_session(request.user)
         return Response({'detail': 'Password changed.', 'token': token.key})
 
 
 class LogoutView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
 
     @extend_schema(
         request=None,
@@ -2210,8 +2409,57 @@ class LogoutView(APIView):
         summary='Log out',
     )
     def post(self, request):
-        Token.objects.filter(user=request.user).delete()
+        # Revokes only the session this request authenticated with — other
+        # devices' sessions for the same account stay signed in.
+        revoke_session(request.auth)
         return Response({'detail': 'Logged out.'})
+
+
+class LogoutAllView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: inline_serializer(
+                name='LogoutAllResponse',
+                fields={'detail': serializers.CharField()},
+            )
+        },
+        tags=['Auth'],
+        summary='Log out of every device',
+    )
+    def post(self, request):
+        revoke_all_sessions(request.user)
+        return Response({'detail': 'Logged out of all devices.'})
+
+
+class WsTicketView(APIView):
+    """
+    Exchange the caller's real session token for a one-time WebSocket ticket.
+
+    Requires the same auth as any other endpoint (so only a client that
+    already holds a working token can get one), but the ticket itself is
+    short-lived and single-use — see api/ws_tickets.py — so it is safe to put
+    in the socket URL, unlike the token itself.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: inline_serializer(
+                name='WsTicketResponse',
+                fields={'ticket': serializers.CharField(), 'expiresInSeconds': serializers.IntegerField()},
+            )
+        },
+        tags=['Auth'],
+        summary='Get a one-time WebSocket connect ticket',
+    )
+    def post(self, request):
+        ticket = issue_ws_ticket(request.user)
+        return Response({'ticket': ticket, 'expiresInSeconds': settings.WS_TICKET_TTL_SECONDS})
 
 
 @extend_schema_view(
@@ -2984,6 +3232,13 @@ class HandoverViewSet(viewsets.ModelViewSet):
                     },
                     many=True,
                 ),
+                'emptyReason': serializers.ChoiceField(
+                    choices=[
+                        'user_off_duty', 'no_next_shift_staff',
+                        'only_self_scheduled', 'no_eligible_nurse_on_next_shift',
+                    ],
+                    allow_null=True,
+                ),
             },
         )},
         summary='Who the signed-in nurse may refer to right now',
@@ -2993,11 +3248,17 @@ class HandoverViewSet(viewsets.ModelViewSet):
             "Afternoon -> Night -> next day's Morning) from the signed-in nurse's own "
             'current DutyAssignment — never a static profile default. `onDuty` is false '
             '(and `recipients` empty) when the signed-in nurse has no active shift right now.'
+            '\n\n`emptyReason` is null whenever `recipients` is non-empty. Otherwise it is a '
+            'code (never display text — the frontend owns the wording) naming why: '
+            '`user_off_duty`, `no_next_shift_staff` (nobody at all is scheduled for the next '
+            'shift in this department), `only_self_scheduled` (the only person scheduled for '
+            "it is the signed-in nurse), or `no_eligible_nurse_on_next_shift` (someone else is "
+            'scheduled, but none of them are an approved, active staff nurse).'
         ),
     )
     @action(detail=False, methods=['get'], url_path='eligible-recipients')
     def eligible_recipients(self, request):
-        current, next_shift, next_date, recipients = get_eligible_recipients(request.user)
+        current, next_shift, next_date, recipients, empty_reason = get_eligible_recipients(request.user)
         if current is None:
             return Response({
                 'onDuty': False,
@@ -3009,6 +3270,7 @@ class HandoverViewSet(viewsets.ModelViewSet):
                 'nextShiftLabel': None,
                 'nextShiftDate': None,
                 'recipients': [],
+                'emptyReason': empty_reason,
             })
         return Response({
             'onDuty': True,
@@ -3029,6 +3291,9 @@ class HandoverViewSet(viewsets.ModelViewSet):
                 }
                 for nurse in recipients
             ],
+            # Null whenever recipients is non-empty — a reason only ever
+            # accompanies an empty list. See referral_shifts.py.
+            'emptyReason': empty_reason,
         })
 
     @staticmethod
@@ -3256,11 +3521,11 @@ class TaskHandoverViewSet(viewsets.ModelViewSet):
         if shift:
             qs = qs.filter(shift=shift)
         if date_param:
-            qs = qs.filter(duty_date=date_param)
+            qs = qs.filter(duty_date=parse_user_date(date_param, 'date'))
         if date_from:
-            qs = qs.filter(duty_date__gte=date_from)
+            qs = qs.filter(duty_date__gte=parse_user_date(date_from, 'dateFrom'))
         if date_to:
-            qs = qs.filter(duty_date__lte=date_to)
+            qs = qs.filter(duty_date__lte=parse_user_date(date_to, 'dateTo'))
         return qs
 
     @extend_schema(
@@ -3277,7 +3542,7 @@ class TaskHandoverViewSet(viewsets.ModelViewSet):
     def eligible_recipients(self, request):
         date_param = request.query_params.get('date')
         if date_param:
-            duty_date = date_param
+            duty_date = parse_user_date(date_param, 'date')
         else:
             duty_date = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
 
@@ -3455,9 +3720,7 @@ class ChartingViewSet(viewsets.ModelViewSet):
             qs = qs.filter(patient__patient_code=patient_id)
         date_str = (self.request.query_params.get('date') or '').strip()
         if date_str:
-            day = parse_date(date_str)
-            if day is None:
-                return qs.none()
+            day = parse_user_date(date_str, 'date')
             from datetime import datetime, time as dtime, timedelta
 
             tz = self._charting_tz()
@@ -3472,13 +3735,30 @@ class ChartingViewSet(viewsets.ModelViewSet):
 
             raise PermissionDenied('You can only modify your own charting notes.')
 
+    def _patient_from_payload(self, validated_data):
+        # The serializer resolves patientId to a Patient only inside create()/update(),
+        # so look it up here from the raw code.
+        code = validated_data.get('patientId')
+        return Patient.objects.filter(patient_code=code).first() if code else None
+
+    def perform_create(self, serializer):
+        # Same rule as labs and medications: only for patients assigned to you (head nurse: any).
+        _check_patient_care_scope(self.request, self._patient_from_payload(serializer.validated_data), 'chart notes')
+        serializer.save()
+
     def perform_update(self, serializer):
+        _check_patient_care_scope(self.request, serializer.instance.patient, 'edit charting notes')
+        if 'patientId' in serializer.validated_data:
+            _check_patient_care_scope(
+                self.request, self._patient_from_payload(serializer.validated_data), 'chart notes',
+            )
         self._ensure_note_owner(serializer.instance)
         # Clients must not flip confirmation via generic PATCH — use /confirm/.
         serializer.validated_data.pop('confirmed', None)
         serializer.save()
 
     def perform_destroy(self, instance):
+        _check_patient_care_scope(self.request, instance.patient, 'delete charting notes')
         self._ensure_note_owner(instance)
         instance.delete()
 
@@ -3579,6 +3859,7 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 {'detail': f'Patient "{data["patientId"]}" not found.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        _check_patient_care_scope(request, patient, 'chart notes')
 
         nurse_name = request.user.get_full_name().strip() or request.user.username
         now = timezone.now()
@@ -3837,6 +4118,11 @@ class VitalSignsViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
     http_method_names = ['get', 'post', 'head', 'options']
 
+    def perform_create(self, serializer):
+        # Same rule as labs and medications: only for patients assigned to you (head nurse: any).
+        _check_patient_care_scope(self.request, serializer.validated_data.get('patient'), 'record vitals')
+        serializer.save()
+
     def get_queryset(self):
         qs = VitalSigns.objects.select_related('patient', 'recorded_by', 'triggered_by_note', 'task').all()
         params = self.request.query_params
@@ -4033,11 +4319,11 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
         search = params.get('search')
 
         if date_param:
-            qs = qs.filter(duty_date=date_param)
+            qs = qs.filter(duty_date=parse_user_date(date_param, 'date'))
         if date_from:
-            qs = qs.filter(duty_date__gte=date_from)
+            qs = qs.filter(duty_date__gte=parse_user_date(date_from, 'dateFrom'))
         if date_to:
-            qs = qs.filter(duty_date__lte=date_to)
+            qs = qs.filter(duty_date__lte=parse_user_date(date_to, 'dateTo'))
         if shift:
             qs = qs.filter(shift=shift)
         if department_id:
@@ -4374,6 +4660,9 @@ def _check_patient_care_scope(request, patient, action_noun):
     patient. Shared here so the three Kardex sub-resource viewsets below
     (labs, medications, intakes) don't each re-derive it.
     """
+    if patient is None:
+        # A charting note may be saved with no patient attached; nothing to scope.
+        return
     role = get_user_role(request.user)
     if role != 'head_nurse' and patient.assigned_nurse_id != request.user.id:
         raise PermissionDenied(f'You can only {action_noun} for patients assigned to you.')
@@ -4546,7 +4835,7 @@ class NurseViewSet(viewsets.ViewSet):
         shift = request.query_params.get('shift')
         if shift:
             date_param = request.query_params.get('date')
-            duty_date = date_param or timezone.now().astimezone(
+            duty_date = parse_user_date(date_param, 'date') if date_param else timezone.now().astimezone(
                 ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)
             ).date()
             scheduled_nurse_ids = (
@@ -4576,7 +4865,7 @@ class NurseViewSet(viewsets.ViewSet):
                     'completedTasks': nurse.completed_tasks,
                 }
             )
-        return Response(results)
+        return Response([filter_nurse_fields(row, request.user) for row in results])
 
     def retrieve(self, request, pk=None):
         try:
@@ -4585,15 +4874,18 @@ class NurseViewSet(viewsets.ViewSet):
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         profile = getattr(nurse, 'nurse_profile', None)
         return Response(
-            {
-                'id': str(nurse.pk),
-                'name': nurse.get_full_name().strip() or nurse.username,
-                'role': profile.clinical_role if profile else 'RN',
-                'shift': profile.shift if profile else 'morning',
-                'specialization': profile.specialization if profile else '',
-                'email': nurse.email,
-                'department': profile.department if profile else '',
-            }
+            filter_nurse_fields(
+                {
+                    'id': str(nurse.pk),
+                    'name': nurse.get_full_name().strip() or nurse.username,
+                    'role': profile.clinical_role if profile else 'RN',
+                    'shift': profile.shift if profile else 'morning',
+                    'specialization': profile.specialization if profile else '',
+                    'email': nurse.email,
+                    'department': profile.department if profile else '',
+                },
+                request.user,
+            )
         )
 
     @extend_schema(
@@ -4704,6 +4996,37 @@ class AdminUserViewSet(viewsets.ViewSet):
         profile.save(update_fields=['approval_status', 'rejection_reason'])
         return Response(_admin_user_payload(profile))
 
+    @extend_schema(
+        request=inline_serializer(
+            name='AdminGrantRoleRequest',
+            fields={'role': serializers.ChoiceField(choices=['staff_nurse', 'head_nurse'])},
+        ),
+        summary='Grant or change a nurse role (admin only)',
+    )
+    @action(detail=True, methods=['post'], url_path='grant-role')
+    def grant_role(self, request, pk=None):
+        """
+        The only path that changes NurseProfile.role after signup. Admin-only
+        by IsAdmin, checked here on the server; records who granted it and when.
+        """
+        profile = get_object_or_404(NurseProfile, user_id=pk)
+        role = request.data.get('role')
+        if role not in ('staff_nurse', 'head_nurse'):
+            return Response(
+                {'detail': "role must be 'staff_nurse' or 'head_nurse'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        previous = profile.role
+        profile.role = role
+        profile.role_granted_by = request.user
+        profile.role_granted_at = timezone.now()
+        profile.save(update_fields=['role', 'role_granted_by', 'role_granted_at'])
+        logger.info(
+            'Role changed: user=%s %s -> %s by admin=%s',
+            profile.user_id, previous, role, request.user.pk,
+        )
+        return Response(_admin_user_payload(profile))
+
     @action(detail=True, methods=['post'])
     def deactivate(self, request, pk=None):
         profile = get_object_or_404(NurseProfile, user_id=pk)
@@ -4737,7 +5060,7 @@ class AdminUserViewSet(viewsets.ViewSet):
         profile.user.save(update_fields=['password'])
         # A password an admin just set from outside the account should not
         # leave old sessions alive — force a fresh login everywhere.
-        Token.objects.filter(user=profile.user).delete()
+        revoke_all_sessions(profile.user)
         return Response({'detail': 'Password updated.'})
 
 
@@ -4757,6 +5080,9 @@ def _admin_user_payload(profile: NurseProfile) -> dict:
         'rejectionReason': profile.rejection_reason,
         'isActiveStaff': profile.is_active_staff,
         'verificationMethod': profile.verification_method,
+        'requestedRole': profile.requested_role,
+        'roleGrantedBy': profile.role_granted_by.get_full_name().strip() if profile.role_granted_by_id else None,
+        'roleGrantedAt': profile.role_granted_at.isoformat() if profile.role_granted_at else None,
         'dateJoined': user.date_joined.isoformat() if user.date_joined else None,
     }
 
@@ -4865,7 +5191,7 @@ class WorkloadView(APIView):
                     'burnoutRisk': profile.burnout_risk,
                 }
             )
-        return Response(data)
+        return Response([filter_nurse_fields(row, request.user) for row in data])
 
 
 class AnalyticsView(APIView):
@@ -5007,7 +5333,7 @@ class LiveStateView(APIView):
     without needing a change log or database triggers.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
 
     @staticmethod
     def _revision(queryset, field='updated_at'):
@@ -5095,7 +5421,7 @@ class PreferencesView(APIView):
     accounts working without a data migration.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
 
     def _preferences(self, request):
         preferences, _ = UserPreferences.objects.get_or_create(user=request.user)
@@ -5127,3 +5453,272 @@ class PreferencesView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+EMAIL_CHANGE_MAX_ATTEMPTS = 5
+EMAIL_CHANGE_MAX_REQUESTS_PER_HOUR = 3
+
+
+def _email_taken(email, *, exclude_user):
+    return User.objects.filter(
+        Q(username__iexact=email) | Q(email__iexact=email)
+    ).exclude(pk=exclude_user.pk).exists()
+
+
+class EmailChangeView(APIView):
+    """
+    Step 1 of a login-email change: password re-check, then a code to the NEW
+    address and a notice to the OLD one. Nothing changes until step 2.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
+
+    def post(self, request):
+        from .identity import hash_code
+        from .models import EmailChangeRequest
+        from .otp_service import _generate_code, _send_otp_email
+
+        serializer = EmailChangeStartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        if not user.check_password(serializer.validated_data['password']):
+            return Response({'detail': 'Your password is incorrect.', 'code': 'wrong_password'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        new_email = serializer.validated_data['newEmail'].strip().lower()
+        if new_email == (user.email or '').lower():
+            return Response({'detail': 'That is already your email.', 'code': 'same_email'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if _email_taken(new_email, exclude_user=user):
+            return Response({'detail': 'Another account already uses this email address.',
+                             'code': 'email_in_use'}, status=status.HTTP_400_BAD_REQUEST)
+
+        hour_ago = timezone.now() - timedelta(hours=1)
+        recent = EmailChangeRequest.objects.filter(user=user, created__gte=hour_ago).count()
+        if recent >= EMAIL_CHANGE_MAX_REQUESTS_PER_HOUR:
+            return Response({'detail': 'Too many email change requests. Try again later.',
+                             'code': 'too_many_requests'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        code = _generate_code()
+        change = EmailChangeRequest.objects.create(
+            user=user,
+            old_email=user.email,
+            new_email=new_email,
+            code_hash=hash_code(code),
+            expires_at=timezone.now() + timedelta(minutes=settings.EMAIL_CHANGE_CODE_TTL_MINUTES),
+        )
+        try:
+            _send_otp_email(new_email, code)
+        except OtpDeliveryError as exc:
+            change.delete()
+            return Response({'detail': str(exc), 'code': 'delivery_failed'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # Tell the address the account is on now, so an unexpected change is noticed.
+        if user.email:
+            try:
+                send_mail(
+                    'Your NurseLink email is being changed',
+                    f'A request was made to change the login email on your NurseLink account to {new_email}. '
+                    'If this was not you, contact an administrator and change your password.',
+                    settings.DEFAULT_FROM_EMAIL,
+                    [user.email],
+                    fail_silently=True,
+                )
+            except Exception:  # noqa: BLE001 — the code step still protects the change
+                logger.exception('Could not send the old-address email-change notice.')
+
+        return Response(
+            {'detail': 'We sent a code to the new address. Enter it to confirm the change.'},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class EmailChangeConfirmView(APIView):
+    """Step 2: the code proves the new address is reachable and owned by the nurse."""
+
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
+
+    def post(self, request):
+        from .identity import hash_code
+        from .models import EmailChangeRequest
+
+        serializer = EmailChangeConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        change = (
+            EmailChangeRequest.objects.filter(user=user, used_at__isnull=True)
+            .order_by('-created').first()
+        )
+        if change is None:
+            return Response({'detail': 'There is no email change waiting for a code.',
+                             'code': 'no_pending_change'}, status=status.HTTP_400_BAD_REQUEST)
+        if change.expires_at < timezone.now():
+            return Response({'detail': 'That code has expired. Start the email change again.',
+                             'code': 'code_expired'}, status=status.HTTP_400_BAD_REQUEST)
+        if change.attempts >= EMAIL_CHANGE_MAX_ATTEMPTS:
+            return Response({'detail': 'Too many wrong codes. Start the email change again.',
+                             'code': 'too_many_attempts'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        if hash_code(serializer.validated_data['code']) != change.code_hash:
+            change.attempts += 1
+            change.save(update_fields=['attempts'])
+            return Response({'detail': 'That code is not right.', 'code': 'invalid_code'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if _email_taken(change.new_email, exclude_user=user):
+            return Response({'detail': 'Another account already uses this email address.',
+                             'code': 'email_in_use'}, status=status.HTTP_400_BAD_REQUEST)
+
+        old_email = user.email
+        user.email = change.new_email
+        user.username = change.new_email
+        user.save(update_fields=['email', 'username'])
+        change.used_at = timezone.now()
+        change.save(update_fields=['used_at'])
+
+        # Every other device is signed out; this one stays signed in.
+        other = AuthSession.objects.filter(user=user)
+        current = getattr(request, 'auth', None)
+        if isinstance(current, AuthSession):
+            other = other.exclude(pk=current.pk)
+        other.delete()
+
+        logger.info('Login email changed: user=%s old=%s new=%s at=%s',
+                    user.pk, old_email, change.new_email, change.used_at.isoformat())
+        return Response({'detail': 'Email changed.', 'email': change.new_email})
+
+
+class CorrectionRequestView(APIView):
+    """A nurse asks for a verified field to be corrected. Changes nothing yet."""
+
+    permission_classes = [permissions.IsAuthenticated, IsApprovedActiveUser]
+
+    def post(self, request):
+        from .models import CorrectionRequest
+
+        serializer = CorrectionRequestSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        if CorrectionRequest.objects.filter(user=request.user, status='pending').exists():
+            return Response({'detail': 'You already have a correction waiting for review.',
+                             'code': 'correction_already_pending'}, status=status.HTTP_400_BAD_REQUEST)
+        correction = CorrectionRequest.objects.create(
+            user=request.user,
+            requested=serializer.validated_data['requested'],
+            reason=serializer.validated_data['reason'],
+        )
+        return Response({'id': correction.pk, 'status': correction.status},
+                        status=status.HTTP_201_CREATED)
+
+
+class AdminCorrectionViewSet(viewsets.ViewSet):
+    """Admin-only review of correction requests. Approving applies the change."""
+
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def list(self, request):
+        from .models import CorrectionRequest
+
+        wanted = request.query_params.get('status', 'pending')
+        rows = CorrectionRequest.objects.filter(status=wanted).select_related('user').order_by('created')
+        return Response([
+            {
+                'id': c.pk,
+                'userId': str(c.user_id),
+                'name': c.user.get_full_name().strip() or c.user.username,
+                'email': c.user.email,
+                'requested': c.requested,
+                'reason': c.reason,
+                'status': c.status,
+                'created': c.created.isoformat(),
+            }
+            for c in rows
+        ])
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        from .models import CorrectionRequest
+
+        correction = get_object_or_404(CorrectionRequest, pk=pk, status='pending')
+        user = correction.user
+        requested = correction.requested
+        if 'firstName' in requested:
+            user.first_name = requested['firstName']
+        if 'lastName' in requested:
+            user.last_name = requested['lastName']
+        user.save()
+        profile = getattr(user, 'nurse_profile', None)
+        if profile is not None:
+            if 'middleName' in requested:
+                profile.middle_name = requested['middleName']
+            if 'licenseNumber' in requested:
+                profile.license_number = requested['licenseNumber']
+            if 'clinicalRole' in requested:
+                profile.clinical_role = requested['clinicalRole']
+            profile.save()
+
+        correction.status = 'approved'
+        correction.reviewed_by = request.user
+        correction.reviewed_at = timezone.now()
+        correction.save(update_fields=['status', 'reviewed_by', 'reviewed_at'])
+        logger.info('Correction approved: request=%s user=%s by=%s fields=%s at=%s',
+                    correction.pk, user.pk, request.user.pk, sorted(requested),
+                    correction.reviewed_at.isoformat())
+        return Response({'id': correction.pk, 'status': 'approved'})
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        from .models import CorrectionRequest
+
+        correction = get_object_or_404(CorrectionRequest, pk=pk, status='pending')
+        note = (request.data.get('reason') or '').strip()
+        if not note:
+            return Response({'detail': 'A reason is required to reject a correction.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        correction.status = 'rejected'
+        correction.reviewed_by = request.user
+        correction.reviewed_at = timezone.now()
+        correction.review_note = note
+        correction.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'review_note'])
+        logger.info('Correction rejected: request=%s by=%s', correction.pk, request.user.pk)
+        return Response({'id': correction.pk, 'status': 'rejected'})
+
+
+class AdminFaceUnlockView(APIView):
+    """
+    Admin-only: end a face-verification lockout early, with a reason. Records
+    who did it and when. The lifetime budget is not waived — once it is spent,
+    only Email OTP remains and this cannot change that.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        session_id = request.data.get('registrationSessionId')
+        email = (request.data.get('email') or '').strip().lower()
+        reason = (request.data.get('reason') or '').strip()
+        if not reason:
+            return Response({'detail': 'A reason is required to clear a face lockout.', 'code': 'reason_required'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        session = None
+        if session_id:
+            session = RegistrationSession.objects.filter(session_id=session_id).first()
+        elif email:
+            session = RegistrationSession.objects.filter(email__iexact=email).order_by('-updated_at').first()
+        if session is None:
+            return Response({'detail': 'Registration session not found.', 'code': 'session_not_found'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        session.face_locked = False
+        session.face_locked_until = None
+        session.face_attempts = 0
+        session.face_unlocked_by = request.user
+        session.face_unlocked_at = timezone.now()
+        session.face_unlock_reason = reason
+        session.save(update_fields=['face_locked', 'face_locked_until', 'face_attempts',
+                                    'face_unlocked_by', 'face_unlocked_at', 'face_unlock_reason', 'updated_at'])
+        logger.warning(
+            'Face lockout cleared by admin: session=%s admin=%s reason=%s at=%s',
+            session.session_id, request.user.pk, reason, session.face_unlocked_at.isoformat(),
+        )
+        return Response(_face_session_payload(session, matched=False, confidence=0, reason=None,
+                                              message='Face verification lockout cleared.'))

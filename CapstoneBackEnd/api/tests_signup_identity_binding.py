@@ -26,7 +26,7 @@ def verified_session(**extra):
         email='raiden@gmail.com',
         face_verified=True,
         verification_method='FACE',
-        id_verification_status='verified',
+        id_verification_status='verified', id_portrait='data:image/jpeg;base64,PORTRAIT',
         id_last_name='VILLAPANDO',
         id_first_name='RAIDEN',
         id_middle_name='',
@@ -73,23 +73,19 @@ class SignupIdentityBindingTests(APITestCase):
         res = self.signup(email='Raiden@Gmail.com')
         self.assertEqual(res.status_code, 201, res.content)
 
-    def test_form_name_and_licence_are_replaced_by_verified_id(self):
+    def test_form_that_differs_from_the_scan_is_rejected_not_replaced(self):
         res = self.signup(firstName='Totally', lastName='Different', middleName='X', licenseNumber='1111111')
-        self.assertEqual(res.status_code, 201, res.content)
-        user = User.objects.get(email='raiden@gmail.com')
-        self.assertEqual((user.first_name, user.last_name), ('RAIDEN', 'VILLAPANDO'))
-        self.assertEqual(user.nurse_profile.middle_name, '')
-        self.assertEqual(user.nurse_profile.license_number, '0987654')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.data['code'], 'identity_mismatch')
+        self.assertFalse(User.objects.filter(email='raiden@gmail.com').exists())
 
-    def test_session_without_id_fields_falls_back_to_form(self):
+    def test_session_without_scanned_id_fields_cannot_create_an_account(self):
         self.session = verified_session(
             email='old@gmail.com', id_last_name='', id_first_name='', id_registration_no='',
         )
         res = self.signup(email='old@gmail.com', firstName='Ana', lastName='Cruz', licenseNumber='7654321')
-        self.assertEqual(res.status_code, 201, res.content)
-        user = User.objects.get(email='old@gmail.com')
-        self.assertEqual(user.first_name, 'Ana')
-        self.assertEqual(user.nurse_profile.license_number, '7654321')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertFalse(User.objects.filter(email='old@gmail.com').exists())
 
 
 class RegistrationStepTwoLockTests(APITestCase):

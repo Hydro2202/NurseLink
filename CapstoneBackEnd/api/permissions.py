@@ -165,3 +165,21 @@ class IsAdmin(BasePermission):
 
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated and request.user.is_staff)
+
+
+class IsApprovedActiveUser(BasePermission):
+    """
+    The default for every endpoint. Authenticated AND allowed to use the app
+    (see api/access.py). Refuses with a coded 403 otherwise.
+    """
+
+    def has_permission(self, request, view):
+        from .access import account_block_code, account_blocked_exception
+
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+        code = account_block_code(user)
+        if code:
+            raise account_blocked_exception(code)
+        return True

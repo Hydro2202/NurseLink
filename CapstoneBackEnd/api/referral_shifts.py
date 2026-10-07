@@ -106,35 +106,57 @@ def get_next_shift(shift_type, shift_date, crosses_midnight=None):
     return _NEXT_SHIFT[shift_type], next_date
 
 
+#: Why get_eligible_recipients came back empty, in the order checked below.
+#: None when recipients is non-empty. Codes, not display text — the
+#: frontend owns the wording. See HandoverViewSet.eligible_recipients.
+EMPTY_REASON_OFF_DUTY = 'user_off_duty'
+EMPTY_REASON_NO_NEXT_SHIFT_STAFF = 'no_next_shift_staff'
+EMPTY_REASON_ONLY_SELF_SCHEDULED = 'only_self_scheduled'
+EMPTY_REASON_NO_ELIGIBLE_NURSE = 'no_eligible_nurse_on_next_shift'
+
+
 def get_eligible_recipients(nurse, now=None):
     """
     Who `nurse` may refer to right now.
 
-    Returns (current_assignment, next_shift, next_date, recipients) where
-    recipients is a User queryset of every approved, active staff nurse in
-    the same department as `nurse`'s current shift, scheduled for the next
-    shift in rotation. current_assignment is None (and recipients empty)
-    when `nurse` has no active shift right now — there is no "next shift"
-    to compute without knowing the current one.
+    Returns (current_assignment, next_shift, next_date, recipients,
+    empty_reason). recipients is a list of every approved, active staff
+    nurse in the same department as `nurse`'s current shift, scheduled for
+    the next shift in rotation. current_assignment is None (and recipients
+    empty, empty_reason EMPTY_REASON_OFF_DUTY) when `nurse` has no active
+    shift right now — there is no "next shift" to compute without knowing
+    the current one.
+
+    empty_reason distinguishes why recipients is empty, checked in the
+    order that gives the most useful answer:
+      - EMPTY_REASON_OFF_DUTY: nurse isn't on duty right now.
+      - EMPTY_REASON_NO_NEXT_SHIFT_STAFF: nobody at all is scheduled for
+        the next shift in this department.
+      - EMPTY_REASON_ONLY_SELF_SCHEDULED: the only person scheduled for it
+        is `nurse` themself.
+      - EMPTY_REASON_NO_ELIGIBLE_NURSE: someone else is scheduled, but none
+        of them are an approved, active staff nurse (e.g. only a head
+        nurse, or an account still pending approval, is on that slot).
     """
     current = get_current_shift(nurse, now)
     if current is None:
-        return None, None, None, User.objects.none()
+        return None, None, None, [], EMPTY_REASON_OFF_DUTY
 
     next_shift, next_date = get_next_shift(
         current.shift, current.duty_date, crosses_midnight=current.end_time <= current.start_time
     )
 
-    recipient_ids = (
+    scheduled_ids = list(
         DutyAssignment.objects.filter(
             department=current.department, duty_date=next_date, shift=next_shift,
         )
         .exclude(status='cancelled')
-        .exclude(nurse=nurse)
         .values_list('nurse_id', flat=True)
         .distinct()
     )
-    recipients = (
+    recipient_ids = [pk for pk in scheduled_ids if pk != nurse.pk]
+
+    recipients = list(
         User.objects.filter(
             pk__in=recipient_ids,
             nurse_profile__role='staff_nurse',
@@ -144,7 +166,17 @@ def get_eligible_recipients(nurse, now=None):
         .select_related('nurse_profile')
         .order_by('first_name', 'last_name')
     )
-    return current, next_shift, next_date, recipients
+
+    empty_reason = None
+    if not recipients:
+        if not scheduled_ids:
+            empty_reason = EMPTY_REASON_NO_NEXT_SHIFT_STAFF
+        elif not recipient_ids:
+            empty_reason = EMPTY_REASON_ONLY_SELF_SCHEDULED
+        else:
+            empty_reason = EMPTY_REASON_NO_ELIGIBLE_NURSE
+
+    return current, next_shift, next_date, recipients, empty_reason
 
 
 def check_referral_eligibility(nurse, recipient, now=None):

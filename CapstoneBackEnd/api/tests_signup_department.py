@@ -21,7 +21,7 @@ def make_session(**extra):
     fields = dict(
         session_id=uuid.uuid4(),
         face_verified=True,
-        id_verification_status='verified',
+        id_verification_status='verified', id_portrait='data:image/jpeg;base64,PORTRAIT',
         verification_method='face',
         id_last_name='CRUZ',
         id_first_name='ANA',
@@ -83,7 +83,10 @@ class SignupDepartmentTests(APITestCase):
         # pattern as tests_nurse_assignment.py) rather than going through
         # the approval-gated login flow.
         self._signup()
-        user = NurseProfile.objects.get(user__email='newnurse@hospital.com').user
+        profile = NurseProfile.objects.get(user__email='newnurse@hospital.com')
+        profile.approval_status = 'approved'
+        profile.save()
+        user = profile.user
         self.client.force_authenticate(user=user)
         response = self.client.get('/api/auth/me/')
         self.assertEqual(response.status_code, 200, response.content)

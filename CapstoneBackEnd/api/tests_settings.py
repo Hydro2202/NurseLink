@@ -221,30 +221,26 @@ class ProfileUpdateTests(APITestCase):
         self.other = make_nurse('cora@hospital.com', 'Cora', 'Reyes')
         self.client.force_authenticate(user=self.nurse)
 
-    def test_a_full_name_is_split_and_actually_saved(self):
+    def test_a_full_name_change_is_refused_as_locked_and_not_saved(self):
         response = self.client.patch(
             '/api/auth/me/', {'name': 'Benjamin Reyes Diaz'}, format='json'
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['name'], 'Benjamin Reyes Diaz')
-
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['code'], 'field_locked')
         self.nurse.refresh_from_db()
-        self.assertEqual(self.nurse.first_name, 'Benjamin')
-        self.assertEqual(self.nurse.last_name, 'Reyes Diaz')
+        self.assertNotEqual(self.nurse.first_name, 'Benjamin')
 
-    def test_changing_email_keeps_the_login_username_in_step(self):
+    def test_changing_email_directly_is_refused_as_locked(self):
+        # Email changes go through the verification-code flow (email-change/).
         response = self.client.patch(
             '/api/auth/me/', {'email': 'ben.diaz@hospital.com'}, format='json'
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['code'], 'field_locked')
         self.nurse.refresh_from_db()
-        self.assertEqual(self.nurse.email, 'ben.diaz@hospital.com')
-        self.assertEqual(
-            self.nurse.username, 'ben.diaz@hospital.com',
-            'username is what authentication matches on; a stale one locks the nurse out',
-        )
+        self.assertNotEqual(self.nurse.email, 'ben.diaz@hospital.com')
 
     def test_an_email_another_account_already_uses_is_rejected(self):
         response = self.client.patch(

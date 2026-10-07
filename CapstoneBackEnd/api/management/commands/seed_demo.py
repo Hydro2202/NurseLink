@@ -11,9 +11,10 @@ notifications, and any other demo users. Never seeds domain records.
 
 from django.contrib.auth.models import User
 from django.core.management.base import BaseCommand
-from rest_framework.authtoken.models import Token
 
+from api.auth_sessions import issue_session
 from api.models import (
+    AuthSession,
     ChartingNote,
     HandoverNote,
     KardexRecord,
@@ -94,7 +95,7 @@ class Command(BaseCommand):
 
             if User.objects.filter(email__iexact=CANONICAL_SUPERVISOR_EMAIL).exists():
                 # Canonical account already exists — drop the legacy duplicate.
-                Token.objects.filter(user=legacy).delete()
+                AuthSession.objects.filter(user=legacy).delete()
                 legacy.delete()
                 self.stdout.write(f'Removed legacy account {legacy_email}')
                 continue
@@ -137,7 +138,8 @@ class Command(BaseCommand):
             profile.account_status = 'active'
             profile.save()
 
-            Token.objects.get_or_create(user=user)
+            if not AuthSession.objects.filter(user=user).exists():
+                issue_session(user)
             users_by_email[email] = user
             self.stdout.write(
                 f'{"Created" if created else "Updated"} account: {email} ({data["role"]})'
@@ -163,7 +165,7 @@ class Command(BaseCommand):
         extras = extras.filter(is_superuser=False)
         extra_count = extras.count()
         for user in extras:
-            Token.objects.filter(user=user).delete()
+            AuthSession.objects.filter(user=user).delete()
         extras.delete()
 
         self.stdout.write(

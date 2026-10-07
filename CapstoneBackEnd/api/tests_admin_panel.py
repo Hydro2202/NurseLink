@@ -41,7 +41,7 @@ def make_registration_session(**extra):
     fields = dict(
         session_id=uuid.uuid4(),
         face_verified=True,
-        id_verification_status='verified',
+        id_verification_status='verified', id_portrait='data:image/jpeg;base64,PORTRAIT',
         verification_method='face',
         id_last_name='CRUZ',
         id_first_name='ANA',
@@ -327,12 +327,13 @@ class NewRegistrationNotifiesAdminsTests(APITestCase):
                 recipient=admin, event='new_registration_pending',
             ).first()
             self.assertIsNotNone(notif, f'no notification for {admin.email}')
-            self.assertIn('Ana Cruz', notif.title + notif.message)
+            # The account name comes from the verified PRC ID, which is printed in capitals.
+            self.assertIn('ana cruz', (notif.title + notif.message).lower())
             self.assertIn('Staff Nurse', notif.message)
             self.assertEqual(notif.action_path, '/admin/accounts')
 
     def test_head_nurse_signup_says_head_nurse_in_the_message(self):
-        response = self._signup(email='newsup@hospital.com', role='head_nurse')
+        response = self._signup(email='newsup@hospital.com', requestedRole='head_nurse')
         self.assertEqual(response.status_code, 201, response.content)
         notif = Notification.objects.get(recipient=self.admin1, event='new_registration_pending')
         self.assertIn('Head Nurse', notif.message)

@@ -185,7 +185,13 @@ class SignupRequiresPrcVerificationTests(TestCase):
         self.assertIn('registrationSessionId', res.data)
 
     def test_signup_succeeds_once_id_verified_and_persists_fields(self):
-        session = RegistrationSession.objects.create(email='nurse.new@example.com')
+        session = RegistrationSession.objects.create(
+            email='nurse.new@example.com',
+            id_first_name='Maria',
+            id_last_name='Dela Cruz',
+            id_registration_no='0123456',
+            id_portrait='data:image/jpeg;base64,PORTRAIT',
+        )
         session.face_verified = True
         session.verification_method = 'FACE'
         session.id_verification_status = 'verified'
@@ -201,7 +207,7 @@ class SignupRequiresPrcVerificationTests(TestCase):
 
         res = self.client.post('/api/auth/signup/', self._payload(session), format='json')
 
-        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.status_code, 201, res.data)
         profile = NurseProfile.objects.get(user__email='nurse.new@example.com')
         self.assertEqual(profile.prc_license_expiry, '06/30/2027')
         self.assertIsNotNone(profile.prc_verified_at)

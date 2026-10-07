@@ -518,7 +518,7 @@ class FaceVerifyWorkflowTests(TestCase):
         # already passed — these tests are about the face-match logic
         # specifically, so start from a session that's already cleared it.
         self.session = RegistrationSession.objects.create(
-            email='nurse@hospital.com', id_verification_status='verified'
+            email='nurse@hospital.com', id_verification_status='verified', id_portrait='data:image/jpeg;base64,PORTRAIT'
         )
 
     def _post(self):
@@ -545,7 +545,9 @@ class FaceVerifyWorkflowTests(TestCase):
 
         payload = mock_call.call_args[0][1]
         self.assertEqual(payload['image'], 'AAAA')
-        self.assertEqual(payload['idImage'], 'BBBB')
+        # The card the face is matched against is the one scanned for this session
+        # (stored server-side), never the idImage the client sent.
+        self.assertEqual(payload['idImage'], 'PORTRAIT')
         self.assertNotIn('data:', payload['image'])
         self.assertNotIn('base64,', payload['idImage'])
 
@@ -703,11 +705,12 @@ class FaceVerifyWorkflowTests(TestCase):
             format='json',
         )
 
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['code'], 'reset_not_allowed')
         mock_call.assert_not_called()
         self.session.refresh_from_db()
-        self.assertEqual(self.session.face_attempts, 0)
-        self.assertFalse(self.session.face_locked)
+        self.assertEqual(self.session.face_attempts, 3)
+        self.assertTrue(self.session.face_locked)
 
 
 class StructureChartEndpointTests(TestCase):

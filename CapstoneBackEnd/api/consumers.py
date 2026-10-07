@@ -6,10 +6,14 @@ local event to react to. This is the push side of that: one socket per signed-in
 nurse, joined to a group that only they are in, so the server can reach exactly
 one person the moment a handover is saved.
 
-Authentication is by the same DRF token the REST API uses. Browsers cannot set
-headers on a WebSocket handshake, so the token arrives as a query parameter —
-which is why the socket URL is only ever built from a token already held in the
-app's own storage, and why the connection is rejected outright without one.
+Authentication is by a one-time ticket (api/ws_tickets.py), obtained from
+POST /api/auth/ws-ticket/ with the same token the REST API uses. Browsers
+cannot set headers on a WebSocket handshake, so *something* has to travel in
+the query string where it can end up in server, proxy and access logs — a
+ticket is disposable (short-lived, accepted at most once) so that being logged
+costs nothing. ?token=<session key> is still accepted for now, for any client
+not yet updated to request a ticket; it carries the same risk the ticket
+exists to avoid and should be removed once nothing sends it any more.
 Nothing is sent to an anonymous socket.
 
 The group name is derived from the authenticated user's primary key, never from
@@ -35,34 +39,77 @@ def user_group(user_id) -> str:
 def _user_for_token(key):
     # Imported lazily: this module is loaded from asgi.py, which runs before
     # the app registry is ready if models are imported at module level.
-    from rest_framework.authtoken.models import Token
+    from .access import account_block_code
+    from .authentication import session_is_expired
+    from .models import AuthSession
 
     if not key:
-        return None
-    token = (
-        Token.objects.select_related('user')
+        return None, None
+    session = (
+        AuthSession.objects.select_related('user')
         .filter(key=key)
         .first()
     )
-    if token is None or not token.user.is_active:
-        return None
-    return token.user
+    if session is None:
+        return None, None
+    if session_is_expired(session):
+        session.delete()
+        return None, None
+    code = account_block_code(session.user)
+    if code:
+        return None, code
+    return session.user, None
+
+
+@database_sync_to_async
+def _user_for_ticket(ticket):
+    from django.contrib.auth.models import User
+
+    from .access import account_block_code
+    from .ws_tickets import consume_ticket
+
+    if not ticket:
+        return None, None
+    user_id = consume_ticket(ticket)
+    if user_id is None:
+        return None, None
+    try:
+        user = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        return None, None
+    code = account_block_code(user)
+    if code:
+        return None, code
+    return user, None
 
 
 class NotificationConsumer(AsyncJsonWebsocketConsumer):
     """Pushes notifications to the one nurse who owns this connection."""
 
-    def _token_from_query(self):
+    def _query_param(self, name):
         query = (self.scope.get('query_string') or b'').decode('utf-8', 'ignore')
         for part in query.split('&'):
-            name, _, value = part.partition('=')
-            if name == 'token':
+            key, _, value = part.partition('=')
+            if key == name:
                 return unquote(value).strip()
         return ''
 
     async def connect(self):
-        token = self._token_from_query()
-        user = await _user_for_token(token)
+        ticket = self._query_param('ticket')
+        if ticket:
+            user, blocked = await _user_for_ticket(ticket)
+        else:
+            # Legacy path — see module docstring. A client sending neither
+            # falls straight through with user=None, same as a bad ticket.
+            token = self._query_param('token')
+            user, blocked = await _user_for_token(token)
+
+        if blocked:
+            # 4003: the account exists but may not use the app (pending,
+            # rejected, deactivated). Distinct from a bad token (4401).
+            logger.info('[Realtime] Rejected socket: account %s', blocked)
+            await self.close(code=4003)
+            return
 
         if user is None:
             # 4401: close before accepting, so an unauthenticated client never
@@ -93,6 +140,11 @@ class NotificationConsumer(AsyncJsonWebsocketConsumer):
         # trusted.
         if isinstance(content, dict) and content.get('type') == 'ping':
             await self.send_json({'type': 'pong'})
+
+    async def account_revoked(self, event):
+        # Sent when the account is deactivated or otherwise blocked; the
+        # connection stops receiving anything from here on.
+        await self.close(code=4003)
 
     async def notify(self, event):
         """Channel-layer handler. `event['payload']` is sent to this nurse."""

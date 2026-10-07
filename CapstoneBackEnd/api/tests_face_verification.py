@@ -1,9 +1,11 @@
 """Face verification attempt counting and Email OTP gating tests."""
 
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.core import mail
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from api.face_match import FaceVerificationOutcome, MAX_FACE_ATTEMPTS
@@ -30,7 +32,7 @@ class FaceVerificationFlowTests(TestCase):
         # already passed — these tests are about attempt counting/lockout
         # specifically, so start from a session that's already cleared it.
         self.session = RegistrationSession.objects.create(
-            email=self.email, id_verification_status='verified'
+            email=self.email, id_verification_status='verified', id_portrait='data:image/jpeg;base64,PORTRAIT'
         )
 
     def test_status_endpoint_returns_session_state(self):
@@ -92,7 +94,7 @@ class FaceVerificationFlowTests(TestCase):
         self.assertTrue(self.session.face_locked)
 
     @patch('api.views.verify_face_against_id')
-    def test_reset_clears_attempts(self, mock_verify):
+    def test_reset_flag_is_refused_and_keeps_the_lock(self, mock_verify):
         self.session.face_attempts = 3
         self.session.face_locked = True
         self.session.save(update_fields=['face_attempts', 'face_locked'])
@@ -101,20 +103,20 @@ class FaceVerificationFlowTests(TestCase):
             {'registrationSessionId': str(self.session.session_id), 'reset': True},
             format='json',
         )
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(res.data['reset'])
-        self.assertEqual(res.data['attemptsUsed'], 0)
-        self.assertFalse(res.data['locked'])
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['code'], 'reset_not_allowed')
+        mock_verify.assert_not_called()
         self.session.refresh_from_db()
-        self.assertEqual(self.session.face_attempts, 0)
-        self.assertFalse(self.session.face_locked)
+        self.assertEqual(self.session.face_attempts, 3)
+        self.assertTrue(self.session.face_locked)
 
     @patch('api.views.verify_face_against_id')
     def test_new_scan_without_session_does_not_reuse_locked_session(self, mock_verify):
         """A locked prior session for the same email must not auto-skip to max attempts."""
         self.session.face_attempts = 3
         self.session.face_locked = True
-        self.session.save(update_fields=['face_attempts', 'face_locked'])
+        self.session.face_locked_until = timezone.now() - timedelta(minutes=1)  # timed lock has run out
+        self.session.save(update_fields=['face_attempts', 'face_locked', 'face_locked_until'])
         mock_verify.return_value = FaceVerificationOutcome(
             False, 10.0, 'MISMATCH', 'Face verification failed.', True
         )
@@ -298,7 +300,7 @@ class FaceVerificationRequiresIdVerificationTests(TestCase):
 
         mock_verify.return_value = FaceVerificationOutcome(True, 92.0, None, None, countable=False)
         session = RegistrationSession.objects.create(
-            email='nurse@hospital.com', id_verification_status='verified'
+            email='nurse@hospital.com', id_verification_status='verified', id_portrait='data:image/jpeg;base64,PORTRAIT'
         )
 
         res = self._post(session.session_id)
@@ -315,10 +317,11 @@ class FaceVerificationRequiresIdVerificationTests(TestCase):
         """
         prior = RegistrationSession.objects.create(
             email='nurse@hospital.com',
-            id_verification_status='verified',
+            id_verification_status='verified', id_portrait='data:image/jpeg;base64,PORTRAIT',
             id_last_name='Dela Cruz',
             face_locked=True,
             face_attempts=3,
+            face_locked_until=timezone.now() - timedelta(minutes=1),  # timed lock has run out
         )
 
         res = self.client.post(

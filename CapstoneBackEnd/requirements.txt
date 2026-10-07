@@ -20,3 +20,7 @@ requests>=2.31
 # WebSocket push for handover notifications. daphne makes
 # `manage.py runserver` serve ASGI so sockets work in development.
 channels[daphne]>=4.3,<5
+# Shared channel layer (Redis-backed) so notifications reach a socket connected
+# to a different process than the one that sent them — required whenever more
+# than one server process is running. See CHANNEL_LAYERS in settings.py.
+channels-redis>=4.2,<5

@@ -9,7 +9,8 @@ import datetime
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from rest_framework.authtoken.models import Token
+from .models import AuthSession
+from .auth_sessions import issue_session
 from rest_framework.test import APITestCase
 
 from .models import NurseProfile, Notification
@@ -141,13 +142,13 @@ class AdminUserManagementTests(APITestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_set_password_lets_the_nurse_log_in_with_it(self):
-        Token.objects.create(user=self.pending_nurse)
+        issue_session(self.pending_nurse)
         response = self.client.post(
             f'/api/admin/users/{self.pending_nurse.pk}/set-password/', {'password': 'brand-new-pass-1'},
         )
         self.assertEqual(response.status_code, 200)
         # Old token revoked by the reset.
-        self.assertFalse(Token.objects.filter(user=self.pending_nurse).exists())
+        self.assertFalse(AuthSession.objects.filter(user=self.pending_nurse).exists())
 
         self.pending_nurse.nurse_profile.approval_status = 'approved'
         self.pending_nurse.nurse_profile.save()

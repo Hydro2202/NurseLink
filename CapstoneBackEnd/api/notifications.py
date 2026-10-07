@@ -651,7 +651,7 @@ def notify_nurse_reassigned(profile, actor, *, changed_department, changed_shift
     if changed_department:
         parts.append(f'department to {profile.department}')
     if changed_shift:
-        parts.append(f'shift to {profile.shift}')
+        parts.append(f'shift to {profile.get_shift_display() if profile.shift else "unassigned"}')
     if not parts:
         return None
 
@@ -685,7 +685,10 @@ def notify_admin_new_registration(new_user):
     account to all of them.
     """
     profile = getattr(new_user, 'nurse_profile', None)
-    role_label = 'Head Nurse' if profile and profile.role == 'head_nurse' else 'Staff Nurse'
+    # A signup can only *request* head nurse (see SignupSerializer), so the
+    # admin is told what was asked for, not what the account is.
+    requested = profile.requested_role if profile else ''
+    role_label = 'Head Nurse' if requested == 'head_nurse' else 'Staff Nurse'
     name = new_user.get_full_name().strip() or new_user.username
 
     admins = User.objects.filter(is_staff=True)
