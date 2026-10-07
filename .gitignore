@@ -16,6 +16,11 @@ venv/
 .venv/
 db.sqlite3
 
+# Expo local dev-session state/logs. CapstoneFrontEnd/NurseLink/.gitignore
+# already covers .expo/ inside the app itself; this catches a stray
+# parent-level one some earlier `expo` invocation created outside it.
+.expo/
+
 # OS
 .DS_Store
 Thumbs.db
