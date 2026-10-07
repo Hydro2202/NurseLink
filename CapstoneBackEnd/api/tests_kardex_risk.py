@@ -135,7 +135,7 @@ class KardexRiskAndAllergiesIntegrationTests(APITestCase):
         patient = Patient.objects.create(
             patient_code='P950', name='Dee Uy', age=61, gender='Female',
             room='204-B', diagnosis='CHF', admission_date=datetime.date(2026, 3, 2),
-            risk_level='low', attending_physician='Dr. Lim',
+            risk_level='low', attending_physician='Dr. Lim', assigned_nurse=self.nurse,
         )
         response = self.client.post('/api/kardex/', {
             'lastName': 'Uy', 'firstName': 'Dee', 'age': '61', 'gender': 'Female',

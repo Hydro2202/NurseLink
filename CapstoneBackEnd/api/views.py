@@ -3046,7 +3046,13 @@ class TaskViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
     def get_queryset(self):
-        qs = Task.objects.select_related('patient', 'assigned_nurse').all()
+        # department: TaskSerializer.departmentName reads obj.department.name
+        # for every row. task_doctors__doctor: get_assignedDoctors() reads
+        # obj.task_doctors.all() per row too — both were a 1-extra-query-per-
+        # task N+1 on every list call without this.
+        qs = Task.objects.select_related('patient', 'assigned_nurse', 'department').prefetch_related(
+            'task_doctors__doctor'
+        ).all()
         role = get_user_role(self.request.user)
         assigned_to = self.request.query_params.get('assignedTo')
         status_filter = self.request.query_params.get('status')
@@ -3054,10 +3060,20 @@ class TaskViewSet(viewsets.ModelViewSet):
         mine = self.request.query_params.get('mine')
         search = self.request.query_params.get('search')
 
-        if mine in ('1', 'true', 'True') or (role == 'staff_nurse' and not assigned_to):
+        # A staff nurse is ALWAYS restricted to their own tasks — assignedTo is
+        # a head-nurse-facing filter (see NurseTasksPage/nurse-tasks/[name])
+        # and must never let a staff nurse widen scope to another nurse's
+        # tasks. That matters beyond list(): get_object() (used by every
+        # detail action, including `complete`) runs against this same
+        # queryset, so a hole here was a real "complete someone else's task
+        # via ?assignedTo=<their name>" IDOR, not just an over-broad list.
+        if role == 'staff_nurse':
             name = self.request.user.get_full_name().strip() or self.request.user.username
             qs = qs.filter(Q(assigned_nurse=self.request.user) | Q(assigned_to__iexact=name))
-        if assigned_to:
+        elif mine in ('1', 'true', 'True'):
+            name = self.request.user.get_full_name().strip() or self.request.user.username
+            qs = qs.filter(Q(assigned_nurse=self.request.user) | Q(assigned_to__iexact=name))
+        elif assigned_to:
             qs = qs.filter(assigned_to__iexact=assigned_to)
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -3084,6 +3100,22 @@ class TaskViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def complete(self, request, task_code=None):
         task = self.get_object()
+        # get_queryset() already scopes a staff nurse to their own tasks, so
+        # this can't currently be reached for someone else's task — kept as
+        # an explicit, independent check (same defense-in-depth style as
+        # DutyAssignmentViewSet.start/end) so completing a task can never
+        # silently start working for the wrong nurse again if that scoping
+        # ever changes.
+        if get_user_role(request.user) == 'staff_nurse':
+            name = request.user.get_full_name().strip() or request.user.username
+            is_owner = task.assigned_nurse_id == request.user.pk or (
+                task.assigned_to or ''
+            ).strip().lower() == name.lower()
+            if not is_owner:
+                return Response(
+                    {'detail': 'You can only complete your own tasks.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         unfinished = [item.get('text', 'item') for item in task.checklist if not item.get('done')]
         if unfinished:
             return Response(
@@ -4601,6 +4633,27 @@ class KardexViewSet(viewsets.ModelViewSet):
         if self.action == 'review':
             return [permissions.IsAuthenticated(), IsSupervisor()]
         return super().get_permissions()
+
+    def perform_create(self, serializer):
+        # KardexRecordSerializer.create() writes straight onto an existing
+        # Patient's demographic/vitals fields when patientId names one — the
+        # same fields PatientViewSet.update() restricts to the assigned
+        # nurse (or a head nurse). Without this check, any approved nurse
+        # could overwrite another patient's data through this endpoint
+        # instead, bypassing that restriction entirely.
+        patient_id = serializer.validated_data.get('patientId')
+        if patient_id:
+            patient = Patient.objects.filter(patient_code=patient_id).first()
+            _check_patient_care_scope(self.request, patient, 'save a kardex')
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        # Matches KardexLaboratoryViewSet/KardexMedicationViewSet: deleting
+        # clinical history is head-nurse-only, not "any approved nurse" —
+        # this was the one Kardex-family viewset missing that restriction.
+        if get_user_role(self.request.user) != 'head_nurse':
+            raise PermissionDenied('Only a head nurse can delete a kardex record.')
+        instance.delete()
 
     @extend_schema(
         request=inline_serializer(

@@ -36,7 +36,7 @@ class DuplicatePatientTests(APITestCase):
         self.existing = Patient.objects.create(
             patient_code='P600', name='Juan Dela Cruz', age=61, gender='Male',
             room='204-B', diagnosis='CHF', admission_date=datetime.date(2026, 3, 2),
-            risk_level='medium', attending_physician='Dr. Lim',
+            risk_level='medium', attending_physician='Dr. Lim', assigned_nurse=self.nurse,
         )
         self.client.force_authenticate(user=self.nurse)
 

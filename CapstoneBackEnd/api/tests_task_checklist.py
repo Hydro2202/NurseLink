@@ -88,3 +88,39 @@ class TaskChecklistTests(APITestCase):
         response = self.client.post('/api/tasks/T904/complete/')
         self.assertEqual(response.status_code, 400)
         self.assertEqual(len(response.data['unfinishedChecklistItems']), 5)
+
+    def test_replacing_the_checklist_with_a_fake_done_item_is_rejected(self):
+        """The gate only means something if a nurse can't just swap the real
+        6-step checklist for one fabricated item that's already 'done'."""
+        task = Task.objects.create(
+            task_code='T905', patient=self.patient, patient_name=self.patient.name,
+            title='Check vitals', assigned_to='Ben Diaz', assigned_nurse=self.nurse,
+        )
+        patch = self.client.patch(
+            '/api/tasks/T905/', {'checklist': [{'text': 'x', 'done': True}]}, format='json'
+        )
+        self.assertEqual(patch.status_code, 400)
+        task.refresh_from_db()
+        self.assertEqual(len(task.checklist), 6)  # untouched
+
+        # The real exploit path: swap it in, then try to complete.
+        response = self.client.post('/api/tasks/T905/complete/')
+        self.assertEqual(response.status_code, 400)
+
+    def test_removing_a_checklist_item_is_rejected(self):
+        task = Task.objects.create(
+            task_code='T906', patient=self.patient, patient_name=self.patient.name,
+            title='Check vitals', assigned_to='Ben Diaz', assigned_nurse=self.nurse,
+        )
+        shortened = [{**item, 'done': True} for item in task.checklist[:5]]
+        patch = self.client.patch('/api/tasks/T906/', {'checklist': shortened}, format='json')
+        self.assertEqual(patch.status_code, 400)
+
+    def test_reordering_checklist_items_is_rejected(self):
+        task = Task.objects.create(
+            task_code='T907', patient=self.patient, patient_name=self.patient.name,
+            title='Check vitals', assigned_to='Ben Diaz', assigned_nurse=self.nurse,
+        )
+        reordered = list(reversed(task.checklist))
+        patch = self.client.patch('/api/tasks/T907/', {'checklist': reordered}, format='json')
+        self.assertEqual(patch.status_code, 400)

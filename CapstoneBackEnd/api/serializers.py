@@ -1464,13 +1464,18 @@ class TaskSerializer(serializers.ModelSerializer):
         ]
 
     def get_assignedDoctors(self, obj):
+        # Plain .all() (not .select_related(...).all()) so this reuses
+        # TaskViewSet.get_queryset()'s prefetch_related('task_doctors__doctor')
+        # cache instead of silently defeating it with a fresh queryset —
+        # select_related/filter/etc. on a related manager always issues a
+        # brand new query, bypassing Django's prefetch cache entirely.
         return [
             {
                 'id': td.doctor_id,
                 'name': td.doctor.full_name,
                 'specialization': td.doctor.specialization,
             }
-            for td in obj.task_doctors.select_related('doctor').all()
+            for td in obj.task_doctors.all()
         ]
 
     def _validate_doctor_ids(self, patient, department, doctor_ids):
@@ -1535,6 +1540,24 @@ class TaskSerializer(serializers.ModelSerializer):
             if 'text' not in item or 'done' not in item:
                 raise serializers.ValidationError(
                     'Each checklist item needs "text" and "done".'
+                )
+        # The checklist exists so TaskViewSet.complete can trust that its
+        # steps were genuinely gone through — that trust means a client can
+        # toggle `done`, but can never add, remove, or reword a step (e.g.
+        # replacing the real 6-item list with a single fake "done" entry to
+        # slip past the complete-action gate below). Comparing against the
+        # task's own current checklist, not a hardcoded default, because
+        # 'vital_signs' category tasks have their own shape (Task.save()).
+        # Only on an existing task with a real checklist already — a brand
+        # new task (instance is None) is free to set its own initial list,
+        # and an empty checklist stays unblocked per the model's own design.
+        instance = self.instance
+        if instance is not None and instance.checklist:
+            current_texts = [item.get('text') for item in instance.checklist]
+            submitted_texts = [item.get('text') for item in value]
+            if submitted_texts != current_texts:
+                raise serializers.ValidationError(
+                    'Checklist steps cannot be added, removed, or reworded — only their done status can change.'
                 )
         # Vital-signs tasks gate their final checklist step behind actually
         # having recorded readings — see VitalSigns.task — so a nurse can't

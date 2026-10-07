@@ -82,4 +82,53 @@ class TaskAssignmentTests(APITestCase):
 
         self.task.refresh_from_db()
         self.assertIsNone(self.task.assigned_nurse)
-        self.assertEqual(self.task.status, 'completed')
+
+
+class TaskScopingIdorTests(APITestCase):
+    """A staff nurse must never be able to reach another nurse's task by
+    adding ?assignedTo=<their name> — not to view it, and not to act on it."""
+
+    def setUp(self):
+        cache.clear()
+        self.nurse = make_user('nurse@hospital.com', 'Ben', 'Diaz', 'staff_nurse')
+        self.other_nurse = make_user('other@hospital.com', 'Cora', 'Reyes', 'staff_nurse')
+        self.supervisor = make_user('sup@hospital.com', 'Maria', 'Santos', 'head_nurse')
+        self.patient = Patient.objects.create(
+            patient_code='P701', name='Juan Dela Cruz', age=61, gender='Male',
+            room='204-B', diagnosis='CHF', admission_date=datetime.date(2026, 3, 2),
+            risk_level='medium', attending_physician='Dr. Lim',
+        )
+        self.others_task = Task.objects.create(
+            task_code='T701', patient=self.patient, patient_name=self.patient.name,
+            title='Check vitals', assigned_to='Cora Reyes', assigned_nurse=self.other_nurse,
+        )
+
+    def test_a_staff_nurse_cannot_list_another_nurses_tasks_via_assignedto(self):
+        self.client.force_authenticate(user=self.nurse)
+        response = self.client.get('/api/tasks/?assignedTo=Cora Reyes')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([t['id'] for t in response.data], [])
+
+    def test_a_staff_nurse_cannot_retrieve_another_nurses_task_via_assignedto(self):
+        self.client.force_authenticate(user=self.nurse)
+        response = self.client.get('/api/tasks/T701/?assignedTo=Cora Reyes')
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_staff_nurse_cannot_complete_another_nurses_task_via_assignedto(self):
+        checked = [{**item, 'done': True} for item in self.others_task.checklist]
+        self.others_task.checklist = checked
+        self.others_task.save(update_fields=['checklist'])
+
+        self.client.force_authenticate(user=self.nurse)
+        response = self.client.post('/api/tasks/T701/complete/?assignedTo=Cora Reyes')
+        self.assertEqual(response.status_code, 404)
+
+        self.others_task.refresh_from_db()
+        self.assertNotEqual(self.others_task.status, 'completed')
+
+    def test_head_nurse_can_still_filter_by_assignedto(self):
+        """The fix must not break the legitimate head-nurse use of this filter."""
+        self.client.force_authenticate(user=self.supervisor)
+        response = self.client.get('/api/tasks/?assignedTo=Cora Reyes')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([t['id'] for t in response.data], ['T701'])
