@@ -42,9 +42,12 @@ export async function loginRequest(
 export async function signupRequest(
   userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
 ): Promise<AuthResponse> {
+  // The server never grants a role at signup — the picked role is only a
+  // request for an admin to review, sent under requestedRole.
+  const { role, ...rest } = userData;
   const data = await apiRequest<AuthResponse>('/auth/signup/', {
     method: 'POST',
-    body: userData,
+    body: { ...rest, requestedRole: role },
     auth: false,
   });
   setToken(data.token);
@@ -110,8 +113,11 @@ export type FaceVerificationResponse = {
   registeredEmail?: string | null;
   reason?: string | null;
   message?: string;
-  reset?: boolean;
   countable?: boolean;
+  /** False once the lifetime face-attempt budget is spent; only Email OTP remains. */
+  retryAvailable?: boolean;
+  /** Set on a 423 (locked): seconds until the timed lockout ends. */
+  retryAfterSeconds?: number;
 };
 
 export type FaceVerificationStatusResponse = {
@@ -180,16 +186,6 @@ export async function verifyPrcLicenseRequest(
       ...(registrationSessionId ? { registrationSessionId } : {}),
       ...(selfie ? { selfie } : {}),
     },
-    auth: false,
-  });
-}
-
-export async function resetFaceVerificationRequest(
-  registrationSessionId: string
-): Promise<FaceVerificationResponse> {
-  return apiRequest<FaceVerificationResponse>('/auth/face-verification/', {
-    method: 'POST',
-    body: { registrationSessionId, reset: true },
     auth: false,
   });
 }

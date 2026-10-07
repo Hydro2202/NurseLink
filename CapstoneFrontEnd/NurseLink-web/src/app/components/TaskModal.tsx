@@ -19,7 +19,7 @@ import {
 } from './ui/select';
 import { Textarea } from './ui/textarea';
 import { Loader2, Stethoscope, Bed, ClipboardList } from 'lucide-react';
-import type { Patient, Task } from '../types/domain';
+import type { Patient, Task, TaskPriority } from '../types/domain';
 import { fetchPatients } from '../api/nurselink';
 
 interface TaskModalProps {
@@ -44,7 +44,7 @@ export function TaskModal({
   const [formData, setFormData] = useState({
     title: '',
     description: '',
-    priority: 'routine' as 'urgent' | 'routine',
+    priority: 'routine' as TaskPriority,
     patientName: '',
     patientId: '',
     dueTime: '',
@@ -187,7 +187,7 @@ export function TaskModal({
               <Label htmlFor="priority">Priority *</Label>
               <Select
                 value={formData.priority}
-                onValueChange={(value: 'urgent' | 'routine') => 
+                onValueChange={(value: TaskPriority) =>
                   setFormData({ ...formData, priority: value })
                 }
               >

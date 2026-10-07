@@ -108,7 +108,6 @@ All references to "Auto-Charting" have been updated to simply "Charting" through
 ### Both Roles Have:
 - ✅ Session timeout (30 minutes inactivity)
 - ✅ Logout confirmation dialogs
-- ✅ Encrypted data indicators
 - ✅ Audit trail tracking
 - ✅ Role-based access control
 - ✅ Activity logging

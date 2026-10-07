@@ -20,7 +20,6 @@ NurseLink is a comprehensive web and mobile-based healthcare application designe
 - Secure role-based login
 - Input validation with error states
 - Session management (30-minute timeout after inactivity)
-- Encrypted data transmission
 - Audit trail for all actions
 - Logout confirmation dialogs
 - Session timeout warnings
@@ -36,7 +35,7 @@ NurseLink is a comprehensive web and mobile-based healthcare application designe
   - **A**ssessment - Clinical observations
   - **R**ecommendation - Care plan and next steps
 - Automatic carry-over of unfinished tasks
-- Secure clinical photo preview (encrypted, auto-delete after 24 hours)
+- Clinical photo preview (auto-delete after 24 hours)
 - Clear patient summary per shift
 - Handover acknowledgment workflow
 
@@ -122,7 +121,6 @@ NurseLink is a comprehensive web and mobile-based healthcare application designe
 - Confirmation dialogs for destructive actions
 
 #### Security UI Indicators
-- 🔒 Encrypted data icons
 - Secure photo labels (non-downloadable)
 - Audit trail visibility
 - Session timeout countdown
@@ -157,7 +155,7 @@ The system implements the following ISO/IEC 25010 quality criteria:
 - **Recoverability:** Auto-save capabilities and session restoration
 
 ### 5. Security
-- **Confidentiality:** Role-based access control, encrypted data
+- **Confidentiality:** Role-based access control
 - **Integrity:** Audit trails, edit history tracking
 - **Non-repudiation:** Digital signatures and timestamps on all actions
 - **Accountability:** Complete activity logging
@@ -220,7 +218,7 @@ The system implements the following ISO/IEC 25010 quality criteria:
 - Nurse from/to
 - SBAR structured content
 - Unfinished tasks list
-- Secure clinical photos (encrypted, auto-expire)
+- Clinical photos (auto-expire)
 - Status (pending/acknowledged/completed)
 
 ### Charting Note
@@ -235,7 +233,7 @@ The system implements the following ISO/IEC 25010 quality criteria:
 
 ### Data Protection
 - All patient data is mock/demo data
-- In production, would use HIPAA-compliant encryption
+- Not HIPAA compliant; referral notes and other data are stored unencrypted in the database — see the main README's Known Limitations section
 - Photos are marked as non-downloadable with auto-deletion
 - Session management prevents unauthorized access
 
@@ -290,11 +288,9 @@ The system implements the following ISO/IEC 25010 quality criteria:
 ## Deployment Considerations
 
 ### Production Requirements
-- HIPAA-compliant hosting
 - SSL/TLS encryption
 - Regular security audits
 - Backup and disaster recovery
-- Database encryption at rest
 - API rate limiting
 - Load balancing for high availability
 

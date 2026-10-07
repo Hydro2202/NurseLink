@@ -18,11 +18,42 @@ import {
   SelectValue,
 } from './ui/select';
 import { Textarea } from './ui/textarea';
-import { Loader2, Shield, User, Clock } from 'lucide-react';
+import { Loader2, FileText, Info, User, Clock } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
-import type { EligibleReferralRecipients, HandoverNote, Patient } from '../types/domain';
+import type {
+  EligibleReferralRecipients,
+  EmptyReferralReason,
+  HandoverNote,
+  Patient,
+} from '../types/domain';
 import { fetchPatients, fetchEligibleReferralRecipients, ApiError } from '../api/nurselink';
 import { bmiCategory } from '../utils/bmi';
+
+/**
+ * Why the receiving-nurse list is empty, in plain language — keyed by the
+ * backend's emptyReason code (see api/referral_shifts.py). Any reason not
+ * in this list (including null while still empty, which shouldn't happen
+ * once the backend always supplies one, but costs nothing to cover) falls
+ * through to a generic message rather than breaking.
+ */
+function emptyReferralMessage(
+  reason: EmptyReferralReason | null | undefined,
+  nextShiftLabel: string | null | undefined
+): string {
+  const shift = nextShiftLabel || 'the next';
+  switch (reason) {
+    case 'user_off_duty':
+      return "You're off duty, so you can't refer patients right now.";
+    case 'no_next_shift_staff':
+      return `Nobody is scheduled on the ${shift} shift yet. Ask your Head Nurse to update the Duty Roster.`;
+    case 'only_self_scheduled':
+      return `You're the only one scheduled for the ${shift} shift — there's no one else to refer to yet.`;
+    case 'no_eligible_nurse_on_next_shift':
+      return `Someone is scheduled for the ${shift} shift, but not as a staff nurse who can receive a referral.`;
+    default:
+      return 'No nurses are available for a referral right now.';
+  }
+}
 
 interface HandoverModalProps {
   open: boolean;
@@ -78,38 +109,40 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       .catch(() => {});
   }, [open]);
 
+  // Shared by the auto-fetch on open and the Retry button below — a failed
+  // request is a real error state, not just an empty list.
+  const loadEligibility = () => {
+    setEligibilityLoading(true);
+    setEligibilityError('');
+    fetchEligibleReferralRecipients()
+      .then((data) => {
+        setEligibility(data);
+        setSelectedNurseId((prev) => (prev && !data.recipients.some((n) => n.id === prev) ? '' : prev));
+      })
+      .catch((err) => {
+        setEligibility(null);
+        setEligibilityError(err instanceof ApiError ? err.message : 'Failed to load eligible recipients.');
+      })
+      .finally(() => {
+        setEligibilityLoading(false);
+      });
+  };
+
   // Refetched every time the modal opens — eligibility depends on the Duty
   // Roster and the current time, both of which can have changed since the
   // last time it was open.
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
-    setEligibilityLoading(true);
-    setEligibilityError('');
-    fetchEligibleReferralRecipients()
-      .then((data) => {
-        if (cancelled) return;
-        setEligibility(data);
-        setSelectedNurseId((prev) => (prev && !data.recipients.some((n) => n.id === prev) ? '' : prev));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setEligibility(null);
-        setEligibilityError(err instanceof ApiError ? err.message : 'Failed to load eligible recipients.');
-      })
-      .finally(() => {
-        if (!cancelled) setEligibilityLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    loadEligibility();
+    // loadEligibility is intentionally not a dependency — it would redefine
+    // on every render; this effect should only re-run when the modal opens.
   }, [open]);
 
   const nurses = eligibility?.recipients ?? [];
   const onDuty = eligibility?.onDuty ?? false;
   const noNursesReason =
-    !eligibilityLoading && eligibility && onDuty && nurses.length === 0
-      ? `No nurses are assigned to the ${eligibility.nextShiftLabel} shift yet. Ask your Head Nurse to update the Duty Roster.`
+    !eligibilityLoading && eligibility && nurses.length === 0
+      ? emptyReferralMessage(eligibility.emptyReason, eligibility.nextShiftLabel)
       : '';
 
   // Update nurseTo when a nurse is selected
@@ -255,19 +288,19 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Shield className="w-5 h-5 text-primary" />
+            <FileText className="w-5 h-5 text-primary" />
             Create Referral Note
           </DialogTitle>
           <DialogDescription>
-            Complete the SBAR form to submit a secure referral note to the incoming nurse.
+            Complete the SBAR form to submit a referral note to the incoming nurse.
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <Alert className="bg-blue-50 border-blue-200">
-            <Shield className="h-4 w-4 text-blue-600" />
+            <Info className="h-4 w-4 text-blue-600" />
             <AlertDescription className="text-blue-900">
-              All referral notes are encrypted and comply with HIPAA security standards.
+              Demo system: don&apos;t enter real patient information.
             </AlertDescription>
           </Alert>
 
@@ -315,7 +348,16 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
 
             {eligibilityError ? (
               <Alert variant="destructive">
-                <AlertDescription>{eligibilityError}</AlertDescription>
+                <AlertDescription>
+                  {eligibilityError}
+                  <button
+                    type="button"
+                    onClick={loadEligibility}
+                    className="ml-2 font-semibold underline underline-offset-2"
+                  >
+                    Retry
+                  </button>
+                </AlertDescription>
               </Alert>
             ) : eligibilityLoading ? (
               <div className="flex items-center gap-2 bg-blue-50 rounded-lg px-3 py-2">
@@ -324,7 +366,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
               </div>
             ) : !onDuty ? (
               <Alert variant="warning">
-                <AlertDescription>You are not on duty right now, so you can't create a referral.</AlertDescription>
+                <AlertDescription>{noNursesReason}</AlertDescription>
               </Alert>
             ) : (
               <div className="flex items-center gap-2 bg-blue-50 rounded-lg px-3 py-2">

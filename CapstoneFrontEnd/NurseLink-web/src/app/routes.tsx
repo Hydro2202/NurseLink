@@ -1,19 +1,32 @@
+import { Suspense, lazy, type ReactNode } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router';
 import LoginPage from './pages/LoginPage';
-import SignUpPage from './pages/SignUpPage';
-import AdminDashboardPage from './pages/AdminDashboardPage';
 import DashboardLayout from './layouts/DashboardLayout';
-import DashboardPage from './pages/DashboardPage';
-import TasksPage from './pages/TasksPage';
-import NurseTasksPage from './pages/NurseTasksPage';
-import HandoverPage from './pages/HandoverPage';
-import ChartingPage from './pages/ChartingPage';
-import KardexPage from './pages/KardexPage';
-import AnalyticsPage from './pages/AnalyticsPage';
-import WorkloadPage from './pages/WorkloadPage';
-import SettingsPage from './pages/SettingsPage';
-import MyPatientsPage from './pages/MyPatientsPage';
-import AllPatientsPage from './pages/AllPatientsPage';
+import RouteLoadingFallback from './components/RouteLoadingFallback';
+
+// Everything except the login page and the shared dashboard shell loads on
+// demand: these are the modules a first-time, unauthenticated visit never
+// needs. See DEPLOYMENT.md-equivalent notes in the PR for before/after sizes.
+const SignUpPage = lazy(() => import('./pages/SignUpPage'));
+const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const TasksPage = lazy(() => import('./pages/TasksPage'));
+const NurseTasksPage = lazy(() => import('./pages/NurseTasksPage'));
+const HandoverPage = lazy(() => import('./pages/HandoverPage'));
+const ChartingPage = lazy(() => import('./pages/ChartingPage'));
+const KardexPage = lazy(() => import('./pages/KardexPage'));
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
+const WorkloadPage = lazy(() => import('./pages/WorkloadPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const MyPatientsPage = lazy(() => import('./pages/MyPatientsPage'));
+const AllPatientsPage = lazy(() => import('./pages/AllPatientsPage'));
+
+// One Suspense boundary per route element (not one global one) — so
+// switching between two lazy pages inside DashboardLayout only shows the
+// fallback in the content area, never blanks the persistent header/sidebar.
+function lazyRoute(element: ReactNode) {
+  return <Suspense fallback={<RouteLoadingFallback />}>{element}</Suspense>;
+}
 
 export const router = createBrowserRouter([
   {
@@ -26,11 +39,11 @@ export const router = createBrowserRouter([
   },
   {
     path: '/signup',
-    element: <SignUpPage />,
+    element: lazyRoute(<SignUpPage />),
   },
   {
     path: '/admin',
-    element: <AdminDashboardPage />,
+    element: lazyRoute(<AdminDashboardPage />),
   },
   {
     path: '/',
@@ -38,47 +51,47 @@ export const router = createBrowserRouter([
     children: [
       {
         path: 'dashboard',
-        element: <DashboardPage />,
+        element: lazyRoute(<DashboardPage />),
       },
       {
         path: 'tasks',
-        element: <TasksPage />,
+        element: lazyRoute(<TasksPage />),
       },
       {
         path: 'nurse-tasks/:nurseName',
-        element: <NurseTasksPage />,
+        element: lazyRoute(<NurseTasksPage />),
       },
       {
         path: 'handover',
-        element: <HandoverPage />,
+        element: lazyRoute(<HandoverPage />),
       },
       {
         path: 'charting',
-        element: <ChartingPage />,
+        element: lazyRoute(<ChartingPage />),
       },
       {
         path: 'kardex',
-        element: <KardexPage />,
+        element: lazyRoute(<KardexPage />),
       },
       {
         path: 'analytics',
-        element: <AnalyticsPage />,
+        element: lazyRoute(<AnalyticsPage />),
       },
       {
         path: 'workload',
-        element: <WorkloadPage />,
+        element: lazyRoute(<WorkloadPage />),
       },
       {
         path: 'settings',
-        element: <SettingsPage />,
+        element: lazyRoute(<SettingsPage />),
       },
       {
         path: 'my-patients',
-        element: <MyPatientsPage />,
+        element: lazyRoute(<MyPatientsPage />),
       },
       {
         path: 'all-patients',
-        element: <AllPatientsPage />,
+        element: lazyRoute(<AllPatientsPage />),
       },
     ],
   },

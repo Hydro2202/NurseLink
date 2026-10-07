@@ -267,7 +267,7 @@ export default function MyPatientsPage() {
             {filteredPatients.map((patient) => (
               <div
                 key={patient.id}
-                ref={el => patientRefs.current[patient.id] = el}
+                ref={el => { patientRefs.current[patient.id] = el; }}
               >
                 <Card
                   className={`border-l-4 hover:shadow-lg transition-shadow ${

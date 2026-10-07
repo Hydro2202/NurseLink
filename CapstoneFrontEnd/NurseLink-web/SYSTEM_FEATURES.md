@@ -125,7 +125,7 @@ Admin:        admin@hospital.com  / password123
 
 ### 📋 5. SHIFT HANDOVER (SBAR-BASED)
 
-- [x] **Security notice** with encryption indicator
+- [x] **Demo notice** on the handover form
 - [x] **Create new handover button**
 - [x] **Tabs for incoming/outgoing handovers**
 - [x] **SBAR format cards** with color-coded sections:
@@ -142,10 +142,9 @@ Admin:        admin@hospital.com  / password123
 - [x] **Unfinished tasks section** (yellow warning box)
   - Clear list of carry-over tasks
   - Visual indicator (→ arrow)
-- [x] **Secure clinical photos:**
+- [x] **Clinical photos:**
   - View photos button with count
-  - 🔒 Security shield icon
-  - "Non-downloadable, encrypted" label
+  - "Non-downloadable" label
   - Auto-delete countdown (expires in X hours)
   - Photo preview in modal
   - Expiration notice
@@ -278,8 +277,6 @@ Admin:        admin@hospital.com  / password123
   - Dark mode toggle (Moon/Sun icon)
   - Compact view toggle
 - [x] **Security & privacy card:**
-  - Secure connection indicator (blue box with checkmark)
-  - Encryption status
   - Session timeout info
   - Change password button
   - Two-factor authentication button
@@ -297,7 +294,6 @@ Admin:        admin@hospital.com  / password123
 - [x] **System information footer:**
   - Version number
   - ISO/IEC 25010 compliance badge
-  - HIPAA Secure badge
   - Copyright notice
 
 ---
@@ -372,12 +368,8 @@ Admin:        admin@hospital.com  / password123
 
 ---
 
-### 🔒 12. SECURITY FEATURES
+### 12. SECURITY FEATURES
 
-- [x] **Encrypted data indicators:**
-  - 🔒 Lock icons throughout
-  - "Encrypted connection" badges
-  - Secure photo labels
 - [x] **Session management:**
   - 30-minute inactivity timeout
   - Activity tracking
@@ -471,7 +463,6 @@ Admin:        admin@hospital.com  / password123
 
 #### Security ✅
 - Role-based access control
-- Encrypted data indicators
 - Audit trails
 - Digital signatures
 - Session timeout
@@ -581,4 +572,4 @@ This is a **production-ready** application that:
 **System Version:** 1.0.0  
 **Last Updated:** March 26, 2026  
 **Status:** ✅ Production Ready  
-**Compliance:** ISO/IEC 25010, HIPAA-Ready Architecture
+**Compliance:** ISO/IEC 25010. Not HIPAA compliant — see the main README's Known Limitations section.

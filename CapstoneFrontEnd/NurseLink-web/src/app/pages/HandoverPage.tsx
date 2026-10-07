@@ -22,6 +22,7 @@ import {
   XCircle,
   Clock,
   Shield,
+  Info,
   AlertCircle,
   Loader2,
   Plus,
@@ -374,11 +375,11 @@ export default function HandoverPage() {
       </div>
 
       <Alert>
-        <Shield className="h-4 w-4" />
+        <Info className="h-4 w-4" />
         <AlertDescription>
           {isHeadNurse
             ? 'Referrals move directly between nurses with no approval step. You can see every referral and its full history here, but cannot accept, decline, or edit one.'
-            : 'All referral notes are encrypted and HIPAA-compliant. Only authorized personnel can access this information.'}
+            : "Demo system: don't enter real patient information."}
         </AlertDescription>
       </Alert>
 
