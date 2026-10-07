@@ -448,23 +448,25 @@ function LabFormModal({ open, onOpenChange, patientId, lab, onSaved }: LabFormMo
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!open) return;
-    if (lab) {
-      setTestName(lab.testName);
-      setDateOrdered(lab.dateOrdered);
-      setDateDone(lab.dateDone || '');
-      setStatus(lab.status);
-      setResult(lab.result);
-      setRemarks(lab.remarks);
-    } else {
-      setTestName('');
-      setDateOrdered(todayIso());
-      setDateDone('');
-      setStatus('pending');
-      setResult('');
-      setRemarks('');
-    }
-    setError('');
+    (() => {
+      if (!open) return;
+      if (lab) {
+        setTestName(lab.testName);
+        setDateOrdered(lab.dateOrdered);
+        setDateDone(lab.dateDone || '');
+        setStatus(lab.status);
+        setResult(lab.result);
+        setRemarks(lab.remarks);
+      } else {
+        setTestName('');
+        setDateOrdered(todayIso());
+        setDateDone('');
+        setStatus('pending');
+        setResult('');
+        setRemarks('');
+      }
+      setError('');
+    })();
   }, [open, lab]);
 
   const dateError =
@@ -595,25 +597,27 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!open) return;
-    if (medication) {
-      setMedicationName(medication.medicationName);
-      setDose(medication.dose);
-      setRoute(medication.route);
-      setFrequency(medication.frequency);
-      setStartDate(medication.startDate);
-      setEndDate(medication.endDate || '');
-      setRemarks(medication.remarks);
-    } else {
-      setMedicationName('');
-      setDose('');
-      setRoute('Oral');
-      setFrequency('');
-      setStartDate(todayIso());
-      setEndDate('');
-      setRemarks('');
-    }
-    setError('');
+    (() => {
+      if (!open) return;
+      if (medication) {
+        setMedicationName(medication.medicationName);
+        setDose(medication.dose);
+        setRoute(medication.route);
+        setFrequency(medication.frequency);
+        setStartDate(medication.startDate);
+        setEndDate(medication.endDate || '');
+        setRemarks(medication.remarks);
+      } else {
+        setMedicationName('');
+        setDose('');
+        setRoute('Oral');
+        setFrequency('');
+        setStartDate(todayIso());
+        setEndDate('');
+        setRemarks('');
+      }
+      setError('');
+    })();
   }, [open, medication]);
 
   const dateError = endDate && startDate && endDate < startDate ? 'End date cannot be before start date.' : '';
@@ -737,15 +741,17 @@ function RecordIntakeModal({ medication, onClose, onSaved }: RecordIntakeModalPr
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!medication) return;
-    const now = nowSplit();
-    setScheduledDate(now.date);
-    setScheduledTime(now.time);
-    setGivenDate(now.date);
-    setGivenTime(now.time);
-    setStatus('given');
-    setReason('');
-    setError('');
+    (() => {
+      if (!medication) return;
+      const now = nowSplit();
+      setScheduledDate(now.date);
+      setScheduledTime(now.time);
+      setGivenDate(now.date);
+      setGivenTime(now.time);
+      setStatus('given');
+      setReason('');
+      setError('');
+    })();
   }, [medication]);
 
   if (!medication) return null;

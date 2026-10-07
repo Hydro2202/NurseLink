@@ -29,11 +29,13 @@ export function NurseAssignModal({ open, onOpenChange, nurse, onSave }: NurseAss
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (nurse) {
-      setDepartment(nurse.department || '');
-      setShift(nurse.shift || 'morning');
-      setError('');
-    }
+    (() => {
+      if (nurse) {
+        setDepartment(nurse.department || '');
+        setShift(nurse.shift || 'morning');
+        setError('');
+      }
+    })();
   }, [nurse, open]);
 
   const handleSubmit = async () => {

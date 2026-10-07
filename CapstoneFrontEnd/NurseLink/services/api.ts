@@ -1,5 +1,5 @@
-import { API_BASE_URL, TOKEN_KEY } from './config';
-import * as authStorage from './authStorage';
+import { API_BASE_URL } from './config';
+import { getStoredToken, setStoredToken, clearStoredToken } from './secureToken';
 import type { User, UserRole } from '../types/user';
 import type {
   AdminAccount,
@@ -44,6 +44,8 @@ import type {
  */
 export type ApiErrorKind = 'network' | 'timeout' | 'auth' | 'server' | 'invalid_response' | 'http';
 
+const BLOCKED_ACCOUNT_CODES = new Set(['account_pending', 'account_rejected', 'account_deactivated']);
+
 export class ApiError extends Error {
   status: number;
   data: unknown;
@@ -69,14 +71,14 @@ export class ApiError extends Error {
 }
 
 export async function getToken(): Promise<string | null> {
-  return authStorage.getItem(TOKEN_KEY);
+  return getStoredToken();
 }
 
 export async function setToken(token: string | null): Promise<void> {
   if (token) {
-    await authStorage.setItem(TOKEN_KEY, token);
+    await setStoredToken(token);
   } else {
-    await authStorage.removeItem(TOKEN_KEY);
+    await clearStoredToken();
   }
 }
 
@@ -86,8 +88,9 @@ export async function setToken(token: string | null): Promise<void> {
 // Without this, a screen's own catch block only had enough to log/toast the
 // failure; the stale token stayed on device and every subsequent request
 // kept failing the same way until the nurse manually logged out.
-let unauthorizedHandler: (() => void) | null = null;
-export function setUnauthorizedHandler(fn: (() => void) | null): void {
+type UnauthorizedReason = 'expired' | 'blocked';
+let unauthorizedHandler: ((reason: UnauthorizedReason) => void) | null = null;
+export function setUnauthorizedHandler(fn: ((reason: UnauthorizedReason) => void) | null): void {
   unauthorizedHandler = fn;
 }
 
@@ -214,14 +217,24 @@ export async function apiRequest<T>(
     // already catches the thrown ApiError and shows a normal inline
     // message (see app/login.tsx). Anything else (500s, unexpected 400s,
     // ...) still logs, since those usually do mean something is broken.
-    if (response.status !== 401 && !quiet) {
+    // 429 is the login lockout (see api/login_throttle.py) — also an expected,
+    // user-facing outcome the screen already shows inline, not a bug.
+    if (response.status !== 401 && response.status !== 429 && !quiet) {
       console.error(
         `[NurseLink] API error response: ${method} ${API_BASE_URL}${path} → ${response.status}`,
         data
       );
     }
     if (auth && response.status === 401) {
-      unauthorizedHandler?.();
+      unauthorizedHandler?.('expired');
+    }
+    // A token for an account that may no longer use the app (pending,
+    // rejected, deactivated) gets a coded 403 — end the session the same way
+    // as an expired token, so the nurse isn't left on a dead screen.
+    const blockedCode =
+      typeof data === 'object' && data && 'code' in data ? String((data as { code: unknown }).code) : '';
+    if (auth && response.status === 403 && BLOCKED_ACCOUNT_CODES.has(blockedCode)) {
+      unauthorizedHandler?.('blocked');
     }
     throw new ApiError(extractDetail(data, response.status), response.status, data);
   }
@@ -251,9 +264,12 @@ export async function loginRequest(
 export async function signupRequest(
   userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
 ): Promise<AuthResponse> {
+  // The server never grants a role at signup — the picked role is only a
+  // request for an admin to review, sent under requestedRole.
+  const { role, ...rest } = userData;
   const data = await apiRequest<AuthResponse>('/auth/signup/', {
     method: 'POST',
-    body: userData,
+    body: { ...rest, requestedRole: role },
     auth: false,
   });
   await setToken(data.token);
@@ -275,10 +291,11 @@ export type FaceVerificationResponse = {
   registeredEmail?: string | null;
   reason?: string | null;
   message?: string;
-  reset?: boolean;
   countable?: boolean;
   /** False once the lifetime face-attempt budget is spent; only Email OTP remains. */
   retryAvailable?: boolean;
+  /** Set on a 423 (locked): seconds until the timed lockout ends. */
+  retryAfterSeconds?: number;
 };
 
 export type FaceVerificationStatusResponse = {
@@ -454,16 +471,6 @@ export async function faceVerificationRequest(
   });
 }
 
-export async function resetFaceVerificationRequest(
-  registrationSessionId: string
-): Promise<FaceVerificationResponse> {
-  return apiRequest<FaceVerificationResponse>('/auth/face-verification/', {
-    method: 'POST',
-    body: { registrationSessionId, reset: true },
-    auth: false,
-  });
-}
-
 export async function faceVerificationStatusRequest(params: {
   registrationSessionId?: string | null;
   registeredEmail?: string;
@@ -543,6 +550,16 @@ export async function logoutRequest(): Promise<void> {
 
 export async function fetchMe(): Promise<User> {
   return apiRequest<User>('/auth/me/');
+}
+
+/**
+ * A short-lived, single-use ticket for opening the notifications WebSocket —
+ * see RealtimeContext. Requested fresh for every connect/reconnect so the
+ * real token never has to appear in the socket URL.
+ */
+export async function fetchWsTicket(): Promise<string> {
+  const data = await apiRequest<{ ticket: string }>('/auth/ws-ticket/', { method: 'POST' });
+  return data.ticket;
 }
 
 export async function updateMe(updates: Partial<User>): Promise<User> {

@@ -180,7 +180,9 @@ export function PatientKardexModal({
   useEffect(() => {
     if (!open) return;
     if (mode === 'edit' && patient) {
-      setForm(patientToForm(patient));
+      (() => {
+        setForm(patientToForm(patient));
+      })();
       let cancelled = false;
       fetchPatientAssignedDoctors(patient.id)
         .then((doctors) => {
@@ -199,16 +201,20 @@ export function PatientKardexModal({
         cancelled = true;
       };
     }
-    setForm(emptyForm());
-    setDoctorIds([]);
-    setInitialAssignedDoctors([]);
+    (() => {
+      setForm(emptyForm());
+      setDoctorIds([]);
+      setInitialAssignedDoctors([]);
+    })();
   }, [open, mode, patient]);
 
   useEffect(() => {
-    if (!open) {
-      setAllergyDraft('');
-      setDuplicateWarning(null);
-    }
+    (() => {
+      if (!open) {
+        setAllergyDraft('');
+        setDuplicateWarning(null);
+      }
+    })();
   }, [open]);
 
   const setField = <K extends keyof PatientKardexForm>(key: K, value: PatientKardexForm[K]) => {

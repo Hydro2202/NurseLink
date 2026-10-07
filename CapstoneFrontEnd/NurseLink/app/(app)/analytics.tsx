@@ -95,7 +95,7 @@ export default function AnalyticsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [toast]);
 
   const tabs = useMemo(
     () => [

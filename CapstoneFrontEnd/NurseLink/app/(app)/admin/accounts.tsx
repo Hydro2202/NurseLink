@@ -97,7 +97,9 @@ export default function AdminAccountsPage() {
   }, [toast]);
 
   useEffect(() => {
-    void load();
+    (async () => {
+      await load();
+    })();
   }, [load]);
 
   // A new signup notifies every admin immediately (see

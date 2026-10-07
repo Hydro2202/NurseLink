@@ -59,32 +59,34 @@ export function AssignPatientModal({
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen) return;
-    if (editingAssignment) {
-      setFormData({
-        patientName: editingAssignment.patientName,
-        patientId: editingAssignment.patientId,
-        room: editingAssignment.room,
-        ward: editingAssignment.ward,
-        diagnosis: editingAssignment.diagnosis,
-        assignedNurse: editingAssignment.assignedNurse,
-        assignedNurseId: editingAssignment.assignedNurseId,
-        priority: editingAssignment.priority,
-        notes: editingAssignment.notes,
-      });
-    } else {
-      setFormData({
-        patientName: '',
-        patientId: '',
-        room: '',
-        ward: '',
-        diagnosis: '',
-        assignedNurse: '',
-        assignedNurseId: '',
-        priority: 'routine',
-        notes: '',
-      });
-    }
+    (() => {
+      if (!isOpen) return;
+      if (editingAssignment) {
+        setFormData({
+          patientName: editingAssignment.patientName,
+          patientId: editingAssignment.patientId,
+          room: editingAssignment.room,
+          ward: editingAssignment.ward,
+          diagnosis: editingAssignment.diagnosis,
+          assignedNurse: editingAssignment.assignedNurse,
+          assignedNurseId: editingAssignment.assignedNurseId,
+          priority: editingAssignment.priority,
+          notes: editingAssignment.notes,
+        });
+      } else {
+        setFormData({
+          patientName: '',
+          patientId: '',
+          room: '',
+          ward: '',
+          diagnosis: '',
+          assignedNurse: '',
+          assignedNurseId: '',
+          priority: 'routine',
+          notes: '',
+        });
+      }
+    })();
   }, [editingAssignment, isOpen]);
 
   const handlePatientSelect = (patientId: string) => {

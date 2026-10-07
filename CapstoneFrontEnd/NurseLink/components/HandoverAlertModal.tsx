@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Modal, View, Text, StyleSheet, Animated } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Bell, User, ArrowRight } from 'lucide-react-native';
@@ -39,24 +39,26 @@ export function HandoverAlertModal() {
   const router = useRouter();
   const { notifications, markRead } = useNotifications();
   const [current, setCurrent] = useState<AppNotification | null>(null);
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [fadeAnim] = useState(() => new Animated.Value(0));
 
   // Handovers dealt with on this device. Marking one read is what really
   // retires it, but the server round-trip takes a moment and the list can
   // refresh in between — without this the popup can flash back.
-  const handled = useRef<Set<string>>(new Set());
+  const [handled, setHandled] = useState<Set<string>>(() => new Set());
 
   const pending = notifications.filter(
-    (item) => item.event === HANDOVER_RECEIVED && !item.isRead && !handled.current.has(item.id)
+    (item) => item.event === HANDOVER_RECEIVED && !item.isRead && !handled.has(item.id)
   );
   // Oldest first: a nurse returning to several handovers works through them in
   // the order they arrived rather than backwards.
   const next = pending.length > 0 ? pending[pending.length - 1] : null;
 
   useEffect(() => {
-    if (current === null && next !== null) {
-      setCurrent(next);
-    }
+    (() => {
+      if (current === null && next !== null) {
+        setCurrent(next);
+      }
+    })();
   }, [current, next]);
 
   useEffect(() => {
@@ -72,7 +74,11 @@ export function HandoverAlertModal() {
   if (!current) return null;
 
   const close = () => {
-    handled.current.add(current.id);
+    setHandled((prev) => {
+      const next = new Set(prev);
+      next.add(current.id);
+      return next;
+    });
     setCurrent(null);
   };
 

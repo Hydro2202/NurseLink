@@ -88,7 +88,7 @@ export default function NurseTasksPage() {
     return () => {
       cancelled = true;
     };
-  }, [nurseName]);
+  }, [nurseName, toast]);
 
   const nurseTasks = useMemo(() => tasks, [tasks]);
 

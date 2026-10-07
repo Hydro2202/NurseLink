@@ -82,10 +82,14 @@ type LiveStatus = 'upcoming' | 'onduty' | 'overtime' | 'completed';
 // Same midnight-wrap rule as DutyAssignment.duration_hours on the backend —
 // an end time at or before the start time means the shift spills into the
 // next calendar day.
+// The server's instants (hospital timezone) are authoritative; the local
+// recombination below only covers a response that predates them.
 function scheduledStart(a: DutyAssignment): Date {
+  if (a.scheduledStartAt) return new Date(a.scheduledStartAt);
   return combine(a.dutyDate, a.startTime.slice(0, 5));
 }
 function scheduledEnd(a: DutyAssignment): Date {
+  if (a.scheduledEndAt) return new Date(a.scheduledEndAt);
   const start = scheduledStart(a);
   let end = combine(a.dutyDate, a.endTime.slice(0, 5));
   if (end.getTime() <= start.getTime()) end = new Date(end.getTime() + 86400000);
@@ -208,7 +212,9 @@ export default function MyDutyPage() {
   };
 
   useEffect(() => {
-    loadData();
+    (async () => {
+      await loadData();
+    })();
   }, []);
 
   // A head nurse ending/editing this nurse's shift elsewhere (Close Shift,
@@ -331,7 +337,7 @@ export default function MyDutyPage() {
   }, [weekRows]);
 
   // Fade/slide the content in once loading resolves, instead of a hard pop.
-  const contentAnim = useRef(new Animated.Value(0)).current;
+  const [contentAnim] = useState(() => new Animated.Value(0));
   useEffect(() => {
     if (!loading) {
       Animated.timing(contentAnim, { toValue: 1, duration: 260, useNativeDriver: true }).start();
@@ -340,7 +346,7 @@ export default function MyDutyPage() {
 
   // A smooth crossfade on the status pill/accent when the live status flips
   // (e.g. Upcoming -> On Duty Now) rather than an abrupt color flash.
-  const statusAnim = useRef(new Animated.Value(1)).current;
+  const [statusAnim] = useState(() => new Animated.Value(1));
   const lastStatus = useRef<LiveStatus | null>(null);
   useEffect(() => {
     if (todayLiveStatus && lastStatus.current && lastStatus.current !== todayLiveStatus) {
@@ -442,8 +448,8 @@ export default function MyDutyPage() {
 
                       <View style={styles.todayTimeRow}>
                         <Text style={styles.todayShiftTime}>
-                          {formatTime(todayAssignment.startTime.slice(0, 5))} –{' '}
-                          {formatTime(todayAssignment.endTime.slice(0, 5))}
+                          {todayAssignment.scheduleWindowLabel ??
+                            `${formatTime(todayAssignment.startTime.slice(0, 5))} – ${formatTime(todayAssignment.endTime.slice(0, 5))}`}
                         </Text>
                         {todayOvertimeLabel ? (
                           <Text style={styles.overtimeInline}>Overtime +{todayOvertimeLabel}</Text>
@@ -563,8 +569,8 @@ export default function MyDutyPage() {
                               <View style={styles.weekDetail}>
                                 <Text style={styles.weekDeptText} numberOfLines={1}>
                                   {assignment.departmentName} · {SHIFT_LABELS[assignment.shift] || assignment.shift} ·{' '}
-                                  {formatTime(assignment.startTime.slice(0, 5))}–
-                                  {formatTime(assignment.endTime.slice(0, 5))}
+                                  {assignment.scheduleWindowLabel ??
+                                    `${formatTime(assignment.startTime.slice(0, 5))}–${formatTime(assignment.endTime.slice(0, 5))}`}
                                   {otLabel ? <Text style={styles.overtimeInline}> Overtime +{otLabel}</Text> : null}
                                 </Text>
                                 <View style={[styles.weekStatusPill, { backgroundColor: STATUS_CONFIG[status].bg }]}>

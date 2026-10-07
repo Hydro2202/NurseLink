@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -79,7 +79,7 @@ export default function WorkloadPage() {
   const [assignTarget, setAssignTarget] = useState<AssignTarget | null>(null);
   const [nurseSearch, setNurseSearch] = useState('');
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       const [workload, assignmentData, tasks] = await Promise.all([
         fetchWorkload(),
@@ -96,11 +96,13 @@ export default function WorkloadPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
   useEffect(() => {
-    loadData();
-  }, []);
+    (async () => {
+      await loadData();
+    })();
+  }, [loadData]);
 
   const highRisk = workloadData.filter((n) => n.burnoutRisk === 'high');
   const availableNurses = workloadData.map((nurse) => ({

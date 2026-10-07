@@ -8,7 +8,7 @@ import React, {
 } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { WS_URL } from '../services/config';
-import { getToken } from '../services/api';
+import { fetchWsTicket } from '../services/api';
 import { useAuth } from './AuthContext';
 
 /**
@@ -101,10 +101,19 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     // Never open a second socket: duplicate connections mean duplicate popups.
     if (socket.current && socket.current.readyState <= WebSocket.OPEN) return;
 
-    const token = await getToken();
-    if (!token) return;
+    let ticket: string;
+    try {
+      ticket = await fetchWsTicket();
+    } catch (error) {
+      // No ticket (signed out, server unreachable, token already dead) —
+      // same as before when there was no token to connect with: give up
+      // quietly and let the normal reconnect backoff try again.
+      if (__DEV__) console.log('[Realtime] Could not get a connect ticket', error);
+      scheduleReconnectRef.current();
+      return;
+    }
 
-    const url = `${WS_URL}?token=${encodeURIComponent(token)}`;
+    const url = `${WS_URL}?ticket=${encodeURIComponent(ticket)}`;
     if (__DEV__) console.log('[Realtime] Connecting...');
 
     let ws: WebSocket;

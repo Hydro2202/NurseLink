@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
 import { Search, Plus, X, Stethoscope } from 'lucide-react-native';
 import {
@@ -38,23 +38,27 @@ export default function AdminDoctorsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const load = useCallback(async () => {
-    try {
-      const [doctorData, deptData] = await Promise.all([fetchDoctors(), fetchDepartments()]);
-      setDoctors(doctorData);
-      setDepartments(deptData);
-    } catch (err) {
-      toast.error('Could not load doctors', {
-        description: err instanceof ApiError ? err.message : 'Check your connection and try again.',
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
-
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const [doctorData, deptData] = await Promise.all([fetchDoctors(), fetchDepartments()]);
+        if (cancelled) return;
+        setDoctors(doctorData);
+        setDepartments(deptData);
+      } catch (err) {
+        if (cancelled) return;
+        toast.error('Could not load doctors', {
+          description: err instanceof ApiError ? err.message : 'Check your connection and try again.',
+        });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [toast]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();

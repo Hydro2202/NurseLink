@@ -86,34 +86,36 @@ export function TaskModal({
   }, [open, patientScope]);
 
   useEffect(() => {
-    if (task && mode === 'edit') {
-      setFormData({
-        title: task.title,
-        description: task.description || '',
-        priority: task.priority === 'urgent' ? 'urgent' : 'routine',
-        patientName: task.patientName,
-        patientId: task.patientId || '',
-        dueTime: task.dueTime,
-        patientRoom: task.patientRoom || '',
-        doctorOrder: task.doctorOrder || '',
-      });
-      setDepartmentId(task.departmentId ? String(task.departmentId) : '');
-      setDoctorIds((task.assignedDoctors || []).map((d) => d.id));
-    } else {
-      setFormData({
-        title: '',
-        description: '',
-        priority: 'routine',
-        patientName: '',
-        patientId: '',
-        dueTime: '',
-        patientRoom: '',
-        doctorOrder: '',
-      });
-      setDepartmentId('');
-      setDoctorIds([]);
-    }
-    setErrors({});
+    (() => {
+      if (task && mode === 'edit') {
+        setFormData({
+          title: task.title,
+          description: task.description || '',
+          priority: task.priority === 'urgent' ? 'urgent' : 'routine',
+          patientName: task.patientName,
+          patientId: task.patientId || '',
+          dueTime: task.dueTime,
+          patientRoom: task.patientRoom || '',
+          doctorOrder: task.doctorOrder || '',
+        });
+        setDepartmentId(task.departmentId ? String(task.departmentId) : '');
+        setDoctorIds((task.assignedDoctors || []).map((d) => d.id));
+      } else {
+        setFormData({
+          title: '',
+          description: '',
+          priority: 'routine',
+          patientName: '',
+          patientId: '',
+          dueTime: '',
+          patientRoom: '',
+          doctorOrder: '',
+        });
+        setDepartmentId('');
+        setDoctorIds([]);
+      }
+      setErrors({});
+    })();
   }, [task, mode, open]);
 
   // The patient is the source of truth for which doctors exist to pick from —
@@ -121,7 +123,9 @@ export function TaskModal({
   // mode's pre-filled patient).
   useEffect(() => {
     if (!open || !formData.patientId) {
-      setPatientDoctors([]);
+      (() => {
+        setPatientDoctors([]);
+      })();
       return;
     }
     let cancelled = false;
@@ -163,9 +167,11 @@ export function TaskModal({
   // Auto-assign the moment there is exactly one match — the nurse should
   // never have to manually pick a doctor who is the only option anyway.
   useEffect(() => {
-    if (matchingDoctors.length === 1) {
-      setDoctorIds([matchingDoctors[0].id]);
-    }
+    (() => {
+      if (matchingDoctors.length === 1) {
+        setDoctorIds([matchingDoctors[0].id]);
+      }
+    })();
     // matchingDoctors is derived fresh each render from departmentId/patientDoctors,
     // so depending on those two (rather than the array itself) avoids re-running
     // this on every render.

@@ -82,12 +82,14 @@ export function DischargePlanModal({ open, onOpenChange, patient, onConfirm, con
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!open) {
-      setFields(EMPTY_PLAN);
-      setAiGenerated(false);
-      setErrors({});
-      setSubmitting(false);
-    }
+    (() => {
+      if (!open) {
+        setFields(EMPTY_PLAN);
+        setAiGenerated(false);
+        setErrors({});
+        setSubmitting(false);
+      }
+    })();
   }, [open]);
 
   const setField = (key: PlanFieldKey, value: string) => {

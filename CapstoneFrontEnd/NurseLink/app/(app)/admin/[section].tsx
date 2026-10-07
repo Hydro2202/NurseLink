@@ -232,13 +232,21 @@ const SECTIONS: Record<string, SectionConfig> = {
       key: h.id,
       title: `${h.patientName} · ${h.nurseFrom} → ${h.nurseTo}`,
       badge: { label: h.status, variant: HANDOVER_STATUS_VARIANT[h.status] || 'secondary' },
-      meta: [`${h.shift} shift · ${h.date}`, h.sbar?.situation || ''],
+      meta: [
+        h.toShiftLabel
+          ? `Assigned shift: ${h.toShiftLabel}${h.shiftDate ? ` (${h.shiftDate})` : ''}`
+          : 'Assigned shift: Not assigned',
+        h.sbar?.situation || '',
+      ],
       search: `${h.patientName} ${h.nurseFrom} ${h.nurseTo}`,
     }),
     detailFields: (h) => [
       { label: 'Patient', value: h.patientName },
       { label: 'From nurse', value: h.nurseFrom },
       { label: 'To nurse', value: h.nurseTo },
+      { label: 'To nurse role', value: h.nurseToRole || '—' },
+      { label: 'Assigned shift', value: h.toShiftLabel ? `${h.toShiftLabel}${h.shiftDate ? ` (${h.shiftDate})` : ''}` : 'Not assigned' },
+      { label: 'Sender shift', value: `${h.shiftLabel || h.shift} shift` },
       { label: 'Shift', value: h.shift },
       { label: 'Date', value: h.date },
       { label: 'Status', value: h.status },
@@ -441,8 +449,12 @@ export default function AdminGenericSectionPage() {
   }, [config]);
 
   useEffect(() => {
-    void load();
-    setFilterValues({});
+    (() => {
+      setFilterValues({});
+    })();
+    (async () => {
+      await load();
+    })();
   }, [load]);
 
   const activeFilters = useMemo(

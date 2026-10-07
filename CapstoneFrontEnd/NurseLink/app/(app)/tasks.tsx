@@ -29,6 +29,7 @@ import {
 } from 'lucide-react-native';
 import {
   fetchTasks,
+  fetchPatients,
   fetchVitalReadings,
   createTask,
   updateTask,
@@ -90,11 +91,14 @@ export default function TasksPage() {
   // nurse ever opens the vitals card for that task this session.
   const [vitalsReadingCounts, setVitalsReadingCounts] = useState<Record<string, number>>({});
   const [vitalsModalTaskId, setVitalsModalTaskId] = useState<string | null>(null);
+  // Codes of the patients this nurse is assigned to. Vitals can only be recorded
+  // for those (the server enforces it); null until loaded.
+  const [myPatientCodes, setMyPatientCodes] = useState<Set<string> | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('newest');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
 
-  const loadTasks = async () => {
+  const loadTasks = useCallback(async () => {
     try {
       const data = await fetchTasks({ mine: true });
       setTasks(data);
@@ -125,7 +129,7 @@ export default function TasksPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
   // Refetch whenever the screen comes back into view, not just on mount.
   // expo-router keeps screens mounted, so a nurse who acknowledges a handover
@@ -133,14 +137,31 @@ export default function TasksPage() {
   // handover's work was added to it.
   useFocusEffect(
     useCallback(() => {
-      loadTasks();
-    }, [])
+      void loadTasks();
+    }, [loadTasks])
   );
 
   // A task can arrive from another nurse's device — handed over, or assigned by
   // a head nurse — so the list also follows the shared live revision rather
   // than only reloading when this screen happens to regain focus.
   useLiveRefresh('tasks', loadTasks);
+
+  useEffect(() => {
+    // Head nurses may record vitals for any patient, so they need no list.
+    if (user?.role === 'head_nurse') return;
+    let cancelled = false;
+    fetchPatients({ mine: true })
+      .then((patients) => {
+        if (!cancelled) setMyPatientCodes(new Set(patients.map((p) => p.id)));
+      })
+      .catch(() => {
+        // Without the list the vitals button stays hidden; nothing else depends on it.
+        if (!cancelled) setMyPatientCodes(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.role]);
 
   useEffect(() => {
     // Notifications and the handover screen both point here with highlightId;
@@ -156,7 +177,9 @@ export default function TasksPage() {
     const scrollToPatient = params.scrollToPatient === 'true' || params.scrollToPatient === '1';
 
     if (taskId) {
-      setHighlightedTaskId(taskId);
+      (() => {
+        setHighlightedTaskId(taskId);
+      })();
       const t1 = setTimeout(() => {
         const y = taskYOffsets.current[taskId];
         if (y !== undefined && scrollRef.current) {
@@ -173,7 +196,9 @@ export default function TasksPage() {
     if (scrollToPatient && patientId) {
       const patientTask = tasks.find((task) => task.patientId === patientId);
       if (patientTask) {
-        setHighlightedTaskId(patientTask.id);
+        (() => {
+          setHighlightedTaskId(patientTask.id);
+        })();
         const t1 = setTimeout(() => {
           const y = taskYOffsets.current[patientTask.id];
           if (y !== undefined && scrollRef.current) {
@@ -664,14 +689,16 @@ export default function TasksPage() {
                         >
                           <Edit size={16} color={Colors.blue600} />
                         </Button>
-                        <Button
-                          size="icon-sm"
-                          variant="outline"
-                          onPress={() => setVitalsModalTaskId(task.id)}
-                          style={styles.vitalsBtn}
-                        >
-                          <HeartPulse size={16} color={Colors.red600} />
-                        </Button>
+                        {user?.role === 'head_nurse' || myPatientCodes?.has(task.patientId) ? (
+                          <Button
+                            size="icon-sm"
+                            variant="outline"
+                            onPress={() => setVitalsModalTaskId(task.id)}
+                            style={styles.vitalsBtn}
+                          >
+                            <HeartPulse size={16} color={Colors.red600} />
+                          </Button>
+                        ) : null}
                         {user?.role === 'head_nurse' && task.assignedTo ? (
                           <Button
                             size="icon-sm"

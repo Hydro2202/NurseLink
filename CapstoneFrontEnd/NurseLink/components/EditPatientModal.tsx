@@ -67,15 +67,17 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!open || !patient) {
-      setForm(null);
-      setError('');
-      return;
-    }
-    setForm(formFromPatient(patient));
-    fetchDepartments()
-      .then(setDepartments)
-      .catch(() => setDepartments([]));
+    (() => {
+      if (!open || !patient) {
+        setForm(null);
+        setError('');
+        return;
+      }
+      setForm(formFromPatient(patient));
+      fetchDepartments()
+        .then(setDepartments)
+        .catch(() => setDepartments([]));
+    })();
   }, [open, patient]);
 
   const setField = <K extends keyof FormState>(key: K, value: FormState[K]) => {

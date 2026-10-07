@@ -9,7 +9,7 @@ interface SwitchProps {
 }
 
 export function Switch({ value, onValueChange, disabled = false }: SwitchProps) {
-  const translateX = React.useRef(new Animated.Value(value ? 16 : 0)).current;
+  const [translateX] = React.useState(() => new Animated.Value(value ? 16 : 0));
 
   React.useEffect(() => {
     Animated.spring(translateX, {

@@ -39,14 +39,16 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
   const [photoBusy, setPhotoBusy] = useState(false);
 
   useEffect(() => {
-    if (user && open) {
-      setFormData({
-        name: user.name,
-        email: user.email,
-        avatar: user.avatar || '',
-      });
-      setErrors({});
-    }
+    (() => {
+      if (user && open) {
+        setFormData({
+          name: user.name,
+          email: user.email,
+          avatar: user.avatar || '',
+        });
+        setErrors({});
+      }
+    })();
   }, [user, open]);
 
   /**

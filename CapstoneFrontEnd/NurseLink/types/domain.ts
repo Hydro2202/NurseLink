@@ -407,6 +407,17 @@ export interface EligibleReferralRecipient {
   email: string;
 }
 
+/** Why `recipients` came back empty (see api/referral_shifts.py). Null
+ * whenever recipients is non-empty. A code, never display text — see
+ * emptyReferralMessage in HandoverModal for the wording. Treat any string
+ * not in this list the same as null-but-still-empty (a generic fallback),
+ * so an older/newer API version can't break the UI. */
+export type EmptyReferralReason =
+  | 'user_off_duty'
+  | 'no_next_shift_staff'
+  | 'only_self_scheduled'
+  | 'no_eligible_nurse_on_next_shift';
+
 /** GET /handovers/eligible-recipients/ — who the signed-in nurse may refer
  * to right now, per the shift-rotation rule (see api/referral_shifts.py).
  * onDuty is false (and recipients empty) when they have no active Duty
@@ -421,6 +432,7 @@ export interface EligibleReferralRecipients {
   nextShiftLabel: string | null;
   nextShiftDate: string | null;
   recipients: EligibleReferralRecipient[];
+  emptyReason: EmptyReferralReason | null;
 }
 
 export interface AppNotification {
@@ -475,6 +487,13 @@ export interface DutyAssignment {
   departmentId: number;
   departmentName: string;
   dutyDate: string;
+  /** Real window in the hospital's timezone, from the server (api/models.py
+   * schedule_status_at / schedule_window_label). A Night shift dated Oct 2
+   * ends on Oct 3. Use these instead of recombining dutyDate + time locally. */
+  scheduledStartAt?: string;
+  scheduledEndAt?: string;
+  scheduleStatus?: 'upcoming' | 'current' | 'past';
+  scheduleWindowLabel?: string;
   shift: DutyShift;
   shiftLabel: string;
   startTime: string;

@@ -31,19 +31,21 @@ export function ReadmitPatientModal({ open, onOpenChange, patient, onReadmitted 
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!open) {
-      setAdmissionDate(todayIso());
-      setDiagnosis('');
-      setRoom('');
-      setAttendingPhysician('');
-      setDepartmentId('');
-      setRiskLevel('low');
-      setError('');
-      return;
-    }
-    fetchDepartments()
-      .then(setDepartments)
-      .catch(() => setDepartments([]));
+    (() => {
+      if (!open) {
+        setAdmissionDate(todayIso());
+        setDiagnosis('');
+        setRoom('');
+        setAttendingPhysician('');
+        setDepartmentId('');
+        setRiskLevel('low');
+        setError('');
+        return;
+      }
+      fetchDepartments()
+        .then(setDepartments)
+        .catch(() => setDepartments([]));
+    })();
   }, [open]);
 
   const handleSubmit = async () => {

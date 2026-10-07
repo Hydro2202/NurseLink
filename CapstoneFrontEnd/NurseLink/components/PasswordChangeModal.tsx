@@ -44,17 +44,19 @@ export function PasswordChangeModal({ open, onOpenChange, onSave }: PasswordChan
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (!open) {
-      setFormData({
-        currentPassword: '',
-        newPassword: '',
-        confirmPassword: '',
-      });
-      setErrors({});
-      setShowCurrentPassword(false);
-      setShowNewPassword(false);
-      setShowConfirmPassword(false);
-    }
+    (() => {
+      if (!open) {
+        setFormData({
+          currentPassword: '',
+          newPassword: '',
+          confirmPassword: '',
+        });
+        setErrors({});
+        setShowCurrentPassword(false);
+        setShowNewPassword(false);
+        setShowConfirmPassword(false);
+      }
+    })();
   }, [open]);
 
   const calculatePasswordStrength = (password: string): number => {

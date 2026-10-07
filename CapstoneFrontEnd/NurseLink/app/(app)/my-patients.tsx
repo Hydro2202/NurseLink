@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -74,7 +74,7 @@ export default function MyPatientsPage() {
   const [labsMedsOpen, setLabsMedsOpen] = useState(false);
   const [labsMedsPatient, setLabsMedsPatient] = useState<Patient | null>(null);
 
-  const loadPatients = async () => {
+  const loadPatients = useCallback(async () => {
     try {
       const data = await fetchPatients({ mine: true });
       setPatients(data);
@@ -86,16 +86,20 @@ export default function MyPatientsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
   useEffect(() => {
-    loadPatients();
-  }, []);
+    (async () => {
+      await loadPatients();
+    })();
+  }, [loadPatients]);
 
   useEffect(() => {
     const id = typeof params.viewPatient === 'string' ? params.viewPatient : null;
     if (!id) return;
-    setHighlightedId(id);
+    (() => {
+      setHighlightedId(id);
+    })();
     const timer = setTimeout(() => setHighlightedId(null), 3000);
     return () => clearTimeout(timer);
   }, [params.viewPatient]);

@@ -11,7 +11,6 @@ import {
 import { CalendarDays, CircleCheck, CircleAlert, CircleX } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
-import { Input } from './Input';
 import { Select } from './Select';
 import { DatePicker, todayIso } from './DatePicker';
 import { TimePicker } from './TimePicker';
@@ -163,31 +162,33 @@ export function DutyAssignmentModal({
   const [formError, setFormError] = useState('');
 
   useEffect(() => {
-    if (!open) return;
-    if (mode === 'edit' && assignment) {
-      setNurseId(assignment.nurseId);
-      setDepartmentId(String(assignment.departmentId));
-      setDutyDate(assignment.dutyDate);
-      setShift(assignment.shift);
-      setStartTime(assignment.startTime.slice(0, 5));
-      setEndTime(assignment.endTime.slice(0, 5));
-      setOvertimeStart(assignment.overtimeStart ? assignment.overtimeStart.slice(0, 5) : '');
-      setOvertimeEnd(assignment.overtimeEnd ? assignment.overtimeEnd.slice(0, 5) : '');
-      setStatus(assignment.status);
-      setNotes(assignment.notes || '');
-    } else {
-      setNurseId('');
-      setDepartmentId('');
-      setDutyDate(todayIso());
-      setShift('morning');
-      setStartTime(SHIFT_DEFAULTS.morning.start);
-      setEndTime(SHIFT_DEFAULTS.morning.end);
-      setOvertimeStart('');
-      setOvertimeEnd('');
-      setStatus('scheduled');
-      setNotes('');
-    }
-    setFormError('');
+    (() => {
+      if (!open) return;
+      if (mode === 'edit' && assignment) {
+        setNurseId(assignment.nurseId);
+        setDepartmentId(String(assignment.departmentId));
+        setDutyDate(assignment.dutyDate);
+        setShift(assignment.shift);
+        setStartTime(assignment.startTime.slice(0, 5));
+        setEndTime(assignment.endTime.slice(0, 5));
+        setOvertimeStart(assignment.overtimeStart ? assignment.overtimeStart.slice(0, 5) : '');
+        setOvertimeEnd(assignment.overtimeEnd ? assignment.overtimeEnd.slice(0, 5) : '');
+        setStatus(assignment.status);
+        setNotes(assignment.notes || '');
+      } else {
+        setNurseId('');
+        setDepartmentId('');
+        setDutyDate(todayIso());
+        setShift('morning');
+        setStartTime(SHIFT_DEFAULTS.morning.start);
+        setEndTime(SHIFT_DEFAULTS.morning.end);
+        setOvertimeStart('');
+        setOvertimeEnd('');
+        setStatus('scheduled');
+        setNotes('');
+      }
+      setFormError('');
+    })();
   }, [open, mode, assignment]);
 
   const handleShiftChange = (value: string) => {

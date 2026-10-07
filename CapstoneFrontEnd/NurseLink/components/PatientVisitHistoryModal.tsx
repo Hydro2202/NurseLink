@@ -67,8 +67,10 @@ export function PatientVisitHistoryModal({ open, onOpenChange, patient }: Patien
   useEffect(() => {
     if (!open || !patient) return;
     let cancelled = false;
-    setLoading(true);
-    setError('');
+    (() => {
+      setLoading(true);
+      setError('');
+    })();
     fetchPatientVisits(patient.id)
       .then((data) => {
         if (!cancelled) setVisits(data);

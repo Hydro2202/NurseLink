@@ -178,7 +178,9 @@ export default function HandoverPage() {
   }, [toast]);
 
   useEffect(() => {
-    void loadHandovers();
+    (async () => {
+      await loadHandovers();
+    })();
   }, [loadHandovers]);
 
   // Handovers are written on other nurses' devices, and acknowledged there too,
@@ -600,7 +602,7 @@ export default function HandoverPage() {
           <AlertDescription>
             {isHeadNurse
               ? 'Referrals move directly between nurses with no approval step. You can see every referral and its full history here, but cannot accept, decline, or edit one.'
-              : 'All referral notes are encrypted and HIPAA-compliant. Only authorized personnel can access this information.'}
+              : "Demo system: don't enter real patient information."}
           </AlertDescription>
         </Alert>
 

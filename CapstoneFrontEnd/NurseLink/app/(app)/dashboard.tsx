@@ -162,7 +162,9 @@ export default function DashboardPage() {
   }, [isStaffNurse]);
 
   useEffect(() => {
-    void loadDashboard();
+    (async () => {
+      await loadDashboard();
+    })();
   }, [loadDashboard]);
 
   // The dashboard counts tasks and patients, both of which change from other

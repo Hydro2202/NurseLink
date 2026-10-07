@@ -12,6 +12,7 @@ import {
   setUnauthorizedHandler,
 } from '../services/api';
 import * as authStorage from '../services/authStorage';
+import { migrateLegacyAsyncStorageToken } from '../services/secureToken';
 import { USER_KEY } from '../services/config';
 import type { User, UserRole } from '../types/user';
 
@@ -51,15 +52,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Shared by the boot-time check below and by the global 401 handler
   // registered further down — both cases mean the same thing: the token on
   // this device no longer works, so drop it and the cached user together.
-  const clearSession = useCallback(async () => {
+  // `notify` is only passed by the mid-session case: at boot there was no
+  // session visibly in use yet for a message about losing one to make sense.
+  const clearSession = useCallback(async (notifyReason?: 'expired' | 'blocked') => {
     await setToken(null);
     await authStorage.removeItem(USER_KEY);
     setUser(null);
+    if (notifyReason === 'expired') {
+      Alert.alert('Session Expired', 'Your session expired, please log in again.');
+    } else if (notifyReason === 'blocked') {
+      Alert.alert('Signed Out', 'Your account access has changed. Please log in again.');
+    }
   }, []);
 
   useEffect(() => {
     (async () => {
       try {
+        // One-time move for devices upgrading from a build that kept the
+        // token in plain AsyncStorage, before anything reads it below.
+        await migrateLegacyAsyncStorageToken();
         const token = await getToken();
         // Dark mode has been removed. This clears the key left on devices that
         // ran an earlier build; it is inert, and the line can go once no
@@ -94,8 +105,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // stale/empty screens with every request failing the same way until the
   // nurse manually logged out.
   useEffect(() => {
-    setUnauthorizedHandler(() => {
-      clearSession();
+    setUnauthorizedHandler((reason) => {
+      clearSession(reason);
     });
     return () => setUnauthorizedHandler(null);
   }, [clearSession]);

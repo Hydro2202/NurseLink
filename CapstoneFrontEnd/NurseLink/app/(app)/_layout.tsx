@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -165,21 +165,23 @@ function HeadNurseMobileMenu({
   const styles = useLayoutStyles();
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
-  const slideAnim = useRef(new Animated.Value(-HN_MENU_WIDTH)).current;
+  const [slideAnim] = useState(() => new Animated.Value(-HN_MENU_WIDTH));
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    if (isOpen) {
-      setVisible(true);
-      slideAnim.setValue(-HN_MENU_WIDTH);
-      Animated.timing(slideAnim, { toValue: 0, duration: 260, useNativeDriver: true }).start();
-      return;
-    }
-    Animated.timing(slideAnim, { toValue: -HN_MENU_WIDTH, duration: 200, useNativeDriver: true }).start(
-      ({ finished }) => {
-        if (finished) setVisible(false);
+    (() => {
+      if (isOpen) {
+        setVisible(true);
+        slideAnim.setValue(-HN_MENU_WIDTH);
+        Animated.timing(slideAnim, { toValue: 0, duration: 260, useNativeDriver: true }).start();
+        return;
       }
-    );
+      Animated.timing(slideAnim, { toValue: -HN_MENU_WIDTH, duration: 200, useNativeDriver: true }).start(
+        ({ finished }) => {
+          if (finished) setVisible(false);
+        }
+      );
+    })();
   }, [isOpen, slideAnim]);
 
   if (!visible) return null;

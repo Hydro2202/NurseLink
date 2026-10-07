@@ -170,7 +170,7 @@ export default function ChartingScreen() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [toast]);
 
   const getNurseName = () => {
     if (!user) return 'Unknown Nurse, RN';

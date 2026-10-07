@@ -63,16 +63,20 @@ export function TaskAssignmentModal({
   }, [open]);
 
   useEffect(() => {
-    if (patient?.attendingPhysician) {
-      setAttendingPhysician(patient.attendingPhysician);
-    }
+    (() => {
+      if (patient?.attendingPhysician) {
+        setAttendingPhysician(patient.attendingPhysician);
+      }
+    })();
   }, [patient]);
 
   // Always land back on the form, never mid-review, on a fresh open —
   // otherwise closing and reopening this modal could strand a head nurse on
   // a review screen for a form they never actually filled in this time.
   useEffect(() => {
-    if (open) setReviewMode(false);
+    (() => {
+      if (open) setReviewMode(false);
+    })();
   }, [open]);
 
   const resetForm = () => {
@@ -293,11 +297,11 @@ export function TaskAssignmentModal({
                 options={nurses.map((nurse) => ({
                   label: `${nurse.name} — ${nurse.role} • ${nurse.shift} shift${nurse.specialization ? ` • ${nurse.specialization}` : ''}`,
                   value: nurse.id,
-                  keywords: `${nurse.email || ''} ${nurse.department || ''}`,
+                  keywords: nurse.department || '',
                 }))}
                 placeholder="Select a nurse"
                 searchable
-                searchPlaceholder="Search by name, username, or email..."
+                searchPlaceholder="Search by name or department..."
               />
 
               <Input

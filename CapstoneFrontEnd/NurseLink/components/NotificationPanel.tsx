@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -46,31 +46,33 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
   const router = useRouter();
   const toast = useToast();
   const insets = useSafeAreaInsets();
-  const slideAnim = useRef(new Animated.Value(PANEL_WIDTH)).current;
+  const [slideAnim] = useState(() => new Animated.Value(PANEL_WIDTH));
   const [visible, setVisible] = useState(false);
 
   const { notifications, unreadCount, refresh, markRead, markAllRead } = useNotifications();
 
   useEffect(() => {
-    if (isOpen) {
-      setVisible(true);
-      slideAnim.setValue(PANEL_WIDTH);
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 280,
-        useNativeDriver: true,
-      }).start();
-      void refresh();
-      return;
-    }
+    (() => {
+      if (isOpen) {
+        setVisible(true);
+        slideAnim.setValue(PANEL_WIDTH);
+        Animated.timing(slideAnim, {
+          toValue: 0,
+          duration: 280,
+          useNativeDriver: true,
+        }).start();
+        void refresh();
+        return;
+      }
 
-    Animated.timing(slideAnim, {
-      toValue: PANEL_WIDTH,
-      duration: 220,
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (finished) setVisible(false);
-    });
+      Animated.timing(slideAnim, {
+        toValue: PANEL_WIDTH,
+        duration: 220,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setVisible(false);
+      });
+    })();
   }, [isOpen, slideAnim, refresh]);
 
   const handleActionClick = (notification: AppNotification) => {

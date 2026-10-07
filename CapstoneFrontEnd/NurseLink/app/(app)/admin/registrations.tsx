@@ -64,19 +64,23 @@ export default function AdminRegistrationsPage() {
   }, [toast]);
 
   useEffect(() => {
-    void load();
+    (async () => {
+      await load();
+    })();
   }, [load]);
 
   useEffect(() => {
-    if (!selected) {
-      setAttempts([]);
-      return;
-    }
-    setAttemptsLoading(true);
-    fetchAdminFaceVerificationAttempts(selected.sessionId)
-      .then(setAttempts)
-      .catch(() => setAttempts([]))
-      .finally(() => setAttemptsLoading(false));
+    (() => {
+      if (!selected) {
+        setAttempts([]);
+        return;
+      }
+      setAttemptsLoading(true);
+      fetchAdminFaceVerificationAttempts(selected.sessionId)
+        .then(setAttempts)
+        .catch(() => setAttempts([]))
+        .finally(() => setAttemptsLoading(false));
+    })();
   }, [selected]);
 
   const filtered = useMemo(() => {

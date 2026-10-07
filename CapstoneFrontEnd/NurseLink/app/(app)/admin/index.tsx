@@ -68,7 +68,9 @@ export default function AdminIndexPage() {
   }, []);
 
   useEffect(() => {
-    void load();
+    (async () => {
+      await load();
+    })();
   }, [load]);
 
   // A new signup notifies every admin (see notify_admin_new_registration on

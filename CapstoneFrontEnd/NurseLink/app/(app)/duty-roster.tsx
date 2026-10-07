@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -264,7 +264,9 @@ export default function DutyRosterPage() {
   };
 
   useEffect(() => {
-    loadData();
+    (async () => {
+      await loadData();
+    })();
   }, []);
 
   // Keeps live status/overtime honest between refreshes, without re-fetching.
@@ -287,7 +289,7 @@ export default function DutyRosterPage() {
   // One continuous pulse, shared by every "live" status dot on the page —
   // cheaper than a separate animated value per card, and keeps every pulse
   // in sync.
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const [pulseAnim] = useState(() => new Animated.Value(1));
   useEffect(() => {
     const loop = Animated.loop(
       Animated.sequence([
@@ -486,7 +488,7 @@ export default function DutyRosterPage() {
 
   // Crossfade the list/weekly body whenever the view or the filtered result
   // changes, instead of an abrupt re-render.
-  const bodyAnim = useRef(new Animated.Value(1)).current;
+  const [bodyAnim] = useState(() => new Animated.Value(1));
   useEffect(() => {
     bodyAnim.setValue(0);
     Animated.timing(bodyAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
@@ -549,9 +551,16 @@ export default function DutyRosterPage() {
               <View style={[styles.shiftTag, { backgroundColor: shiftColors.bg }]}>
                 <Clock size={11} color={shiftColors.color} />
                 <Text style={[styles.shiftTagText, { color: shiftColors.color }]}>
-                  {SHIFT_LABELS[a.shift] || a.shift} · {formatTime(a.startTime)}–{formatTime(a.endTime)}
+                  {a.scheduleWindowLabel
+                    ? `${SHIFT_LABELS[a.shift] || a.shift} · ${a.scheduleWindowLabel}`
+                    : `${SHIFT_LABELS[a.shift] || a.shift} · ${formatTime(a.startTime)}–${formatTime(a.endTime)}`}
                 </Text>
               </View>
+              {a.shift === 'night' ? (
+                <Text style={styles.overtimeInline}>
+                  Night shifts start at 11 PM on the date shown and end the next morning.
+                </Text>
+              ) : null}
               {otLabel ? <Text style={styles.overtimeInline}>Overtime +{otLabel}</Text> : null}
             </View>
 

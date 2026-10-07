@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, Animated, Pressable } from 'react-native';
 import { CheckCircle, AlertCircle, Info, X } from 'lucide-react-native';
 import { Colors, Shadows, Radius } from '../constants/colors';
@@ -39,19 +39,24 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     [removeToast]
   );
 
-  const toast = {
-    success: (title: string, options?: { description?: string }) =>
-      addToast('success', title, options?.description),
-    error: (title: string, options?: { description?: string }) =>
-      addToast('error', title, options?.description),
-    info: (title: string, options?: { description?: string }) =>
-      addToast('info', title, options?.description),
-    warning: (title: string, options?: { description?: string }) =>
-      addToast('warning', title, options?.description),
-  };
+  const toast = useMemo(
+    () => ({
+      success: (title: string, options?: { description?: string }) =>
+        addToast('success', title, options?.description),
+      error: (title: string, options?: { description?: string }) =>
+        addToast('error', title, options?.description),
+      info: (title: string, options?: { description?: string }) =>
+        addToast('info', title, options?.description),
+      warning: (title: string, options?: { description?: string }) =>
+        addToast('warning', title, options?.description),
+    }),
+    [addToast]
+  );
+
+  const value = useMemo(() => ({ toast }), [toast]);
 
   return (
-    <ToastContext.Provider value={{ toast }}>
+    <ToastContext.Provider value={value}>
       {children}
       <View style={styles.container} pointerEvents="box-none">
         {toasts.map((t) => (
@@ -63,7 +68,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 }
 
 function ToastItem({ toast: t, onDismiss }: { toast: Toast; onDismiss: () => void }) {
-  const opacity = useRef(new Animated.Value(0)).current;
+  const [opacity] = useState(() => new Animated.Value(0));
 
   React.useEffect(() => {
     Animated.timing(opacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();

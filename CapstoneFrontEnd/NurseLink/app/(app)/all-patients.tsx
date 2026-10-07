@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -193,7 +193,7 @@ export default function AllPatientsPage() {
   const [labsMedsOpen, setLabsMedsOpen] = useState(false);
   const [labsMedsPatient, setLabsMedsPatient] = useState<Patient | null>(null);
 
-  const loadPatients = async () => {
+  const loadPatients = useCallback(async () => {
     try {
       const data = await fetchPatients();
       setPatients(data);
@@ -205,14 +205,16 @@ export default function AllPatientsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
   useEffect(() => {
-    loadPatients();
+    (async () => {
+      await loadPatients();
+    })();
     fetchDepartments()
       .then(setDepartments)
       .catch(() => setDepartments([]));
-  }, []);
+  }, [loadPatients]);
 
   const uniqueRooms = useMemo(
     () => Array.from(new Set(patients.map((p) => p.room.split('-')[0]))),

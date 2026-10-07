@@ -106,7 +106,20 @@ export function Select({
               </View>
             ) : null}
             {visibleOptions.length === 0 ? (
-              <Text style={styles.emptyText}>{emptyMessage}</Text>
+              // Two different empty states share this: genuinely nothing to
+              // offer (emptyMessage, server/caller-driven) vs. the search
+              // box filtering out everything that IS there — distinguished
+              // by whether options itself is non-empty.
+              query.trim() && options.length > 0 ? (
+                <View style={styles.emptySearchBox}>
+                  <Text style={styles.emptySearchText}>No matches for &quot;{query.trim()}&quot;.</Text>
+                  <Pressable onPress={() => setQuery('')} accessibilityRole="button">
+                    <Text style={styles.clearSearchText}>Clear search</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <Text style={styles.emptyText}>{emptyMessage}</Text>
+              )
             ) : (
             <ScrollView style={styles.list} keyboardShouldPersistTaps="handled">
               {visibleOptions.map((option) => {
@@ -227,6 +240,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.foreground,
     padding: 0,
+  },
+  emptySearchBox: {
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 24,
+  },
+  emptySearchText: {
+    fontSize: 13,
+    color: Colors.mutedForeground,
+    textAlign: 'center',
+  },
+  clearSearchText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.primary,
   },
   emptyText: {
     fontSize: 13,

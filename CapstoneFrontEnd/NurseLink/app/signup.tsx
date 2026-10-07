@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -54,7 +54,6 @@ import {
   faceVerificationRequest,
   faceVerificationStatusRequest,
   resendRegistrationOtpRequest,
-  resetFaceVerificationRequest,
   saveRegistrationEmailRequest,
   sendRegistrationOtpRequest,
   verifyIdRequest,
@@ -203,7 +202,7 @@ const STEP_TITLES = [
   'PRC Identity Verification',
   'Extracted ID Information',
   'Mandatory Face Verification',
-  'Role Selection',
+  'Requested Role',
   'Account Credentials',
 ];
 
@@ -211,7 +210,7 @@ const STEP_DESCRIPTIONS = [
   'Scan your PRC ID to automatically extract your information.',
   'Review your extracted information. These fields are read-only.',
   'Capture a live selfie to confirm your identity.',
-  'Select the role you are registering for.',
+  'Choose the role you are requesting. You start as a nurse; a head nurse request needs admin approval.',
   'Set your login credentials to complete registration.',
 ];
 
@@ -223,10 +222,10 @@ const ROLE_OPTIONS: { label: string; value: UserRole; emoji: string; detail: str
     detail: 'Staff Nurse or Registered Nurse responsible for direct patient care and clinical documentation.',
   },
   {
-    label: 'Head Nurse',
+    label: 'Head Nurse (requested, needs admin approval)',
     value: 'head_nurse',
     emoji: '👨‍💼',
-    detail: 'Head Nurse, Nursing Supervisor, or Charge Nurse overseeing nursing staff and patient care operations.',
+    detail: 'Requested only. Head nurse access is granted by an administrator after review, never at signup.',
   },
 ];
 
@@ -376,7 +375,7 @@ export default function SignUpPage() {
 
   const router = useRouter();
   const { signup, logout } = useAuth();
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [fadeAnim] = useState(() => new Animated.Value(0));
   const faceVerificationInFlight = useRef(false);
   const otpSendInFlight = useRef(false);
   const otpVerifyInFlight = useRef(false);
@@ -483,7 +482,8 @@ export default function SignUpPage() {
   // False once the server says the lifetime face-attempt budget is spent:
   // only Email OTP is left, so the Retry button is hidden.
   const [faceRetryAvailable, setFaceRetryAvailable] = useState(true);
-  const [faceResetPending, setFaceResetPending] = useState(false);
+  // When a timed face lockout ends (ms since epoch). Null when not locked by time.
+  const [faceLockedUntil, setFaceLockedUntil] = useState<number | null>(null);
   const [faceResuming, setFaceResuming] = useState(true);
   const [showOtpPanel, setShowOtpPanel] = useState(false);
   const [otpEmailInput, setOtpEmailInput] = useState('');
@@ -516,10 +516,11 @@ export default function SignUpPage() {
   // fresh cycle without touching registrationSessionId — used when entering
   // Face Verification right after Step 1/2 just established that session, so
   // the ID-verified session is carried forward rather than discarded.
-  const resetFaceCycleUI = () => {
+  const resetFaceCycleUI = useCallback(() => {
     setFaceAttemptsUsed(0);
     setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
     setFaceLocked(false);
+    setFaceLockedUntil(null);
     setFaceStatus('idle');
     setError('');
     setSelfieUri(null);
@@ -532,16 +533,24 @@ export default function SignUpPage() {
     setOtpExpiresAt(null);
     setOtpResendAvailableAt(null);
     faceVerificationInFlight.current = false;
-  };
+  }, []);
 
   // Full reset used when there is no session worth keeping — a brand new ID
   // scan superseding any prior attempt, or nothing persisted to resume on
   // mount. Also drops registrationSessionId and the persisted session id.
-  const clearFaceCycleLocal = async () => {
+  const clearFaceCycleLocal = useCallback(async () => {
     await AsyncStorage.removeItem(FACE_SESSION_KEY).catch(() => undefined);
     setRegistrationSessionId(null);
     resetFaceCycleUI();
-  };
+  }, [resetFaceCycleUI]);
+
+  // Read inside the mount-only effect below without making it re-run every
+  // time an attempt completes — this effect must fire exactly once, on
+  // mount, to resume whatever the backend says, not restart mid-flow.
+  const faceAttemptsUsedRef = useRef(faceAttemptsUsed);
+  useEffect(() => {
+    faceAttemptsUsedRef.current = faceAttemptsUsed;
+  }, [faceAttemptsUsed]);
 
   // Resume face/OTP verification state from the backend on mount, so closing
   // and reopening the app cannot silently reset the 3-attempt counter or an
@@ -568,7 +577,7 @@ export default function SignUpPage() {
         if (cancelled) return;
         setRegistrationSessionId(res.registrationSessionId ?? persistedId ?? null);
         setFaceMaxAttempts(resolveMaxAttempts(res));
-        setFaceAttemptsUsed(resolveAttemptsUsed(res, faceAttemptsUsed));
+        setFaceAttemptsUsed(resolveAttemptsUsed(res, faceAttemptsUsedRef.current));
         setFaceLocked(Boolean(res.locked));
         if (res.retryAvailable === false) setFaceRetryAvailable(false);
         if (res.faceVerified) {
@@ -586,25 +595,27 @@ export default function SignUpPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [clearFaceCycleLocal]);
 
   useEffect(() => {
-    if (currentStep !== 3) {
-      setLiveCameraActive(false);
-      return;
-    }
-    if (
-      faceResuming ||
-      faceLocked ||
-      showOtpPanel ||
-      faceStatus === 'success' ||
-      faceStatus === 'processing' ||
-      faceStatus === 'failed' ||
-      selfieUri
-    ) {
-      return;
-    }
-    setLiveCameraActive(true);
+    (() => {
+      if (currentStep !== 3) {
+        setLiveCameraActive(false);
+        return;
+      }
+      if (
+        faceResuming ||
+        faceLocked ||
+        showOtpPanel ||
+        faceStatus === 'success' ||
+        faceStatus === 'processing' ||
+        faceStatus === 'failed' ||
+        selfieUri
+      ) {
+        return;
+      }
+      setLiveCameraActive(true);
+    })();
   }, [currentStep, faceResuming, faceLocked, showOtpPanel, faceStatus, selfieUri]);
 
   const completedThrough: WizardStep = (() => {
@@ -884,6 +895,7 @@ export default function SignUpPage() {
           setFaceStatus('success');
           setFaceVerificationCompleted(true);
           setFaceLocked(false);
+          setFaceLockedUntil(null);
           await AsyncStorage.removeItem(FACE_SESSION_KEY);
           return;
         }
@@ -904,9 +916,17 @@ export default function SignUpPage() {
             maxAttempts?: number;
             locked?: boolean;
             retryAvailable?: boolean;
+            retryAfterSeconds?: number;
           } | undefined;
           const retryLeft = data?.retryAvailable !== false;
           setFaceRetryAvailable(retryLeft);
+          // 423: a timed lockout. Remember when it ends so Retry is disabled until then.
+          const waitMs = (data?.retryAfterSeconds ?? 0) * 1000;
+          if (err.status === 423 && waitMs > 0) {
+            const until = Date.now() + waitMs;
+            setFaceLockedUntil(until);
+            setTimeout(() => setFaceLockedUntil((current) => (current === until ? null : current)), waitMs);
+          }
           if (data?.registrationSessionId) {
             setRegistrationSessionId(data.registrationSessionId);
             const maxAttempts = resolveMaxAttempts(data);
@@ -951,41 +971,26 @@ export default function SignUpPage() {
     setShowOtpPanel(false);
   };
 
+  // Retry does not reset anything on the server — the server refuses that now.
+  // A timed lockout simply ends; the next scan is checked by the server, which
+  // clears the lock itself once its time has run out.
   const handleModalRetake = async () => {
-    if (faceResetPending) return;
-    if (!registrationSessionId) {
-      setFaceLocked(false);
-      setFaceAttemptsUsed(0);
-      setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
-      setFaceStatus('idle');
-      setError('');
-      setSelfieUri(null);
-      setFaceVerificationCompleted(false);
-      resetOtpState();
-      await openLiveCamera();
+    if (faceLockedUntil && Date.now() < faceLockedUntil) {
+      const time = new Date(faceLockedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setError(`Face verification is locked. You can try again after ${time}.`);
       return;
     }
-    setFaceResetPending(true);
-    try {
-      const res = await resetFaceVerificationRequest(registrationSessionId);
-      await AsyncStorage.removeItem(FACE_SESSION_KEY);
-      setFaceLocked(false);
-      setFaceAttemptsUsed(0);
-      setFaceMaxAttempts(resolveMaxAttempts(res));
-      setFaceStatus('idle');
-      setError('');
-      setSelfieUri(null);
-      setFaceVerificationCompleted(false);
-      resetOtpState();
-      await openLiveCamera();
-    } catch (err) {
-      if (err instanceof ApiError && (err.data as { retryAvailable?: boolean } | undefined)?.retryAvailable === false) {
-        setFaceRetryAvailable(false);
-      }
-      setError(extractErrorMessage(err, 'Could not reset verification. Please try again.'));
-    } finally {
-      setFaceResetPending(false);
-    }
+    setFaceLockedUntil(null);
+    setFaceLocked(false);
+    setFaceAttemptsUsed(0);
+    setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
+    setFaceStatus('idle');
+    setError('');
+    setSelfieUri(null);
+    setFaceVerificationCompleted(false);
+    resetOtpState();
+    if (registrationSessionId) void persistFaceSession(registrationSessionId, 0, false);
+    await openLiveCamera();
   };
 
   const handleOpenOtp = () => {
@@ -1093,6 +1098,8 @@ export default function SignUpPage() {
     ? Math.max(0, Math.ceil((otpResendAvailableAt - nowTick) / 1000))
     : 0;
   const otpExpired = otpExpiresAt ? nowTick > otpExpiresAt && otpStatus !== 'verified' : false;
+  // The lock timer clears faceLockedUntil when the lock ends, so non-null means still locked.
+  const faceLockActive = faceLockedUntil !== null;
   const identityVerified = faceVerificationCompleted || otpStatus === 'verified';
   const verificationMethod: 'FACE' | 'EMAIL_OTP' | null = faceVerificationCompleted
     ? 'FACE'
@@ -1412,13 +1419,12 @@ export default function SignUpPage() {
                       />
                     ))}
 
+                    {/* Read-only: the licence number and dates come from the card. A wrong
+                        reading means rescanning, not typing a different number. */}
                     <Input
                       label="Registration No."
                       value={ocrData.registrationNumber}
-                      onChangeText={(value) => {
-                        setOcrData((prev) => ({ ...prev, registrationNumber: value }));
-                        setIdFieldErrors((prev) => ({ ...prev, registrationNumber: '' }));
-                      }}
+                      editable={false}
                       keyboardType="number-pad"
                       placeholder="7 digits"
                       error={idFieldErrors.registrationNumber}
@@ -1427,20 +1433,16 @@ export default function SignUpPage() {
                     <DatePicker
                       label="Registration Date"
                       value={ocrData.registrationDate}
-                      onChange={(value) => {
-                        setOcrData((prev) => ({ ...prev, registrationDate: value }));
-                        setIdFieldErrors((prev) => ({ ...prev, registrationDate: '' }));
-                      }}
+                      disabled
+                      onChange={() => undefined}
                       maxDate={todayIso()}
                       error={idFieldErrors.registrationDate}
                     />
                     <DatePicker
                       label="Valid Until"
                       value={ocrData.validUntil}
-                      onChange={(value) => {
-                        setOcrData((prev) => ({ ...prev, validUntil: value }));
-                        setIdFieldErrors((prev) => ({ ...prev, validUntil: '' }));
-                      }}
+                      disabled
+                      onChange={() => undefined}
                       minDate={ocrData.registrationDate || undefined}
                       error={idFieldErrors.validUntil}
                     />
@@ -1722,21 +1724,19 @@ export default function SignUpPage() {
                             variant="outline"
                             size="lg"
                             onPress={handleModalRetake}
-                            disabled={faceResetPending || otpStatus === 'sending'}
+                            disabled={faceLockActive || otpStatus === 'sending'}
                           >
-                            {faceResetPending ? (
-                              <ActivityIndicator color={Colors.primary} />
-                            ) : (
-                              <RefreshCw size={16} color={Colors.orange700} />
-                            )}
+                            <RefreshCw size={16} color={Colors.orange700} />
                             <Text style={[navStyles.backText, { color: Colors.orange700 }]}>
-                              {faceResetPending ? 'Resetting...' : 'Retry Face Verification'}
+                              {faceLockActive && faceLockedUntil
+                                ? `Available after ${new Date(faceLockedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                                : 'Retry Face Verification'}
                             </Text>
                           </Button>
                           <Text style={styles.otpDividerText}>or</Text>
                             </>
                           ) : null}
-                          <Button size="lg" onPress={handleOpenOtp} disabled={otpStatus === 'sending' || faceResetPending}>
+                          <Button size="lg" onPress={handleOpenOtp} disabled={otpStatus === 'sending'}>
                             <Mail size={16} color={Colors.white} />
                             <Text style={navStyles.btnText}>Verify Using Email OTP</Text>
                           </Button>
@@ -1892,7 +1892,7 @@ export default function SignUpPage() {
                           variant="outline"
                           size="lg"
                           onPress={handleBackToFaceFromOtp}
-                          disabled={otpStatus === 'verified' || faceResetPending}
+                          disabled={otpStatus === 'verified'}
                         >
                           <RefreshCw size={16} color={Colors.gray700} />
                           <Text style={navStyles.backText}>Retry Face Verification</Text>
