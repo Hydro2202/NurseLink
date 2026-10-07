@@ -59,22 +59,10 @@ import {
   verifyIdRequest,
   verifyRegistrationOtpRequest,
 } from '../services/api';
+import { compressPhoto } from '../services/imageCompression';
 
 const FACE_SESSION_KEY = 'nurselink.faceVerificationSession';
 const MAX_FACE_ATTEMPTS = 3;
-
-/**
- * Return bare base64, dropping any `data:image/jpeg;base64,` prefix.
- *
- * takePictureAsync behaves differently per platform: on web there is no file
- * system, so URIs come back as data URIs and base64 can arrive already
- * prefixed. Re-prefixing that produces `data:image/jpeg;base64,data:image/...`,
- * which the backend rejects as undecodable — surfacing as a bare 400.
- */
-function bareBase64(value: string | null | undefined): string | null {
-  if (!value) return null;
-  return value.replace(/^data:[^;]+;base64,/, '');
-}
 
 function extractErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
@@ -706,6 +694,10 @@ export default function SignUpPage() {
       setHospitalIdCompleted(true);
     } catch (err) {
       setOcrStatus('failed');
+      if (err instanceof ApiError && err.status === 429) {
+        setError('Too many attempts. Please wait a while before trying again.');
+        return;
+      }
       setError(
         err instanceof ApiError
           ? err.message
@@ -742,7 +734,13 @@ export default function SignUpPage() {
       allowsEditing: true,
       base64: true,
     });
-    if (!result.canceled) handleIdImage(result.assets[0].uri, result.assets[0].base64 ?? null);
+    if (result.canceled) return;
+    try {
+      const compressed = await compressPhoto(result.assets[0].uri);
+      handleIdImage(compressed.uri, compressed.base64);
+    } catch {
+      setError('Could not process the selected photo. Please try again.');
+    }
   };
 
   const handleScanId = () => {
@@ -773,7 +771,8 @@ export default function SignUpPage() {
         setError('Could not read the captured photo. Please try again.');
         return;
       }
-      setPendingIdPhoto({ uri: photo.uri, base64: bareBase64(photo.base64) ?? '' });
+      const compressed = await compressPhoto(photo.uri);
+      setPendingIdPhoto({ uri: compressed.uri, base64: compressed.base64 });
       setIdCameraActive(false);
     } catch {
       setError('Camera capture failed. Please try again.');
@@ -840,8 +839,14 @@ export default function SignUpPage() {
       return;
     }
 
-    setSelfieUri(photo.uri);
-    setPendingSelfieBase64(bareBase64(photo.base64));
+    try {
+      const compressed = await compressPhoto(photo.uri);
+      setSelfieUri(compressed.uri);
+      setPendingSelfieBase64(compressed.base64);
+    } catch {
+      setError('Could not process the captured photo. Please try again.');
+      return;
+    }
     setLiveCameraActive(false);
     setFaceStatus('idle');
   };
@@ -940,9 +945,13 @@ export default function SignUpPage() {
           const maxAttempts = resolveMaxAttempts(data ?? {});
           const attempts = resolveAttemptsUsed(data ?? {});
           const locked = Boolean(data?.locked) && (attempts >= maxAttempts || !retryLeft);
-          setError(locked
-            ? data?.message || `You've used all ${maxAttempts} face verification attempts. Choose Retry Face Verification or Verify Using Email OTP.`
-            : extractErrorMessage(err, 'Face verification failed. Please try again.'));
+          setError(
+            err.status === 429
+              ? 'Too many attempts. Please wait a while before trying again.'
+              : locked
+                ? data?.message || `You've used all ${maxAttempts} face verification attempts. Choose Retry Face Verification or Verify Using Email OTP.`
+                : extractErrorMessage(err, 'Face verification failed. Please try again.')
+          );
         } else {
           // Network/UI errors do not count as face attempts.
           setError(extractErrorMessage(err, 'Face verification failed. Please try again.'));
