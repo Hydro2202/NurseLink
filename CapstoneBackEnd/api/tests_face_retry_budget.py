@@ -135,6 +135,33 @@ class FaceRetryBudgetTests(TestCase):
         self.assertEqual(mock_verify.call_count, calls_before, 'no comparison may run')
 
     @patch('api.views.verify_face_against_id', return_value=MISMATCH)
+    def test_a_fresh_session_blocked_by_a_timed_lock_is_told_it_will_end(self, mock_verify):
+        self.fail_n(self.session, MAX_FACE_ATTEMPTS)  # first set: timed, not permanent
+
+        fresh = self.make_session(self.email)
+        res = self.attempt(fresh)
+
+        self.assertEqual(res.status_code, 423)
+        self.assertIn('Wait for the lockout to end', res.data['message'])
+        self.assertNotIn('no longer available', res.data['message'])
+
+    @patch('api.views.verify_face_against_id', return_value=MISMATCH)
+    def test_a_fresh_session_blocked_by_a_permanent_lock_is_not_told_to_wait(self, mock_verify):
+        # The exact bug report this guards against: a brand new session for an
+        # email whose lifetime budget was already spent (in an earlier set,
+        # possibly days ago) must never be told to "wait for the lockout to
+        # end" — a permanent lock has no end, and that message sends an
+        # applicant into a wait that never resolves instead of to Email OTP.
+        self.run_sets(self.session, SETS)
+
+        fresh = self.make_session(self.email)
+        res = self.attempt(fresh)
+
+        self.assertEqual(res.status_code, 423)
+        self.assertIn('Email OTP', res.data['message'])
+        self.assertNotIn('Wait for the lockout to end', res.data['message'])
+
+    @patch('api.views.verify_face_against_id', return_value=MISMATCH)
     def test_new_email_on_same_licence_cannot_bypass(self, mock_verify):
         self.run_sets(self.session, SETS)
         calls_before = mock_verify.call_count

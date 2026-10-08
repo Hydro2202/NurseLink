@@ -219,7 +219,9 @@ export async function apiRequest<T>(
     // ...) still logs, since those usually do mean something is broken.
     // 429 is the login lockout (see api/login_throttle.py) — also an expected,
     // user-facing outcome the screen already shows inline, not a bug.
-    if (response.status !== 401 && response.status !== 429 && !quiet) {
+    // 423 is a face-verification lockout (timed or permanent) — signup.tsx
+    // already shows a proper message and countdown for it, same deal.
+    if (response.status !== 401 && response.status !== 429 && response.status !== 423 && !quiet) {
       console.error(
         `[NurseLink] API error response: ${method} ${API_BASE_URL}${path} → ${response.status}`,
         data

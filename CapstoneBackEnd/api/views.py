@@ -950,8 +950,11 @@ class FaceVerificationView(APIView):
                 if blocking is not None:
                     return _locked_response(
                         blocking,
-                        message=("You've reached the maximum number of face verification attempts. "
-                                 'Wait for the lockout to end, or verify with Email OTP.'),
+                        message=(
+                            "You've reached the maximum number of face verification attempts. "
+                            'Wait for the lockout to end, or verify with Email OTP.'
+                            if _face_retry_available(blocking) else FACE_BUDGET_SPENT_MESSAGE
+                        ),
                     )
                 # No resumable session — but this email may already have
                 # completed Step 1 under a prior (e.g. locked) session, and
@@ -1019,8 +1022,11 @@ class FaceVerificationView(APIView):
             if blocking is not None:
                 return _locked_response(
                     blocking,
-                    message=("You've reached the maximum number of face verification attempts. "
-                             'Wait for the lockout to end, or verify with Email OTP.'),
+                    message=(
+                        "You've reached the maximum number of face verification attempts. "
+                        'Wait for the lockout to end, or verify with Email OTP.'
+                        if _face_retry_available(blocking) else FACE_BUDGET_SPENT_MESSAGE
+                    ),
                 )
         if session.face_locked:
             return _locked_response(
