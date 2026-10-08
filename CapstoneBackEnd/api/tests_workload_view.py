@@ -15,9 +15,10 @@ import datetime
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .models import NurseProfile, Patient, Task
+from .models import Department, DutyAssignment, NurseProfile, Patient, Task
 
 
 def make_nurse(email, first, last, *, department='ICU', shift='morning'):
@@ -121,3 +122,52 @@ class WorkloadViewTests(TestCase):
         self.assertEqual(row['patientCount'], 0)
         self.assertEqual(row['taskCount'], 0)
         self.assertEqual(row['completedTasks'], 0)
+
+    def test_nurse_never_manually_assigned_falls_back_to_todays_duty_roster(self):
+        # The exact bug report this guards against: a nurse who's actually
+        # rostered to work ICU today (via the Duty Roster) but whose profile
+        # department/shift were never separately set through this screen's
+        # own "Assign" action used to show up as "Unassigned" even though
+        # the system already knew their department.
+        nurse = make_nurse('raiden41@hospital.com', 'Raiden', 'Villapando', department='', shift='')
+        icu = Department.objects.create(name='ICU')
+        DutyAssignment.objects.create(
+            nurse=nurse, department=icu, duty_date=timezone.localdate(), shift='morning',
+            start_time=datetime.time(7, 0), end_time=datetime.time(15, 0),
+        )
+
+        response = self.client.get('/api/workload/')
+        row = next(r for r in response.data if r['nurseEmail'] == 'raiden41@hospital.com')
+        self.assertEqual(row['department'], 'ICU')
+        self.assertEqual(row['shift'], 'Morning')
+
+    def test_manually_assigned_profile_department_wins_over_duty_roster(self):
+        nurse = make_nurse('ben@hospital.com', 'Ben', 'Diaz', department='ER', shift='night')
+        icu = Department.objects.create(name='ICU')
+        DutyAssignment.objects.create(
+            nurse=nurse, department=icu, duty_date=timezone.localdate(), shift='morning',
+            start_time=datetime.time(7, 0), end_time=datetime.time(15, 0),
+        )
+
+        response = self.client.get('/api/workload/')
+        row = next(r for r in response.data if r['nurseEmail'] == 'ben@hospital.com')
+        self.assertEqual(row['department'], 'ER')
+        self.assertEqual(row['shift'], 'night')
+
+    def test_a_cancelled_or_non_todays_duty_assignment_is_not_used_as_a_fallback(self):
+        nurse = make_nurse('cora@hospital.com', 'Cora', 'Reyes', department='', shift='')
+        icu = Department.objects.create(name='ICU')
+        er = Department.objects.create(name='ER')
+        DutyAssignment.objects.create(
+            nurse=nurse, department=er, duty_date=timezone.localdate() - datetime.timedelta(days=1),
+            shift='morning', start_time=datetime.time(7, 0), end_time=datetime.time(15, 0),
+        )
+        DutyAssignment.objects.create(
+            nurse=nurse, department=icu, duty_date=timezone.localdate(), shift='night',
+            start_time=datetime.time(23, 0), end_time=datetime.time(7, 0), status='cancelled',
+        )
+
+        response = self.client.get('/api/workload/')
+        row = next(r for r in response.data if r['nurseEmail'] == 'cora@hospital.com')
+        self.assertEqual(row['department'], '')
+        self.assertEqual(row['shift'], '')

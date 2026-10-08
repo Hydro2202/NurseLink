@@ -5319,10 +5319,29 @@ class WorkloadView(APIView):
                 if task.status == 'completed':
                     task_completed[nid] = task_completed.get(nid, 0) + 1
 
+        # profile.department/shift are only ever set by someone manually
+        # clicking "Assign" on this screen — a nurse who's actually working
+        # today via the Duty Roster (DutyAssignment) but was never
+        # separately "Assign"-ed here used to fall into "Unassigned" even
+        # though the system already knows their department. Fall back to
+        # today's duty assignment (earliest shift if more than one) so the
+        # Team tab's grouping reflects the real roster automatically.
+        today = timezone.localdate()
+        duty_today = (
+            DutyAssignment.objects.filter(nurse_id__in=nurse_ids, duty_date=today)
+            .exclude(status='cancelled')
+            .select_related('department')
+            .order_by('nurse_id', 'start_time')
+        )
+        duty_by_nurse = {}
+        for duty in duty_today:
+            duty_by_nurse.setdefault(duty.nurse_id, duty)
+
         data = []
         for nurse in nurses:
             profile = nurse.nurse_profile
             name = names_by_id[nurse.pk]
+            duty = duty_by_nurse.get(nurse.pk)
             data.append(
                 {
                     'nurseId': str(nurse.pk),
@@ -5333,8 +5352,8 @@ class WorkloadView(APIView):
                     # head nurse reassigning "RAIDEN VILLAPANDO" here has no
                     # way to tell which of several accounts they just picked.
                     'nurseEmail': nurse.email,
-                    'shift': profile.shift,
-                    'department': profile.department,
+                    'shift': profile.shift or (duty.get_shift_display() if duty else ''),
+                    'department': profile.department or (duty.department.name if duty else ''),
                     'patientCount': patient_counts.get(nurse.pk, 0),
                     'taskCount': task_totals.get(nurse.pk, 0),
                     'completedTasks': task_completed.get(nurse.pk, 0),
