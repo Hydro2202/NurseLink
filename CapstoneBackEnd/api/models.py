@@ -1461,7 +1461,16 @@ class KardexMedication(models.Model):
 
     @property
     def last_intake(self):
-        return self.intakes.order_by('-scheduled_time').first()
+        # Plain .all() (not .order_by(...).first()) so this reuses a
+        # prefetch_related('intakes') cache when one is set up (see
+        # KardexMedicationViewSet.get_queryset) instead of issuing a fresh
+        # query that silently bypasses it — any further method call on a
+        # related manager does that, .all() is the one exception Django
+        # recognizes. Still correct without a prefetch: MedicationIntake's
+        # own Meta.ordering is already '-scheduled_time', so index [0] is
+        # still "most recent" either way.
+        intakes = self.intakes.all()
+        return intakes[0] if intakes else None
 
 
 class MedicationIntake(models.Model):

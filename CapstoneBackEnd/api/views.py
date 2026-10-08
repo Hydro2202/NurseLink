@@ -27,7 +27,7 @@ from rest_framework import permissions, serializers, status, viewsets
 from .auth_sessions import issue_session, revoke_all_sessions, revoke_session
 from .ws_tickets import issue_ticket as issue_ws_ticket
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import MethodNotAllowed, PermissionDenied
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -2845,7 +2845,17 @@ class PatientViewSet(viewsets.ModelViewSet):
         visits = patient.visits.select_related('assigned_nurse', 'discharged_by').order_by(
             '-admission_date', '-created_at'
         )
-        return Response(PatientVisitSerializer(visits, many=True, context={'request': request}).data)
+        # One query each for the whole patient instead of one per visit —
+        # PatientVisitSerializer.get_vitals/get_notes partition these by each
+        # visit's date range in Python instead of re-querying per visit.
+        all_vitals = list(VitalSigns.objects.filter(patient_id=patient.pk).order_by('-recorded_at'))
+        all_notes = list(ChartingNote.objects.filter(patient_id=patient.pk).order_by('-timestamp'))
+        return Response(
+            PatientVisitSerializer(
+                visits, many=True,
+                context={'request': request, 'all_vitals': all_vitals, 'all_notes': all_notes},
+            ).data
+        )
 
     def update(self, request, *args, **kwargs):
         patient = self.get_object()
@@ -5007,7 +5017,11 @@ class AdminUserViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def list(self, request):
-        profiles = NurseProfile.objects.select_related('user').order_by('-user__date_joined')
+        # role_granted_by: _admin_user_payload reads profile.role_granted_by
+        # .get_full_name() for every row — 1 extra query per account without this.
+        profiles = NurseProfile.objects.select_related('user', 'role_granted_by').order_by(
+            '-user__date_joined'
+        )
         role_filter = request.query_params.get('role')
         status_filter = request.query_params.get('status')
         if role_filter:
@@ -5157,6 +5171,14 @@ class RegistrationSessionViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     http_method_names = ['get', 'delete', 'post', 'head', 'options']
 
+    def create(self, request, *args, **kwargs):
+        # 'post' stays in http_method_names for clear_abandoned (a custom
+        # POST action, routed independently) — this blocks only the generic
+        # ModelViewSet.create(), which the docstring above already says
+        # should not exist ("no create/update here") but nothing had
+        # actually disabled.
+        raise MethodNotAllowed('POST')
+
     def get_queryset(self):
         qs = RegistrationSession.objects.select_related('user').order_by('-created_at')
         email = self.request.query_params.get('email')
@@ -5212,19 +5234,57 @@ class WorkloadView(APIView):
 
     @extend_schema(tags=['Analytics'], summary='Workload summary')
     def get(self, request):
-        nurses = (
+        nurses = list(
             User.objects.filter(nurse_profile__role='staff_nurse', nurse_profile__is_active_staff=True)
             .select_related('nurse_profile')
-            .prefetch_related('assigned_patients', 'tasks')
         )
+        nurse_ids = [n.pk for n in nurses]
+        names_by_id = {n.pk: (n.get_full_name().strip() or n.username) for n in nurses}
+
+        # One aggregate query for every nurse's patient count, instead of one
+        # .count() query per nurse in the loop below.
+        patient_counts = dict(
+            Patient.objects.filter(assigned_nurse_id__in=nurse_ids)
+            .values('assigned_nurse_id')
+            .annotate(c=Count('id'))
+            .values_list('assigned_nurse_id', 'c')
+        )
+
+        # Task counts can't be a simple group-by: a task counts for a nurse if
+        # EITHER its FK matches OR its free-text assigned_to name matches
+        # (case-insensitively) — and if two nurses share a display name, a
+        # name-matched task genuinely counts for both independently (same
+        # behaviour the old per-nurse query had; preserved here, not "fixed",
+        # since changing it would be a behaviour change this N+1 cleanup
+        # isn't meant to make). One bulk fetch, grouped in Python, replaces
+        # 2 queries (total + completed) per nurse.
+        name_lower_to_ids: dict[str, list] = {}
+        for nid, name in names_by_id.items():
+            name_lower_to_ids.setdefault(name.lower(), []).append(nid)
+
+        name_match = Q()
+        for name in names_by_id.values():
+            name_match |= Q(assigned_to__iexact=name)
+        relevant_tasks = Task.objects.filter(
+            Q(assigned_nurse_id__in=nurse_ids) | name_match
+        ).only('id', 'assigned_nurse_id', 'assigned_to', 'status')
+
+        task_totals = {}
+        task_completed = {}
+        for task in relevant_tasks:
+            matched_ids = set()
+            if task.assigned_nurse_id in names_by_id:
+                matched_ids.add(task.assigned_nurse_id)
+            matched_ids.update(name_lower_to_ids.get((task.assigned_to or '').lower(), ()))
+            for nid in matched_ids:
+                task_totals[nid] = task_totals.get(nid, 0) + 1
+                if task.status == 'completed':
+                    task_completed[nid] = task_completed.get(nid, 0) + 1
+
         data = []
         for nurse in nurses:
             profile = nurse.nurse_profile
-            name = nurse.get_full_name().strip() or nurse.username
-            tasks = Task.objects.filter(Q(assigned_nurse=nurse) | Q(assigned_to__iexact=name))
-            total = tasks.count()
-            completed = tasks.filter(status='completed').count()
-            patients = Patient.objects.filter(assigned_nurse=nurse).count()
+            name = names_by_id[nurse.pk]
             data.append(
                 {
                     'nurseId': str(nurse.pk),
@@ -5237,9 +5297,9 @@ class WorkloadView(APIView):
                     'nurseEmail': nurse.email,
                     'shift': profile.shift,
                     'department': profile.department,
-                    'patientCount': patients,
-                    'taskCount': total,
-                    'completedTasks': completed,
+                    'patientCount': patient_counts.get(nurse.pk, 0),
+                    'taskCount': task_totals.get(nurse.pk, 0),
+                    'completedTasks': task_completed.get(nurse.pk, 0),
                     'overtimeHours': profile.overtime_hours,
                     'burnoutRisk': profile.burnout_risk,
                 }

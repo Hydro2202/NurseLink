@@ -1338,10 +1338,30 @@ class PatientVisitSerializer(serializers.ModelSerializer):
     def get_dischargedByName(self, obj):
         return nurse_display_name(obj.discharged_by) or None
 
+    def _visit_window(self, obj, items, date_attr):
+        """Items for this one visit's date range, newest first, capped at 50.
+
+        Reads from a pre-fetched, patient-wide list in context when
+        PatientViewSet.visits supplied one (the normal path — one query for
+        every visit instead of one query per visit), falling back to nothing
+        otherwise since callers outside that action have no such list to filter.
+        """
+        matches = [
+            item for item in items
+            if timezone.localtime(getattr(item, date_attr)).date() >= obj.admission_date
+            and (obj.discharge_date is None or getattr(item, date_attr) <= obj.discharge_date)
+        ]
+        return matches[:50]
+
     def get_vitals(self, obj):
-        qs = VitalSigns.objects.filter(patient_id=obj.patient_id, recorded_at__date__gte=obj.admission_date)
-        if obj.discharge_date:
-            qs = qs.filter(recorded_at__lte=obj.discharge_date)
+        all_vitals = self.context.get('all_vitals')
+        if all_vitals is not None:
+            readings = self._visit_window(obj, all_vitals, 'recorded_at')
+        else:
+            qs = VitalSigns.objects.filter(patient_id=obj.patient_id, recorded_at__date__gte=obj.admission_date)
+            if obj.discharge_date:
+                qs = qs.filter(recorded_at__lte=obj.discharge_date)
+            readings = qs.order_by('-recorded_at')[:50]
         return [
             {
                 'id': v.id,
@@ -1354,13 +1374,18 @@ class PatientVisitSerializer(serializers.ModelSerializer):
                 'painScale': v.pain_scale,
                 'source': v.source,
             }
-            for v in qs.order_by('-recorded_at')[:50]
+            for v in readings
         ]
 
     def get_notes(self, obj):
-        qs = ChartingNote.objects.filter(patient_id=obj.patient_id, timestamp__date__gte=obj.admission_date)
-        if obj.discharge_date:
-            qs = qs.filter(timestamp__lte=obj.discharge_date)
+        all_notes = self.context.get('all_notes')
+        if all_notes is not None:
+            notes = self._visit_window(obj, all_notes, 'timestamp')
+        else:
+            qs = ChartingNote.objects.filter(patient_id=obj.patient_id, timestamp__date__gte=obj.admission_date)
+            if obj.discharge_date:
+                qs = qs.filter(timestamp__lte=obj.discharge_date)
+            notes = qs.order_by('-timestamp')[:50]
         return [
             {
                 'id': n.note_code,
@@ -1368,7 +1393,7 @@ class PatientVisitSerializer(serializers.ModelSerializer):
                 'type': n.note_type,
                 'content': (n.content or '')[:300],
             }
-            for n in qs.order_by('-timestamp')[:50]
+            for n in notes
         ]
 
     def get_hasDischargePlan(self, obj):

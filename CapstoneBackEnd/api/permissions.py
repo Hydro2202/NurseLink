@@ -76,21 +76,6 @@ class IsApprovedNurse(BasePermission):
         return True
 
 
-class IsSupervisorOrReadOnly(BasePermission):
-    """Head nurses can write; authenticated users can read."""
-
-    def has_permission(self, request, view):
-        if not request.user or not request.user.is_authenticated:
-            self.message = 'You must be signed in to do this.'
-            return False
-        if request.method in SAFE_METHODS:
-            return True
-        if get_user_role(request.user) != 'head_nurse':
-            self.message = f'This action requires a head nurse account. {_denial_context(request.user)}'
-            return False
-        return True
-
-
 class CanManageReferral(BasePermission):
     """
     Referrals (HandoverNote) are nurse-to-nurse only, with no head-nurse

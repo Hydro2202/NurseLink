@@ -184,6 +184,18 @@ class RegistrationSessionAdminTests(APITestCase):
         self.assertEqual(row['idFirstName'], 'ANA')
         self.assertTrue(row['isVerified'])
 
+    def test_the_generic_create_action_is_blocked_even_for_an_admin(self):
+        # The class docstring says sessions are only ever created by the
+        # signup flow itself, "never edited by hand" — this pins that the
+        # generic ModelViewSet POST is actually disabled, not just
+        # documented as unwanted. clear-abandoned (a different, custom POST
+        # action) is unaffected — see test_clear_abandoned_deletes_only_
+        # truly_empty_sessions below.
+        self.client.force_authenticate(self.admin)
+        response = self.client.post('/api/admin/registration-sessions/', {'email': 'new@hospital.com'})
+        self.assertEqual(response.status_code, 405)
+        self.assertFalse(RegistrationSession.objects.filter(email='new@hospital.com').exists())
+
     def test_admin_can_list_face_verification_attempts_for_a_session(self):
         self.client.force_authenticate(self.admin)
         response = self.client.get(f'/api/admin/face-verification-attempts/?sessionId={self.session.session_id}')
