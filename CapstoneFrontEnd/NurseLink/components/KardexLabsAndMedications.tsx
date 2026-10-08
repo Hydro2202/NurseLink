@@ -258,7 +258,7 @@ export function KardexLabsAndMedications({ patientId }: Props) {
           ) : sortedLabs.length === 0 ? (
             <Text style={styles.emptyText}>No labs ordered yet.</Text>
           ) : (
-            <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
+            <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator style={styles.tableScroll}>
               <View style={{ minWidth: 820 }}>
                 <View style={[styles.tableRow, styles.tableHeaderRow]}>
                   <Text style={[styles.th, styles.colTest]}>Test</Text>
@@ -333,7 +333,7 @@ export function KardexLabsAndMedications({ patientId }: Props) {
           ) : activeMeds.length === 0 ? (
             <Text style={styles.emptyText}>No active medications.</Text>
           ) : (
-            <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
+            <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator style={styles.tableScroll}>
               <View style={{ minWidth: 900 }}>
                 <View style={[styles.tableRow, styles.tableHeaderRow]}>
                   <Text style={[styles.th, styles.colMed]}>Medication</Text>
@@ -363,7 +363,7 @@ export function KardexLabsAndMedications({ patientId }: Props) {
                 </Text>
               </Pressable>
               {showDiscontinued ? (
-                <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator style={{ marginTop: 8 }}>
+                <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator style={[styles.tableScroll, { marginTop: 8 }]}>
                   <View style={{ minWidth: 900 }}>
                     <View style={[styles.tableRow, styles.tableHeaderRow]}>
                       <Text style={[styles.th, styles.colMed]}>Medication</Text>
@@ -925,6 +925,14 @@ const styles = StyleSheet.create({
   btnTextWhite: { color: Colors.white, fontWeight: '700', fontSize: 13 },
   emptyText: { fontSize: 13, color: Colors.mutedForeground, paddingVertical: 8 },
 
+  // Without an explicit width, a horizontal ScrollView sizes its own
+  // viewport to fit its (wider-than-screen) content instead of the space
+  // actually available — so its scrollable range is 0 and swiping does
+  // nothing, while the ancestor Card's overflow:'hidden' still visually
+  // crops it, making it look cut off rather than just unscrollable.
+  // width:'100%' forces the viewport to the available width so there's
+  // something real to scroll.
+  tableScroll: { width: '100%' },
   tableRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
