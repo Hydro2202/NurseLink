@@ -105,6 +105,7 @@ from .notifications import (
     notify_admin_new_registration,
     notify_nurse_reassigned,
     notify_referral_head_nurse_fyi,
+    notify_safety_alert,
     notify_task_handover_accepted,
     notify_task_handover_rejected,
     notify_task_handover_verified,
@@ -2587,7 +2588,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         # variant) — this method fully replaces the class-level
         # permission_classes, so a branch that forgot it would silently let
         # a pending nurse through.
-        if self.action in ('create', 'discharge', 'readmit'):
+        if self.action in ('create', 'discharge', 'readmit', 'notify_nurse'):
             return [permissions.IsAuthenticated(), IsApprovedNurse(), IsSupervisor()]
         # Drafting a discharge plan doesn't discharge anyone — any approved
         # nurse can propose one for a head nurse to review/finalize via
@@ -2984,6 +2985,37 @@ class PatientViewSet(viewsets.ModelViewSet):
             .select_related('doctor', 'doctor__department')
         ]
         return Response(DoctorSerializer(active_doctors, many=True).data)
+
+    @extend_schema(
+        request=inline_serializer(name='NotifyNurse', fields={'message': serializers.CharField(required=False)}),
+        responses={200: inline_serializer(name='NotifyNurseResult', fields={'detail': serializers.CharField()})},
+        summary='Notify a patient\'s assigned nurse',
+        description=(
+            'Head-nurse-only. Sends the assigned nurse a critical in-app '
+            'notification (and email, if they opted in) — the "Notify Nurse" '
+            'action on the Patient Safety Alerts panel. Optional '
+            '"message" body is the alert detail already shown on the '
+            'dashboard (e.g. the vitals that triggered it); falls back to a '
+            'generic message if omitted. 400 if the patient has nobody '
+            'assigned to notify.'
+        ),
+    )
+    @action(detail=True, methods=['post'], url_path='notify-nurse')
+    def notify_nurse(self, request, patient_code=None):
+        patient = self.get_object()
+        if patient.assigned_nurse_id is None:
+            return Response(
+                {'detail': 'This patient has no assigned nurse to notify.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        message = (request.data.get('message') or '').strip()[:500]
+        if not message:
+            message = f'{patient.name} ({patient.room}) requires immediate attention.'
+
+        notify_safety_alert(patient, request.user, message=message)
+        nurse_name = patient.assigned_nurse.get_full_name().strip() or patient.assigned_nurse.username
+        return Response({'detail': f'{nurse_name} has been notified.'})
 
 
 class DepartmentViewSet(viewsets.ReadOnlyModelViewSet):

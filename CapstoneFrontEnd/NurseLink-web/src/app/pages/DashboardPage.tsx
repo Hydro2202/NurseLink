@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router';
 import type { Patient, Task, WorkloadData } from '../types/domain';
-import { fetchPatients, fetchTasks, fetchWorkload } from '../api/nurselink';
+import { fetchPatients, fetchTasks, fetchWorkload, notifyPatientNurse } from '../api/nurselink';
+import { ApiError } from '../api/client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
@@ -109,6 +110,7 @@ export default function DashboardPage() {
       title: string;
       description: string;
       nurseName?: string;
+      patientId?: string;
       path?: string;
     }[] = [];
     patients.filter(p => p.riskLevel === 'high').slice(0, 5).forEach(p => {
@@ -121,6 +123,7 @@ export default function DashboardPage() {
           ? `Vital signs require attention. BP ${vs.bloodPressure}, HR ${vs.heartRate}, Temp ${vs.temperature}°C.`
           : `${p.diagnosis || 'High-risk patient'} — immediate assessment required.`,
         nurseName: p.assignedNurseName || undefined,
+        patientId: p.id,
         path: '/workload',
       });
     });
@@ -136,6 +139,26 @@ export default function DashboardPage() {
     });
     return alerts;
   }, [patients, tasks]);
+
+  const handleNotifyNurse = async (alert: (typeof safetyAlerts)[number]) => {
+    // Patient (critical vitals) alerts have a real assigned nurse resolved
+    // server-side from the patient record, so these actually reach the
+    // nurse's notification inbox. Task alerts' "nurse" is free-text
+    // (assignedTo) with no patient to anchor a lookup to, so those stay a
+    // local confirmation only, same as before.
+    if (alert.variant === 'destructive' && alert.patientId) {
+      try {
+        const result = await notifyPatientNurse(alert.patientId, alert.description);
+        toast.success(result.detail);
+      } catch (err) {
+        toast.error(err instanceof ApiError ? err.message : 'Could not notify the nurse.');
+      }
+      return;
+    }
+    toast.success(`Notification sent to ${alert.nurseName}`, {
+      description: 'The nurse has been notified.',
+    });
+  };
 
   const departmentStats = React.useMemo(() => {
     const buckets: Record<string, { label: string; total: number; critical: number; stable: number }> = {
@@ -734,15 +757,7 @@ export default function DashboardPage() {
                     {alert.variant === 'destructive' ? 'Respond Now' : 'View Task'}
                   </Button>
                   {alert.nurseName ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        toast.success(`Notification sent to ${alert.nurseName}`, {
-                          description: 'The nurse has been notified.',
-                        })
-                      }
-                    >
+                    <Button size="sm" variant="outline" onClick={() => handleNotifyNurse(alert)}>
                       Notify Nurse
                     </Button>
                   ) : null}

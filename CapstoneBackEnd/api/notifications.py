@@ -39,6 +39,7 @@ TASK_HANDOVER_VERIFIED = 'task_handover_verified'
 TASK_HANDOVER_ACCEPTED = 'task_handover_accepted'
 TASK_HANDOVER_REJECTED = 'task_handover_rejected'
 NEW_REGISTRATION_PENDING = 'new_registration_pending'
+SAFETY_ALERT = 'safety_alert'
 
 
 
@@ -665,6 +666,48 @@ def notify_nurse_reassigned(profile, actor, *, changed_department, changed_shift
         sender=actor,
         action_label='Open Settings',
         action_path='/settings',
+    )
+
+
+def notify_safety_alert(patient, actor, *, message):
+    """
+    Tell a patient's assigned nurse that a head nurse flagged them for a
+    critical safety alert — the "Notify Nurse" button on the Patient
+    Safety Alerts panel. `message` is the alert detail already shown on
+    the dashboard (e.g. the vitals that triggered it), passed through
+    as-is rather than recomputed here.
+
+    Skipped when the patient has nobody assigned, or when a nurse somehow
+    notifies themselves about their own patient — same self-notify guard
+    every other notify_* wrapper uses. Gated on critical_alerts, the same
+    preference an urgent task assignment uses.
+    """
+    recipient = patient.assigned_nurse
+    if recipient is None:
+        return None
+    if actor is not None and actor.pk == recipient.pk:
+        return None
+
+    if not wants(recipient, 'critical_alerts'):
+        logger.info(
+            '[Settings] %s has critical alerts off; safety alert for %s not notified.',
+            recipient.username, patient.patient_code,
+        )
+        return None
+
+    actor_name = actor.get_full_name().strip() or actor.username if actor else 'A head nurse'
+    return notify(
+        recipient,
+        notification_type='critical',
+        event=SAFETY_ALERT,
+        title='Patient Safety Alert',
+        message=f'{actor_name} flagged {patient.name} ({patient.room}): {message}',
+        patient_label=patient.name,
+        patient=patient,
+        sender=actor,
+        action_label='View Patient',
+        action_path='/workload',
+        action_highlight_id=patient.patient_code,
     )
 
 

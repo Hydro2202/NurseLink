@@ -614,6 +614,15 @@ export async function deletePatient(patientCode: string): Promise<void> {
   await apiRequest(`/patients/${patientCode}/`, { method: 'DELETE' });
 }
 
+/** Head-nurse-only. Notifies the patient's assigned nurse (resolved
+ * server-side) via the real notification inbox — not a local-only toast. */
+export async function notifyPatientNurse(patientCode: string, message?: string): Promise<{ detail: string }> {
+  return apiRequest<{ detail: string }>(`/patients/${patientCode}/notify-nurse/`, {
+    method: 'POST',
+    body: message ? { message } : {},
+  });
+}
+
 /** Head-nurse-only. Sets status to discharged and records who/when. The
  * record is kept, not deleted — see fetchPatientVisits for its history.
  * dischargePlan (M.E.T.H.O.D.) is required unless the backend has

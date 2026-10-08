@@ -319,6 +319,13 @@ export async function deletePatient(patientCode: string): Promise<void> {
   await apiRequest(`/patients/${patientCode}/`, { method: 'DELETE' });
 }
 
+export async function notifyPatientNurse(patientCode: string, message?: string): Promise<{ detail: string }> {
+  return apiRequest<{ detail: string }>(`/patients/${patientCode}/notify-nurse/`, {
+    method: 'POST',
+    body: message ? { message } : {},
+  });
+}
+
 export async function fetchTasks(options?: {
   mine?: boolean;
   assignedTo?: string;
