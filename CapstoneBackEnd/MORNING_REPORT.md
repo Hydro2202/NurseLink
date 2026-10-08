@@ -5,7 +5,6 @@ Branch: `fix/overnight-sweep` (created from `main`, never merged/pushed — see 
 ## 1. Summary — most important first
 
 **Needs your decision before anything else:**
-- **CORS/CSRF not configured for production.** `CORS_ALLOW_ALL_ORIGINS = DEBUG` correctly turns off in production, but no `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` replaces it — once `DJANGO_DEBUG=False`, the web app would be unable to call the API **at all** (fails closed, not a leak, but it's a "the site doesn't work" bug waiting to happen). I didn't guess your production domain names, so this isn't fixed. See §7.
 - **Pillow has multiple CVEs** (11.3.0 → fix in 12.1.1+), used directly by `api/avatar.py` and by `pytesseract`. Not auto-upgraded — it's a major version bump (11→12). See §7.
 - **Mobile has 23 remaining npm audit findings** (1 critical, were more before I fixed 5 safely) that all require `--force` and a breaking/major version change — one of them even wants to *downgrade* `expo` to 44.0.6, which is almost certainly npm's resolver doing something you don't want. Not applied. See §7.
 
@@ -17,8 +16,9 @@ Branch: `fix/overnight-sweep` (created from `main`, never merged/pushed — see 
 3. **Issue 15** (anonymous upload hardening) — mostly already built from an earlier session; closed the remaining gaps (pixel-dimension limit, consistent 5MB-everywhere, lowered the 30MB global ceiling to 15MB with the reasoning spelled out, mobile-side photo compression, a cleanup command for abandoned uploads, new tests, a new smoke-test script).
 4. Two N+1 query bugs in the Task list endpoint (missing `select_related`/`prefetch_related`, one of them silently defeated by a `.select_related()` call on a related manager that bypasses Django's prefetch cache).
 5. Two stray tracked-but-gitignored directories untracked (`__pycache__`, a parent-level `.expo/`), 5 safe mobile dependency patches applied.
+6. **CORS/CSRF plumbing for production** (added after this report was first drafted, at your request): `CORS_ALLOW_ALL_ORIGINS = DEBUG` correctly turned off in production but nothing replaced it, so a deploy would have had the web app load fine and then every API call silently blocked by the browser. Added `CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS`, env-var-driven the same way `ALLOWED_HOSTS` already is, fail-loud on the CORS one when `DEBUG=False` and it's unset. No real domain exists for this project yet, so there was nothing to put in the env var — this just means deploying is now "set one env var" instead of "silently broken until someone debugs why login doesn't work."
 
-**Still broken / not fixed** — see §7 for the full list with recommended fixes: `WorkloadView`'s N+1 (3 queries × active-nurse-count per call — fix needs careful handling of a legacy free-text name-matching fallback, didn't want to rush it), a handful of smaller N+1s (`TaskSerializer.departmentName`-style patterns elsewhere), `KardexMedication.last_intake` property defeating its own prefetch the same way `get_assignedDoctors` did (same root cause, different call site — not yet fixed), the CORS/Pillow/npm-audit items above.
+**Still broken / not fixed** — see §7 for the full list with recommended fixes: `WorkloadView`'s N+1 (3 queries × active-nurse-count per call — fix needs careful handling of a legacy free-text name-matching fallback, didn't want to rush it), a handful of smaller N+1s (`TaskSerializer.departmentName`-style patterns elsewhere), `KardexMedication.last_intake` property defeating its own prefetch the same way `get_assignedDoctors` did (same root cause, different call site — not yet fixed), Pillow/npm-audit items above.
 
 ---
 
@@ -67,7 +67,7 @@ Found most of this already built from an earlier session: per-file size checks, 
 | 1 | **High** | Security — IDOR | `api/views.py` `KardexViewSet` | Any approved nurse could overwrite/delete any patient's core data via `/api/kardex/`, bypassing `PatientViewSet`'s assigned-nurse restriction on the same fields | **Fixed**, commit `2a8604dc5` |
 | 2 | **High** | Security — IDOR | `api/views.py` `TaskViewSet.get_queryset`/`complete` | `?assignedTo=<name>` let a staff nurse act on (incl. complete) another nurse's task | **Fixed**, commit `2a8604dc5` |
 | 3 | **High** | Correctness/integrity | `api/serializers.py` `TaskSerializer.validate_checklist` | A fabricated single-item checklist could substitute for the real 6-step one, defeating the completion gate | **Fixed**, commit `2a8604dc5` |
-| 4 | Medium | Config/deployment | `CapstoneBackEnd/settings.py` | No `CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS` for production | **Not fixed** — needs your production domain(s), see §7 |
+| 4 | Medium | Config/deployment | `CapstoneBackEnd/settings.py` | No `CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS` for production | **Fixed**, commit `510b29d80` — plumbing wired up (env-var-driven, fail-loud), no real domain to put in it yet |
 | 5 | Medium | Dependency | Pillow 11.3.0 | Multiple CVEs, fix is a major version bump, used directly (`api/avatar.py`) and via `pytesseract` | **Not fixed**, see §7 |
 | 6 | Medium-High | Performance (N+1) | `api/views.py` `WorkloadView.get` | 3 queries × active-nurse-count per call, plus 2 wholly unused `prefetch_related` calls | **Not fixed**, see §7 |
 | 7 | High (perf) | Performance (N+1) | `api/views.py` `TaskViewSet.get_queryset`, `api/serializers.py` `TaskSerializer.get_assignedDoctors` | Missing `select_related('department')`/`prefetch_related('task_doctors__doctor')`; the serializer method also silently defeated prefetch by calling `.select_related()` on the related manager | **Fixed**, commit `2a8604dc5` |
@@ -131,7 +131,7 @@ One thing the smoke test caught that **wasn't a code bug**: the local dev databa
 
 ## 7. Problems not fixed — recommended fix and effort
 
-1. **CORS/CSRF not configured for production** (Medium). Add `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` to `settings.py`, env-var-driven the same way `ALLOWED_HOSTS` already is, and update `.env.example`. I didn't do this because I don't know your production domain(s) and didn't want to guess/hardcode one. **Effort: 15 minutes once you tell me the domain(s).**
+1. ~~CORS/CSRF not configured for production~~ — **fixed**, see §1 and §4 (commit `510b29d80`). The only remaining step is setting `DJANGO_CORS_ALLOWED_ORIGINS` in production once a real domain exists — that's a one-line env var, not a code change.
 
 2. **Pillow 11.3.0 has several CVEs** (Medium), fixed in 12.1.1+ — major version bump. Used directly by `api/avatar.py` (profile photo resize/re-encode) and by `pytesseract` (PRC licence OCR preprocessing). **Recommended**: `pip install -U Pillow`, then run `python manage.py test api.tests_avatar api.tests_prc_ocr` and eyeball a real avatar upload + PRC scan before trusting it. **Effort: 20–30 minutes** including the manual check (Pillow 12 removed some deprecated APIs; `avatar.py`/`prc_ocr.py` would need a quick read for anything removed, likely nothing since both use basic `Image.open`/`resize`/`save`).
 
@@ -155,8 +155,10 @@ One thing the smoke test caught that **wasn't a code bug**: the local dev databa
 - Backend (dev/smoke-test only, **not** added to `requirements.txt`): `websockets` — `pip install websockets` before running `scripts/smoke_test.py`.
 - Mobile (`package.json`, already committed): `expo-image-manipulator` (photo compression).
 
-**New environment variables** (all optional, with defaults — nothing requires action unless you want to change the default):
-- `ABANDONED_REGISTRATION_DAYS` (default `7`) — age cutoff for `cleanup_abandoned_registrations`.
+**New environment variables:**
+- `ABANDONED_REGISTRATION_DAYS` (optional, default `7`) — age cutoff for `cleanup_abandoned_registrations`.
+- `DJANGO_CORS_ALLOWED_ORIGINS` (**required once you deploy with `DJANGO_DEBUG=False`** — the app will refuse to start without it) — comma-separated web app origin(s), e.g. `https://app.nurselink.com`. Not needed for local dev.
+- `DJANGO_CSRF_TRUSTED_ORIGINS` (optional) — same format, only matters if the Django admin or Scalar docs will be used cross-origin.
 
 **Changed settings** (no env var, a literal in `settings.py` — see §3 for why):
 - `DATA_UPLOAD_MAX_MEMORY_SIZE`: 30MB → 15MB.
@@ -167,7 +169,7 @@ One thing the smoke test caught that **wasn't a code bug**: the local dev databa
 1. Nothing is required to deploy what's here — it's all backward-compatible, additive, or a tightening of an existing rule.
 2. If you want the abandoned-registration cleanup to run automatically rather than manually: add `python manage.py cleanup_abandoned_registrations` to whatever cron/scheduled-task mechanism you use (there's no Celery in this project — confirmed during tonight's mapping pass — so this has to be external cron, not a Celery beat schedule).
 3. Review the branch (`git log fix/overnight-sweep`, or diff against `main`) and merge it yourself when you're satisfied — I didn't merge or push it, per the safety rules.
-4. Read §7 items 1 and 2 (CORS/CSRF, Pillow) — both need a small decision/action from you, not just a merge.
+4. Read §7 item 2 (Pillow) — needs a small decision/action from you, not just a merge. CORS/CSRF (item 1) is already resolved.
 
 ---
 
