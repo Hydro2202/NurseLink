@@ -258,7 +258,7 @@ export function KardexLabsAndMedications({ patientId }: Props) {
           ) : sortedLabs.length === 0 ? (
             <Text style={styles.emptyText}>No labs ordered yet.</Text>
           ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
               <View style={{ minWidth: 820 }}>
                 <View style={[styles.tableRow, styles.tableHeaderRow]}>
                   <Text style={[styles.th, styles.colTest]}>Test</Text>
@@ -333,7 +333,7 @@ export function KardexLabsAndMedications({ patientId }: Props) {
           ) : activeMeds.length === 0 ? (
             <Text style={styles.emptyText}>No active medications.</Text>
           ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
               <View style={{ minWidth: 900 }}>
                 <View style={[styles.tableRow, styles.tableHeaderRow]}>
                   <Text style={[styles.th, styles.colMed]}>Medication</Text>
@@ -363,7 +363,7 @@ export function KardexLabsAndMedications({ patientId }: Props) {
                 </Text>
               </Pressable>
               {showDiscontinued ? (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+                <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator style={{ marginTop: 8 }}>
                   <View style={{ minWidth: 900 }}>
                     <View style={[styles.tableRow, styles.tableHeaderRow]}>
                       <Text style={[styles.th, styles.colMed]}>Medication</Text>

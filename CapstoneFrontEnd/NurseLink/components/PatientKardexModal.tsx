@@ -312,7 +312,7 @@ export function PatientKardexModal({
               <X size={22} color={Colors.gray700} />
             </Pressable>
           </View>
-          <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
             {/* Patient quick summary — live preview of what's been entered */}
             <View style={styles.summaryCard}>
               <View style={styles.summaryHeaderRow}>

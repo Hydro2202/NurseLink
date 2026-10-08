@@ -506,6 +506,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
+      nestedScrollEnabled
     >
       {/* Header */}
       <View>
@@ -1133,6 +1134,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
               style={styles.historyScroll}
               contentContainerStyle={{ padding: 16, gap: 16 }}
               showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
             >
               {selectedHistoryEntry ? (
                 <View style={styles.gap4}>

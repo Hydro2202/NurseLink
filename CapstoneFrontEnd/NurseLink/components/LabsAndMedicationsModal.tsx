@@ -36,7 +36,7 @@ export function LabsAndMedicationsModal({ open, onOpenChange, patient }: Props) 
           <Text style={styles.subtitle}>
             {patient.name} · {patient.id}
           </Text>
-          <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
+          <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false} nestedScrollEnabled>
             <KardexLabsAndMedications patientId={patient.id} />
           </ScrollView>
         </Pressable>
