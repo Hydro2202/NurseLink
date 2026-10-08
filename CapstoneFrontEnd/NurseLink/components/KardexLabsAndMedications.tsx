@@ -908,7 +908,18 @@ function IntakeHistoryModal({ medication, onClose }: IntakeHistoryModalProps) {
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    // The title ("Medication Intake") and the "+ Add Medication" button
+    // are both auto-width with no flex-shrink, so on a narrow phone (and
+    // inside Card, which clips overflow) their combined width got cut off
+    // instead of reflowing. Wrap lets the button drop to its own line.
+    flexWrap: 'wrap',
+    rowGap: 8,
+    gap: 8,
+  },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   btnTextWhite: { color: Colors.white, fontWeight: '700', fontSize: 13 },
