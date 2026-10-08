@@ -5,7 +5,6 @@ Branch: `fix/overnight-sweep` (created from `main`, never merged/pushed — see 
 ## 1. Summary — most important first
 
 **Needs your decision before anything else:**
-- **Pillow has multiple CVEs** (11.3.0 → fix in 12.1.1+), used directly by `api/avatar.py` and by `pytesseract`. Not auto-upgraded — it's a major version bump (11→12). See §7.
 - **Mobile has 23 remaining npm audit findings** (1 critical, were more before I fixed 5 safely) that all require `--force` and a breaking/major version change — one of them even wants to *downgrade* `expo` to 44.0.6, which is almost certainly npm's resolver doing something you don't want. Not applied. See §7.
 
 **Fixed tonight, most important first:**
@@ -17,8 +16,9 @@ Branch: `fix/overnight-sweep` (created from `main`, never merged/pushed — see 
 4. Two N+1 query bugs in the Task list endpoint (missing `select_related`/`prefetch_related`, one of them silently defeated by a `.select_related()` call on a related manager that bypasses Django's prefetch cache).
 5. Two stray tracked-but-gitignored directories untracked (`__pycache__`, a parent-level `.expo/`), 5 safe mobile dependency patches applied.
 6. **CORS/CSRF plumbing for production** (added after this report was first drafted, at your request): `CORS_ALLOW_ALL_ORIGINS = DEBUG` correctly turned off in production but nothing replaced it, so a deploy would have had the web app load fine and then every API call silently blocked by the browser. Added `CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS`, env-var-driven the same way `ALLOWED_HOSTS` already is, fail-loud on the CORS one when `DEBUG=False` and it's unset. No real domain exists for this project yet, so there was nothing to put in the env var — this just means deploying is now "set one env var" instead of "silently broken until someone debugs why login doesn't work."
+7. **Project-specific virtualenv + Pillow/setuptools upgrade** (also added after this report was first drafted, at your request): created `CapstoneBackEnd/.venv/` and reinstalled `requirements.txt` into it — this pulled in Pillow 12.3.0, `sqlparse` 0.6.0, and `urllib3` 2.8.0 automatically (no version pins in `requirements.txt`), resolving 3 of the real `pip-audit` findings as a side effect. Upgraded `setuptools` (65.5.0 → 84.0.0) inside the venv too. `pip-audit` re-run scoped to the venv now shows **0 known vulnerabilities** (down from ~40, most of which turned out to be unrelated projects' packages polluting the global-Python reading — see §7's old item 3). Verified Pillow 12's actual code path (`api/avatar.py`'s EXIF/RGBA/crop/re-encode pipeline) directly, and re-ran `bandit` through the venv — same 3 pre-existing findings, nothing new. **You now need to point your terminal/IDE at `CapstoneBackEnd/.venv/Scripts/python.exe`** for this project going forward; the global Python still works unchanged until you do.
 
-**Still broken / not fixed** — see §7 for the full list with recommended fixes: `WorkloadView`'s N+1 (3 queries × active-nurse-count per call — fix needs careful handling of a legacy free-text name-matching fallback, didn't want to rush it), a handful of smaller N+1s (`TaskSerializer.departmentName`-style patterns elsewhere), `KardexMedication.last_intake` property defeating its own prefetch the same way `get_assignedDoctors` did (same root cause, different call site — not yet fixed), Pillow/npm-audit items above.
+**Still broken / not fixed** — see §7 for the full list with recommended fixes: `WorkloadView`'s N+1 (3 queries × active-nurse-count per call — fix needs careful handling of a legacy free-text name-matching fallback, didn't want to rush it), a handful of smaller N+1s (`TaskSerializer.departmentName`-style patterns elsewhere), `KardexMedication.last_intake` property defeating its own prefetch the same way `get_assignedDoctors` did (same root cause, different call site — not yet fixed), the npm-audit item above.
 
 ---
 
@@ -31,7 +31,7 @@ Branch: `fix/overnight-sweep` (created from `main`, never merged/pushed — see 
 | Backend | `python manage.py makemigrations --check --dry-run` | no changes detected | no changes detected (none of tonight's fixes needed a migration) |
 | Backend | `python manage.py test api` (full suite) | exit 0 | exit 0 — re-run after every fix tonight, and once more as the very last step after the IDOR/checklist commit; all green |
 | Backend | `bandit -r api CapstoneBackEnd` | 3 findings (2 medium-confidence `urllib.urlopen` on hardcoded trusted URLs, already `# noqa`'d; 1 low-confidence SQL-injection false positive on an f-string building a human error message, not SQL) | unchanged — none were real, none touched |
-| Backend | `pip-audit` | ~40 findings, but this machine's Python has **no project-specific virtualenv** (it's the global Windows Python install) — most flagged packages (`pyjwt`, `werkzeug`, `python-socketio`, `mako`, `marshmallow`, `pip`/`setuptools`/`wheel`) belong to **other, unrelated projects** installed on this machine (confirmed via `pip show --Required-by`: `werkzeug`→Flask, `mako`→alembic, etc. — zero imports of any of these anywhere in this repo). The one real, relevant finding is Pillow (see §7). | unchanged — no global packages touched (see §7 for why) |
+| Backend | `pip-audit` | ~40 findings against the global Windows Python (no project-specific virtualenv existed) — most belonged to **other, unrelated projects** sharing that install (confirmed via `pip show --Required-by`: `werkzeug`→Flask, `mako`→alembic, etc.). The one real, relevant finding was Pillow. | **Fixed** — created `CapstoneBackEnd/.venv/`, reinstalled `requirements.txt` (pulled in Pillow 12.3.0/`sqlparse` 0.6.0/`urllib3` 2.8.0 automatically), upgraded `setuptools`. `pip-audit` scoped to the venv: **0 known vulnerabilities** |
 | Web | `npx tsc --noEmit` | clean | clean |
 | Web | `npm run build` (`vite build`) | succeeds, code-split | unchanged, succeeds |
 | Web | `npm audit --omit=dev` | 0 vulnerabilities | 0 vulnerabilities |
@@ -68,7 +68,7 @@ Found most of this already built from an earlier session: per-file size checks, 
 | 2 | **High** | Security — IDOR | `api/views.py` `TaskViewSet.get_queryset`/`complete` | `?assignedTo=<name>` let a staff nurse act on (incl. complete) another nurse's task | **Fixed**, commit `2a8604dc5` |
 | 3 | **High** | Correctness/integrity | `api/serializers.py` `TaskSerializer.validate_checklist` | A fabricated single-item checklist could substitute for the real 6-step one, defeating the completion gate | **Fixed**, commit `2a8604dc5` |
 | 4 | Medium | Config/deployment | `CapstoneBackEnd/settings.py` | No `CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS` for production | **Fixed**, commit `510b29d80` — plumbing wired up (env-var-driven, fail-loud), no real domain to put in it yet |
-| 5 | Medium | Dependency | Pillow 11.3.0 | Multiple CVEs, fix is a major version bump, used directly (`api/avatar.py`) and via `pytesseract` | **Not fixed**, see §7 |
+| 5 | Medium | Dependency | Pillow 11.3.0 | Multiple CVEs, fix is a major version bump, used directly (`api/avatar.py`) and via `pytesseract` | **Fixed** — now 12.3.0 inside `CapstoneBackEnd/.venv/`, verified against the real `avatar.py` code path |
 | 6 | Medium-High | Performance (N+1) | `api/views.py` `WorkloadView.get` | 3 queries × active-nurse-count per call, plus 2 wholly unused `prefetch_related` calls | **Not fixed**, see §7 |
 | 7 | High (perf) | Performance (N+1) | `api/views.py` `TaskViewSet.get_queryset`, `api/serializers.py` `TaskSerializer.get_assignedDoctors` | Missing `select_related('department')`/`prefetch_related('task_doctors__doctor')`; the serializer method also silently defeated prefetch by calling `.select_related()` on the related manager | **Fixed**, commit `2a8604dc5` |
 | 8 | High (perf) | Performance (N+1) | `api/models.py` `KardexMedication.last_intake` (property) | Same "fresh queryset on a related manager defeats prefetch" bug as #7, different call site — `get_lastGiven`/`get_isOverdue` each pay for it independently | **Not fixed**, see §7 |
@@ -133,9 +133,9 @@ One thing the smoke test caught that **wasn't a code bug**: the local dev databa
 
 1. ~~CORS/CSRF not configured for production~~ — **fixed**, see §1 and §4 (commit `510b29d80`). The only remaining step is setting `DJANGO_CORS_ALLOWED_ORIGINS` in production once a real domain exists — that's a one-line env var, not a code change.
 
-2. **Pillow 11.3.0 has several CVEs** (Medium), fixed in 12.1.1+ — major version bump. Used directly by `api/avatar.py` (profile photo resize/re-encode) and by `pytesseract` (PRC licence OCR preprocessing). **Recommended**: `pip install -U Pillow`, then run `python manage.py test api.tests_avatar api.tests_prc_ocr` and eyeball a real avatar upload + PRC scan before trusting it. **Effort: 20–30 minutes** including the manual check (Pillow 12 removed some deprecated APIs; `avatar.py`/`prc_ocr.py` would need a quick read for anything removed, likely nothing since both use basic `Image.open`/`resize`/`save`).
+2. ~~Pillow 11.3.0 has several CVEs~~ — **fixed**, see §1 and §4. Now 12.3.0, installed inside the new `CapstoneBackEnd/.venv/`. Verified directly: ran `avatar.py`'s actual EXIF-transpose/RGBA-flatten/center-crop/JPEG-re-encode pipeline against a real in-memory test image — works correctly, no deprecated-API issues. `pytesseract`/`prc_ocr.py` doesn't touch Pillow at all (it decodes via OpenCV), so there was no risk there to begin with.
 
-3. **No virtualenv for the backend** — this Python install is the global Windows one, shared with at least one unrelated Flask/alembic project. This is why I didn't run any `pip install --upgrade` tonight even for "safe" patches: I have no way to scope a pip upgrade to just this project, and upgrading a global package could affect that other project in ways I can't test. **Recommended**: `python -m venv .venv` in `CapstoneBackEnd/`, reinstall from `requirements.txt`, and all future dependency work (including the Pillow upgrade above) becomes safe to automate. **Effort: 10 minutes, then redo item 2 inside it.**
+3. ~~No virtualenv for the backend~~ — **fixed**, see §1 and §4. `CapstoneBackEnd/.venv/` now exists (gitignored, not committed — same `.venv/` rule already in the root `.gitignore`), `requirements.txt` installed into it. **Action needed from you**: point your terminal/IDE at `CapstoneBackEnd/.venv/Scripts/python.exe` for this project going forward (e.g. VS Code: Ctrl+Shift+P → "Python: Select Interpreter" → browse to that path). The global Python still works exactly as before until you do — nothing broke either way.
 
 4. **23 remaining mobile npm audit findings** (1 critical: `shell-quote` command injection — wait, that one was in the 5 I fixed; the remaining critical-adjacent one is a transitive `metro`/`react-native` chain). All require `--force` and a breaking change; one path npm suggests is `expo@44.0.6` (a downgrade from your current `^57.0.0` — almost certainly not what you want; npm's resolver sometimes proposes this when the real fix is "wait for the next patch upstream"). **Recommended**: don't force these tonight; re-run `npm audit` after your next routine `expo upgrade` and see if they've cleared on their own (most of this chain is Metro/dev-tooling, not runtime app code shipped to a device). **Effort: 0 now, revisit at your next Expo SDK bump.**
 
@@ -152,7 +152,8 @@ One thing the smoke test caught that **wasn't a code bug**: the local dev databa
 ## 8. New dependencies, environment variables, migrations
 
 **New dependencies:**
-- Backend (dev/smoke-test only, **not** added to `requirements.txt`): `websockets` — `pip install websockets` before running `scripts/smoke_test.py`.
+- Backend: a project-specific virtualenv now exists at `CapstoneBackEnd/.venv/` (gitignored, not committed — see §7 item 3). `requirements.txt` is installed into it; Pillow/`sqlparse`/`urllib3`/`setuptools` are now current inside it (see §4).
+- Backend (dev/smoke-test only, **not** added to `requirements.txt`, installed into the venv): `websockets` — needed before running `scripts/smoke_test.py`.
 - Mobile (`package.json`, already committed): `expo-image-manipulator` (photo compression).
 
 **New environment variables:**
@@ -169,24 +170,26 @@ One thing the smoke test caught that **wasn't a code bug**: the local dev databa
 1. Nothing is required to deploy what's here — it's all backward-compatible, additive, or a tightening of an existing rule.
 2. If you want the abandoned-registration cleanup to run automatically rather than manually: add `python manage.py cleanup_abandoned_registrations` to whatever cron/scheduled-task mechanism you use (there's no Celery in this project — confirmed during tonight's mapping pass — so this has to be external cron, not a Celery beat schedule).
 3. Review the branch (`git log fix/overnight-sweep`, or diff against `main`) and merge it yourself when you're satisfied — I didn't merge or push it, per the safety rules.
-4. Read §7 item 2 (Pillow) — needs a small decision/action from you, not just a merge. CORS/CSRF (item 1) is already resolved.
+4. Point your terminal/IDE at `CapstoneBackEnd/.venv/Scripts/python.exe` for this project (see §7 item 3). CORS/CSRF and Pillow (items 1 and 2) are already resolved — nothing further needed from you on those two.
 
 ---
 
 ## 9. Commands to re-run everything
 
 ```bash
-# Backend
+# Backend — uses the project-specific virtualenv created tonight
+# (CapstoneBackEnd/.venv). On Windows that's .venv\Scripts\python.exe;
+# on macOS/Linux, activate it first (source .venv/bin/activate) then
+# just use `python`.
 cd CapstoneBackEnd
-python manage.py check
-python manage.py check --deploy
-python manage.py makemigrations --check --dry-run
-python manage.py test api
+.venv/Scripts/python.exe manage.py check
+.venv/Scripts/python.exe manage.py check --deploy
+.venv/Scripts/python.exe manage.py makemigrations --check --dry-run
+.venv/Scripts/python.exe manage.py test api
 
-# Backend security tools (bandit/pip-audit installed tonight via pip install --user;
-# not on PATH, hence python -m)
-python -m bandit -r api CapstoneBackEnd -ll
-python -m pip_audit
+# Backend security tools (installed into the venv tonight)
+.venv/Scripts/python.exe -m bandit -r api CapstoneBackEnd -ll
+.venv/Scripts/python.exe -m pip_audit
 
 # Web
 cd CapstoneFrontEnd/NurseLink-web
@@ -203,8 +206,8 @@ npm audit --omit=dev
 
 # End-to-end smoke test (needs the backend running first)
 cd CapstoneBackEnd
-pip install websockets
-python manage.py seed_demo          # resets to a clean nurse@/headnurse@hospital.com baseline
-python manage.py runserver 0.0.0.0:8010   # separate terminal
-python scripts/smoke_test.py
+.venv/Scripts/python.exe -m pip install websockets
+.venv/Scripts/python.exe manage.py seed_demo          # resets to a clean nurse@/headnurse@hospital.com baseline
+.venv/Scripts/python.exe manage.py runserver 0.0.0.0:8010   # separate terminal
+.venv/Scripts/python.exe scripts/smoke_test.py
 ```
