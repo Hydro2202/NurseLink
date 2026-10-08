@@ -221,25 +221,35 @@ export function KardexLabsAndMedications({ patientId }: Props) {
       </View>
       <View style={styles.rowCardActions}>
         {active ? (
-          <Pressable onPress={() => setIntakeMedication(med)}>
-            <Text style={styles.linkText}>Record Intake</Text>
-          </Pressable>
+          <View style={styles.actionItem}>
+            <Pressable onPress={() => setIntakeMedication(med)}>
+              <Text style={styles.linkText}>Record Intake</Text>
+            </Pressable>
+          </View>
         ) : null}
-        <Pressable onPress={() => setHistoryMedication(med)}>
-          <Text style={styles.linkText}>History ({med.intakes.length})</Text>
-        </Pressable>
-        <Pressable onPress={() => { setEditingMed(med); setMedModalOpen(true); }}>
-          <Text style={styles.linkText}>Edit</Text>
-        </Pressable>
-        {active ? (
-          <Pressable onPress={() => handleDiscontinueMed(med)}>
-            <Text style={[styles.linkText, { color: Colors.orange600 }]}>Discontinue</Text>
+        <View style={styles.actionItem}>
+          <Pressable onPress={() => setHistoryMedication(med)}>
+            <Text style={styles.linkText}>History ({med.intakes.length})</Text>
           </Pressable>
+        </View>
+        <View style={styles.actionItem}>
+          <Pressable onPress={() => { setEditingMed(med); setMedModalOpen(true); }}>
+            <Text style={styles.linkText}>Edit</Text>
+          </Pressable>
+        </View>
+        {active ? (
+          <View style={styles.actionItem}>
+            <Pressable onPress={() => handleDiscontinueMed(med)}>
+              <Text style={[styles.linkText, { color: Colors.orange600 }]}>Discontinue</Text>
+            </Pressable>
+          </View>
         ) : null}
         {isHeadNurse ? (
-          <Pressable onPress={() => setDeletingMed(med)}>
-            <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
-          </Pressable>
+          <View style={styles.actionItem}>
+            <Pressable onPress={() => setDeletingMed(med)}>
+              <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
+            </Pressable>
+          </View>
         ) : null}
       </View>
     </View>
@@ -304,18 +314,24 @@ export function KardexLabsAndMedications({ patientId }: Props) {
                     <Text style={styles.fieldValue}>{lab.remarks || '—'}</Text>
                   </View>
                   <View style={styles.rowCardActions}>
-                    <Pressable onPress={() => { setEditingLab(lab); setLabModalOpen(true); }}>
-                      <Text style={styles.linkText}>Edit</Text>
-                    </Pressable>
-                    {lab.status === 'pending' ? (
-                      <Pressable onPress={() => handleCancelLab(lab)}>
-                        <Text style={[styles.linkText, { color: Colors.orange600 }]}>Cancel</Text>
+                    <View style={styles.actionItem}>
+                      <Pressable onPress={() => { setEditingLab(lab); setLabModalOpen(true); }}>
+                        <Text style={styles.linkText}>Edit</Text>
                       </Pressable>
+                    </View>
+                    {lab.status === 'pending' ? (
+                      <View style={styles.actionItem}>
+                        <Pressable onPress={() => handleCancelLab(lab)}>
+                          <Text style={[styles.linkText, { color: Colors.orange600 }]}>Cancel</Text>
+                        </Pressable>
+                      </View>
                     ) : null}
                     {isHeadNurse ? (
-                      <Pressable onPress={() => setDeletingLab(lab)}>
-                        <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
-                      </Pressable>
+                      <View style={styles.actionItem}>
+                        <Pressable onPress={() => setDeletingLab(lab)}>
+                          <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
+                        </Pressable>
+                      </View>
                     ) : null}
                   </View>
                 </View>
@@ -945,6 +961,12 @@ const styles = StyleSheet.create({
   },
   fieldValue: { fontSize: 13, color: Colors.foreground, marginTop: 2 },
   rowCardActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 4 },
+  // Content-sized Pressables (no explicit width) wrapping onto a second
+  // line inside a flexWrap row is where this went wrong — fieldGrid above
+  // wraps correctly because its items (fieldItem) have an explicit
+  // minWidth for Yoga to wrap against; giving each action the same
+  // treatment fixes it the same proven way instead of guessing again.
+  actionItem: { minWidth: '28%' },
 
   linkText: { fontSize: 12, fontWeight: '700', color: Colors.blue600 },
   overdueBadge: { marginTop: 4 },
