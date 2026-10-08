@@ -2010,6 +2010,12 @@ const styles = StyleSheet.create({
   historyFooter: {
     flexDirection: 'row',
     alignItems: 'center',
+    // Up to 3 auto-width buttons ("Back to List", "Print", "Close") — on a
+    // narrow phone they don't all fit on one line. Without wrap, Yoga
+    // doesn't shrink auto-width siblings, so the row overflows past the
+    // screen edge and the last button(s) get clipped instead of wrapping.
+    flexWrap: 'wrap',
+    rowGap: 8,
     gap: 8,
     padding: 16,
     borderTopWidth: 1,

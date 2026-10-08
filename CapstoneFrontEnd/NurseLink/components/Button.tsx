@@ -82,9 +82,15 @@ const styles = StyleSheet.create({
     // Matches the web app's rounded-lg buttons (styles/theme.css) — the web
     // app is this project's design reference.
     borderRadius: Radius.lg,
+    // Without this, a flex:1 button (e.g. two side-by-side action buttons)
+    // won't shrink below its label's unwrapped width — on a narrow phone
+    // that pushes the button past the screen edge instead of wrapping the
+    // text, clipping it. minWidth:0 lets Yoga shrink it to its flex share.
+    minWidth: 0,
+    paddingVertical: 6,
   },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  text: { fontWeight: '600', textAlign: 'center' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1, minWidth: 0 },
+  text: { fontWeight: '600', textAlign: 'center', flexShrink: 1 },
   pressed: { opacity: 0.85, transform: [{ scale: 0.98 }] },
   disabled: { opacity: 0.5 },
 });
@@ -93,9 +99,13 @@ const styles = StyleSheet.create({
 // also the minimum touch target size, which the default height fell short
 // of before (40px).
 const sizeStyles: Record<Size, ViewStyle> = {
-  default: { height: 44, paddingHorizontal: 20 },
-  sm: { height: 36, paddingHorizontal: 14 },
-  lg: { height: 48, paddingHorizontal: 32 },
+  // minHeight, not height: if a label has to wrap to a second line on a
+  // narrow screen (see `base.minWidth`), the button grows to fit it
+  // instead of clipping it. Icon buttons stay fixed/square — they never
+  // wrap.
+  default: { minHeight: 44, paddingHorizontal: 20 },
+  sm: { minHeight: 36, paddingHorizontal: 14 },
+  lg: { minHeight: 48, paddingHorizontal: 32 },
   icon: { width: 44, height: 44, paddingHorizontal: 0 },
   'icon-sm': { width: 36, height: 36, paddingHorizontal: 0 },
 };
