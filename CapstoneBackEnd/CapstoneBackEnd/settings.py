@@ -273,9 +273,36 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# Allow React (Vite) and Expo web/dev clients during local development
+# Allow React (Vite) and Expo web/dev clients during local development.
+# In production (DEBUG off), CORS_ALLOW_ALL_ORIGINS correctly turns off, but
+# nothing replaced it until now — the web app would load fine and then every
+# API call would be silently blocked by the browser. Same fail-loud pattern
+# as ALLOWED_HOSTS above: list the real origin(s), comma-separated, in
+# DJANGO_CORS_ALLOWED_ORIGINS once this is actually deployed somewhere.
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get('DJANGO_CORS_ALLOWED_ORIGINS', '').split(',')
+    if origin.strip()
+]
+if not DEBUG and not CORS_ALLOWED_ORIGINS:
+    raise ImproperlyConfigured(
+        'DJANGO_CORS_ALLOWED_ORIGINS is empty. List the web app\'s real origin(s) '
+        '(e.g. https://app.example.com), comma-separated, when DJANGO_DEBUG is off — '
+        'otherwise every browser request to the API will be silently blocked.'
+    )
+
+# CSRF only matters for session-cookie-authenticated requests (Django admin,
+# the Scalar API docs "try it out" button) — the nurse-facing apps themselves
+# authenticate with a Bearer token, which CSRF does not apply to. Not
+# fail-loud like the two settings above: a deploy with no cross-origin admin/
+# docs access needs nothing here.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get('DJANGO_CSRF_TRUSTED_ORIGINS', '').split(',')
+    if origin.strip()
+]
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
