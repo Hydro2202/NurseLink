@@ -187,22 +187,39 @@ export function KardexLabsAndMedications({ patientId }: Props) {
   };
 
   const renderMedRow = (med: MedicationOrder, active: boolean) => (
-    <View key={med.id} style={styles.tableRow}>
-      <View style={styles.colMed}>
-        <Text style={styles.td}>{med.medicationName}</Text>
-        {med.isOverdue ? <Badge variant="destructive" style={styles.overdueBadge}>Overdue</Badge> : null}
-      </View>
-      <Text style={[styles.td, styles.colDose]}>{med.dose || '—'}</Text>
-      <Text style={[styles.td, styles.colRoute]}>{med.route}</Text>
-      <Text style={[styles.td, styles.colFreq]}>{med.frequency || '—'}</Text>
-      <Text style={[styles.td, styles.colDates]}>
-        {fmtDate(med.startDate)} – {med.endDate ? fmtDate(med.endDate) : 'ongoing'}
-      </Text>
-      <View style={styles.colMedStatus}>
+    <View key={med.id} style={styles.rowCard}>
+      <View style={styles.rowCardHeader}>
+        <View style={{ flex: 1, flexShrink: 1 }}>
+          <Text style={styles.rowCardTitle}>{med.medicationName}</Text>
+          {med.isOverdue ? <Badge variant="destructive" style={styles.overdueBadge}>Overdue</Badge> : null}
+        </View>
         <Badge variant={active ? 'success' : 'secondary'}>{active ? 'Active' : 'Discontinued'}</Badge>
       </View>
-      <Text style={[styles.td, styles.colLastGiven]}>{fmtDateTime(med.lastGiven)}</Text>
-      <View style={[styles.colActions, styles.actionsCell]}>
+      <View style={styles.fieldGrid}>
+        <View style={styles.fieldItem}>
+          <Text style={styles.fieldLabel}>Dose</Text>
+          <Text style={styles.fieldValue}>{med.dose || '—'}</Text>
+        </View>
+        <View style={styles.fieldItem}>
+          <Text style={styles.fieldLabel}>Route</Text>
+          <Text style={styles.fieldValue}>{med.route}</Text>
+        </View>
+        <View style={styles.fieldItem}>
+          <Text style={styles.fieldLabel}>Frequency</Text>
+          <Text style={styles.fieldValue}>{med.frequency || '—'}</Text>
+        </View>
+        <View style={styles.fieldItem}>
+          <Text style={styles.fieldLabel}>Last Given</Text>
+          <Text style={styles.fieldValue}>{fmtDateTime(med.lastGiven)}</Text>
+        </View>
+      </View>
+      <View style={styles.fieldItemFull}>
+        <Text style={styles.fieldLabel}>Start–End Date</Text>
+        <Text style={styles.fieldValue}>
+          {fmtDate(med.startDate)} – {med.endDate ? fmtDate(med.endDate) : 'ongoing'}
+        </Text>
+      </View>
+      <View style={styles.rowCardActions}>
         {active ? (
           <Pressable onPress={() => setIntakeMedication(med)}>
             <Text style={styles.linkText}>Record Intake</Text>
@@ -258,49 +275,52 @@ export function KardexLabsAndMedications({ patientId }: Props) {
           ) : sortedLabs.length === 0 ? (
             <Text style={styles.emptyText}>No labs ordered yet.</Text>
           ) : (
-            <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator style={styles.tableScroll}>
-              <View style={{ minWidth: 820 }}>
-                <View style={[styles.tableRow, styles.tableHeaderRow]}>
-                  <Text style={[styles.th, styles.colTest]}>Test</Text>
-                  <Text style={[styles.th, styles.colDate]}>Date Ordered</Text>
-                  <Text style={[styles.th, styles.colDate]}>Date Done</Text>
-                  <Text style={[styles.th, styles.colLabStatus]}>Status</Text>
-                  <Text style={[styles.th, styles.colResult]}>Result</Text>
-                  <Text style={[styles.th, styles.colRemarks]}>Remarks</Text>
-                  <Text style={[styles.th, styles.colActions]}>Actions</Text>
-                </View>
-                {sortedLabs.map((lab) => (
-                  <View key={lab.id} style={styles.tableRow}>
-                    <View style={styles.colTest}>
-                      <Text style={styles.td}>{lab.testName}</Text>
+            <View style={{ gap: 10 }}>
+              {sortedLabs.map((lab) => (
+                <View key={lab.id} style={styles.rowCard}>
+                  <View style={styles.rowCardHeader}>
+                    <View style={{ flex: 1, flexShrink: 1 }}>
+                      <Text style={styles.rowCardTitle}>{lab.testName}</Text>
                       {lab.isOverdue ? <Badge variant="destructive" style={styles.overdueBadge}>Overdue</Badge> : null}
                     </View>
-                    <Text style={[styles.td, styles.colDate]}>{fmtDate(lab.dateOrdered)}</Text>
-                    <Text style={[styles.td, styles.colDate]}>{fmtDate(lab.dateDone)}</Text>
-                    <View style={styles.colLabStatus}>
-                      <Badge variant={LAB_STATUS_BADGE[lab.status].variant}>{LAB_STATUS_BADGE[lab.status].label}</Badge>
+                    <Badge variant={LAB_STATUS_BADGE[lab.status].variant}>{LAB_STATUS_BADGE[lab.status].label}</Badge>
+                  </View>
+                  <View style={styles.fieldGrid}>
+                    <View style={styles.fieldItem}>
+                      <Text style={styles.fieldLabel}>Date Ordered</Text>
+                      <Text style={styles.fieldValue}>{fmtDate(lab.dateOrdered)}</Text>
                     </View>
-                    <Text style={[styles.td, styles.colResult]} numberOfLines={2}>{lab.result || '—'}</Text>
-                    <Text style={[styles.td, styles.colRemarks]} numberOfLines={2}>{lab.remarks || '—'}</Text>
-                    <View style={[styles.colActions, styles.actionsCell]}>
-                      <Pressable onPress={() => { setEditingLab(lab); setLabModalOpen(true); }}>
-                        <Text style={styles.linkText}>Edit</Text>
-                      </Pressable>
-                      {lab.status === 'pending' ? (
-                        <Pressable onPress={() => handleCancelLab(lab)}>
-                          <Text style={[styles.linkText, { color: Colors.orange600 }]}>Cancel</Text>
-                        </Pressable>
-                      ) : null}
-                      {isHeadNurse ? (
-                        <Pressable onPress={() => setDeletingLab(lab)}>
-                          <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
-                        </Pressable>
-                      ) : null}
+                    <View style={styles.fieldItem}>
+                      <Text style={styles.fieldLabel}>Date Done</Text>
+                      <Text style={styles.fieldValue}>{fmtDate(lab.dateDone)}</Text>
                     </View>
                   </View>
-                ))}
-              </View>
-            </ScrollView>
+                  <View style={styles.fieldItemFull}>
+                    <Text style={styles.fieldLabel}>Result</Text>
+                    <Text style={styles.fieldValue}>{lab.result || '—'}</Text>
+                  </View>
+                  <View style={styles.fieldItemFull}>
+                    <Text style={styles.fieldLabel}>Remarks</Text>
+                    <Text style={styles.fieldValue}>{lab.remarks || '—'}</Text>
+                  </View>
+                  <View style={styles.rowCardActions}>
+                    <Pressable onPress={() => { setEditingLab(lab); setLabModalOpen(true); }}>
+                      <Text style={styles.linkText}>Edit</Text>
+                    </Pressable>
+                    {lab.status === 'pending' ? (
+                      <Pressable onPress={() => handleCancelLab(lab)}>
+                        <Text style={[styles.linkText, { color: Colors.orange600 }]}>Cancel</Text>
+                      </Pressable>
+                    ) : null}
+                    {isHeadNurse ? (
+                      <Pressable onPress={() => setDeletingLab(lab)}>
+                        <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
+              ))}
+            </View>
           )}
         </CardContent>
       </Card>
@@ -333,21 +353,7 @@ export function KardexLabsAndMedications({ patientId }: Props) {
           ) : activeMeds.length === 0 ? (
             <Text style={styles.emptyText}>No active medications.</Text>
           ) : (
-            <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator style={styles.tableScroll}>
-              <View style={{ minWidth: 900 }}>
-                <View style={[styles.tableRow, styles.tableHeaderRow]}>
-                  <Text style={[styles.th, styles.colMed]}>Medication</Text>
-                  <Text style={[styles.th, styles.colDose]}>Dose</Text>
-                  <Text style={[styles.th, styles.colRoute]}>Route</Text>
-                  <Text style={[styles.th, styles.colFreq]}>Frequency</Text>
-                  <Text style={[styles.th, styles.colDates]}>Start–End Date</Text>
-                  <Text style={[styles.th, styles.colMedStatus]}>Status</Text>
-                  <Text style={[styles.th, styles.colLastGiven]}>Last Given</Text>
-                  <Text style={[styles.th, styles.colActions]}>Actions</Text>
-                </View>
-                {activeMeds.map((med) => renderMedRow(med, true))}
-              </View>
-            </ScrollView>
+            <View style={{ gap: 10 }}>{activeMeds.map((med) => renderMedRow(med, true))}</View>
           )}
 
           {discontinuedMeds.length > 0 ? (
@@ -363,21 +369,9 @@ export function KardexLabsAndMedications({ patientId }: Props) {
                 </Text>
               </Pressable>
               {showDiscontinued ? (
-                <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator style={[styles.tableScroll, { marginTop: 8 }]}>
-                  <View style={{ minWidth: 900 }}>
-                    <View style={[styles.tableRow, styles.tableHeaderRow]}>
-                      <Text style={[styles.th, styles.colMed]}>Medication</Text>
-                      <Text style={[styles.th, styles.colDose]}>Dose</Text>
-                      <Text style={[styles.th, styles.colRoute]}>Route</Text>
-                      <Text style={[styles.th, styles.colFreq]}>Frequency</Text>
-                      <Text style={[styles.th, styles.colDates]}>Start–End Date</Text>
-                      <Text style={[styles.th, styles.colMedStatus]}>Status</Text>
-                      <Text style={[styles.th, styles.colLastGiven]}>Last Given</Text>
-                      <Text style={[styles.th, styles.colActions]}>Actions</Text>
-                    </View>
-                    {discontinuedMeds.map((med) => renderMedRow(med, false))}
-                  </View>
-                </ScrollView>
+                <View style={{ gap: 10, marginTop: 8 }}>
+                  {discontinuedMeds.map((med) => renderMedRow(med, false))}
+                </View>
               ) : null}
             </View>
           ) : null}
@@ -925,41 +919,32 @@ const styles = StyleSheet.create({
   btnTextWhite: { color: Colors.white, fontWeight: '700', fontSize: 13 },
   emptyText: { fontSize: 13, color: Colors.mutedForeground, paddingVertical: 8 },
 
-  // Without an explicit width, a horizontal ScrollView sizes its own
-  // viewport to fit its (wider-than-screen) content instead of the space
-  // actually available — so its scrollable range is 0 and swiping does
-  // nothing, while the ancestor Card's overflow:'hidden' still visually
-  // crops it, making it look cut off rather than just unscrollable.
-  // width:'100%' forces the viewport to the available width so there's
-  // something real to scroll.
-  tableScroll: { width: '100%' },
-  tableRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+  // Each lab/medication is a stacked card instead of a wide table row —
+  // on a phone a table wider than the screen needs horizontal scrolling,
+  // which turned out to be unreliable to trigger inside this modal's
+  // nested scroll views on iOS (see commit history). Stacking every field
+  // vertically means everything is visible with no swipe gesture needed.
+  rowCard: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.lg,
+    padding: 12,
     gap: 8,
   },
-  tableHeaderRow: { borderBottomWidth: 2, borderBottomColor: Colors.gray300 },
-  th: { fontSize: 11, fontWeight: '800', color: Colors.mutedForeground, textTransform: 'uppercase', letterSpacing: 0.3 },
-  td: { fontSize: 13, color: Colors.foreground },
-
-  colTest: { width: 150 },
-  colDate: { width: 100 },
-  colLabStatus: { width: 90 },
-  colResult: { width: 170 },
-  colRemarks: { width: 150 },
-  colActions: { width: 130, gap: 4 },
-  actionsCell: { gap: 4 },
-
-  colMed: { width: 140 },
-  colDose: { width: 80 },
-  colRoute: { width: 80 },
-  colFreq: { width: 100 },
-  colDates: { width: 160 },
-  colMedStatus: { width: 100 },
-  colLastGiven: { width: 140 },
+  rowCardHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  rowCardTitle: { fontSize: 14, fontWeight: '700', color: Colors.foreground },
+  fieldGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  fieldItem: { minWidth: '40%', flexGrow: 1 },
+  fieldItemFull: { width: '100%' },
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: Colors.mutedForeground,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  fieldValue: { fontSize: 13, color: Colors.foreground, marginTop: 2 },
+  rowCardActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 4 },
 
   linkText: { fontSize: 12, fontWeight: '700', color: Colors.blue600 },
   overdueBadge: { marginTop: 4 },
