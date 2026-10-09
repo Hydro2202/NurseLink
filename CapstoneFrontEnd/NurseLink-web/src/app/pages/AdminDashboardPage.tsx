@@ -266,18 +266,20 @@ export default function AdminDashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b px-6 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-blue-100 to-blue-200">
+      <header className="bg-gradient-to-r from-white via-blue-50 to-blue-100 border-b-2 border-blue-300 px-6 py-4 flex items-center justify-between sticky top-0 z-50 shadow-lg shadow-blue-500/10">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-blue-800 flex items-center justify-center shadow-md">
             <ShieldCheck className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="font-bold text-gray-900">NurseLink Admin</h1>
+            <h1 className="font-black text-transparent bg-gradient-to-r from-blue-700 to-blue-900 bg-clip-text">
+              NurseLink Admin
+            </h1>
             <p className="text-xs text-gray-500">{user?.email}</p>
           </div>
         </div>
-        <Button variant="outline" onClick={handleLogout}>
+        <Button variant="outline" onClick={handleLogout} className="shadow-sm">
           <LogOut className="w-4 h-4 mr-2" />
           Logout
         </Button>
@@ -289,8 +291,10 @@ export default function AdminDashboardPage() {
             <button
               key={p.id}
               onClick={() => setPanel(p.id)}
-              className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
-                panel === p.id ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground hover:bg-accent'
+              className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                panel === p.id
+                  ? 'bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-md'
+                  : 'bg-white/70 text-foreground hover:bg-white shadow-sm'
               }`}
             >
               {p.label}
@@ -310,8 +314,10 @@ export default function AdminDashboardPage() {
                   <button
                     key={t.id}
                     onClick={() => setTab(t.id)}
-                    className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
-                      tab === t.id ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground hover:bg-accent'
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                      tab === t.id
+                        ? 'bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-md'
+                        : 'bg-muted text-foreground hover:bg-accent'
                     }`}
                   >
                     {t.label}
