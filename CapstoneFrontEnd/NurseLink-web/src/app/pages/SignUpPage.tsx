@@ -41,7 +41,6 @@ import {
   resendRegistrationOtpRequest,
   sendRegistrationOtpRequest,
   verifyIdRequest,
-  verifyPrcLicenseRequest,
   verifyRegistrationOtpRequest,
 } from '../api/nurselink';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
@@ -142,11 +141,13 @@ function extractErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-const STEP_LABELS = ['PRC ID', 'ID Review', 'Face Check', 'Role', 'PRC License', 'Role Check', 'Credentials'];
-const NURSE_POSITIONS = ['nurse', 'registered nurse', 'staff nurse'];
-const SUPERVISOR_POSITIONS = ['supervisor', 'head nurse', 'nursing supervisor', 'charge nurse'];
+// 5 steps, matching mobile's signup.tsx: the PRC license number is read
+// directly from the Step 1 ID scan's OCR response (ocrData.registrationNumber)
+// instead of a separate upload/verification step, and there is no separate
+// role cross-check step — selecting a role on Step 4 is enough.
+const STEP_LABELS = ['PRC ID', 'ID Review', 'Face Check', 'Role', 'Credentials'];
 
-type StepNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type StepNumber = 1 | 2 | 3 | 4 | 5;
 type SelectedRole = 'nurse' | 'head_nurse' | null;
 
 type OcrData = {
@@ -182,7 +183,7 @@ const roleOptions: Array<{ value: SelectedRole; title: string; detail: string; e
   },
 ];
 
-const STEP_ICONS = [IdCard, FileText, Camera, Users, ShieldCheck, CheckCircle2, Lock];
+const STEP_ICONS = [IdCard, FileText, Camera, Users, Lock];
 
 function StepStepper({ current }: { current: StepNumber }) {
   return (
@@ -251,7 +252,7 @@ function StepCardHeader({
         </div>
         <div>
           <h2 className="text-lg font-bold leading-snug sm:text-xl">
-            Step {step} of 7 — {title}
+            Step {step} of {STEP_LABELS.length} — {title}
           </h2>
           <p className="mt-1 text-sm text-blue-100">{description}</p>
         </div>
@@ -423,7 +424,7 @@ export default function SignUpPage() {
   // Which ID-capture camera modal is open, if any. A hidden file input with
   // capture="environment" cannot open a camera in a desktop browser, so the
   // web flow uses a real getUserMedia preview with an alignment guide.
-  const [idCameraFor, setIdCameraFor] = useState<null | 'hospital' | 'prc'>(null);
+  const [idCameraFor, setIdCameraFor] = useState<null | 'hospital'>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const cameraRequestInFlight = useRef(false);
   const faceVerificationInFlight = useRef(false);
@@ -480,17 +481,7 @@ export default function SignUpPage() {
   const [nowTick, setNowTick] = useState(Date.now());
 
   const [selectedRole, setSelectedRole] = useState<SelectedRole>(null);
-  const [roleMatch, setRoleMatch] = useState<'idle' | 'matched' | 'mismatch'>('idle');
   const [roleSelectError, setRoleSelectError] = useState('');
-
-  const [licenseNumber, setLicenseNumber] = useState('');
-  const [prcStatus, setPrcStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
-  const [prcData, setPrcData] = useState<{ profession: string; expiration: string } | null>(null);
-  const [prcError, setPrcError] = useState('');
-  const [prcImagePreview, setPrcImagePreview] = useState<string | null>(null);
-  const [prcFaceMatched, setPrcFaceMatched] = useState(false);
-  const prcFileInputRef = useRef<HTMLInputElement>(null);
-  const prcCameraInputRef = useRef<HTMLInputElement>(null);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -501,9 +492,7 @@ export default function SignUpPage() {
     'PRC Identity Verification',
     'Extracted ID Information',
     'Mandatory Face Verification',
-    'Role Selection',
-    'PRC License Verification',
-    'Role Verification',
+    'Requested Role',
     'Account Credentials',
   ];
 
@@ -511,9 +500,7 @@ export default function SignUpPage() {
     'Scan your PRC ID to automatically extract your information.',
     'Review your extracted information. These fields are read-only.',
     'Capture a live selfie to confirm your identity.',
-    'Select the role you are registering for. It must match your verified employment information.',
-    'Upload or scan your PRC Professional License to verify it.',
-    'Confirming your selected role matches your PRC ID and PRC License records.',
+    'Choose the role you are requesting. You start as a nurse; a head nurse request needs admin approval.',
     'Set your login credentials to complete registration.',
   ];
 
@@ -664,7 +651,6 @@ export default function SignUpPage() {
     setHospitalIdError('');
     setOcrStatus('idle');
     setOcrData(null);
-    setRoleMatch('idle');
     resetFaceCycleLocal();
 
     if (!acceptedFormats.includes(file.type)) {
@@ -1002,91 +988,6 @@ export default function SignUpPage() {
     : 0;
   const otpExpired = otpExpiresAt ? nowTick > otpExpiresAt && otpStatus !== 'verified' : false;
 
-  // Verification is driven by scanning/uploading the card, not by typing a
-  // number — mirrors the mobile wizard. When the session was identity-
-  // verified via Face, the already-captured selfie is resent so the backend
-  // can confirm it matches the licence photo (see api/views.py VerifyPrcLicenseView).
-  const runPrcVerify = useCallback(
-    async (imageDataUrl: string) => {
-      setPrcError('');
-      setPrcStatus('processing');
-      try {
-        // faceStatus/otpStatus rather than the derived `verificationMethod`
-        // const, which is declared later in this component and would be in
-        // its temporal dead zone if referenced from this callback's deps.
-        const selfieToSend = faceStatus === 'success' ? (selfiePreview ?? undefined) : undefined;
-        const res = await verifyPrcLicenseRequest(imageDataUrl, registrationSessionId, selfieToSend);
-
-        if (!res.valid) {
-          setPrcStatus('error');
-          setPrcData(null);
-          setPrcError(res.message || 'Please upload a valid PRC nursing license.');
-          return;
-        }
-
-        if (res.faceMatch && !res.faceMatch.matched) {
-          setPrcStatus('error');
-          setPrcData(null);
-          setPrcError(res.faceMatch.message || 'This selfie does not match your PRC card photo. Please retake it.');
-          return;
-        }
-
-        if (res.registrationNumber) setLicenseNumber(res.registrationNumber);
-        setPrcData({ profession: res.profession, expiration: res.validUntil });
-        setPrcFaceMatched(Boolean(res.faceMatch?.matched));
-        setPrcStatus('success');
-      } catch (err) {
-        setPrcStatus('error');
-        setPrcData(null);
-        setPrcError(extractErrorMessage(err, 'Licence verification is unavailable right now. Please try again.'));
-      }
-    },
-    [registrationSessionId, selfiePreview, faceStatus]
-  );
-
-  const handlePrcFile = (file: File) => {
-    setPrcError('');
-    setPrcStatus('idle');
-    setPrcData(null);
-    setPrcFaceMatched(false);
-
-    if (!['image/jpeg', 'image/png'].includes(file.type)) {
-      setPrcError('Unsupported file format. Please upload JPG or PNG.');
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      setPrcError('File too large. Maximum size is 5 MB.');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      setPrcImagePreview(dataUrl);
-      void runPrcVerify(dataUrl);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const computeRoleMatch = useCallback(() => {
-    if (!selectedRole || !ocrData) {
-      setRoleMatch('mismatch');
-      return;
-    }
-    const position = ocrData.position.toLowerCase();
-    const matchesNurse = NURSE_POSITIONS.some((entry) => position.includes(entry));
-    const matchesSupervisor = SUPERVISOR_POSITIONS.some((entry) => position.includes(entry));
-    if (selectedRole === 'nurse' && matchesNurse) setRoleMatch('matched');
-    else if (selectedRole === 'head_nurse' && matchesSupervisor) setRoleMatch('matched');
-    else setRoleMatch('mismatch');
-  }, [ocrData, selectedRole]);
-
-  useEffect(() => {
-    if (step === 6) {
-      computeRoleMatch();
-    }
-  }, [step, computeRoleMatch]);
-
   const validateCredentials = () => {
     const errors: Record<string, string> = {};
     if (!email.trim()) errors.email = 'Email is required';
@@ -1128,7 +1029,9 @@ export default function SignUpPage() {
         password,
         role: selectedRole === 'head_nurse' ? 'head_nurse' : 'staff_nurse',
         department: ocrData?.department ?? '',
-        licenseNumber,
+        // Read from the PRC ID scan in Step 1; there is no separate PRC
+        // license upload step (mirrors mobile's signup.tsx).
+        licenseNumber: (ocrData?.registrationNumber || '').trim(),
         registrationSessionId,
       });
       // Keep the user on the pending-approval screen; do not leave them logged in.
@@ -1147,30 +1050,19 @@ export default function SignUpPage() {
   const identityVerified = faceDone || otpStatus === 'verified';
   const verificationMethod: 'FACE' | 'EMAIL_OTP' | null = faceDone ? 'FACE' : otpStatus === 'verified' ? 'EMAIL_OTP' : null;
   const roleSelected = !!selectedRole;
-  const prcDone = prcStatus === 'success';
-  const roleVerified = roleMatch === 'matched';
   const credsDone = email.trim() !== '' && password.length >= 8 && password === confirmPassword;
-  const canSubmitCredentials = roleVerified && prcDone && identityVerified && ocrDone && idUploaded && roleSelected;
+  const canSubmitCredentials = identityVerified && ocrDone && idUploaded && roleSelected;
 
   return (
     <>
       <IdCameraCaptureModal
         open={idCameraFor !== null}
         onClose={() => setIdCameraFor(null)}
-        title={idCameraFor === 'prc' ? 'Scan your PRC ID' : 'Scan your Hospital ID'}
+        title="Scan your Hospital ID"
         onCapture={(dataUrl) => {
           // Same path the file picker uses, so OCR and validation are unchanged.
-          if (idCameraFor === 'prc') {
-            setPrcError('');
-            setPrcStatus('idle');
-            setPrcData(null);
-            setPrcFaceMatched(false);
-            setPrcImagePreview(dataUrl);
-            void runPrcVerify(dataUrl);
-          } else {
-            setHospitalIdPreview(dataUrl);
-            void runIdVerification(dataUrl);
-          }
+          setHospitalIdPreview(dataUrl);
+          void runIdVerification(dataUrl);
         }}
       />
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
@@ -1949,248 +1841,6 @@ export default function SignUpPage() {
                 )}
 
                 {step === 5 && (
-                  <div className="space-y-5">
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => !prcImagePreview && prcFileInputRef.current?.click()}
-                      onKeyDown={(e) => e.key === 'Enter' && prcFileInputRef.current?.click()}
-                      className={`rounded-2xl border-2 border-dashed px-4 py-8 text-center transition ${
-                        prcStatus === 'success'
-                          ? 'border-green-300 bg-green-50/30'
-                          : 'border-blue-200 bg-blue-50/50 hover:border-blue-300 hover:bg-blue-50'
-                      }`}
-                    >
-                      {prcImagePreview ? (
-                        <div className="relative mx-auto max-w-lg">
-                          <img
-                            src={prcImagePreview}
-                            alt="PRC License"
-                            className="mx-auto max-h-52 w-full rounded-xl object-contain"
-                          />
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setPrcImagePreview(null);
-                              setPrcStatus('idle');
-                              setPrcData(null);
-                              setPrcError('');
-                              setPrcFaceMatched(false);
-                            }}
-                            className="absolute -right-2 -top-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-600 shadow-md hover:bg-slate-100"
-                          >
-                            <X className="h-4 w-4" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="mx-auto flex max-w-md flex-col items-center gap-3 py-4">
-                          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-100 text-blue-600">
-                            <ShieldCheck className="h-8 w-8" />
-                          </div>
-                          <p className="text-sm font-semibold text-blue-700">
-                            Drag & drop or click to upload your PRC License
-                          </p>
-                          <p className="text-xs text-slate-500">Accepted formats: JPG, PNG · Max 5 MB</p>
-                        </div>
-                      )}
-                    </div>
-
-                    <input
-                      ref={prcFileInputRef}
-                      type="file"
-                      accept="image/jpeg,image/png"
-                      className="sr-only"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0];
-                        if (file) handlePrcFile(file);
-                      }}
-                    />
-                    <input
-                      ref={prcCameraInputRef}
-                      type="file"
-                      accept="image/jpeg,image/png"
-                      capture="environment"
-                      className="sr-only"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0];
-                        if (file) handlePrcFile(file);
-                      }}
-                    />
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        onClick={() => setIdCameraFor('prc')}
-                        className="flex h-12 items-center justify-center gap-2 rounded-full border-2 border-blue-200 bg-white text-sm font-semibold text-blue-700 transition hover:border-blue-300 hover:bg-blue-50"
-                      >
-                        <Camera className="h-5 w-5" /> Camera Scan
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => prcFileInputRef.current?.click()}
-                        className="flex h-12 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-                      >
-                        <Upload className="h-5 w-5" /> Upload File
-                      </button>
-                    </div>
-
-                    {prcStatus === 'processing' && (
-                      <span className="flex items-center gap-1 text-xs text-blue-600">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Verifying license...
-                      </span>
-                    )}
-                    {prcError && <p className="text-sm text-red-600">{prcError}</p>}
-
-                    {licenseNumber && (
-                      <div className="space-y-2">
-                        <Label htmlFor="licenseNumber" className="flex items-center gap-2 text-sm font-medium text-slate-700">
-                          <ShieldCheck className="h-4 w-4 text-slate-400" />
-                          PRC License Number
-                        </Label>
-                        <div className="relative">
-                          {/* Read-only: the licence number comes from the card scan. */}
-                          <Input
-                            id="licenseNumber"
-                            type="text"
-                            value={licenseNumber}
-                            readOnly
-                            className="h-11 rounded-xl pr-28"
-                          />
-                          {prcStatus === 'success' && (
-                            <span className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full border border-green-300 bg-green-50 px-2.5 py-0.5 text-xs font-semibold text-green-700">
-                              <CheckCircle className="h-3.5 w-3.5" /> Verified
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {prcStatus === 'success' && prcData && (
-                      <div className="rounded-xl border border-green-200 bg-green-50 p-4">
-                        <div className="mb-3 flex items-center gap-2 font-semibold text-green-700">
-                          <CheckCircle className="h-4 w-4" />
-                          Active PRC License
-                        </div>
-                        <div className="grid gap-4 sm:grid-cols-3">
-                          <div>
-                            <p className="text-xs text-slate-500">License Status</p>
-                            <p className="font-semibold text-slate-900">Active</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-slate-500">Profession</p>
-                            <p className="font-semibold text-slate-900">{prcData.profession}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-slate-500">Expiration Date</p>
-                            <p className="font-semibold text-slate-900">{prcData.expiration}</p>
-                          </div>
-                          {prcFaceMatched && (
-                            <div>
-                              <p className="text-xs text-slate-500">Face Match</p>
-                              <span className="inline-flex items-center gap-1 rounded-full border border-green-300 bg-white px-2.5 py-0.5 text-xs font-semibold text-green-700">
-                                <CheckCircle className="h-3.5 w-3.5" /> Matched with PRC photo
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    <NavButtons
-                      onBack={() => setStep(4)}
-                      onContinue={() => setStep(6)}
-                      continueDisabled={prcStatus !== 'success'}
-                    />
-                  </div>
-                )}
-
-                {step === 6 && (
-                  <div className="space-y-5">
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                        <p className="text-xs text-slate-500">Selected Role</p>
-                        <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
-                          {selectedRole === 'head_nurse' ? '👨‍⚕️' : '👩‍⚕️'}{' '}
-                          {selectedRole === 'head_nurse' ? 'Head Nurse' : 'Nurse'}
-                        </p>
-                      </div>
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                        <p className="text-xs text-slate-500">OCR Detected Position</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-900">{ocrData?.position ?? 'Pending'}</p>
-                      </div>
-                    </div>
-
-                    {roleMatch === 'matched' && (
-                      <div className="rounded-xl border border-green-200 bg-green-50 p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2 font-semibold text-green-700">
-                            <CheckCircle className="h-4 w-4" />
-                            Role Verified
-                          </div>
-                          <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-700">
-                            <CheckCircle className="h-3 w-3" /> Role Match
-                          </span>
-                        </div>
-                        <div className="mt-3 space-y-2 rounded-xl border border-green-100 bg-white p-4 text-sm text-slate-700">
-                          <div className="flex items-center gap-2">
-                            <CheckCircle className="h-4 w-4 text-green-600" />
-                            Selected: <strong>{selectedRole === 'head_nurse' ? 'Head Nurse' : 'Nurse'}</strong>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <CheckCircle className="h-4 w-4 text-green-600" />
-                            OCR Detected: <strong>{ocrData?.position}</strong>
-                          </div>
-                        </div>
-                        <p className="mt-3 flex items-center gap-2 text-sm font-medium text-green-700">
-                          <CheckCircle className="h-4 w-4" />
-                          You are authorized to register as a{' '}
-                          {selectedRole === 'head_nurse' ? 'Head Nurse' : 'Nurse'}.
-                        </p>
-                      </div>
-                    )}
-
-                    {roleMatch === 'mismatch' && (
-                      <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="font-semibold text-red-700">Role Mismatch</div>
-                          <span className="rounded-full border border-red-200 bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700">
-                            Mismatch Detected
-                          </span>
-                        </div>
-                        <div className="mt-3 space-y-2 rounded-xl border border-red-100 bg-white p-4 text-sm text-slate-700">
-                          <div className="flex items-center gap-2">
-                            <XCircle className="h-4 w-4 text-red-600" />
-                            Selected: <strong>{selectedRole === 'head_nurse' ? 'Head Nurse' : 'Nurse'}</strong>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <AlertCircle className="h-4 w-4 text-amber-500" />
-                            OCR Detected: <strong>{ocrData?.position}</strong>
-                          </div>
-                        </div>
-                        <p className="mt-3 text-sm font-medium text-red-700">
-                          The selected role does not match your verified employment information.
-                        </p>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={() => setStep(4)}
-                          className="mt-3 h-11 w-full rounded-full border-red-300 text-red-700"
-                        >
-                          <ChevronLeft className="mr-2 h-4 w-4" /> Change Role Selection
-                        </Button>
-                      </div>
-                    )}
-
-                    <NavButtons
-                      onBack={() => setStep(5)}
-                      onContinue={() => setStep(7)}
-                      continueDisabled={roleMatch !== 'matched'}
-                    />
-                  </div>
-                )}
-
-                {step === 7 && (
                   <form onSubmit={handleCreateAccount} className="space-y-5">
                     {globalError && (
                       <Alert variant="destructive">
@@ -2283,8 +1933,6 @@ export default function SignUpPage() {
                             done: identityVerified,
                           },
                           { label: 'Role Selected', done: roleSelected },
-                          { label: 'PRC Verified', done: prcDone },
-                          { label: 'Role Matched', done: roleVerified },
                           { label: 'Credentials Completed', done: credsDone },
                         ].map((item) => (
                           <div
@@ -2310,7 +1958,7 @@ export default function SignUpPage() {
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setStep(6)}
+                        onClick={() => setStep(4)}
                         className="h-12 flex-1 rounded-xl border-gray-200"
                       >
                         <ChevronLeft className="mr-1 h-4 w-4" aria-hidden /> Back

@@ -871,3 +871,31 @@ export async function fetchPatientVisits(
 ): Promise<import('../types/domain').PatientVisit[]> {
   return apiRequest<import('../types/domain').PatientVisit[]>(`/patients/${patientCode}/visits/`);
 }
+
+// --- Live refresh + realtime (ported from mobile's LiveContext/RealtimeContext) ---
+
+/** Revision stamps used to detect changes without refetching whole lists. */
+export interface LiveState {
+  notifications: string;
+  tasks: string;
+  handovers: string;
+  patients: string;
+  /** A head nurse ending/editing any nurse's shift moves this. */
+  duty: string;
+  /** The signed-in nurse's own department:shift — set by a head nurse via
+   * assignNurse, not by this device. */
+  profile: string;
+  unreadCount: number;
+}
+
+export async function fetchLiveState(): Promise<LiveState> {
+  return apiRequest<LiveState>('/live/');
+}
+
+/** A short-lived, single-use ticket for opening the notifications WebSocket —
+ * see RealtimeContext. Requested fresh for every connect/reconnect so the
+ * real auth token never has to appear in the socket URL. */
+export async function fetchWsTicket(): Promise<string> {
+  const data = await apiRequest<{ ticket: string }>('/auth/ws-ticket/', { method: 'POST' });
+  return data.ticket;
+}
