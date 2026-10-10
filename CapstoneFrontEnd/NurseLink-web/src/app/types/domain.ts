@@ -129,6 +129,19 @@ export interface Patient {
    * api/nurselink.ts), not by re-saving the Kardex form. */
   laboratories?: LabEntry[];
   medicationOrders?: MedicationOrder[];
+  /** Discharge audit trail — set by the head-nurse-only discharge action. */
+  dischargedAt?: string | null;
+  dischargedByName?: string | null;
+  /** Nurse who assigned assignedNurseName to this patient. */
+  assignedBy?: string | null;
+  /** Whoever is actually on shift right now for this patient's department,
+   * per the Duty Roster — distinct from the static assignedNurseName. */
+  onDutyNurseId?: string | null;
+  onDutyNurseName?: string | null;
+  /** {editedBy, editedAt, changes} entries — see PatientSerializer.update(). */
+  editHistory?: { editedBy: string; editedAt: string; changes: string[] }[];
+  lastEditedAt?: string | null;
+  lastEditedByName?: string | null;
 }
 
 export interface Department {
@@ -586,4 +599,51 @@ export interface AdminFaceVerificationAttempt {
   reasonLabel: string;
   countable: boolean;
   createdAt: string;
+}
+
+/**
+ * M.E.T.H.O.D. discharge plan — Medications, Environment, Treatment, Health
+ * Teaching, Outpatient Referral, Diet. Filled in as part of discharging a
+ * patient and attached to that visit; completedByName/completedAt mirror
+ * PatientVisit.dischargedByName/dischargeDate.
+ */
+export interface DischargePlan {
+  medications: string;
+  environment: string;
+  treatment: string;
+  healthTeaching: string;
+  outpatientReferral: string;
+  diet: string;
+  aiGenerated: boolean;
+  completedByName: string | null;
+  completedAt: string | null;
+}
+
+/** One admission-to-discharge encounter under a Patient profile — never
+ * overwritten by a later visit; see PatientVisit on the backend. */
+export interface PatientVisit {
+  id: number;
+  admissionDate: string;
+  dischargeDate: string | null;
+  isActive: boolean;
+  diagnosis: string;
+  room: string;
+  attendingPhysician: string;
+  assignedNurseName: string | null;
+  medicalTeam: { name: string; specialization: string; departmentName: string }[];
+  dischargedByName: string | null;
+  vitals: {
+    id: number;
+    recordedAt: string;
+    heartRate: number | null;
+    bloodPressure: string;
+    temperature: number | null;
+    oxygenSaturation: number | null;
+    respiratoryRate: number | null;
+    painScale: number | null;
+    source: string;
+  }[];
+  notes: { id: string; timestamp: string; type: string; content: string }[];
+  hasDischargePlan: boolean;
+  dischargePlan: DischargePlan | null;
 }

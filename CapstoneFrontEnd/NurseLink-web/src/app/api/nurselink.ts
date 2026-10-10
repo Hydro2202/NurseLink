@@ -812,3 +812,62 @@ export async function clearAbandonedRegistrationSessions(): Promise<{ deleted: n
     method: 'POST',
   });
 }
+
+// --- Patient discharge / readmit / visit history (ported from mobile's
+// services/api.ts for the All Patients page) ---
+
+export type DischargePlanDraft = {
+  medications: string;
+  environment: string;
+  treatment: string;
+  healthTeaching: string;
+  outpatientReferral: string;
+  diet: string;
+  aiGenerated: boolean;
+};
+
+/** Head-nurse-only. Sets status to discharged and records who/when. The
+ * record is kept, not deleted — see fetchPatientVisits for its history.
+ * dischargePlan (M.E.T.H.O.D.) is required unless the backend has
+ * DISCHARGE_PLAN_REQUIRED off — omitting it when required returns a 400. */
+export async function dischargePatient(
+  patientCode: string,
+  dischargePlan?: Omit<DischargePlanDraft, 'aiGenerated'> & { aiGenerated?: boolean }
+): Promise<Patient> {
+  return apiRequest<Patient>(`/patients/${patientCode}/discharge/`, {
+    method: 'POST',
+    body: dischargePlan ? { dischargePlan } : undefined,
+  });
+}
+
+/** Any approved nurse. AI-drafts a Discharge Plan from this patient's
+ * medications, most recent Kardex diet entry, and charted notes — a starting
+ * point to review/edit, never persisted until dischargePatient() is called. */
+export async function generateDischargePlan(patientCode: string): Promise<DischargePlanDraft> {
+  return apiRequest<DischargePlanDraft>(`/patients/${patientCode}/discharge-plan-generate/`, {
+    method: 'POST',
+  });
+}
+
+/** Head-nurse-only. Reactivates a discharged patient under their existing
+ * profile (same id) for a new admission, rather than creating a duplicate. */
+export async function readmitPatient(
+  patientCode: string,
+  data: {
+    diagnosis: string;
+    room: string;
+    admissionDate?: string;
+    attendingPhysician?: string;
+    departmentId?: number | null;
+    riskLevel?: Patient['riskLevel'];
+  }
+): Promise<Patient> {
+  return apiRequest<Patient>(`/patients/${patientCode}/readmit/`, { method: 'POST', body: data });
+}
+
+/** Every admission-to-discharge visit on record for this patient, newest first. */
+export async function fetchPatientVisits(
+  patientCode: string
+): Promise<import('../types/domain').PatientVisit[]> {
+  return apiRequest<import('../types/domain').PatientVisit[]>(`/patients/${patientCode}/visits/`);
+}
