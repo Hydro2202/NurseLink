@@ -31,8 +31,47 @@ import {
   Settings as SettingsIcon,
   Camera,
   Save,
+  KeyRound,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { PasswordChangeModal } from '../components/PasswordChangeModal';
+import {
+  ApiError,
+  changePasswordRequest,
+  fetchPreferences,
+  updatePreferences,
+  type UserPreferences,
+} from '../api/nurselink';
+
+/** Same defaults as mobile's PreferencesContext, used until the server answers. */
+const DEFAULT_PREFERENCES: UserPreferences = {
+  fontSize: 'medium',
+  compactView: false,
+  taskNotifications: true,
+  handoverNotifications: true,
+  criticalAlerts: true,
+  emailNotifications: false,
+  soundAlerts: true,
+  autoRefresh: true,
+  showCharts: true,
+  backgroundSync: true,
+};
+
+/** Which controls each Save button is responsible for (mirrors mobile). */
+const SECTIONS = {
+  appearance: ['fontSize', 'compactView'],
+  notifications: [
+    'taskNotifications',
+    'handoverNotifications',
+    'criticalAlerts',
+    'emailNotifications',
+    'soundAlerts',
+  ],
+  system: ['autoRefresh', 'showCharts', 'backgroundSync'],
+} as const satisfies Record<string, readonly (keyof UserPreferences)[]>;
+
+type SectionName = keyof typeof SECTIONS;
 
 export default function SettingsPage() {
   const { user, logout, updateUser } = useAuth();
@@ -48,26 +87,66 @@ export default function SettingsPage() {
   const [profilePhoto, setProfilePhoto] = useState(user?.avatar || '');
   const [showLogoutDialog, setShowLogoutDialog] = useState(false);
   
-  // Appearance settings
-  const [fontSize, setFontSize] = useState(() => {
-    return localStorage.getItem('nurselink_fontsize') || 'medium';
-  });
-  const [compactView, setCompactView] = useState(() => {
-    const saved = localStorage.getItem('nurselink_compactview');
-    return saved === 'true';
-  });
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
 
-  // Notification settings
-  const [taskNotifications, setTaskNotifications] = useState(true);
-  const [handoverNotifications, setHandoverNotifications] = useState(true);
-  const [criticalAlerts, setCriticalAlerts] = useState(true);
-  const [emailNotifications, setEmailNotifications] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(true);
+  // Every control below reads and writes the account's settings on the
+  // server (GET/PATCH /preferences/), mirroring mobile. Toggling is local so a
+  // nurse can change several things and press Save once; Save is what
+  // actually persists them. Font size / compact view start from the
+  // localStorage cache only to avoid a flash before the server answers.
+  const [preferences, setPreferences] = useState<UserPreferences>(() => {
+    const cachedFont = localStorage.getItem('nurselink_fontsize');
+    return {
+      ...DEFAULT_PREFERENCES,
+      fontSize:
+        cachedFont === 'small' || cachedFont === 'large' || cachedFont === 'medium'
+          ? cachedFont
+          : DEFAULT_PREFERENCES.fontSize,
+      compactView: localStorage.getItem('nurselink_compactview') === 'true',
+    };
+  });
+  const [preferencesLoading, setPreferencesLoading] = useState(true);
+  const [savingSection, setSavingSection] = useState<SectionName | null>(null);
 
-  // System preferences
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [showCharts, setShowCharts] = useState(true);
-  const [dataSync, setDataSync] = useState(true);
+  const setLocal = (changes: Partial<UserPreferences>) =>
+    setPreferences((prev) => ({ ...prev, ...changes }));
+
+  const {
+    fontSize,
+    compactView,
+    taskNotifications,
+    handoverNotifications,
+    criticalAlerts,
+    emailNotifications,
+    soundAlerts,
+    autoRefresh,
+    showCharts,
+    backgroundSync,
+  } = preferences;
+
+  // Load the account's real settings once per signed-in user.
+  useEffect(() => {
+    if (!user) {
+      setPreferencesLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPreferencesLoading(true);
+    fetchPreferences()
+      .then((fromServer) => {
+        if (!cancelled) setPreferences({ ...DEFAULT_PREFERENCES, ...fromServer });
+      })
+      .catch(() => {
+        // Offline or the server is down: keep what we have rather than
+        // resetting a nurse's settings to defaults in front of them.
+      })
+      .finally(() => {
+        if (!cancelled) setPreferencesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   // Apply font size
   useEffect(() => {
@@ -92,22 +171,56 @@ export default function SettingsPage() {
     localStorage.setItem('nurselink_compactview', compactView.toString());
   }, [compactView]);
 
-  const handleSaveAppearance = () => {
-    toast.success('Appearance settings saved!', {
-      description: 'Your theme preferences have been applied.',
-    });
+  const saveSection = async (section: SectionName, successMessage: string) => {
+    setSavingSection(section);
+    try {
+      // Send only this section's fields, so pressing one Save button cannot
+      // overwrite unsaved edits sitting in another section.
+      const changes: Partial<UserPreferences> = {};
+      for (const key of SECTIONS[section]) {
+        (changes as Record<string, unknown>)[key] = preferences[key];
+      }
+      const stored = await updatePreferences(changes);
+      // Keep what the server stored for this section (not what we sent), but
+      // leave other sections' unsaved local edits alone.
+      const confirmed: Partial<UserPreferences> = {};
+      for (const key of SECTIONS[section]) {
+        if (stored && key in stored) {
+          (confirmed as Record<string, unknown>)[key] = stored[key];
+        }
+      }
+      setLocal(confirmed);
+      toast.success(successMessage, { description: 'Your settings have been saved.' });
+    } catch (error) {
+      toast.error('Could not save your settings', {
+        description:
+          error instanceof ApiError
+            ? error.message
+            : 'Check your connection and try again — nothing was changed.',
+      });
+    } finally {
+      setSavingSection(null);
+    }
   };
 
-  const handleSaveNotifications = () => {
-    toast.success('Notification preferences saved!', {
-      description: 'Your notification settings have been updated.',
-    });
-  };
+  const handleSaveAppearance = () => saveSection('appearance', 'Appearance settings saved!');
+  const handleSaveNotifications = () =>
+    saveSection('notifications', 'Notification preferences saved!');
+  const handleSavePreferences = () => saveSection('system', 'System preferences saved!');
 
-  const handleSavePreferences = () => {
-    toast.success('System preferences saved!', {
-      description: 'Your system settings have been updated.',
-    });
+  const handlePasswordSave = async (currentPassword: string, newPassword: string) => {
+    try {
+      await changePasswordRequest(currentPassword, newPassword);
+      toast.success('Password changed successfully!', {
+        description: 'Your password has been updated.',
+      });
+    } catch (error) {
+      toast.error('Failed to change password', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+      // Rethrown so the dialog stays open instead of closing on a failure.
+      throw error;
+    }
   };
 
   const handleSaveProfile = () => {
@@ -272,7 +385,12 @@ export default function SettingsPage() {
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label>Font Size</Label>
-            <Select value={fontSize} onValueChange={setFontSize}>
+            <Select
+              value={fontSize}
+              onValueChange={(value) =>
+                setLocal({ fontSize: value as UserPreferences['fontSize'] })
+              }
+            >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -293,12 +411,22 @@ export default function SettingsPage() {
                 Reduce spacing between elements
               </p>
             </div>
-            <Switch checked={compactView} onCheckedChange={setCompactView} />
+            <Switch checked={compactView} onCheckedChange={(value) => setLocal({ compactView: value })} />
           </div>
 
-          <Button onClick={handleSaveAppearance} className="w-full">
-            <Save className="w-4 h-4 mr-2" />
-            Save Appearance
+          <Button
+            onClick={handleSaveAppearance}
+            className="w-full"
+            // Disabled until the account's real settings have arrived, so a
+            // nurse cannot save defaults over what they already had.
+            disabled={preferencesLoading || savingSection !== null}
+          >
+            {savingSection === 'appearance' ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4 mr-2" />
+            )}
+            {savingSection === 'appearance' ? 'Saving...' : 'Save Appearance'}
           </Button>
         </CardContent>
       </Card>
@@ -320,7 +448,7 @@ export default function SettingsPage() {
                 Get notified about new and updated tasks
               </p>
             </div>
-            <Switch checked={taskNotifications} onCheckedChange={setTaskNotifications} />
+            <Switch checked={taskNotifications} onCheckedChange={(value) => setLocal({ taskNotifications: value })} />
           </div>
 
           <Separator />
@@ -332,7 +460,7 @@ export default function SettingsPage() {
                 Receive shift handover alerts
               </p>
             </div>
-            <Switch checked={handoverNotifications} onCheckedChange={setHandoverNotifications} />
+            <Switch checked={handoverNotifications} onCheckedChange={(value) => setLocal({ handoverNotifications: value })} />
           </div>
 
           <Separator />
@@ -344,7 +472,7 @@ export default function SettingsPage() {
                 Urgent notifications for critical patients
               </p>
             </div>
-            <Switch checked={criticalAlerts} onCheckedChange={setCriticalAlerts} />
+            <Switch checked={criticalAlerts} onCheckedChange={(value) => setLocal({ criticalAlerts: value })} />
           </div>
 
           <Separator />
@@ -356,7 +484,7 @@ export default function SettingsPage() {
                 Send notifications to your email
               </p>
             </div>
-            <Switch checked={emailNotifications} onCheckedChange={setEmailNotifications} />
+            <Switch checked={emailNotifications} onCheckedChange={(value) => setLocal({ emailNotifications: value })} />
           </div>
 
           <Separator />
@@ -368,12 +496,25 @@ export default function SettingsPage() {
                 Play sound for notifications
               </p>
             </div>
-            <Switch checked={soundEnabled} onCheckedChange={setSoundEnabled} />
+            <Switch
+              checked={soundAlerts}
+              onCheckedChange={(value) => setLocal({ soundAlerts: value })}
+            />
           </div>
 
-          <Button onClick={handleSaveNotifications} className="w-full">
-            <Save className="w-4 h-4 mr-2" />
-            Save Notifications
+          <Button
+            onClick={handleSaveNotifications}
+            className="w-full"
+            // Disabled until the account's real settings have arrived, so a
+            // nurse cannot save defaults over what they already had.
+            disabled={preferencesLoading || savingSection !== null}
+          >
+            {savingSection === 'notifications' ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4 mr-2" />
+            )}
+            {savingSection === 'notifications' ? 'Saving...' : 'Save Notifications'}
           </Button>
         </CardContent>
       </Card>
@@ -395,7 +536,7 @@ export default function SettingsPage() {
                 Automatically update data every 30 seconds
               </p>
             </div>
-            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+            <Switch checked={autoRefresh} onCheckedChange={(value) => setLocal({ autoRefresh: value })} />
           </div>
 
           <Separator />
@@ -407,7 +548,7 @@ export default function SettingsPage() {
                 Display visual data analytics
               </p>
             </div>
-            <Switch checked={showCharts} onCheckedChange={setShowCharts} />
+            <Switch checked={showCharts} onCheckedChange={(value) => setLocal({ showCharts: value })} />
           </div>
 
           <Separator />
@@ -419,12 +560,25 @@ export default function SettingsPage() {
                 Sync data in the background
               </p>
             </div>
-            <Switch checked={dataSync} onCheckedChange={setDataSync} />
+            <Switch
+              checked={backgroundSync}
+              onCheckedChange={(value) => setLocal({ backgroundSync: value })}
+            />
           </div>
 
-          <Button onClick={handleSavePreferences} className="w-full">
-            <Save className="w-4 h-4 mr-2" />
-            Save Preferences
+          <Button
+            onClick={handleSavePreferences}
+            className="w-full"
+            // Disabled until the account's real settings have arrived, so a
+            // nurse cannot save defaults over what they already had.
+            disabled={preferencesLoading || savingSection !== null}
+          >
+            {savingSection === 'system' ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4 mr-2" />
+            )}
+            {savingSection === 'system' ? 'Saving...' : 'Save Preferences'}
           </Button>
         </CardContent>
       </Card>
@@ -439,6 +593,15 @@ export default function SettingsPage() {
           <CardDescription>Manage your account security</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => setShowPasswordChange(true)}
+          >
+            <KeyRound className="w-4 h-4 mr-2" />
+            Change Password
+          </Button>
+
           <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
             <h4 className="font-semibold text-red-900 mb-2">Account Actions</h4>
             <Button
@@ -473,6 +636,13 @@ export default function SettingsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Password Change Dialog */}
+      <PasswordChangeModal
+        open={showPasswordChange}
+        onOpenChange={setShowPasswordChange}
+        onSave={handlePasswordSave}
+      />
     </div>
   );
 }
