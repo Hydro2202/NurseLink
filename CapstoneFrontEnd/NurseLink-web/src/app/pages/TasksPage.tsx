@@ -7,6 +7,8 @@ import {
   updateTask,
   unassignTask,
   completeTask,
+  fetchPatients,
+  fetchVitalReadings,
   ApiError,
 } from '../api/nurselink';
 import type { Task } from '../types/domain';
@@ -31,6 +33,8 @@ import {
   ChevronUp,
   Square,
   CheckSquare,
+  Lock,
+  HeartPulse,
 } from 'lucide-react';
 import {
   Select,
@@ -41,7 +45,17 @@ import {
 } from '../components/ui/select';
 import { TaskModal } from '../components/TaskModal';
 import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
+import { TaskVitalSignsBars } from '../components/TaskVitalSignsBars';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog';
 import { toast } from 'sonner';
+
+const VITALS_READINGS_REQUIRED = 2;
 
 export default function TasksPage() {
   const location = useLocation();
@@ -58,6 +72,15 @@ export default function TasksPage() {
   const [completeLoading, setCompleteLoading] = useState<string | null>(null);
   const [expandedChecklistId, setExpandedChecklistId] = useState<string | null>(null);
   const [checklistSaving, setChecklistSaving] = useState<string | null>(null);
+  // Fetched for every vital_signs task right after the task list loads, so
+  // the checklist's lock state is correct even before the nurse ever opens
+  // the vitals panel for that task this session.
+  const [vitalsReadingCounts, setVitalsReadingCounts] = useState<Record<string, number>>({});
+  const [vitalsModalTaskId, setVitalsModalTaskId] = useState<string | null>(null);
+  // Codes of the patients this nurse is assigned to. Vitals can only be
+  // recorded for those (the server enforces it — VitalSignsViewSet's
+  // _check_patient_care_scope); null until loaded.
+  const [myPatientCodes, setMyPatientCodes] = useState<Set<string> | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'priority' | 'status'>('newest');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
@@ -67,7 +90,29 @@ export default function TasksPage() {
     (async () => {
       try {
         const data = await fetchTasks({ mine: true });
-        if (!cancelled) setTasks(data);
+        if (cancelled) return;
+        setTasks(data);
+        const vitalsTasks = data.filter((t) => t.category === 'vital_signs');
+        if (vitalsTasks.length > 0) {
+          const pairs = await Promise.all(
+            vitalsTasks.map(async (t) => {
+              try {
+                const readings = await fetchVitalReadings({ taskId: t.id });
+                return [t.id, readings.length] as const;
+              } catch {
+                return [t.id, 0] as const;
+              }
+            })
+          );
+          if (cancelled) return;
+          setVitalsReadingCounts((prev) => {
+            const next = { ...prev };
+            pairs.forEach(([id, count]) => {
+              next[id] = count;
+            });
+            return next;
+          });
+        }
       } catch (error) {
         toast.error(error instanceof ApiError ? error.message : 'Failed to load tasks');
       } finally {
@@ -78,6 +123,23 @@ export default function TasksPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    // Head nurses may record vitals for any patient, so they need no list.
+    if (user?.role === 'head_nurse') return;
+    let cancelled = false;
+    fetchPatients({ mine: true })
+      .then((patients) => {
+        if (!cancelled) setMyPatientCodes(new Set(patients.map((p) => p.id)));
+      })
+      .catch(() => {
+        // Without the list the vitals button stays hidden; nothing else depends on it.
+        if (!cancelled) setMyPatientCodes(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.role]);
 
   // Handle navigation from dashboard - scroll to and highlight specific task
   useEffect(() => {
@@ -155,6 +217,8 @@ export default function TasksPage() {
           dueTime: taskData.dueTime || '',
           status: 'pending',
           category: taskData.category || 'medication',
+          departmentId: taskData.departmentId,
+          doctorIds: taskData.doctorIds,
           attendingPhysician: taskData.attendingPhysician,
           patientRoom: taskData.patientRoom,
           doctorOrder: taskData.doctorOrder,
@@ -218,6 +282,21 @@ export default function TasksPage() {
   };
 
   const handleToggleChecklistItem = async (task: Task, index: number) => {
+    const isLastItem = index === task.checklist.length - 1;
+    const isVitalsTask = task.category === 'vital_signs';
+    const readingCount = vitalsReadingCounts[task.id] ?? 0;
+    if (
+      isVitalsTask &&
+      isLastItem &&
+      !task.checklist[index].done &&
+      readingCount < VITALS_READINGS_REQUIRED
+    ) {
+      toast.error('Vital signs not recorded yet', {
+        description: `Record at least ${VITALS_READINGS_REQUIRED} vital sign readings below before completing this step.`,
+      });
+      return;
+    }
+
     const nextChecklist = task.checklist.map((item, i) =>
       i === index ? { ...item, done: !item.done } : item
     );
@@ -233,6 +312,8 @@ export default function TasksPage() {
       setChecklistSaving(null);
     }
   };
+
+  const vitalsModalTask = tasks.find((t) => t.id === vitalsModalTaskId) || null;
 
   // Filter and sort tasks
   const filteredTasks = tasks
@@ -472,28 +553,42 @@ export default function TasksPage() {
                           </button>
                           {expandedChecklistId === task.id && (
                             <div className="mt-2 space-y-1.5">
-                              {task.checklist.map((item, index) => (
-                                <button
-                                  type="button"
-                                  key={index}
-                                  disabled={checklistSaving === task.id}
-                                  onClick={() => handleToggleChecklistItem(task, index)}
-                                  className="w-full flex items-center gap-2 text-left"
-                                >
-                                  {item.done ? (
-                                    <CheckSquare className="w-4 h-4 text-green-600 flex-shrink-0" />
-                                  ) : (
-                                    <Square className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                                  )}
-                                  <span
-                                    className={`text-xs ${
-                                      item.done ? 'text-gray-400 line-through' : 'text-gray-700'
-                                    }`}
+                              {task.checklist.map((item, index) => {
+                                const isLocked =
+                                  task.category === 'vital_signs' &&
+                                  index === task.checklist.length - 1 &&
+                                  !item.done &&
+                                  (vitalsReadingCounts[task.id] ?? 0) < VITALS_READINGS_REQUIRED;
+                                return (
+                                  <button
+                                    type="button"
+                                    key={index}
+                                    disabled={checklistSaving === task.id}
+                                    onClick={() => handleToggleChecklistItem(task, index)}
+                                    className="w-full flex items-center gap-2 text-left"
                                   >
-                                    {item.text}
-                                  </span>
-                                </button>
-                              ))}
+                                    {item.done ? (
+                                      <CheckSquare className="w-4 h-4 text-green-600 flex-shrink-0" />
+                                    ) : isLocked ? (
+                                      <Lock className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                                    ) : (
+                                      <Square className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                                    )}
+                                    <span
+                                      className={`text-xs ${
+                                        item.done
+                                          ? 'text-gray-400 line-through'
+                                          : isLocked
+                                            ? 'text-gray-400 italic'
+                                            : 'text-gray-700'
+                                      }`}
+                                    >
+                                      {item.text}
+                                      {isLocked ? ` (record ${VITALS_READINGS_REQUIRED} vitals first)` : ''}
+                                    </span>
+                                  </button>
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -524,6 +619,18 @@ export default function TasksPage() {
                     >
                       <Edit className="w-4 h-4" />
                     </Button>
+                    {(user?.role === 'head_nurse' || myPatientCodes?.has(task.patientId)) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        title="Record vital signs"
+                        aria-label="Record vital signs"
+                        onClick={() => setVitalsModalTaskId(task.id)}
+                        className="text-red-600 border-red-600 hover:bg-red-50"
+                      >
+                        <HeartPulse className="w-4 h-4" />
+                      </Button>
+                    )}
                     {user?.role === 'head_nurse' && task.assignedTo && (
                       <Button
                         size="sm"
@@ -550,6 +657,7 @@ export default function TasksPage() {
         task={selectedTask}
         mode={taskModalMode}
         allTasks={tasks}
+        patientScope="mine"
       />
 
       <DeleteConfirmDialog
@@ -560,6 +668,40 @@ export default function TasksPage() {
         title="Unassign Task"
         description="This will remove the assigned nurse and return the task to pending. The task itself is not deleted."
       />
+
+      <Dialog
+        open={!!vitalsModalTask}
+        onOpenChange={(open) => {
+          if (!open) setVitalsModalTaskId(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[860px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <HeartPulse className="w-5 h-5 text-red-600" />
+              Vital Signs Check-ins
+            </DialogTitle>
+            <DialogDescription>
+              {vitalsModalTask
+                ? `${vitalsModalTask.patientName} (${vitalsModalTask.patientId}) · Room ${
+                    vitalsModalTask.patientRoom || '—'
+                  }`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+          {vitalsModalTask ? (
+            <TaskVitalSignsBars
+              key={vitalsModalTask.id}
+              taskId={vitalsModalTask.id}
+              patientId={vitalsModalTask.patientId}
+              readingsRequired={VITALS_READINGS_REQUIRED}
+              onReadingsChange={(count) =>
+                setVitalsReadingCounts((prev) => ({ ...prev, [vitalsModalTask.id]: count }))
+              }
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

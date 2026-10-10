@@ -18,9 +18,19 @@ import {
   SelectValue,
 } from './ui/select';
 import { Textarea } from './ui/textarea';
-import { Loader2, Stethoscope, Bed, ClipboardList } from 'lucide-react';
-import type { Patient, Task, TaskPriority } from '../types/domain';
-import { fetchPatients } from '../api/nurselink';
+import {
+  Loader2,
+  Stethoscope,
+  Bed,
+  ClipboardList,
+  Building2,
+  CheckCircle2,
+  Square,
+  CheckSquare,
+  AlertCircle,
+} from 'lucide-react';
+import type { Doctor, Patient, Task, TaskPriority } from '../types/domain';
+import { fetchPatients, fetchPatientAssignedDoctors, ApiError } from '../api/nurselink';
 
 interface TaskModalProps {
   open: boolean;
@@ -29,6 +39,10 @@ interface TaskModalProps {
   onSave: (task: Partial<Task>) => Promise<void>;
   mode: 'add' | 'edit';
   allTasks?: Task[];
+  // 'mine' scopes the patient picker to patients assigned to the logged-in
+  // user (a nurse's own Add Task). Defaults to 'all' so head-nurse-facing
+  // call sites keep their existing unscoped roster.
+  patientScope?: 'mine' | 'all';
 }
 
 export function TaskModal({
@@ -38,6 +52,7 @@ export function TaskModal({
   onSave,
   mode,
   allTasks = [],
+  patientScope = 'all',
 }: TaskModalProps) {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(false);
@@ -52,13 +67,32 @@ export function TaskModal({
     patientRoom: '',
     doctorOrder: '',
   });
+  const [departmentId, setDepartmentId] = useState('');
+  const [doctorIds, setDoctorIds] = useState<number[]>([]);
+  // The selected patient's Kardex-assigned doctors — the department and
+  // doctor fields are both derived from this list, never from the
+  // hospital-wide rosters. The backend re-validates doctorIds against the
+  // patient's active PatientDoctor rows (TaskSerializer._validate_doctor_ids).
+  const [patientDoctors, setPatientDoctors] = useState<Doctor[]>([]);
+  const [patientDoctorsLoading, setPatientDoctorsLoading] = useState(false);
+  const [patientDoctorsError, setPatientDoctorsError] = useState('');
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!open) return;
-    fetchPatients().then(setPatients).catch(() => setPatients([]));
-  }, [open]);
+    let cancelled = false;
+    fetchPatients(patientScope === 'mine' ? { mine: true } : undefined)
+      .then((data) => {
+        if (!cancelled) setPatients(data);
+      })
+      .catch(() => {
+        if (!cancelled) setPatients([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, patientScope]);
 
   useEffect(() => {
     if (task && mode === 'edit') {
@@ -73,6 +107,8 @@ export function TaskModal({
         patientRoom: task.patientRoom || '',
         doctorOrder: task.doctorOrder || '',
       });
+      setDepartmentId(task.departmentId ? String(task.departmentId) : '');
+      setDoctorIds((task.assignedDoctors || []).map((d) => d.id));
     } else {
       // For new tasks, patient ID will be set when patient is selected
       setFormData({
@@ -86,9 +122,73 @@ export function TaskModal({
         patientRoom: '',
         doctorOrder: '',
       });
+      setDepartmentId('');
+      setDoctorIds([]);
     }
     setErrors({});
   }, [task, mode, open]);
+
+  // Reload the doctor list whenever the selected patient changes (including
+  // on open, for edit mode's pre-filled patient).
+  useEffect(() => {
+    if (!open || !formData.patientId) {
+      setPatientDoctors([]);
+      return;
+    }
+    let cancelled = false;
+    setPatientDoctorsLoading(true);
+    setPatientDoctorsError('');
+    fetchPatientAssignedDoctors(formData.patientId)
+      .then((data) => {
+        if (!cancelled) setPatientDoctors(data);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setPatientDoctors([]);
+        setPatientDoctorsError(
+          e instanceof ApiError
+            ? e.message
+            : "Unable to load the patient's assigned doctors. Please try again."
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setPatientDoctorsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, formData.patientId]);
+
+  // Only departments the patient actually has a Kardex-assigned doctor in.
+  const patientDepartments = Array.from(
+    new Map(patientDoctors.map((d) => [String(d.departmentId), d.departmentName])).entries()
+  ).map(([id, name]) => ({ id, name }));
+
+  const matchingDoctors = departmentId
+    ? patientDoctors.filter((d) => String(d.departmentId) === departmentId)
+    : [];
+
+  // Auto-assign when there is exactly one match.
+  useEffect(() => {
+    if (matchingDoctors.length === 1) {
+      setDoctorIds([matchingDoctors[0].id]);
+    }
+    // matchingDoctors is derived each render from departmentId/patientDoctors.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [departmentId, patientDoctors]);
+
+  const handleDepartmentChange = (value: string) => {
+    // Doctors belong to a specific patient+department pair — changing either
+    // half invalidates whatever was selected before.
+    setDoctorIds([]);
+    setDepartmentId(value);
+  };
+
+  const toggleDoctor = (doctorId: number) => {
+    setDoctorIds((prev) =>
+      prev.includes(doctorId) ? prev.filter((id) => id !== doctorId) : [...prev, doctorId]
+    );
+  };
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
@@ -107,8 +207,17 @@ export function TaskModal({
       newErrors.dueTime = 'Due time is required';
     }
 
-    if (!formData.attendingPhysician) {
-      newErrors.attendingPhysician = 'Attending physician is required';
+    if (!departmentId) {
+      newErrors.department = 'No department selected.';
+    }
+
+    if (doctorIds.length === 0) {
+      newErrors.doctors =
+        patientDoctors.length === 0
+          ? 'No doctors are assigned to this patient.'
+          : matchingDoctors.length === 0
+            ? 'No doctor is currently assigned to this patient in the selected department.'
+            : 'Please select at least one doctor.';
     }
 
     if (!formData.patientRoom) {
@@ -131,6 +240,8 @@ export function TaskModal({
     try {
       await onSave({
         ...formData,
+        departmentId,
+        doctorIds,
         id: task?.id || `task-${Date.now()}`,
         status: task?.status || 'pending',
       });
@@ -230,6 +341,12 @@ export function TaskModal({
                       selectedPatient?.attendingPhysician || formData.attendingPhysician,
                     patientRoom: selectedPatient?.room || formData.patientRoom,
                   });
+                  // A doctor assigned to the previous patient must never carry over.
+                  if (patientId !== formData.patientId) {
+                    setDepartmentId('');
+                    setDoctorIds([]);
+                    setPatientDoctors([]);
+                  }
                 }}
               >
                 <SelectTrigger id="patientName" className={errors.patientName ? 'border-red-500' : ''}>
@@ -278,26 +395,122 @@ export function TaskModal({
             <p className="text-xs text-gray-500">Patient ID is automatically filled from selected patient</p>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <Stethoscope className="w-4 h-4 text-blue-600" />
-                <Label htmlFor="attendingPhysician">Doctor *</Label>
-              </div>
-              <Input
-                id="attendingPhysician"
-                placeholder="Physician name"
-                value={formData.attendingPhysician}
-                onChange={(e) =>
-                  setFormData({ ...formData, attendingPhysician: e.target.value })
-                }
-                className={errors.attendingPhysician ? 'border-red-500' : ''}
-              />
-              {errors.attendingPhysician && (
-                <p className="text-sm text-red-500">{errors.attendingPhysician}</p>
-              )}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Building2 className="w-4 h-4 text-blue-600" />
+              <Label htmlFor="task-department">Department *</Label>
             </div>
+            <Select
+              value={departmentId}
+              onValueChange={handleDepartmentChange}
+              disabled={!formData.patientId || patientDoctorsLoading}
+            >
+              <SelectTrigger
+                id="task-department"
+                className={errors.department ? 'border-red-500' : ''}
+              >
+                <SelectValue
+                  placeholder={
+                    !formData.patientId
+                      ? 'Select a patient first'
+                      : patientDoctorsLoading
+                        ? 'Loading...'
+                        : patientDepartments.length === 0
+                          ? 'No departments assigned to this patient'
+                          : 'Choose a department'
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {patientDepartments.length === 0 ? (
+                  <SelectItem value="__none" disabled>
+                    No departments assigned to this patient.
+                  </SelectItem>
+                ) : (
+                  patientDepartments.map((d) => (
+                    <SelectItem key={d.id} value={d.id}>
+                      {d.name}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+            {errors.department && <p className="text-sm text-red-500">{errors.department}</p>}
+          </div>
 
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Stethoscope className="w-4 h-4 text-blue-600" />
+              <Label>Doctor *</Label>
+            </div>
+            {!formData.patientId ? (
+              <p className="rounded-md border border-border bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                No patient selected.
+              </p>
+            ) : patientDoctorsLoading ? (
+              <p className="flex items-center gap-2 rounded-md border border-border bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Loading assigned doctors...
+              </p>
+            ) : patientDoctorsError ? (
+              <p className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-destructive">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                {patientDoctorsError}
+              </p>
+            ) : !departmentId ? (
+              <p className="rounded-md border border-border bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                Select a department to see this patient's assigned doctor.
+              </p>
+            ) : matchingDoctors.length === 0 ? (
+              <p className="rounded-md border border-border bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                No doctor is currently assigned to this patient in the selected department.
+              </p>
+            ) : matchingDoctors.length === 1 ? (
+              <>
+                <div className="flex items-center justify-between rounded-md border border-green-200 bg-green-50 px-3 py-2">
+                  <span className="text-sm font-semibold text-gray-900">
+                    {matchingDoctors[0].fullName}
+                  </span>
+                  <CheckCircle2 className="w-4 h-4 text-green-600" />
+                </div>
+                <p className="text-xs text-gray-500">
+                  Doctor is automatically assigned based on the patient's Kardex.
+                </p>
+              </>
+            ) : (
+              <div className="space-y-1.5 rounded-md border border-border p-2">
+                {matchingDoctors.map((doctor) => {
+                  const isSelected = doctorIds.includes(doctor.id);
+                  return (
+                    <button
+                      type="button"
+                      key={doctor.id}
+                      onClick={() => toggleDoctor(doctor.id)}
+                      aria-pressed={isSelected}
+                      className={`w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
+                        isSelected ? 'bg-primary/10' : 'hover:bg-gray-50'
+                      }`}
+                    >
+                      {isSelected ? (
+                        <CheckSquare className="w-4 h-4 text-primary shrink-0" />
+                      ) : (
+                        <Square className="w-4 h-4 text-gray-400 shrink-0" />
+                      )}
+                      <span>
+                        <span className="block text-sm font-semibold text-gray-900">
+                          {doctor.fullName}
+                        </span>
+                        <span className="block text-xs text-gray-500">{doctor.specialization}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {errors.doctors && <p className="text-sm text-red-500">{errors.doctors}</p>}
+          </div>
+
+          <div>
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <Bed className="w-4 h-4 text-gray-600" />
