@@ -1,5 +1,7 @@
 import { RouterProvider } from 'react-router';
 import { AuthProvider } from './contexts/AuthContext';
+import { RealtimeProvider } from './contexts/RealtimeContext';
+import { LiveProvider } from './contexts/LiveContext';
 import { router } from './routes.tsx';
 import { Toaster } from './components/ui/toaster';
 import { Toaster as SonnerToaster } from 'sonner';
@@ -21,9 +23,13 @@ export default function App() {
 
   return (
     <AuthProvider>
-      <RouterProvider router={router} />
-      <Toaster />
-      <SonnerToaster position="top-right" richColors />
+      <RealtimeProvider>
+        <LiveProvider>
+          <RouterProvider router={router} />
+          <Toaster />
+          <SonnerToaster position="top-right" richColors />
+        </LiveProvider>
+      </RealtimeProvider>
     </AuthProvider>
   );
 }
