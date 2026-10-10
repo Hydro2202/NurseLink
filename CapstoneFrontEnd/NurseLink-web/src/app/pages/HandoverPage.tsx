@@ -11,6 +11,7 @@ import {
   ApiError,
 } from '../api/nurselink';
 import { useAuth } from '../contexts/AuthContext';
+import { useLiveRefresh } from '../contexts/LiveContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -137,6 +138,13 @@ export default function HandoverPage() {
     loadHandovers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Handovers are written on other nurses' devices, and acknowledged there
+  // too, so this list follows the shared live revision instead of only
+  // what this device has done itself.
+  useLiveRefresh('handovers', () => {
+    loadHandovers();
+  });
 
   const handleCreateHandover = () => setHandoverModalOpen(true);
 

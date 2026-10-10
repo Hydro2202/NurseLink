@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router';
 import type { Patient, Task, WorkloadData, DutyAssignment } from '../types/domain';
 import { fetchPatients, fetchTasks, fetchWorkload, fetchDutyAssignments, notifyPatientNurse } from '../api/nurselink';
 import { ApiError } from '../api/client';
+import { useLiveRefresh } from '../contexts/LiveContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
@@ -78,34 +79,38 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [patientData, taskData, workload, duty] = await Promise.all([
-          fetchPatients(isStaffNurse ? { mine: true } : undefined),
-          fetchTasks(isStaffNurse ? { mine: true } : undefined),
-          isStaffNurse ? Promise.resolve([]) : fetchWorkload(),
-          // Yesterday too: a night shift that started before midnight is
-          // still "today's duty" until it ends.
-          isStaffNurse
-            ? fetchDutyAssignments({ dateFrom: addDays(todayIso(), -1), dateTo: todayIso() })
-            : Promise.resolve([]),
-        ]);
-        if (!cancelled) {
-          setPatients(patientData);
-          setTasks(taskData);
-          setWorkloadData(workload);
-          setDutyAssignments(duty);
-        }
-      } catch (error) {
-        console.error('Failed to load dashboard:', error);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  const loadDashboard = React.useCallback(async () => {
+    try {
+      const [patientData, taskData, workload, duty] = await Promise.all([
+        fetchPatients(isStaffNurse ? { mine: true } : undefined),
+        fetchTasks(isStaffNurse ? { mine: true } : undefined),
+        isStaffNurse ? Promise.resolve([]) : fetchWorkload(),
+        // Yesterday too: a night shift that started before midnight is
+        // still "today's duty" until it ends.
+        isStaffNurse
+          ? fetchDutyAssignments({ dateFrom: addDays(todayIso(), -1), dateTo: todayIso() })
+          : Promise.resolve([]),
+      ]);
+      setPatients(patientData);
+      setTasks(taskData);
+      setWorkloadData(workload);
+      setDutyAssignments(duty);
+    } catch (error) {
+      console.error('Failed to load dashboard:', error);
+    }
   }, [isStaffNurse]);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  // The dashboard counts tasks and patients, both of which change from other
+  // nurses' devices, so it follows the shared live revisions too. duty is
+  // what makes a head nurse ending this nurse's shift show up here without
+  // waiting for an unrelated task/patient change to trigger a refetch.
+  useLiveRefresh('tasks', () => void loadDashboard());
+  useLiveRefresh('patients', () => void loadDashboard());
+  useLiveRefresh('duty', () => void loadDashboard());
 
   // Calculate stats
   const urgentTasks = tasks.filter(t => t.priority === 'urgent' && t.status !== 'completed').length;

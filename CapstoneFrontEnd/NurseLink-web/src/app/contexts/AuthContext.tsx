@@ -47,6 +47,11 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   updateUser: (updates: Partial<User>) => void;
+  /** Re-fetches the signed-in nurse's own profile — used when LiveContext's
+   * `profile` revision moves (a head nurse reassigning this nurse's
+   * department/shift), so Settings/Dashboard don't keep showing stale
+   * values until the next sign-in. */
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -167,6 +172,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
   };
 
+  const refreshUser = async () => {
+    if (!getToken()) return;
+    try {
+      const me = await fetchMe();
+      setUser(me);
+      localStorage.setItem(USER_KEY, JSON.stringify(me));
+    } catch {
+      // A transient failure here shouldn't sign the nurse out — they keep
+      // whatever profile they already had until the next successful refresh.
+    }
+  };
+
   const logout = () => {
     logoutRequest();
     setUser(null);
@@ -184,6 +201,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAuthenticated: !!user,
         isLoading,
         updateUser,
+        refreshUser,
       }}
     >
       {children}

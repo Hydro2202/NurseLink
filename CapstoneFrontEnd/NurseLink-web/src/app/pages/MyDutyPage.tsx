@@ -16,6 +16,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { fetchDutyAssignments, startDutyAssignment, endDutyAssignment, ApiError } from '../api/nurselink';
+import { useLiveRefresh } from '../contexts/LiveContext';
 import type { DutyAssignment } from '../types/domain';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -170,6 +171,13 @@ export default function MyDutyPage() {
   useEffect(() => {
     void loadData();
   }, []);
+
+  // A head nurse editing/closing this nurse's shift from the Duty Roster
+  // happens on a different device, so this follows the shared live
+  // revision instead of only what this device has done itself.
+  useLiveRefresh('duty', () => {
+    void loadData();
+  });
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 60000);

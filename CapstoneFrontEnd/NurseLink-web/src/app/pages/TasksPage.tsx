@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
+import { useLiveRefresh } from '../contexts/LiveContext';
 import {
   fetchTasks,
   createTask,
@@ -85,44 +86,49 @@ export default function TasksPage() {
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'priority' | 'status'>('newest');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchTasks({ mine: true });
-        if (cancelled) return;
-        setTasks(data);
-        const vitalsTasks = data.filter((t) => t.category === 'vital_signs');
-        if (vitalsTasks.length > 0) {
-          const pairs = await Promise.all(
-            vitalsTasks.map(async (t) => {
-              try {
-                const readings = await fetchVitalReadings({ taskId: t.id });
-                return [t.id, readings.length] as const;
-              } catch {
-                return [t.id, 0] as const;
-              }
-            })
-          );
-          if (cancelled) return;
-          setVitalsReadingCounts((prev) => {
-            const next = { ...prev };
-            pairs.forEach(([id, count]) => {
-              next[id] = count;
-            });
-            return next;
+  const loadTasks = React.useCallback(async (options?: { quiet?: boolean }) => {
+    try {
+      const data = await fetchTasks({ mine: true });
+      setTasks(data);
+      const vitalsTasks = data.filter((t) => t.category === 'vital_signs');
+      if (vitalsTasks.length > 0) {
+        const pairs = await Promise.all(
+          vitalsTasks.map(async (t) => {
+            try {
+              const readings = await fetchVitalReadings({ taskId: t.id });
+              return [t.id, readings.length] as const;
+            } catch {
+              return [t.id, 0] as const;
+            }
+          })
+        );
+        setVitalsReadingCounts((prev) => {
+          const next = { ...prev };
+          pairs.forEach(([id, count]) => {
+            next[id] = count;
           });
-        }
-      } catch (error) {
-        toast.error(error instanceof ApiError ? error.message : 'Failed to load tasks');
-      } finally {
-        if (!cancelled) setLoading(false);
+          return next;
+        });
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    } catch (error) {
+      if (!options?.quiet) {
+        toast.error(error instanceof ApiError ? error.message : 'Failed to load tasks');
+      }
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadTasks();
+  }, [loadTasks]);
+
+  // Tasks are written on other nurses'/head nurses' devices (assigned,
+  // completed, handed over), so this follows the shared live revision
+  // instead of only what this device has done itself.
+  useLiveRefresh('tasks', () => {
+    void loadTasks({ quiet: true });
+  });
 
   useEffect(() => {
     // Head nurses may record vitals for any patient, so they need no list.

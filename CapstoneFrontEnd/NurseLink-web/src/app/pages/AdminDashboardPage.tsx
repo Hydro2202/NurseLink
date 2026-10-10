@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
+import { useLiveRefresh } from '../contexts/LiveContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -496,6 +497,13 @@ export default function AdminDashboardPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+
+  // A new signup notifies every admin — that notification moving the
+  // shared 'notifications' revision is what makes the accounts list catch
+  // up without a manual refresh.
+  useLiveRefresh('notifications', () => {
+    void load();
+  });
 
   const handleLogout = () => {
     logout();

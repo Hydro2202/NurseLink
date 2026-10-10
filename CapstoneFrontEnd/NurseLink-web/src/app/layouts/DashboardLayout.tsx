@@ -38,6 +38,8 @@ import {
   AlertDialogTitle,
 } from '../components/ui/alert-dialog';
 import { NotificationPanel } from '../components/NotificationPanel';
+import { fetchNotifications } from '../api/nurselink';
+import { useLiveRefresh } from '../contexts/LiveContext';
 import { HandoverAlertModal } from '../components/HandoverAlertModal';
 // Tightly cropped to just the circular emblem mark (no "NURSELINK" wordmark,
 // no surrounding empty canvas) — the original figma:asset export is a full
@@ -54,7 +56,25 @@ export default function DashboardLayout() {
   const [showLogoutDialog, setShowLogoutDialog] = React.useState(false);
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = React.useState(false);
+  const [unreadCount, setUnreadCount] = React.useState(0);
   const [isDesktop, setIsDesktop] = React.useState(typeof window !== 'undefined' ? window.innerWidth >= 1024 : true);
+
+  const loadUnreadCount = React.useCallback(async () => {
+    try {
+      const { unreadCount: count } = await fetchNotifications();
+      setUnreadCount(count);
+    } catch {
+      // Non-critical — the bell just won't show a fresh count until the next tick.
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadUnreadCount();
+  }, [loadUnreadCount]);
+
+  useLiveRefresh('notifications', () => {
+    void loadUnreadCount();
+  });
 
   // Track window resize for responsive behavior
   React.useEffect(() => {
@@ -148,9 +168,11 @@ export default function DashboardLayout() {
               onClick={() => setNotificationPanelOpen(true)}
             >
               <Bell className="w-4 h-4 text-blue-600" />
-              <Badge className="absolute -top-0.5 -right-0.5 w-4 h-4 flex items-center justify-center p-0 bg-gradient-to-br from-blue-500 to-blue-700 text-white text-[9px] font-black shadow-md">
-                5
-              </Badge>
+              {unreadCount > 0 && (
+                <Badge className="absolute -top-0.5 -right-0.5 w-4 h-4 flex items-center justify-center p-0 bg-gradient-to-br from-blue-500 to-blue-700 text-white text-[9px] font-black shadow-md">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </Badge>
+              )}
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -255,6 +277,7 @@ export default function DashboardLayout() {
         <NotificationPanel
           isOpen={notificationPanelOpen}
           onClose={() => setNotificationPanelOpen(false)}
+          onUnreadChange={setUnreadCount}
         />
 
         {/* Referrals are nurse-to-nurse only — this branch only renders for staff nurses. */}
@@ -286,9 +309,11 @@ export default function DashboardLayout() {
               onClick={() => setNotificationPanelOpen(true)}
             >
               <Bell className="w-5 h-5 text-blue-600" />
-              <Badge className="absolute -top-1 -right-1 w-5 h-5 flex items-center justify-center p-0 bg-gradient-to-br from-blue-500 to-blue-700 text-white text-[10px] font-black shadow-lg">
-                5
-              </Badge>
+              {unreadCount > 0 && (
+                <Badge className="absolute -top-1 -right-1 w-5 h-5 flex items-center justify-center p-0 bg-gradient-to-br from-blue-500 to-blue-700 text-white text-[10px] font-black shadow-lg">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </Badge>
+              )}
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -381,9 +406,10 @@ export default function DashboardLayout() {
         </AlertDialog>
 
         {/* Notification Panel */}
-        <NotificationPanel 
-          isOpen={notificationPanelOpen} 
-          onClose={() => setNotificationPanelOpen(false)} 
+        <NotificationPanel
+          isOpen={notificationPanelOpen}
+          onClose={() => setNotificationPanelOpen(false)}
+          onUnreadChange={setUnreadCount}
         />
       </div>
     );
@@ -493,9 +519,11 @@ export default function DashboardLayout() {
               onClick={() => setNotificationPanelOpen(true)}
             >
               <Bell className="w-5 h-5 text-blue-600" />
-              <Badge className="absolute -top-1 -right-1 w-5 h-5 flex items-center justify-center p-0 bg-gradient-to-br from-blue-500 to-blue-700 text-white text-[10px] font-black shadow-lg">
-                5
-              </Badge>
+              {unreadCount > 0 && (
+                <Badge className="absolute -top-1 -right-1 w-5 h-5 flex items-center justify-center p-0 bg-gradient-to-br from-blue-500 to-blue-700 text-white text-[10px] font-black shadow-lg">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </Badge>
+              )}
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -563,6 +591,7 @@ export default function DashboardLayout() {
       <NotificationPanel
         isOpen={notificationPanelOpen}
         onClose={() => setNotificationPanelOpen(false)}
+        onUnreadChange={setUnreadCount}
       />
 
       {/* Desktop is shared between roles — referrals are nurse-to-nurse only. */}
