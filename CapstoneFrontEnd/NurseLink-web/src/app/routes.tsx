@@ -20,6 +20,8 @@ const WorkloadPage = lazy(() => import('./pages/WorkloadPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const MyPatientsPage = lazy(() => import('./pages/MyPatientsPage'));
 const AllPatientsPage = lazy(() => import('./pages/AllPatientsPage'));
+const DutyRosterPage = lazy(() => import('./pages/DutyRosterPage'));
+const MyDutyPage = lazy(() => import('./pages/MyDutyPage'));
 
 // One Suspense boundary per route element (not one global one) — so
 // switching between two lazy pages inside DashboardLayout only shows the
@@ -92,6 +94,14 @@ export const router = createBrowserRouter([
       {
         path: 'all-patients',
         element: lazyRoute(<AllPatientsPage />),
+      },
+      {
+        path: 'duty-roster',
+        element: lazyRoute(<DutyRosterPage />),
+      },
+      {
+        path: 'my-duty',
+        element: lazyRoute(<MyDutyPage />),
       },
     ],
   },

@@ -7,6 +7,7 @@ import type {
   AppNotification,
   ChartingNote,
   Department,
+  DutyAssignment,
   EligibleReferralRecipients,
   HandoverNote,
   KardexHistory,
@@ -429,6 +430,71 @@ export async function deleteChartingNote(id: string): Promise<void> {
 
 export async function fetchNurses(): Promise<Nurse[]> {
   return apiRequest<Nurse[]>('/nurses/');
+}
+
+export async function fetchDutyAssignments(options?: {
+  date?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  shift?: string;
+  departmentId?: string | number;
+  status?: string;
+  nurseId?: string;
+  search?: string;
+}): Promise<DutyAssignment[]> {
+  const params = new URLSearchParams();
+  if (options?.date) params.set('date', options.date);
+  if (options?.dateFrom) params.set('dateFrom', options.dateFrom);
+  if (options?.dateTo) params.set('dateTo', options.dateTo);
+  if (options?.shift) params.set('shift', options.shift);
+  if (options?.departmentId) params.set('departmentId', String(options.departmentId));
+  if (options?.status) params.set('status', options.status);
+  if (options?.nurseId) params.set('nurseId', options.nurseId);
+  if (options?.search) params.set('search', options.search);
+  const query = params.toString() ? `?${params}` : '';
+  return apiRequest<DutyAssignment[]>(`/duty-assignments/${query}`);
+}
+
+export type DutyAssignmentInput = {
+  nurseId: string;
+  departmentId: number;
+  dutyDate: string;
+  shift: string;
+  startTime: string;
+  endTime: string;
+  overtimeStart?: string | null;
+  overtimeEnd?: string | null;
+  status?: string;
+  notes?: string;
+};
+
+export async function createDutyAssignment(data: DutyAssignmentInput): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>('/duty-assignments/', { method: 'POST', body: data });
+}
+
+export async function updateDutyAssignment(
+  id: number,
+  data: Partial<DutyAssignmentInput>
+): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/`, { method: 'PATCH', body: data });
+}
+
+export async function deleteDutyAssignment(id: number): Promise<void> {
+  await apiRequest(`/duty-assignments/${id}/`, { method: 'DELETE' });
+}
+
+/** Clock in — records the real start time server-side. No request body. */
+export async function startDutyAssignment(id: number): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/start/`, { method: 'POST' });
+}
+
+/** Clock out — records the real end time and freezes actual hours server-side. */
+export async function endDutyAssignment(id: number): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/end/`, { method: 'POST' });
+}
+
+export async function closeDutyAssignment(id: number): Promise<DutyAssignment> {
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/close/`, { method: 'POST' });
 }
 
 /** Head-nurse-only: change a nurse's department and/or shift. */

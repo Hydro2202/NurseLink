@@ -15,6 +15,7 @@ import {
   X,
   BookOpen,
   Users,
+  CalendarClock,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -98,11 +99,13 @@ export default function DashboardLayout() {
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, show: true },
+    { name: 'My Duty', href: '/my-duty', icon: CalendarClock, show: isStaffNurse },
     { name: 'Tasks', href: '/tasks', icon: ClipboardList, show: isStaffNurse },
     { name: 'Handover', href: '/handover', icon: FileText, show: isStaffNurse },
     { name: 'Charting', href: '/charting', icon: FileText, show: isStaffNurse },
     { name: 'Kardex', href: '/kardex', icon: BookOpen, show: isStaffNurse },
     { name: 'All Patients', href: '/all-patients', icon: Users, show: isSupervisor },
+    { name: 'Duty Roster', href: '/duty-roster', icon: CalendarClock, show: isSupervisor },
     { name: 'Analytics', href: '/analytics', icon: BarChart3, show: isSupervisor },
     { name: 'Workload Monitor', href: '/workload', icon: BarChart3, show: isSupervisor },
     { name: 'Settings', href: '/settings', icon: Settings, show: true },
@@ -112,7 +115,7 @@ export default function DashboardLayout() {
   const supervisorMobileNav = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Patients', href: '/all-patients', icon: Users },
-    { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+    { name: 'Duty Roster', href: '/duty-roster', icon: CalendarClock },
     { name: 'Workload', href: '/workload', icon: BarChart3 },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];

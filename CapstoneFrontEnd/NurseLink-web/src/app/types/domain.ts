@@ -399,6 +399,47 @@ export interface AdminUser {
   dateJoined: string | null;
 }
 
+export type DutyShift = 'morning' | 'afternoon' | 'night';
+export type DutyStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+
+export interface DutyAssignment {
+  id: number;
+  nurseId: string;
+  nurseName: string;
+  departmentId: number;
+  departmentName: string;
+  dutyDate: string;
+  /** Real window in the hospital's timezone, from the server. A Night shift
+   * dated Oct 2 ends on Oct 3 — use these instead of recombining
+   * dutyDate + time locally. */
+  scheduledStartAt?: string;
+  scheduledEndAt?: string;
+  scheduleStatus?: 'upcoming' | 'current' | 'past';
+  scheduleWindowLabel?: string;
+  shift: DutyShift;
+  shiftLabel: string;
+  startTime: string;
+  endTime: string;
+  regularHours: number;
+  overtimeStart: string | null;
+  overtimeEnd: string | null;
+  overtimeHours: number;
+  totalHours: number;
+  status: DutyStatus;
+  statusLabel: string;
+  notes: string;
+  /** Real attendance — null until the nurse clocks in/out. */
+  actualStartTime: string | null;
+  actualEndTime: string | null;
+  actualWorkedHours: number;
+  actualOvertimeHours: number;
+  /** Set only when a head nurse closes out a shift the nurse never ended themselves. */
+  actualEndRecordedBy: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AnalyticsData {
   taskCompletion: { value: number; label: string; frontColor?: string }[];
   workloadTrend: { value: number; label: string }[];
