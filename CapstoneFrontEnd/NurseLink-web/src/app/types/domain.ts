@@ -346,10 +346,20 @@ export interface EligibleReferralRecipients {
 export interface AppNotification {
   id: string;
   type: 'critical' | 'warning' | 'info' | 'success';
+  /** What happened. 'handover_received' is the one the app raises as a popup. */
+  event?: string;
   title: string;
   message: string;
   time: string;
+  /** ISO timestamp, for showing a clock time rather than "3 mins ago". */
+  createdAt?: string;
   patient?: string;
+  /** Patient code, when the notification refers to a real patient. */
+  patientId?: string | null;
+  /** Handover code, when it refers to a real referral. */
+  handoverId?: string | null;
+  /** Nurse who caused it. */
+  senderName?: string | null;
   isRead: boolean;
   action?: {
     label: string;

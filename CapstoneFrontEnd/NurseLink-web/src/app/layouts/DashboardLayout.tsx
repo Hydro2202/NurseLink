@@ -38,6 +38,7 @@ import {
   AlertDialogTitle,
 } from '../components/ui/alert-dialog';
 import { NotificationPanel } from '../components/NotificationPanel';
+import { HandoverAlertModal } from '../components/HandoverAlertModal';
 // Tightly cropped to just the circular emblem mark (no "NURSELINK" wordmark,
 // no surrounding empty canvas) — the original figma:asset export is a full
 // lockup on a wide mostly-transparent canvas, which made the mark itself
@@ -251,10 +252,13 @@ export default function DashboardLayout() {
         </AlertDialog>
 
         {/* Notification Panel */}
-        <NotificationPanel 
-          isOpen={notificationPanelOpen} 
-          onClose={() => setNotificationPanelOpen(false)} 
+        <NotificationPanel
+          isOpen={notificationPanelOpen}
+          onClose={() => setNotificationPanelOpen(false)}
         />
+
+        {/* Referrals are nurse-to-nurse only — this branch only renders for staff nurses. */}
+        <HandoverAlertModal />
       </div>
     );
   }
@@ -556,10 +560,13 @@ export default function DashboardLayout() {
       </AlertDialog>
 
       {/* Notification Panel */}
-      <NotificationPanel 
-        isOpen={notificationPanelOpen} 
-        onClose={() => setNotificationPanelOpen(false)} 
+      <NotificationPanel
+        isOpen={notificationPanelOpen}
+        onClose={() => setNotificationPanelOpen(false)}
       />
+
+      {/* Desktop is shared between roles — referrals are nurse-to-nurse only. */}
+      {isStaffNurse ? <HandoverAlertModal /> : null}
     </div>
   );
 }

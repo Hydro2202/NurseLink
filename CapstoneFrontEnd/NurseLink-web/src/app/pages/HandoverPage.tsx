@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router';
 import type { HandoverNote } from '../types/domain';
 import {
   fetchHandovers,
@@ -30,6 +31,8 @@ import {
   ArrowUpDown,
   Trash2,
   Eye,
+  History,
+  Image as ImageIcon,
 } from 'lucide-react';
 import {
   Select,
@@ -99,6 +102,10 @@ function describeHandover(handover: HandoverNote, type: 'incoming' | 'outgoing' 
 
 export default function HandoverPage() {
   const { user } = useAuth();
+  const location = useLocation();
+  // Set when a notification or the referral popup sends the nurse straight
+  // to one handover.
+  const highlightId = (location.state as { highlightId?: string } | null)?.highlightId || null;
   const currentUserName = user?.name || 'You';
   // Head nurses are FYI observers only — no create/delete/accept/decline/
   // complete. See CanManageReferral (backend) for the matching write-side
@@ -117,6 +124,7 @@ export default function HandoverPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [declineTarget, setDeclineTarget] = useState<string | null>(null);
   const [declineReason, setDeclineReason] = useState('');
+  const [historyTarget, setHistoryTarget] = useState<HandoverNote | null>(null);
 
   const loadHandovers = () => {
     fetchHandovers()
@@ -184,10 +192,10 @@ export default function HandoverPage() {
   };
 
   const handleConfirmDecline = async () => {
-    if (!declineTarget || !declineReason.trim()) return;
+    if (!declineTarget) return;
     setActionLoading(declineTarget);
     try {
-      const updated = await declineHandover(declineTarget, declineReason.trim());
+      const updated = await declineHandover(declineTarget, declineReason.trim() || undefined);
       setHandovers((prev) => prev.map((h) => (h.id === declineTarget ? updated : h)));
       toast.success('Referral declined');
       setDeclineTarget(null);
@@ -267,7 +275,12 @@ export default function HandoverPage() {
   );
 
   const renderHandoverCard = (handover: HandoverNote, type: 'incoming' | 'outgoing' | 'oversight') => (
-    <Card key={handover.id} className="border-2 hover:shadow-md transition-shadow">
+    <Card
+      key={handover.id}
+      className={`border-2 hover:shadow-md transition-shadow ${
+        highlightId === handover.id ? 'border-blue-600 ring-2 ring-blue-200' : ''
+      }`}
+    >
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between">
           <div className="flex-1">
@@ -281,7 +294,10 @@ export default function HandoverPage() {
           </div>
           <div className="flex items-center gap-2">
             <Badge variant={STATUS_BADGE[handover.status].variant}>{STATUS_BADGE[handover.status].label}</Badge>
-            {type === 'outgoing' && (
+            <Button size="sm" variant="ghost" onClick={() => setHistoryTarget(handover)} className="text-gray-500 hover:bg-gray-100">
+              <History className="w-4 h-4" />
+            </Button>
+            {type !== 'oversight' && (
               <Button size="sm" variant="ghost" onClick={() => handleDeleteHandover(handover.id)} className="text-red-600 hover:bg-red-50">
                 <Trash2 className="w-4 h-4" />
               </Button>
@@ -326,6 +342,27 @@ export default function HandoverPage() {
             <AlertDescription>Declined: {handover.declinedReason}</AlertDescription>
           </Alert>
         )}
+
+        {handover.photos && handover.photos.length > 0 ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <ImageIcon className="w-4 h-4 text-blue-600" />
+              <p className="text-sm font-semibold text-gray-700 flex-1">Clinical Photos</p>
+              <Badge variant="secondary">{handover.photos.length}</Badge>
+            </div>
+            <div className="flex gap-2.5 overflow-x-auto pb-1">
+              {handover.photos.map((photo) => (
+                <div key={photo.id} className="w-40 flex-shrink-0 bg-gray-50 rounded-lg border border-border overflow-hidden">
+                  <img src={photo.url} alt={photo.description} className="w-full h-[110px] object-cover bg-gray-200" />
+                  <p className="text-xs text-gray-700 px-2 pt-1.5 line-clamp-2">{photo.description}</p>
+                  <p className="text-[10px] text-muted-foreground px-2 pb-2 pt-0.5">
+                    Expires {new Date(photo.expiresAt).toLocaleDateString()}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {type === 'incoming' && isActionable(handover.status) && (
           <div className="flex gap-2">
@@ -489,15 +526,53 @@ export default function HandoverPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Decline Referral</DialogTitle>
-            <DialogDescription>Explain why this referral is being declined.</DialogDescription>
+            <DialogDescription>Let the sending nurse know why, so they can reassign the patient.</DialogDescription>
           </DialogHeader>
-          <Textarea value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} rows={4} placeholder="Reason for declining..." />
+          <Textarea value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} rows={4} placeholder="Reason (optional)" />
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeclineTarget(null)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={handleConfirmDecline} disabled={!declineReason.trim() || actionLoading === declineTarget}>
+            <Button variant="destructive" onClick={handleConfirmDecline} disabled={actionLoading === declineTarget}>
               {actionLoading === declineTarget ? 'Submitting...' : 'Confirm Decline'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Referral history */}
+      <Dialog open={!!historyTarget} onOpenChange={(open) => !open && setHistoryTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Referral History</DialogTitle>
+            {historyTarget ? (
+              <DialogDescription>
+                {historyTarget.patientName} · {historyTarget.nurseFrom} → {historyTarget.nurseTo}
+              </DialogDescription>
+            ) : null}
+          </DialogHeader>
+          <div className="max-h-80 overflow-y-auto">
+            {(historyTarget?.statusHistory ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4">No history recorded for this referral.</p>
+            ) : (
+              (historyTarget?.statusHistory ?? []).map((entry, idx) => (
+                <div key={idx} className="flex gap-2.5 py-2.5 border-b border-gray-100 last:border-0">
+                  <div className="w-2 h-2 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold">{STATUS_BADGE[entry.status as HandoverNote['status']]?.label || entry.status}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {entry.byName || 'Unknown'}
+                      {entry.at ? ` · ${new Date(entry.at).toLocaleString()}` : ''}
+                    </p>
+                    {entry.note ? <p className="text-sm text-gray-700 mt-1 italic">{entry.note}</p> : null}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setHistoryTarget(null)} className="flex-1">
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

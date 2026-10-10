@@ -388,8 +388,11 @@ export async function acceptHandover(id: string): Promise<HandoverNote & { adopt
   return apiRequest(`/handovers/${id}/accept/`, { method: 'POST' });
 }
 
-export async function declineHandover(id: string, reason: string): Promise<HandoverNote> {
-  return apiRequest<HandoverNote>(`/handovers/${id}/decline/`, { method: 'POST', body: { reason } });
+export async function declineHandover(id: string, reason?: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/handovers/${id}/decline/`, {
+    method: 'POST',
+    body: reason ? { reason } : undefined,
+  });
 }
 
 export async function completeHandover(id: string): Promise<HandoverNote> {
