@@ -270,6 +270,43 @@ export interface HandoverNote {
   adoptedTasks?: string[];
 }
 
+export interface ChartingVitalSigns {
+  heartRate?: string;
+  bloodPressure?: string;
+  temperature?: string;
+  oxygenSaturation?: string;
+  respiratoryRate?: string;
+}
+
+/** Section-by-section Auto Charting payload persisted with the note. */
+export interface ChartingStructuredData {
+  patientName?: string;
+  patientId?: string;
+  room?: string;
+  date?: string;
+  time?: string;
+  attendingPhysician?: string;
+  nurseName?: string;
+  vitalSigns?: ChartingVitalSigns;
+  assessment?: string;
+  diagnosis?: string;
+  riskLevel?: string;
+  allergies?: string;
+  medications?: string;
+  alerts?: string;
+  interventions?: string[];
+  patientResponse?: string;
+  clinicalSummary?: string;
+  plan?: string;
+  timestamp?: string;
+}
+
+export interface ChartingHistoryDate {
+  date: string;
+  count: number;
+  isToday: boolean;
+}
+
 export interface ChartingNote {
   id: string;
   patientId: string;
@@ -279,14 +316,27 @@ export interface ChartingNote {
   timestamp: string;
   type: 'progress' | 'assessment' | 'medication' | 'vital_signs';
   content: string;
+  /** Persisted Auto Charting sections — used by View Full Note. */
+  structured?: ChartingStructuredData | null;
+  /** FDAR sections — populated (possibly as empty strings) when noteFormat is 'fdar'; blank for legacy notes. */
+  focus?: string;
+  data?: string;
+  action?: string;
+  response?: string;
+  /** 'legacy' = pre-FDAR note, rendered read-only via StructuredNursingNote with a "Legacy Note" badge. Absent/undefined is treated as 'fdar'. */
+  noteFormat?: 'fdar' | 'legacy';
   aiGenerated: boolean;
   edited: boolean;
+  confirmed?: boolean;
+  confirmedAt?: string | null;
   attendingPhysician?: string;
   editHistory: {
     editedBy: string;
     editedAt: string;
     changes: string;
   }[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface WorkloadData {

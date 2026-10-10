@@ -36,11 +36,15 @@ type RequestOptions = {
   method?: string;
   body?: unknown;
   auth?: boolean;
+  /** Aborts the request after this many ms — for slow AI/workflow backends
+   * that can exceed a normal request's expected duration. Omit for no
+   * client-side timeout (the default). */
+  timeoutMs?: number;
 };
 
 export async function apiRequest<T>(
   path: string,
-  { method = 'GET', body, auth = true }: RequestOptions = {}
+  { method = 'GET', body, auth = true, timeoutMs }: RequestOptions = {}
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -53,11 +57,25 @@ export async function apiRequest<T>(
     }
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller?.signal,
+    });
+  } catch (error) {
+    if (controller?.signal.aborted) {
+      throw new ApiError('The request timed out. Please try again.', 0);
+    }
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 
   let data: unknown = null;
   const text = await response.text();

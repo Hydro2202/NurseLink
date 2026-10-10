@@ -105,14 +105,24 @@ export function StructuredNursingNote({
       value: vitalSigns.respiratoryRate,
       icon: <Wind className="w-4 h-4 text-teal-500" />,
     },
-  ];
+    // Only show vitals that were actually recorded — never blank tiles.
+  ].filter((vital) => Boolean(vital.value && String(vital.value).trim()));
 
   const getRiskColor = (risk: string) => {
     const riskLower = risk.toLowerCase();
-    if (riskLower === 'high') return 'bg-red-100 text-red-800 border-red-300';
+    if (riskLower === 'high' || riskLower === 'critical') return 'bg-red-100 text-red-800 border-red-300';
     if (riskLower === 'medium') return 'bg-yellow-100 text-yellow-800 border-yellow-300';
     return 'bg-green-100 text-green-800 border-green-300';
   };
+
+  const hasAssessmentDetails =
+    Boolean(assessment?.trim()) ||
+    Boolean(diagnosis?.trim()) ||
+    Boolean(riskLevel?.trim()) ||
+    Boolean(allergies?.trim()) ||
+    Boolean(medications?.trim()) ||
+    Boolean(alerts?.trim());
+  const hasDetailRows = Boolean(allergies?.trim() || medications?.trim() || alerts?.trim());
 
   return (
     <div className="space-y-4">
@@ -189,85 +199,104 @@ export function StructuredNursingNote({
         </CardContent>
       </Card>
 
-      {/* Vital Signs */}
-      <Card className="border-l-4 border-l-red-500">
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Activity className="w-5 h-5 text-red-600" />
-            <h3 className="text-lg font-semibold">Vital Signs</h3>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {vitalSignsData.map((vital, index) => (
-              <div
-                key={index}
-                className="bg-gradient-to-br from-gray-50 to-white border-2 border-gray-200 rounded-lg p-3 hover:shadow-md transition-shadow"
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  {vital.icon}
-                  <p className="text-xs font-medium text-gray-600">{vital.label}</p>
+      {/* Vital Signs — only values that were actually recorded */}
+      {vitalSignsData.length > 0 && (
+        <Card className="border-l-4 border-l-red-500">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Activity className="w-5 h-5 text-red-600" />
+              <h3 className="text-lg font-semibold">Vital Signs</h3>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {vitalSignsData.map((vital, index) => (
+                <div
+                  key={index}
+                  className="bg-gradient-to-br from-gray-50 to-white border-2 border-gray-200 rounded-lg p-3 hover:shadow-md transition-shadow"
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    {vital.icon}
+                    <p className="text-xs font-medium text-gray-600">{vital.label}</p>
+                  </div>
+                  <p className="text-lg font-bold text-gray-900">{vital.value}</p>
                 </div>
-                <p className="text-lg font-bold text-gray-900">{vital.value}</p>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Assessment & Observations */}
-      <Card className="border-l-4 border-l-green-500">
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <ClipboardList className="w-5 h-5 text-green-600" />
-            <h3 className="text-lg font-semibold">Assessment & Observations</h3>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-            <p className="text-sm leading-relaxed text-gray-800 whitespace-pre-wrap">{assessment}</p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <p className="text-xs font-semibold text-gray-600 mb-2">Current Diagnosis</p>
-              <p className="text-sm text-gray-900">{diagnosis}</p>
+      {hasAssessmentDetails && (
+        <Card className="border-l-4 border-l-green-500">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <ClipboardList className="w-5 h-5 text-green-600" />
+              <h3 className="text-lg font-semibold">Assessment & Observations</h3>
             </div>
-            <div>
-              <p className="text-xs font-semibold text-gray-600 mb-2">Risk Level</p>
-              <Badge className={getRiskColor(riskLevel)}>{riskLevel}</Badge>
-            </div>
-          </div>
-
-          <Separator />
-
-          <div className="space-y-3">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-              <div className="flex-1">
-                <p className="text-xs font-semibold text-gray-600 mb-1">Allergies</p>
-                <p className="text-sm text-gray-900">{allergies}</p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {assessment?.trim() && (
+              <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                <p className="text-sm leading-relaxed text-gray-800 whitespace-pre-wrap">{assessment}</p>
               </div>
-            </div>
+            )}
 
-            <div className="flex items-start gap-2">
-              <Pill className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
-              <div className="flex-1">
-                <p className="text-xs font-semibold text-gray-600 mb-1">Active Medications</p>
-                <p className="text-sm text-gray-900">{medications}</p>
+            {(diagnosis?.trim() || riskLevel?.trim()) && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {diagnosis?.trim() && (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-600 mb-2">Current Diagnosis</p>
+                    <p className="text-sm text-gray-900">{diagnosis}</p>
+                  </div>
+                )}
+                {riskLevel?.trim() && (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-600 mb-2">Risk Level</p>
+                    <Badge className={getRiskColor(riskLevel)}>{riskLevel}</Badge>
+                  </div>
+                )}
               </div>
-            </div>
+            )}
 
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-orange-500 mt-0.5 flex-shrink-0" />
-              <div className="flex-1">
-                <p className="text-xs font-semibold text-gray-600 mb-1">Alerts</p>
-                <p className="text-sm text-gray-900">{alerts}</p>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+            {hasDetailRows && (
+              <>
+                <Separator />
+                <div className="space-y-3">
+                  {allergies?.trim() && (
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-xs font-semibold text-gray-600 mb-1">Allergies</p>
+                        <p className="text-sm text-gray-900">{allergies}</p>
+                      </div>
+                    </div>
+                  )}
+                  {medications?.trim() && (
+                    <div className="flex items-start gap-2">
+                      <Pill className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-xs font-semibold text-gray-600 mb-1">Active Medications</p>
+                        <p className="text-sm text-gray-900">{medications}</p>
+                      </div>
+                    </div>
+                  )}
+                  {alerts?.trim() && (
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-orange-500 mt-0.5 flex-shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-xs font-semibold text-gray-600 mb-1">Alerts</p>
+                        <p className="text-sm text-gray-900">{alerts}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Interventions Performed */}
       {interventions && interventions.length > 0 && (

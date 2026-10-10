@@ -5,6 +5,7 @@ import type {
   AdminUser,
   AnalyticsData,
   AppNotification,
+  ChartingHistoryDate,
   ChartingNote,
   Department,
   DutyAssignment,
@@ -409,11 +410,17 @@ export async function fetchEligibleReferralRecipients(): Promise<EligibleReferra
 
 export async function fetchChartingNotes(options?: {
   patientId?: string;
+  /** When true, backend returns only the logged-in nurse's notes. */
+  mine?: boolean;
+  /** Local calendar date YYYY-MM-DD (Asia/Manila by default on the server). */
+  date?: string;
 }): Promise<ChartingNote[]> {
-  const query = options?.patientId
-    ? `?patientId=${encodeURIComponent(options.patientId)}`
-    : '';
-  return apiRequest<ChartingNote[]>(`/charting/${query}`);
+  const params = new URLSearchParams();
+  if (options?.patientId) params.set('patientId', options.patientId);
+  if (options?.mine) params.set('mine', 'true');
+  if (options?.date) params.set('date', options.date);
+  const query = params.toString();
+  return apiRequest<ChartingNote[]>(`/charting/${query ? `?${query}` : ''}`);
 }
 
 export async function createChartingNote(data: Partial<ChartingNote>): Promise<ChartingNote> {
@@ -429,6 +436,57 @@ export async function updateChartingNote(
 
 export async function deleteChartingNote(id: string): Promise<void> {
   await apiRequest(`/charting/${id}/`, { method: 'DELETE' });
+}
+
+/** Local calendar dates (Asia/Manila by default on the server) that have at
+ * least one charting note by the signed-in nurse, newest first — backs the
+ * "My Charting History" date browser. */
+export async function fetchChartingHistoryDates(): Promise<ChartingHistoryDate[]> {
+  return apiRequest<ChartingHistoryDate[]>('/charting/history-dates/');
+}
+
+/** Head-nurse confirmation of a charting note — sets confirmed/confirmedAt. */
+export async function confirmChartingNote(id: string): Promise<ChartingNote> {
+  return apiRequest<ChartingNote>(`/charting/${id}/confirm/`, { method: 'POST' });
+}
+
+/**
+ * Autocharting — the backend attaches the patient's demographics and vitals,
+ * then runs the n8n structure-chart workflow to build the note. Can exceed
+ * the default request timeout, so this calls with a 60s client timeout; a
+ * 503 (or any ApiError) means the n8n workflow is unavailable right now.
+ */
+export type StructureChartResponse = {
+  success: boolean;
+  note: string;
+  structured: Record<string, unknown>;
+  focus?: string;
+  data?: string;
+  action?: string;
+  response?: string;
+  aiGenerated: boolean;
+  /** True when n8n returned nothing usable and the backend organised the nurse's own text instead. */
+  fallback?: boolean;
+  warning?: string;
+  saved: boolean;
+  noteId?: string;
+};
+
+export async function structureChartRequest(payload: {
+  patientId: string;
+  assessment: string;
+  interventions?: string[];
+  patientResponse?: string;
+  noteType?: 'progress' | 'assessment' | 'medication' | 'vital_signs';
+  shift?: 'morning' | 'afternoon' | 'night';
+  vitalSigns?: Record<string, unknown>;
+  save?: boolean;
+}): Promise<StructureChartResponse> {
+  return apiRequest<StructureChartResponse>('/charting/structure/', {
+    method: 'POST',
+    body: payload,
+    timeoutMs: 60000,
+  });
 }
 
 export async function fetchNurses(): Promise<Nurse[]> {
