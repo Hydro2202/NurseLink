@@ -20,11 +20,59 @@ export interface Task {
   patientRoom?: string;
   doctorOrder?: string;
   checklist: TaskChecklistItem[];
+  /** Numeric Department id — the API accepts/returns it as a number. */
+  departmentId?: string | number | null;
+  departmentName?: string;
+  /** Read-only, populated by the backend from TaskDoctor. To change who's
+   * assigned, submit `doctorIds` instead — see createTask/updateTask. */
+  assignedDoctors?: TaskDoctorAssignment[];
+  /** Write-only on create/update: the full set of doctor ids for this task. */
+  doctorIds?: number[];
 }
 
 export interface TaskChecklistItem {
   text: string;
   done: boolean;
+}
+
+export interface TaskDoctorAssignment {
+  id: number;
+  name: string;
+  specialization: string;
+  departmentName?: string;
+}
+
+export interface Doctor {
+  id: number;
+  fullName: string;
+  specialization: string;
+  departmentId: number;
+  departmentName: string;
+  licenseNumber: string;
+  status: 'active' | 'inactive';
+}
+
+/** One timestamped vitals reading — see the backend's VitalSignsSerializer.
+ * Insert-only: never edited after the fact. */
+export interface VitalReading {
+  id: number;
+  patientId: string;
+  /** Set when logged as a timed check-in on a 'vital_signs' category Task. */
+  taskId?: string | null;
+  heartRate: number | null;
+  bloodPressure: string;
+  temperature: number | null;
+  oxygenSaturation: number | null;
+  respiratoryRate: number | null;
+  /** Null means not recorded, not "no". */
+  oxygenUse: boolean | null;
+  painScale: number | null;
+  source: string;
+  notes: string;
+  recordedById: number | null;
+  recordedByName: string | null;
+  recordedAt: string;
+  createdAt: string;
 }
 
 export interface Patient {
@@ -456,4 +504,73 @@ export interface AnalyticsData {
     totalTasks: number;
     completedTasks: number;
   };
+}
+
+/** A shift-to-shift task handoff (distinct from HandoverNote, the SBAR
+ * referral) — see TaskHandoverSerializer. Read-only here: the Admin panel
+ * only browses these for oversight, the real send/accept/verify flow lives
+ * elsewhere. */
+export interface AdminTaskHandover {
+  id: string;
+  taskId: number | null;
+  taskTitle: string;
+  taskDescription: string;
+  fromNurseId: number;
+  fromNurseName: string;
+  toNurseId: number;
+  toNurseName: string;
+  departmentId: number | null;
+  departmentName: string;
+  shift: string;
+  shiftLabel: string;
+  dutyDate: string;
+  notes: string;
+  status: 'pending' | 'accepted' | 'verified' | 'rejected';
+  statusLabel: string;
+  supervisorId: number | null;
+  supervisorName: string;
+  verifiedAt: string | null;
+  rejectionReason: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A signup wizard's identity-verification progress — the evidence behind
+ * an approve/reject decision on an AdminUser. Read-only. */
+export interface AdminRegistrationSession {
+  id: number;
+  sessionId: string;
+  email: string;
+  faceAttempts: number;
+  faceVerified: boolean;
+  faceLocked: boolean;
+  otpVerified: boolean;
+  verificationMethod: string;
+  prcVerified: boolean;
+  prcLicenseNumber: string;
+  prcFullName: string;
+  prcProfession: string;
+  idLastName: string;
+  idFirstName: string;
+  idMiddleName: string;
+  idRegistrationNo: string;
+  idVerificationStatus: string;
+  isVerified: boolean;
+  userId: string | null;
+  userEmail: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** One face-match attempt within a registration session's verification
+ * history. Never carries raw images. */
+export interface AdminFaceVerificationAttempt {
+  id: number;
+  sessionId: string;
+  matched: boolean;
+  confidence: number;
+  reason: string;
+  reasonLabel: string;
+  countable: boolean;
+  createdAt: string;
 }

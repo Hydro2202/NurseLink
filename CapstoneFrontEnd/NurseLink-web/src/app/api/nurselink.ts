@@ -513,6 +513,31 @@ export async function fetchAnalytics(): Promise<AnalyticsData> {
   return apiRequest<AnalyticsData>('/analytics/');
 }
 
+/** The Settings page, as stored on the account. */
+export interface UserPreferences {
+  fontSize: 'small' | 'medium' | 'large';
+  compactView: boolean;
+  taskNotifications: boolean;
+  handoverNotifications: boolean;
+  criticalAlerts: boolean;
+  emailNotifications: boolean;
+  soundAlerts: boolean;
+  autoRefresh: boolean;
+  showCharts: boolean;
+  backgroundSync: boolean;
+}
+
+export async function fetchPreferences(): Promise<UserPreferences> {
+  return apiRequest<UserPreferences>('/preferences/');
+}
+
+/** Partial update: the Settings page saves one section at a time. */
+export async function updatePreferences(
+  changes: Partial<UserPreferences>
+): Promise<UserPreferences> {
+  return apiRequest<UserPreferences>('/preferences/', { method: 'PATCH', body: changes });
+}
+
 export async function fetchNotifications(): Promise<{
   results: AppNotification[];
   unreadCount: number;
@@ -678,4 +703,109 @@ export async function reactivateAdminUser(id: string): Promise<AdminUser> {
 
 export async function setAdminUserPassword(id: string, password: string): Promise<void> {
   await apiRequest(`/admin/users/${id}/set-password/`, { method: 'POST', body: { password } });
+}
+
+// --- Vital signs check-ins + task doctor assignment (ported from mobile) ---
+// Types are referenced inline (not added to the import block above) so this
+// append doesn't touch any existing lines of this file.
+
+/** Timestamped vitals history, filterable by patient and/or task. */
+export async function fetchVitalReadings(options?: {
+  patientId?: string;
+  taskId?: string;
+}): Promise<import('../types/domain').VitalReading[]> {
+  const params = new URLSearchParams();
+  if (options?.patientId) params.set('patientId', options.patientId);
+  if (options?.taskId) params.set('taskId', options.taskId);
+  const query = params.toString() ? `?${params}` : '';
+  return apiRequest<import('../types/domain').VitalReading[]>(`/vital-signs/${query}`);
+}
+
+/** Logs one timestamped vitals reading — insert-only. The server rejects it
+ * (403) unless the patient is assigned to the caller or the caller is a head
+ * nurse. `recordedAt` defaults to "now" server-side when omitted. */
+export async function createVitalSigns(
+  data: Partial<import('../types/domain').VitalReading> & { patientId: string }
+): Promise<import('../types/domain').VitalReading> {
+  return apiRequest<import('../types/domain').VitalReading>('/vital-signs/', {
+    method: 'POST',
+    body: data,
+  });
+}
+
+/** A patient's Kardex-assigned doctors — the source of truth for a task's
+ * department/doctor fields (never the whole hospital roster). */
+export async function fetchPatientAssignedDoctors(
+  patientCode: string
+): Promise<import('../types/domain').Doctor[]> {
+  return apiRequest<import('../types/domain').Doctor[]>(`/patients/${patientCode}/assigned-doctors/`);
+}
+
+// --- Admin: hospital doctor directory, task handovers, registration audit
+// trail (ported from mobile's admin/doctors.tsx, admin/[section].tsx, and
+// admin/registrations.tsx) ---
+
+export async function fetchDoctors(options?: {
+  departmentId?: number | string;
+  search?: string;
+}): Promise<import('../types/domain').Doctor[]> {
+  const params = new URLSearchParams();
+  if (options?.departmentId) params.set('department', String(options.departmentId));
+  if (options?.search) params.set('search', options.search);
+  const query = params.toString();
+  return apiRequest<import('../types/domain').Doctor[]>(`/doctors/${query ? `?${query}` : ''}`);
+}
+
+// Create/update: admin-only (see DoctorViewSet.get_permissions).
+export async function createDoctor(
+  data: Partial<import('../types/domain').Doctor>
+): Promise<import('../types/domain').Doctor> {
+  return apiRequest<import('../types/domain').Doctor>('/doctors/', { method: 'POST', body: data });
+}
+
+export async function updateDoctor(
+  id: number | string,
+  data: Partial<import('../types/domain').Doctor>
+): Promise<import('../types/domain').Doctor> {
+  return apiRequest<import('../types/domain').Doctor>(`/doctors/${id}/`, { method: 'PATCH', body: data });
+}
+
+// Read-only oversight — the real send/accept/verify workflow lives outside
+// the Admin panel.
+export async function fetchTaskHandovers(): Promise<import('../types/domain').AdminTaskHandover[]> {
+  return apiRequest<import('../types/domain').AdminTaskHandover[]>('/task-handovers/');
+}
+
+export async function fetchAdminRegistrationSessions(options?: {
+  email?: string;
+  verified?: boolean;
+}): Promise<import('../types/domain').AdminRegistrationSession[]> {
+  const params = new URLSearchParams();
+  if (options?.email) params.set('email', options.email);
+  if (options?.verified !== undefined) params.set('verified', String(options.verified));
+  const query = params.toString();
+  return apiRequest<import('../types/domain').AdminRegistrationSession[]>(
+    `/admin/registration-sessions/${query ? `?${query}` : ''}`
+  );
+}
+
+export async function fetchAdminFaceVerificationAttempts(
+  sessionId?: string
+): Promise<import('../types/domain').AdminFaceVerificationAttempt[]> {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+  return apiRequest<import('../types/domain').AdminFaceVerificationAttempt[]>(
+    `/admin/face-verification-attempts/${query}`
+  );
+}
+
+// `id` here is the numeric row id (AdminRegistrationSession.id), not the
+// UUID sessionId field.
+export async function deleteAdminRegistrationSession(id: number): Promise<void> {
+  await apiRequest(`/admin/registration-sessions/${id}/`, { method: 'DELETE' });
+}
+
+export async function clearAbandonedRegistrationSessions(): Promise<{ deleted: number }> {
+  return apiRequest<{ deleted: number }>('/admin/registration-sessions/clear-abandoned/', {
+    method: 'POST',
+  });
 }
