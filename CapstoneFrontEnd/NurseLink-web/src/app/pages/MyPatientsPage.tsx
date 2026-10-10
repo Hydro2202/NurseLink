@@ -39,8 +39,12 @@ import {
   AlertCircle,
   Edit2,
   Trash2,
+  Building2,
+  FlaskConical,
 } from 'lucide-react';
 import { PatientKardexModal } from '../components/PatientKardexModal';
+import { LabsAndMedicationsModal } from '../components/LabsAndMedicationsModal';
+import { groupDoctorsByDepartment } from '../utils/patientDisplay';
 import { toast } from 'sonner';
 
 export default function MyPatientsPage() {
@@ -57,6 +61,8 @@ export default function MyPatientsPage() {
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [toDelete, setToDelete] = useState<Patient | null>(null);
+  const [labsMedsOpen, setLabsMedsOpen] = useState(false);
+  const [labsMedsPatient, setLabsMedsPatient] = useState<Patient | null>(null);
 
   const loadPatients = async () => {
     if (!user) return;
@@ -350,6 +356,26 @@ export default function MyPatientsPage() {
                       </div>
                     </div>
 
+                    {/* Medical Team — Kardex-assigned doctors, one line per department */}
+                    {patient.assignedDoctors && patient.assignedDoctors.length > 0 ? (
+                      <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+                        <p className="text-xs font-bold uppercase tracking-wide text-blue-700 mb-1">
+                          Medical Team
+                        </p>
+                        <div className="space-y-1">
+                          {groupDoctorsByDepartment(patient).map(({ department, doctors }) => (
+                            <div key={department} className="flex items-center gap-1.5 text-xs text-gray-900">
+                              <Building2 className="w-3.5 h-3.5 shrink-0 text-blue-700" />
+                              <span className="truncate">
+                                <span className="font-bold">{department}: </span>
+                                {doctors.join(', ')}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
                     {/* Vital Signs */}
                     <div className="bg-white rounded-lg p-3 border border-gray-200">
                       <p className="text-xs font-semibold text-gray-700 mb-2">Latest Vitals</p>
@@ -474,10 +500,22 @@ export default function MyPatientsPage() {
                         View Chart
                       </Button>
                       <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setLabsMedsPatient(patient);
+                          setLabsMedsOpen(true);
+                        }}
+                        className="w-full"
+                      >
+                        <FlaskConical className="w-4 h-4 mr-2" />
+                        Labs &amp; Meds
+                      </Button>
+                      <Button
                         variant="default"
                         size="sm"
                         onClick={() => navigate('/tasks', { state: { patientId: patient.id, scrollToPatient: true } })}
-                        className="w-full bg-blue-600 hover:bg-blue-700"
+                        className="w-full bg-blue-600 hover:bg-blue-700 col-span-2"
                       >
                         View Tasks
                       </Button>
@@ -496,6 +534,12 @@ export default function MyPatientsPage() {
         mode="edit"
         patient={editingPatient}
         onSaved={loadPatients}
+      />
+
+      <LabsAndMedicationsModal
+        open={labsMedsOpen}
+        onOpenChange={setLabsMedsOpen}
+        patient={labsMedsPatient}
       />
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
