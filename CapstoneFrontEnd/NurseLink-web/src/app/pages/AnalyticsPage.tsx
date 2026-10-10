@@ -16,7 +16,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { TrendingUp, Activity, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
+import { TrendingUp, Activity, AlertTriangle, CheckCircle, Clock, ListChecks, Users } from 'lucide-react';
 import { fetchAnalytics, ApiError } from '../api/nurselink';
 import type { AnalyticsData } from '../types/domain';
 import { toast } from 'sonner';
@@ -94,6 +94,20 @@ export default function AnalyticsPage() {
   );
 
   const kpis = data?.kpis;
+
+  const kpiItems = useMemo(
+    () => [
+      { key: 'completion', icon: TrendingUp, iconBg: 'bg-green-100', iconColor: 'text-green-600', value: `${kpis?.completionRate ?? 0}%`, label: 'Completion Rate' },
+      { key: 'total', icon: ListChecks, iconBg: 'bg-blue-100', iconColor: 'text-blue-600', value: `${kpis?.totalTasks ?? 0}`, label: 'Total Tasks' },
+      { key: 'completed', icon: CheckCircle, iconBg: 'bg-green-100', iconColor: 'text-green-600', value: `${kpis?.completedTasks ?? 0}`, label: 'Completed Tasks' },
+      { key: 'overdue', icon: AlertTriangle, iconBg: 'bg-red-100', iconColor: 'text-red-600', value: `${kpis?.overdueTasks ?? 0}`, label: 'Overdue Tasks' },
+      { key: 'nurses', icon: Users, iconBg: 'bg-purple-100', iconColor: 'text-purple-600', value: `${kpis?.activeNurses ?? 0}`, label: 'Active Nurses' },
+      { key: 'ratio', icon: Activity, iconBg: 'bg-purple-100', iconColor: 'text-purple-600', value: `${kpis?.avgPatientsPerNurse ?? 0}`, label: 'Avg Patients / Nurse' },
+      { key: 'response', icon: Clock, iconBg: 'bg-yellow-100', iconColor: 'text-yellow-600', value: `${kpis?.avgResponseMinutes ?? 0}m`, label: 'Avg Response' },
+    ],
+    [kpis]
+  );
+
   const highBurnout = burnoutRiskData.find((b) => b.risk === 'High')?.nurses ?? 0;
   const medBurnout = burnoutRiskData.find((b) => b.risk === 'Med' || b.risk === 'Medium')?.nurses ?? 0;
   const lowBurnout = burnoutRiskData.find((b) => b.risk === 'Low')?.nurses ?? 0;
@@ -104,54 +118,21 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Avg Task Completion</CardTitle>
-            <TrendingUp className="h-4 w-4 text-green-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{kpis?.completionRate ?? 0}%</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {kpis?.completedTasks ?? 0} of {kpis?.totalTasks ?? 0} tasks
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Avg Response Time</CardTitle>
-            <Clock className="h-4 w-4 text-blue-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{kpis?.avgResponseMinutes ?? 0} min</div>
-            <p className="text-xs text-muted-foreground mt-1">Derived from overdue load</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Critical Delays</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-red-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{kpis?.overdueTasks ?? 0}</div>
-            <p className="text-xs text-muted-foreground mt-1">Overdue tasks</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Active Nurses</CardTitle>
-            <Activity className="h-4 w-4 text-green-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{kpis?.activeNurses ?? 0}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Avg {kpis?.avgPatientsPerNurse ?? 0} patients/nurse
-            </p>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+        {kpiItems.map((kpi) => {
+          const Icon = kpi.icon;
+          return (
+            <Card key={kpi.key}>
+              <CardContent className="p-4">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${kpi.iconBg}`}>
+                  <Icon className={`w-4 h-4 ${kpi.iconColor}`} />
+                </div>
+                <div className="text-xl font-bold">{kpi.value}</div>
+                <p className="text-xs text-muted-foreground mt-0.5">{kpi.label}</p>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
       <Tabs defaultValue="completion" className="w-full">
@@ -236,15 +217,14 @@ export default function AnalyticsPage() {
               <CardDescription>Breakdown of tasks by category</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="w-full">
-                <ResponsiveContainer width="100%" height={400}>
+              <div className="w-full relative">
+                <ResponsiveContainer width="100%" height={340}>
                   <PieChart>
                     <Pie
                       data={taskTypeDistribution}
                       cx="50%"
                       cy="50%"
-                      labelLine={false}
-                      label={({ name, value }) => `${name}: ${value}%`}
+                      innerRadius={78}
                       outerRadius={120}
                       dataKey="value"
                     >
@@ -255,6 +235,24 @@ export default function AnalyticsPage() {
                     <Tooltip />
                   </PieChart>
                 </ResponsiveContainer>
+                {/* Centered total — recharts has no native center-label slot,
+                    so this is a plain absolutely-positioned overlay matching
+                    the donut's own center. */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold">{kpis?.totalTasks ?? 0}</p>
+                    <p className="text-xs text-muted-foreground">Tasks</p>
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-4">
+                {taskTypeDistribution.map((item) => (
+                  <div key={item.name} className="flex items-center gap-2 text-sm">
+                    <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: item.color }} />
+                    <span className="text-muted-foreground truncate">{item.name}</span>
+                    <span className="font-semibold ml-auto">{item.value}</span>
+                  </div>
+                ))}
               </div>
             </CardContent>
           </Card>
