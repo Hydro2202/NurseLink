@@ -299,6 +299,14 @@ if not DEBUG and not CORS_ALLOWED_ORIGINS:
         'otherwise every browser request to the API will be silently blocked.'
     )
 
+# Every Vercel Preview deployment of the "nurse-link" project gets its own
+# random subdomain (nurse-link-<hash>-nurse-link.vercel.app), so the fixed
+# CORS_ALLOWED_ORIGINS list above can't name them in advance. Allow the whole
+# pattern via regex instead of hand-adding each preview URL to Render's env.
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r'^https://nurse-link-[a-z0-9]+-nurse-link\.vercel\.app$',
+]
+
 # CSRF only matters for session-cookie-authenticated requests (Django admin,
 # the Scalar API docs "try it out" button) — the nurse-facing apps themselves
 # authenticate with a Bearer token, which CSRF does not apply to. Not
@@ -309,6 +317,9 @@ CSRF_TRUSTED_ORIGINS = [
     for origin in os.environ.get('DJANGO_CSRF_TRUSTED_ORIGINS', '').split(',')
     if origin.strip()
 ]
+# Same reasoning as CORS_ALLOWED_ORIGIN_REGEXES above, but Django's own
+# wildcard syntax (leading "*") covers it without a regex.
+CSRF_TRUSTED_ORIGINS.append('https://*.vercel.app')
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

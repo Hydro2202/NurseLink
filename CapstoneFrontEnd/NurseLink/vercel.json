@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/admin/:section", "destination": "/admin/%5Bsection%5D" },
+    { "source": "/nurse-tasks/:name", "destination": "/nurse-tasks/%5Bname%5D" }
+  ]
+}
