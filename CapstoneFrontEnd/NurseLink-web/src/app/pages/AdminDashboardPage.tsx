@@ -25,6 +25,19 @@ import {
   KeyRound,
   Loader2,
   Eye,
+  ClipboardList,
+  FileText,
+  ArrowLeftRight,
+  Calendar,
+  BookOpen,
+  HeartPulse,
+  Stethoscope,
+  Building2,
+  IdCard,
+  Plus,
+  Trash2,
+  Sparkles,
+  Search,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -36,9 +49,38 @@ import {
   setAdminUserPassword,
   fetchPatients,
   fetchDepartments,
+  fetchTasks,
+  fetchHandovers,
+  fetchTaskHandovers,
+  fetchChartingNotes,
+  fetchDutyAssignments,
+  fetchKardexRecords,
+  fetchVitalReadings,
+  fetchDoctors,
+  createDoctor,
+  updateDoctor,
+  fetchAdminRegistrationSessions,
+  fetchAdminFaceVerificationAttempts,
+  deleteAdminRegistrationSession,
+  clearAbandonedRegistrationSessions,
   ApiError,
 } from '../api/nurselink';
-import type { AdminUser, Patient, Department } from '../types/domain';
+import type {
+  AdminUser,
+  Patient,
+  Department,
+  Doctor,
+  AdminTaskHandover,
+  AdminRegistrationSession,
+  AdminFaceVerificationAttempt,
+} from '../types/domain';
+import {
+  RECORD_SECTIONS,
+  RECORD_SECTION_LIST,
+  type RecordSectionKey,
+  type RecordRow,
+  type RecordFilter,
+} from '../utils/adminRecordSections';
 
 const STATUS_BADGE: Record<AdminUser['approvalStatus'], { label: string; variant: 'info' | 'success' | 'destructive' }> = {
   pending: { label: 'Pending', variant: 'info' },
@@ -64,10 +106,49 @@ const ROLE_FILTERS: Array<{ id: 'all' | AdminUser['role']; label: string }> = [
   { id: 'head_nurse', label: 'Head Nurse' },
 ];
 
-const PANEL_TABS: Array<{ id: 'accounts' | 'patients'; label: string }> = [
+type PanelId = 'accounts' | 'patients' | 'doctors' | 'registrations' | 'records';
+
+const PANEL_TABS: Array<{ id: PanelId; label: string }> = [
   { id: 'accounts', label: 'Accounts' },
   { id: 'patients', label: 'Patients' },
+  { id: 'doctors', label: 'Doctors' },
+  { id: 'registrations', label: 'Registrations' },
+  { id: 'records', label: 'Hospital Records' },
 ];
+
+const SECTION_ICON: Record<RecordSectionKey, React.ComponentType<{ className?: string }>> = {
+  tasks: ClipboardList,
+  handovers: FileText,
+  'task-handovers': ArrowLeftRight,
+  charting: FileText,
+  duty: Calendar,
+  kardex: BookOpen,
+  vitals: HeartPulse,
+  departments: Building2,
+};
+
+interface DoctorForm {
+  fullName: string;
+  specialization: string;
+  departmentId: string;
+  licenseNumber: string;
+  status: 'active' | 'inactive';
+}
+
+const EMPTY_DOCTOR_FORM: DoctorForm = {
+  fullName: '', specialization: '', departmentId: '', licenseNumber: '', status: 'active',
+};
+
+const VERIFIED_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'true', label: 'Verified' },
+  { id: 'false', label: 'Unverified' },
+];
+
+// Matches the backend's clear-abandoned filter exactly (RegistrationSessionViewSet.clear_abandoned).
+function isAbandonedSession(s: AdminRegistrationSession): boolean {
+  return !s.email && !s.idFirstName && !s.idLastName && !s.faceVerified && !s.otpVerified && !s.userId;
+}
 
 const RISK_BADGE: Record<string, 'success' | 'warning' | 'destructive'> = {
   low: 'success',
@@ -122,7 +203,7 @@ export default function AdminDashboardPage() {
   const [passwordTarget, setPasswordTarget] = useState<AdminUser | null>(null);
   const [newPassword, setNewPassword] = useState('');
 
-  const [panel, setPanel] = useState<'accounts' | 'patients'>('accounts');
+  const [panel, setPanel] = useState<PanelId>('accounts');
   const [patients, setPatients] = useState<Patient[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [patientsLoading, setPatientsLoading] = useState(true);
@@ -131,6 +212,237 @@ export default function AdminDashboardPage() {
   const [riskFilter, setRiskFilter] = useState('all');
   const [patientStatusFilter, setPatientStatusFilter] = useState('all');
   const [viewPatient, setViewPatient] = useState<Patient | null>(null);
+
+  // --- Hospital Records (generic config-driven browser) ---
+  const [recordsSection, setRecordsSection] = useState<RecordSectionKey>('tasks');
+  const [recordRows, setRecordRows] = useState<RecordRow[]>([]);
+  const [recordsLoading, setRecordsLoading] = useState(true);
+  const [recordsError, setRecordsError] = useState('');
+  const [recordSearch, setRecordSearch] = useState('');
+  const [recordFilterValues, setRecordFilterValues] = useState<Record<string, string>>({});
+  const [selectedRecord, setSelectedRecord] = useState<RecordRow | null>(null);
+
+  const recordsConfig = RECORD_SECTIONS[recordsSection];
+
+  useEffect(() => {
+    if (panel !== 'records') return;
+    let cancelled = false;
+    setRecordsLoading(true);
+    setRecordsError('');
+    setRecordFilterValues({});
+    (async () => {
+      try {
+        const data = await recordsConfig.fetch();
+        if (cancelled) return;
+        setRecordRows(data.map((item) => ({ ...recordsConfig.toRow(item), raw: item })));
+      } catch (err) {
+        if (cancelled) return;
+        setRecordsError(err instanceof ApiError ? err.message : 'Could not load this section.');
+      } finally {
+        if (!cancelled) setRecordsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panel, recordsSection]);
+
+  const activeRecordFilters: RecordFilter[] = useMemo(
+    () => (recordsConfig.filters ? recordsConfig.filters(recordRows.map((r) => r.raw)) : []),
+    [recordsConfig, recordRows]
+  );
+
+  const filteredRecordRows = useMemo(() => {
+    const q = recordSearch.trim().toLowerCase();
+    let result = recordRows;
+    for (const f of activeRecordFilters) {
+      const value = recordFilterValues[f.key] ?? 'all';
+      if (value !== 'all') {
+        result = result.filter((r) => f.match(r.raw, value));
+      }
+    }
+    if (!q) return result;
+    return result.filter((r) => r.search.toLowerCase().includes(q));
+  }, [recordRows, recordSearch, activeRecordFilters, recordFilterValues]);
+
+  // --- Doctors ---
+  const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const [doctorsLoading, setDoctorsLoading] = useState(true);
+  const [doctorSearch, setDoctorSearch] = useState('');
+  const [editingDoctor, setEditingDoctor] = useState<Doctor | null>(null);
+  const [doctorFormOpen, setDoctorFormOpen] = useState(false);
+  const [doctorForm, setDoctorForm] = useState<DoctorForm>(EMPTY_DOCTOR_FORM);
+  const [doctorSaving, setDoctorSaving] = useState(false);
+  const [doctorFormError, setDoctorFormError] = useState('');
+
+  useEffect(() => {
+    if (panel !== 'doctors') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchDoctors();
+        if (!cancelled) setDoctors(data);
+      } catch (err) {
+        if (!cancelled) toast.error(err instanceof ApiError ? err.message : 'Could not load doctors.');
+      } finally {
+        if (!cancelled) setDoctorsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [panel]);
+
+  const filteredDoctors = useMemo(() => {
+    const q = doctorSearch.trim().toLowerCase();
+    if (!q) return doctors;
+    return doctors.filter(
+      (d) => d.fullName.toLowerCase().includes(q) || d.specialization.toLowerCase().includes(q)
+    );
+  }, [doctors, doctorSearch]);
+
+  const openCreateDoctor = () => {
+    setEditingDoctor(null);
+    setDoctorForm(EMPTY_DOCTOR_FORM);
+    setDoctorFormError('');
+    setDoctorFormOpen(true);
+  };
+
+  const openEditDoctor = (doctor: Doctor) => {
+    setEditingDoctor(doctor);
+    setDoctorForm({
+      fullName: doctor.fullName,
+      specialization: doctor.specialization,
+      departmentId: String(doctor.departmentId),
+      licenseNumber: doctor.licenseNumber || '',
+      status: doctor.status,
+    });
+    setDoctorFormError('');
+    setDoctorFormOpen(true);
+  };
+
+  const handleSaveDoctor = async () => {
+    if (!doctorForm.fullName.trim()) {
+      setDoctorFormError('Full name is required.');
+      return;
+    }
+    if (!doctorForm.departmentId) {
+      setDoctorFormError('Department is required.');
+      return;
+    }
+    setDoctorSaving(true);
+    try {
+      const payload = {
+        fullName: doctorForm.fullName.trim(),
+        specialization: doctorForm.specialization.trim(),
+        departmentId: Number(doctorForm.departmentId),
+        licenseNumber: doctorForm.licenseNumber.trim(),
+        status: doctorForm.status,
+      };
+      if (editingDoctor) {
+        const updated = await updateDoctor(editingDoctor.id, payload);
+        setDoctors((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+        toast.success('Doctor updated');
+      } else {
+        const created = await createDoctor(payload);
+        setDoctors((prev) => [created, ...prev]);
+        toast.success('Doctor added');
+      }
+      setDoctorFormOpen(false);
+    } catch (err) {
+      setDoctorFormError(err instanceof ApiError ? err.message : 'Could not save. Please try again.');
+    } finally {
+      setDoctorSaving(false);
+    }
+  };
+
+  // --- Registrations ---
+  const [regSessions, setRegSessions] = useState<AdminRegistrationSession[]>([]);
+  const [regLoading, setRegLoading] = useState(true);
+  const [regSearch, setRegSearch] = useState('');
+  const [regVerifiedFilter, setRegVerifiedFilter] = useState('all');
+  const [selectedReg, setSelectedReg] = useState<AdminRegistrationSession | null>(null);
+  const [regAttempts, setRegAttempts] = useState<AdminFaceVerificationAttempt[]>([]);
+  const [regAttemptsLoading, setRegAttemptsLoading] = useState(false);
+  const [confirmDeleteReg, setConfirmDeleteReg] = useState(false);
+  const [confirmClearAbandoned, setConfirmClearAbandoned] = useState(false);
+  const [regBusy, setRegBusy] = useState(false);
+
+  const loadRegistrations = async () => {
+    try {
+      const data = await fetchAdminRegistrationSessions();
+      setRegSessions(data);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not load registrations.');
+    } finally {
+      setRegLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (panel !== 'registrations') return;
+    void loadRegistrations();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panel]);
+
+  useEffect(() => {
+    if (!selectedReg) {
+      setRegAttempts([]);
+      return;
+    }
+    setRegAttemptsLoading(true);
+    fetchAdminFaceVerificationAttempts(selectedReg.sessionId)
+      .then(setRegAttempts)
+      .catch(() => setRegAttempts([]))
+      .finally(() => setRegAttemptsLoading(false));
+  }, [selectedReg]);
+
+  const filteredRegSessions = useMemo(() => {
+    const q = regSearch.trim().toLowerCase();
+    return regSessions.filter((s) => {
+      if (regVerifiedFilter !== 'all' && String(s.isVerified) !== regVerifiedFilter) return false;
+      if (!q) return true;
+      return (
+        s.email.toLowerCase().includes(q) ||
+        s.idFirstName.toLowerCase().includes(q) ||
+        s.idLastName.toLowerCase().includes(q) ||
+        s.prcFullName.toLowerCase().includes(q)
+      );
+    });
+  }, [regSessions, regSearch, regVerifiedFilter]);
+
+  const abandonedRegCount = useMemo(() => regSessions.filter(isAbandonedSession).length, [regSessions]);
+
+  const handleDeleteReg = async () => {
+    if (!selectedReg) return;
+    setRegBusy(true);
+    try {
+      await deleteAdminRegistrationSession(selectedReg.id);
+      setRegSessions((prev) => prev.filter((s) => s.id !== selectedReg.id));
+      setConfirmDeleteReg(false);
+      setSelectedReg(null);
+      toast.success('Registration session deleted');
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not delete.');
+    } finally {
+      setRegBusy(false);
+    }
+  };
+
+  const handleClearAbandoned = async () => {
+    setRegBusy(true);
+    try {
+      const { deleted } = await clearAbandonedRegistrationSessions();
+      setConfirmClearAbandoned(false);
+      toast.success(`Deleted ${deleted} abandoned session${deleted === 1 ? '' : 's'}`);
+      void loadRegistrations();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not clear abandoned sessions.');
+    } finally {
+      setRegBusy(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -451,7 +763,7 @@ export default function AdminDashboardPage() {
             )}
           </CardContent>
         </Card>
-        ) : (
+        ) : panel === 'patients' ? (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-2">
@@ -584,6 +896,242 @@ export default function AdminDashboardPage() {
             )}
           </CardContent>
         </Card>
+        ) : panel === 'doctors' ? (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <CardTitle>Doctors</CardTitle>
+              <Button size="sm" onClick={openCreateDoctor}>
+                <Plus className="w-4 h-4 mr-1" />
+                Add
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="relative mb-4 max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Input
+                placeholder="Search by name or specialization"
+                value={doctorSearch}
+                onChange={(e) => setDoctorSearch(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+
+            {doctorsLoading ? (
+              <div className="flex justify-center py-12">
+                <Loader2 className="w-6 h-6 animate-spin text-primary" />
+              </div>
+            ) : filteredDoctors.length === 0 ? (
+              <p className="text-center text-gray-500 py-12">No doctors match.</p>
+            ) : (
+              <div className="space-y-3">
+                {filteredDoctors.map((doctor) => (
+                  <div
+                    key={doctor.id}
+                    className="flex items-center justify-between p-4 border rounded-lg gap-4 flex-wrap cursor-pointer hover:bg-accent/40"
+                    onClick={() => openEditDoctor(doctor)}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-semibold text-gray-900">Dr. {doctor.fullName}</p>
+                        <Badge variant={doctor.status === 'active' ? 'success' : 'secondary'} className="text-xs">
+                          {doctor.status}
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-gray-500">
+                        {doctor.specialization || 'No specialization set'} · {doctor.departmentName}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+        ) : panel === 'registrations' ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Registrations</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              The identity-verification audit trail behind every signup — evidence for each Accounts decision.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {abandonedRegCount > 0 ? (
+              <button
+                onClick={() => setConfirmClearAbandoned(true)}
+                className="w-full flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-left hover:bg-blue-100 transition-colors"
+              >
+                <Sparkles className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                <span className="flex-1 text-sm font-medium text-blue-800">
+                  {abandonedRegCount} abandoned session{abandonedRegCount === 1 ? '' : 's'} — nobody ever
+                  finished Step 1 (no name, no email, no verification).
+                </span>
+                <span className="text-sm font-bold text-blue-700">Clear</span>
+              </button>
+            ) : null}
+
+            <div className="flex flex-wrap gap-3 mb-4">
+              <div className="relative max-w-sm flex-1 min-w-[220px]">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <Input
+                  placeholder="Search by email or name"
+                  value={regSearch}
+                  onChange={(e) => setRegSearch(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <div className="flex gap-2">
+                {VERIFIED_FILTERS.map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => setRegVerifiedFilter(f.id)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
+                      regVerifiedFilter === f.id
+                        ? 'bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-md'
+                        : 'bg-muted text-foreground hover:bg-accent'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {regLoading ? (
+              <div className="flex justify-center py-12">
+                <Loader2 className="w-6 h-6 animate-spin text-primary" />
+              </div>
+            ) : filteredRegSessions.length === 0 ? (
+              <p className="text-center text-gray-500 py-12">No registration sessions match.</p>
+            ) : (
+              <div className="space-y-3">
+                {filteredRegSessions.map((session) => (
+                  <div
+                    key={session.id}
+                    className="p-4 border rounded-lg cursor-pointer hover:bg-accent/40"
+                    onClick={() => setSelectedReg(session)}
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-semibold text-gray-900">
+                        {session.idFirstName || session.prcFullName || session.email || 'Unknown'}{' '}
+                        {session.idLastName}
+                      </p>
+                      <Badge variant={session.isVerified ? 'success' : 'secondary'} className="text-xs">
+                        {session.isVerified ? 'verified' : 'unverified'}
+                      </Badge>
+                      {session.faceLocked ? (
+                        <Badge variant="destructive" className="text-xs">face locked</Badge>
+                      ) : null}
+                    </div>
+                    <p className="text-sm text-gray-500 mt-1">{session.email || 'No email yet'}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {session.faceAttempts} face attempt{session.faceAttempts === 1 ? '' : 's'}
+                      {session.verificationMethod ? ` · via ${session.verificationMethod}` : ''}
+                      {' · '}{new Date(session.createdAt).toLocaleString(undefined, {
+                        year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                      })}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+        ) : (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <CardTitle>{recordsConfig.title}</CardTitle>
+            </div>
+            <p className="text-sm text-muted-foreground">{recordsConfig.description}</p>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-2 flex-wrap mb-4">
+              {RECORD_SECTION_LIST.map((s) => {
+                const Icon = SECTION_ICON[s.key];
+                return (
+                  <button
+                    key={s.key}
+                    onClick={() => setRecordsSection(s.key)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
+                      recordsSection === s.key
+                        ? 'bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-md'
+                        : 'bg-muted text-foreground hover:bg-accent'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                    {s.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap gap-3 mb-4">
+              <div className="relative max-w-sm flex-1 min-w-[220px]">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <Input
+                  placeholder="Search"
+                  value={recordSearch}
+                  onChange={(e) => setRecordSearch(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              {activeRecordFilters.map((f) => (
+                <div key={f.key} className="flex items-center gap-2">
+                  <Select
+                    value={recordFilterValues[f.key] ?? 'all'}
+                    onValueChange={(v) => setRecordFilterValues((prev) => ({ ...prev, [f.key]: v }))}
+                  >
+                    <SelectTrigger size="sm" className="w-[170px]">
+                      <SelectValue placeholder={f.label} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {f.options.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ))}
+            </div>
+
+            {recordsLoading ? (
+              <div className="flex justify-center py-12">
+                <Loader2 className="w-6 h-6 animate-spin text-primary" />
+              </div>
+            ) : recordsError ? (
+              <p className="text-center text-destructive py-12">{recordsError}</p>
+            ) : filteredRecordRows.length === 0 ? (
+              <p className="text-center text-gray-500 py-12">Nothing here yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {filteredRecordRows.map((row) => (
+                  <div
+                    key={row.key}
+                    className={`p-4 border rounded-lg ${recordsConfig.detailFields ? 'cursor-pointer hover:bg-accent/40' : ''}`}
+                    onClick={() => recordsConfig.detailFields && setSelectedRecord(row)}
+                  >
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <p className="font-semibold text-gray-900">{row.title}</p>
+                      {row.badge ? (
+                        <Badge variant={row.badge.variant} className="text-xs capitalize">
+                          {row.badge.label}
+                        </Badge>
+                      ) : null}
+                    </div>
+                    {row.meta.filter(Boolean).map((line, i) => (
+                      <p key={i} className="text-sm text-gray-500 mt-0.5">{line}</p>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
         )}
       </main>
 
@@ -698,6 +1246,276 @@ export default function AdminDashboardPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setViewPatient(null)}>
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Doctor add/edit dialog */}
+      <Dialog open={doctorFormOpen} onOpenChange={(open) => !doctorSaving && setDoctorFormOpen(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingDoctor ? 'Edit Doctor' : 'Add Doctor'}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-sm font-medium text-muted-foreground">Full name *</label>
+              <Input
+                placeholder="e.g. Maria Santos"
+                value={doctorForm.fullName}
+                onChange={(e) => setDoctorForm((f) => ({ ...f, fullName: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-muted-foreground">Specialization</label>
+              <Input
+                placeholder="e.g. Cardiology"
+                value={doctorForm.specialization}
+                onChange={(e) => setDoctorForm((f) => ({ ...f, specialization: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-muted-foreground">Department *</label>
+              <Select
+                value={doctorForm.departmentId}
+                onValueChange={(v) => setDoctorForm((f) => ({ ...f, departmentId: v }))}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select department" />
+                </SelectTrigger>
+                <SelectContent>
+                  {departments.map((d) => (
+                    <SelectItem key={d.id} value={String(d.id)}>
+                      {d.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm font-medium text-muted-foreground">License number</label>
+              <Input
+                placeholder="Optional"
+                value={doctorForm.licenseNumber}
+                onChange={(e) => setDoctorForm((f) => ({ ...f, licenseNumber: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-muted-foreground">Status</label>
+              <Select
+                value={doctorForm.status}
+                onValueChange={(v) => setDoctorForm((f) => ({ ...f, status: v as 'active' | 'inactive' }))}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {doctorFormError ? <p className="text-sm text-destructive">{doctorFormError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDoctorFormOpen(false)} disabled={doctorSaving}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveDoctor} disabled={doctorSaving}>
+              {doctorSaving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Hospital Records detail dialog */}
+      <Dialog open={!!selectedRecord} onOpenChange={(open) => !open && setSelectedRecord(null)}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{selectedRecord?.title}</DialogTitle>
+          </DialogHeader>
+          {selectedRecord && recordsConfig.detailFields ? (
+            <div className="space-y-3">
+              {recordsConfig.detailFields(selectedRecord.raw).map((field) =>
+                field.multiline ? (
+                  <div key={field.label}>
+                    <p className="text-sm text-muted-foreground mb-1">{field.label}</p>
+                    <p className="text-sm font-medium bg-gray-50 rounded-lg p-2.5 whitespace-pre-line">
+                      {field.value}
+                    </p>
+                  </div>
+                ) : (
+                  <div key={field.label} className="flex items-start justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground flex-shrink-0">{field.label}</span>
+                    <span className="font-medium text-right">{field.value}</span>
+                  </div>
+                )
+              )}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSelectedRecord(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Registration session detail dialog */}
+      <Dialog open={!!selectedReg} onOpenChange={(open) => !open && setSelectedReg(null)}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between gap-2">
+              <DialogTitle>
+                {selectedReg?.idFirstName || selectedReg?.email} {selectedReg?.idLastName}
+              </DialogTitle>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={() => setConfirmDeleteReg(true)}
+              >
+                <Trash2 className="w-4 h-4" />
+              </Button>
+            </div>
+          </DialogHeader>
+          {selectedReg ? (
+            <div className="space-y-3">
+              <div className="space-y-2 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Email</span>
+                  <span className="font-medium text-right">{selectedReg.email || '—'}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Verification method</span>
+                  <span className="font-medium text-right">{selectedReg.verificationMethod || '—'}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Face verified</span>
+                  <span className="font-medium text-right">{selectedReg.faceVerified ? 'Yes' : 'No'}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Face attempts</span>
+                  <span className="font-medium text-right">{selectedReg.faceAttempts}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Face locked</span>
+                  <span className="font-medium text-right">{selectedReg.faceLocked ? 'Yes' : 'No'}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">OTP verified</span>
+                  <span className="font-medium text-right">{selectedReg.otpVerified ? 'Yes' : 'No'}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">ID name</span>
+                  <span className="font-medium text-right">
+                    {`${selectedReg.idFirstName} ${selectedReg.idMiddleName} ${selectedReg.idLastName}`.trim() || '—'}
+                  </span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">ID verification status</span>
+                  <span className="font-medium text-right">{selectedReg.idVerificationStatus || '—'}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Linked account</span>
+                  <span className="font-medium text-right">{selectedReg.userEmail || 'Not yet signed up'}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Started</span>
+                  <span className="font-medium text-right">
+                    {new Date(selectedReg.createdAt).toLocaleString(undefined, {
+                      year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                    })}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">
+                  Face verification attempts
+                </p>
+                {regAttemptsLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                ) : regAttempts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No face attempts recorded.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {regAttempts.map((a) => (
+                      <div key={a.id} className="flex items-center gap-2 bg-gray-50 rounded-lg p-2.5">
+                        {a.matched ? (
+                          <CheckCircle2 className="w-4 h-4 text-success flex-shrink-0" />
+                        ) : (
+                          <XCircle className="w-4 h-4 text-destructive flex-shrink-0" />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold">
+                            {a.matched ? 'Match' : a.reasonLabel || 'No match'}
+                            {a.confidence ? ` · ${Math.round(a.confidence * 100)}% confidence` : ''}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {new Date(a.createdAt).toLocaleString(undefined, {
+                              year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                            })}
+                            {a.countable ? '' : ' · not counted'}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSelectedReg(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm delete registration session */}
+      <Dialog open={confirmDeleteReg} onOpenChange={(open) => !regBusy && setConfirmDeleteReg(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this registration session?</DialogTitle>
+            <DialogDescription>
+              Removes the identity-verification audit trail and its face-attempt history. If this session
+              already has a signed-up account, the account itself is not affected.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDeleteReg(false)} disabled={regBusy}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteReg} disabled={regBusy}>
+              {regBusy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm clear abandoned sessions */}
+      <Dialog open={confirmClearAbandoned} onOpenChange={(open) => !regBusy && setConfirmClearAbandoned(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Delete {abandonedRegCount} abandoned session{abandonedRegCount === 1 ? '' : 's'}?
+            </DialogTitle>
+            <DialogDescription>
+              Only sessions with no name, no email, and no verification progress are removed — anything with
+              real progress or a linked account is left alone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmClearAbandoned(false)} disabled={regBusy}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleClearAbandoned} disabled={regBusy}>
+              {regBusy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              Clear
             </Button>
           </DialogFooter>
         </DialogContent>
