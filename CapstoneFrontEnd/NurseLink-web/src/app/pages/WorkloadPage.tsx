@@ -15,6 +15,7 @@ import { Progress } from '../components/ui/progress';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import {
   Users,
@@ -28,6 +29,7 @@ import {
   Trash2,
   MapPin,
   FileText,
+  Search,
 } from 'lucide-react';
 import { AssignPatientModal, PatientAssignment } from '../components/AssignPatientModal';
 import {
@@ -63,6 +65,7 @@ function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
 
 export default function WorkloadPage() {
   const [workloadData, setWorkloadData] = React.useState<WorkloadData[]>([]);
+  const [nurseSearch, setNurseSearch] = useState('');
   const [allTasks, setAllTasks] = React.useState<Task[]>([]);
   const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -198,6 +201,12 @@ export default function WorkloadPage() {
     });
     return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
   }, [workloadData]);
+
+  const filteredWorkloadData = useMemo(() => {
+    const q = nurseSearch.trim().toLowerCase();
+    if (!q) return workloadData;
+    return workloadData.filter((n) => n.nurseName.toLowerCase().includes(q));
+  }, [workloadData, nurseSearch]);
 
   const handleAssignSave = async (data: { department: string; shift: string }) => {
     if (!assignTarget) return;
@@ -365,6 +374,10 @@ export default function WorkloadPage() {
                           >
                             <div>
                               <p className="font-medium text-gray-900">{nurse.nurseName}</p>
+                              {/* Several nurses on this ward share a display name — without the
+                                  email, there is no way to tell which account "Assign" below is
+                                  about to change. */}
+                              <p className="text-xs text-gray-500">{nurse.nurseEmail}</p>
                               <p className="text-sm text-gray-600 capitalize">{nurse.shift} shift</p>
                             </div>
                             <Button
@@ -625,11 +638,22 @@ export default function WorkloadPage() {
               <CardDescription>Detailed breakdown by nurse</CardDescription>
             </CardHeader>
             <CardContent>
+              <div className="relative mb-4">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <Input
+                  placeholder="Search nurses by name..."
+                  value={nurseSearch}
+                  onChange={(e) => setNurseSearch(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
               {workloadData.length === 0 ? (
                 <p className="text-center py-8 text-gray-600">No records found.</p>
+              ) : filteredWorkloadData.length === 0 ? (
+                <p className="text-center py-8 text-gray-600">No nurses match "{nurseSearch}".</p>
               ) : (
               <div className="space-y-4">
-                {workloadData.map(nurse => (
+                {filteredWorkloadData.map(nurse => (
                   <div key={nurse.nurseId} className={`p-4 border rounded-lg ${
                     nurse.burnoutRisk === 'high' ? 'bg-red-50 border-red-200' :
                     nurse.burnoutRisk === 'medium' ? 'bg-yellow-50 border-yellow-200' :

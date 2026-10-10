@@ -279,6 +279,9 @@ export interface ChartingNote {
 export interface WorkloadData {
   nurseId: string;
   nurseName: string;
+  /** Disambiguates same-named nurses — several accounts on a ward can share
+   * a display name, so the name alone is not enough to tell them apart. */
+  nurseEmail: string;
   shift: string;
   department: string;
   patientCount: number;
