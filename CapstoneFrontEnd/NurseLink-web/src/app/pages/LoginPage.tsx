@@ -6,19 +6,42 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { Eye, EyeOff, Loader2, User, Lock, AlertCircle } from 'lucide-react';
+import { Eye, EyeOff, Loader2, User, Lock, AlertCircle, Clock, CheckCircle2, XCircle } from 'lucide-react';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
 import hospitalBg from '../../assets/branding/hospital-bg.jpg';
 import { ApiError } from '../api/nurselink';
+import { toast } from 'sonner';
+
+// LoginView (CapstoneBackEnd/api/views.py) rejects a pending/rejected account
+// before ever issuing a token, and puts the reason in `data.approvalStatus` —
+// this reads that field back out rather than guessing from the message text.
+function approvalStatusFromError(err: unknown): 'pending' | 'rejected' | null {
+  if (
+    err instanceof ApiError &&
+    err.data &&
+    typeof err.data === 'object' &&
+    'approvalStatus' in err.data
+  ) {
+    const value = (err.data as { approvalStatus?: unknown }).approvalStatus;
+    if (value === 'pending' || value === 'rejected') return value;
+  }
+  return null;
+}
 
 export default function LoginPage() {
-  const { login, isLoading } = useAuth();
+  const { login, logout, isLoading } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [selectedRole, setSelectedRole] = useState<'staff_nurse' | 'head_nurse'>('staff_nurse');
   const [error, setError] = useState('');
+  // Set only when the account itself is pending/rejected/newly-approved —
+  // every other failure (wrong password, network error, ...) stays a plain
+  // Alert above the form instead of replacing it with this card.
+  const [statusCard, setStatusCard] = useState<'pending' | 'approved' | 'rejected' | null>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [checkingStatus, setCheckingStatus] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,8 +60,55 @@ export default function LoginPage() {
       // selected above (see LoginView on the backend for why that's safe).
       navigate(loggedInUser.isAdmin ? '/admin' : '/dashboard');
     } catch (err) {
+      const approval = approvalStatusFromError(err);
+      if (approval === 'pending') {
+        setStatusCard('pending');
+        return;
+      }
+      if (approval === 'rejected') {
+        setRejectionReason(err instanceof ApiError ? err.message : '');
+        setStatusCard('rejected');
+        return;
+      }
       setError(err instanceof ApiError ? err.message : 'Login failed. Please try again.');
     }
+  };
+
+  // Re-runs the exact same credential check as Sign In. LoginView validates
+  // the password before it ever looks at approval_status, so reaching this
+  // screen already proved the password is right — the only thing a retry can
+  // reveal is whether an admin has approved the account since. A success
+  // here means the account is now approved; per the spec that must still not
+  // sign the nurse in, so the token is discarded immediately and the green
+  // card asks them to sign in again through the normal form.
+  const handleCheckStatus = async () => {
+    setCheckingStatus(true);
+    try {
+      await login(email, password, selectedRole);
+      logout();
+      setStatusCard('approved');
+    } catch (err) {
+      const approval = approvalStatusFromError(err);
+      if (approval === 'rejected') {
+        setRejectionReason(err instanceof ApiError ? err.message : '');
+        setStatusCard('rejected');
+      } else if (approval === 'pending') {
+        toast.info('Still pending', {
+          description: 'An administrator has not approved this account yet.',
+        });
+      } else {
+        toast.error('Could not check status', {
+          description: err instanceof ApiError ? err.message : 'Please try again.',
+        });
+      }
+    } finally {
+      setCheckingStatus(false);
+    }
+  };
+
+  const handleBackToSignIn = () => {
+    setStatusCard(null);
+    setPassword('');
   };
 
   return (
@@ -93,6 +163,88 @@ export default function LoginPage() {
           </CardHeader>
           
           <CardContent className="space-y-4">
+            {statusCard ? (
+              <div className="flex flex-col items-stretch">
+                {statusCard === 'pending' && (
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-orange-300 bg-orange-50 p-6 text-center">
+                    <div className="mb-1.5 flex h-14 w-14 items-center justify-center rounded-full bg-orange-100">
+                      <Clock className="h-6.5 w-6.5 text-orange-700" />
+                    </div>
+                    <p className="text-[17px] font-bold text-foreground">Your Account is Pending Approval</p>
+                    <p className="mt-0.5 text-sm text-muted-foreground">
+                      Your account has been successfully registered and is currently waiting for
+                      administrator approval. Please wait while the administrator reviews and
+                      approves your account.
+                    </p>
+                    <span className="mt-2 rounded-full border border-orange-300 bg-orange-100 px-3.5 py-1.5 text-xs font-bold text-orange-700">
+                      Status: Pending
+                    </span>
+                    <Button
+                      onClick={handleCheckStatus}
+                      disabled={checkingStatus}
+                      className="mt-3.5 w-full bg-primary hover:bg-primary-hover text-white"
+                    >
+                      {checkingStatus ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          Checking...
+                        </>
+                      ) : (
+                        'Check Approval Status'
+                      )}
+                    </Button>
+                    <button
+                      type="button"
+                      onClick={handleBackToSignIn}
+                      className="mt-3 text-sm font-semibold text-muted-foreground hover:text-foreground"
+                    >
+                      Back to Sign In
+                    </button>
+                  </div>
+                )}
+
+                {statusCard === 'approved' && (
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 p-6 text-center">
+                    <div className="mb-1.5 flex h-14 w-14 items-center justify-center rounded-full bg-green-100">
+                      <CheckCircle2 className="h-6.5 w-6.5 text-green-700" />
+                    </div>
+                    <p className="text-[17px] font-bold text-foreground">Account Approved</p>
+                    <p className="mt-0.5 text-sm text-muted-foreground">
+                      Your account has been approved by the administrator. You can now continue to
+                      the login page and sign in.
+                    </p>
+                    <span className="mt-2 rounded-full border border-green-200 bg-green-100 px-3.5 py-1.5 text-xs font-bold text-green-700">
+                      ✓ Approved
+                    </span>
+                    <Button
+                      onClick={handleBackToSignIn}
+                      className="mt-3.5 w-full bg-primary hover:bg-primary-hover text-white"
+                    >
+                      Proceed to Login
+                    </Button>
+                  </div>
+                )}
+
+                {statusCard === 'rejected' && (
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 p-6 text-center">
+                    <div className="mb-1.5 flex h-14 w-14 items-center justify-center rounded-full bg-red-100">
+                      <XCircle className="h-6.5 w-6.5 text-red-700" />
+                    </div>
+                    <p className="text-[17px] font-bold text-foreground">Account Not Approved</p>
+                    <p className="mt-0.5 text-sm leading-5 text-muted-foreground">
+                      {rejectionReason ||
+                        'Your account registration was not approved by the administrator. Please contact an administrator for details.'}
+                    </p>
+                    <Button
+                      onClick={handleBackToSignIn}
+                      className="mt-3.5 w-full bg-primary hover:bg-primary-hover text-white"
+                    >
+                      Back to Sign In
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Error Alert */}
               {error && (
@@ -211,6 +363,7 @@ export default function LoginPage() {
                 </p>
               </div>
             </form>
+            )}
           </CardContent>
         </Card>
       </div>
