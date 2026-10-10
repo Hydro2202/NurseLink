@@ -246,6 +246,12 @@ else:
             'PASSWORD': _db_password(),
             'HOST': os.environ.get('DB_HOST', 'localhost'),
             'PORT': os.environ.get('DB_PORT', '5432'),
+            # 'prefer' (not 'require'): local Postgres has no SSL configured
+            # and would fail to connect if SSL were forced, while a hosted
+            # Postgres (e.g. Render, which rejects sslmode=disable) offers
+            # SSL and this negotiates it automatically — same setting works
+            # against both without an extra env var to toggle.
+            'OPTIONS': {'sslmode': 'prefer'},
         }
     }
 

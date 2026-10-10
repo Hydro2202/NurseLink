@@ -13,3 +13,5 @@ build/
 # editor/OS
 .DS_Store
 *.log
+.vercel
+.env*
