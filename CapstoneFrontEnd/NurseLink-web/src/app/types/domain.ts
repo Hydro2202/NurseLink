@@ -422,6 +422,10 @@ export interface KardexHistory {
    * of what this particular append-only kardex saw. */
   laboratories?: LabEntry[];
   medicationOrders?: MedicationOrder[];
+  /** ISO 'YYYY-MM-DD' (or '' when not entered) — free-text CharField on the
+   * backend, same as mobile. Optional here only because records saved
+   * before web sent it may still be typed loosely elsewhere. */
+  birthday?: string;
   religion: string;
   room: string;
   bedNumber: string;
@@ -431,6 +435,10 @@ export interface KardexHistory {
   admittingDiagnosis: string;
   finalDiagnosis: string;
   diet: string;
+  ivf?: string;
+  /** Also copied onto the linked Patient's allergies by
+   * KardexRecordSerializer.create(). */
+  allergies?: string[];
   temperature: string;
   pulseRate: string;
   respiratoryRate: string;

@@ -27,6 +27,10 @@ import {
   CheckCircle2,
   XCircle,
   RotateCcw,
+  UserRound,
+  MapPin,
+  BedDouble,
+  FlaskConical,
 } from 'lucide-react';
 import {
   Dialog,
@@ -53,6 +57,170 @@ const STATUS_BADGE: Record<
   rejected: { label: 'Rejected', variant: 'destructive' },
 };
 
+// Left-edge accent on each History list row — lets a head nurse scanning a
+// long list tell status apart at a glance, without reading every badge.
+const STATUS_ACCENT: Record<KardexHistory['status'], string> = {
+  submitted: 'border-l-blue-500',
+  approved: 'border-l-green-600',
+  returned: 'border-l-orange-600',
+  rejected: 'border-l-red-600',
+};
+
+const RECENT_ACTIVITY_LIMIT = 5;
+
+/** Local 'today' as ISO 'YYYY-MM-DD' — the max for date inputs that cannot be in the future. */
+function todayIso(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** ISO 'YYYY-MM-DD' -> 'MM/DD/YYYY' (same display format as mobile's
+ * DatePicker.formatDisplayDate); anything unparseable is returned as-is. */
+function formatDisplayDate(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!match) return iso;
+  return `${match[2]}/${match[3]}/${match[1]}`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+type PrintSection = { title: string; rows?: [string, string][]; lines?: string[] };
+
+/** Everything a printed saved-record kardex shows — rendered both as a
+ * print-friendly HTML page and as a plain-text fallback (clipboard) from the
+ * same data, so the two never drift. Superset of mobile's share-sheet text:
+ * mobile's export also carries labs/active meds, this adds the remaining
+ * record fields so the printout is the complete record. */
+function buildHistoryPrintSections(entry: KardexHistory): PrintSection[] {
+  const na = (v: string | null | undefined, fallback = 'N/A') => (v && v.trim() ? v : fallback);
+  const bmiLine = entry.bmi != null ? `${entry.bmi} (${bmiCategory(entry.bmi)})` : 'N/A';
+  const labs = entry.laboratories || [];
+  const meds = (entry.medicationOrders || []).filter((m) => m.isActive);
+
+  return [
+    {
+      title: 'Patient',
+      rows: [
+        ['Name', [entry.firstName, entry.middleName, entry.lastName].filter(Boolean).join(' ')],
+        ['Age', na(entry.age)],
+        ['Sex', na(entry.gender)],
+        ['Birthday', entry.birthday ? formatDisplayDate(entry.birthday) : 'N/A'],
+        ['Height', entry.heightCm ? `${entry.heightCm} cm` : 'N/A'],
+        ['Weight', entry.weightKg ? `${entry.weightKg} kg` : 'N/A'],
+        ['BMI', bmiLine],
+        ['Religion', na(entry.religion)],
+        ['Room', na(entry.room)],
+        ['Bed', na(entry.bedNumber)],
+        ['Admission Date', na(formatDisplayDate(entry.admissionDate))],
+      ],
+    },
+    {
+      title: 'Medical Information',
+      rows: [
+        ['Attending Physician', na(entry.attendingPhysician)],
+        ['Chief Complaint', na(entry.chiefComplaint)],
+        ['Admitting Diagnosis', na(entry.admittingDiagnosis)],
+        ['Final Diagnosis', na(entry.finalDiagnosis)],
+        ['Diet', na(entry.diet)],
+        ['IVF', na(entry.ivf)],
+        ['Allergies', entry.allergies?.length ? entry.allergies.join(', ') : 'None known'],
+      ],
+    },
+    {
+      title: 'Vital Signs',
+      rows: [
+        ['Temp', entry.temperature ? `${entry.temperature} °C` : 'N/A'],
+        ['Pulse', entry.pulseRate ? `${entry.pulseRate} bpm` : 'N/A'],
+        ['RR', na(entry.respiratoryRate)],
+        ['BP', na(entry.bloodPressure)],
+        ['O2 Sat', entry.oxygenSaturation ? `${entry.oxygenSaturation}%` : 'N/A'],
+      ],
+    },
+    {
+      title: 'Special Endorsements',
+      lines: [na(entry.specialEndorsements, 'None')],
+    },
+    {
+      title: 'Laboratories',
+      lines: labs.length
+        ? labs.map(
+            (l) => `${l.testName} (${l.status}${l.dateDone ? `, done ${formatDisplayDate(l.dateDone)}` : ''})`
+          )
+        : ['None recorded'],
+    },
+    {
+      title: 'Active Medications',
+      lines: meds.length
+        ? meds.map((m) => {
+            const lastGiven = m.lastGiven ? new Date(m.lastGiven).toLocaleString() : 'not yet given';
+            return `${m.medicationName} ${m.dose} ${m.route} ${m.frequency} (last given: ${lastGiven})`;
+          })
+        : ['None active'],
+    },
+    {
+      title: 'Record',
+      rows: [
+        ['Saved On', new Date(entry.savedAt).toLocaleString()],
+        ['Saved By', na(entry.savedBy)],
+        ['Status', STATUS_BADGE[entry.status].label],
+        ...(entry.reviewedBy ? ([['Reviewed By', entry.reviewedBy]] as [string, string][]) : []),
+        ...(entry.reviewNotes ? ([['Review Notes', entry.reviewNotes]] as [string, string][]) : []),
+      ],
+    },
+  ];
+}
+
+function buildHistoryPrintText(entry: KardexHistory): string {
+  const body = buildHistoryPrintSections(entry)
+    .map((section) => {
+      const content = section.rows
+        ? section.rows.map(([label, value]) => `${label}: ${value}`)
+        : (section.lines || []).map((line) => (section.title === 'Special Endorsements' ? line : `- ${line}`));
+      return `${section.title.toUpperCase()}\n${content.join('\n')}`;
+    })
+    .join('\n\n');
+  return `NURSELINK KARDEX\n================\n${body}\n`;
+}
+
+function buildHistoryPrintHtml(entry: KardexHistory): string {
+  const sections = buildHistoryPrintSections(entry)
+    .map((section) => {
+      const content = section.rows
+        ? `<table>${section.rows
+            .map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`)
+            .join('')}</table>`
+        : section.title === 'Special Endorsements'
+          ? `<p class="pre">${escapeHtml((section.lines || []).join('\n'))}</p>`
+          : `<ul>${(section.lines || []).map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`;
+      return `<section><h2>${escapeHtml(section.title)}</h2>${content}</section>`;
+    })
+    .join('');
+  const title = `Kardex — ${escapeHtml(entry.patientName || `${entry.firstName} ${entry.lastName}`)}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111827;margin:32px;font-size:13px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:#6b7280;margin:0 0 20px}
+section{margin-bottom:18px;page-break-inside:avoid}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#374151;border-bottom:1px solid #d1d5db;padding-bottom:4px;margin:0 0 8px}
+table{border-collapse:collapse;width:100%}
+th{text-align:left;font-weight:600;color:#4b5563;width:180px;padding:3px 8px 3px 0;vertical-align:top}
+td{padding:3px 0;vertical-align:top}
+ul{margin:0;padding-left:18px}
+li{margin:2px 0}
+.pre{white-space:pre-wrap;margin:0}
+@media print{body{margin:12mm}}
+</style></head><body><h1>NurseLink Kardex</h1><p class="sub">${title}</p>${sections}</body></html>`;
+}
+
 export default function KardexPage() {
   const { user } = useAuth();
 
@@ -65,6 +233,7 @@ export default function KardexPage() {
   const [heightCm, setHeightCm] = useState('');
   const [weightKg, setWeightKg] = useState('');
   const [religion, setReligion] = useState('');
+  const [birthday, setBirthday] = useState('');
   const [room, setRoom] = useState('');
   const [bedNumber, setBedNumber] = useState('');
   const [admissionDate, setAdmissionDate] = useState('');
@@ -75,6 +244,9 @@ export default function KardexPage() {
   const [admittingDiagnosis, setAdmittingDiagnosis] = useState('');
   const [finalDiagnosis, setFinalDiagnosis] = useState('');
   const [diet, setDiet] = useState('');
+  const [ivf, setIvf] = useState('');
+  const [allergies, setAllergies] = useState<string[]>([]);
+  const [allergyDraft, setAllergyDraft] = useState('');
 
   // Vital Signs
   const [temperature, setTemperature] = useState('');
@@ -93,6 +265,13 @@ export default function KardexPage() {
   const [saveSubmitting, setSaveSubmitting] = useState(false);
   const [showHistoryDialog, setShowHistoryDialog] = useState(false);
   const [selectedHistoryEntry, setSelectedHistoryEntry] = useState<KardexHistory | null>(null);
+
+  // Set right after a successful save so Laboratories/Medication Intake can
+  // be added immediately for that patient, without leaving this screen —
+  // cleared by its own "X" action, not by clearForm() (the fields reset for
+  // the next admission, but this panel should stay put until the nurse is
+  // finished with it).
+  const [savedPatient, setSavedPatient] = useState<{ id: string; name: string } | null>(null);
 
   // 'returned'/'rejected' need a reason typed in first — approved fires
   // immediately since an approval needs no explanation.
@@ -148,6 +327,19 @@ export default function KardexPage() {
     }
   };
 
+  const addAllergy = () => {
+    const entry = allergyDraft.trim();
+    if (!entry) return;
+    setAllergies((prev) =>
+      prev.some((a) => a.toLowerCase() === entry.toLowerCase()) ? prev : [...prev, entry]
+    );
+    setAllergyDraft('');
+  };
+
+  const removeAllergy = (index: number) => {
+    setAllergies((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleOpenHistoryList = () => {
     if (kardexHistory.length === 0) {
       toast.info('No History Available', {
@@ -199,6 +391,7 @@ export default function KardexPage() {
         gender,
         heightCm,
         weightKg,
+        birthday,
         religion,
         room,
         bedNumber,
@@ -208,6 +401,8 @@ export default function KardexPage() {
         admittingDiagnosis,
         finalDiagnosis,
         diet,
+        ivf,
+        allergies,
         temperature,
         pulseRate,
         respiratoryRate,
@@ -220,6 +415,9 @@ export default function KardexPage() {
       setKardexHistory((prev) => [newEntry, ...prev]);
       setShowConfirmDialog(false);
       setDuplicateWarning(null);
+      if (newEntry.patientCode) {
+        setSavedPatient({ id: newEntry.patientCode, name: newEntry.patientName || `${firstName} ${lastName}` });
+      }
 
       toast.success('Kardex Saved Successfully!', {
         description: `${firstName} ${lastName} was added to the patient list.`,
@@ -268,6 +466,7 @@ export default function KardexPage() {
     setGender('');
     setHeightCm('');
     setWeightKg('');
+    setBirthday('');
     setReligion('');
     setRoom('');
     setBedNumber('');
@@ -277,6 +476,9 @@ export default function KardexPage() {
     setAdmittingDiagnosis('');
     setFinalDiagnosis('');
     setDiet('');
+    setIvf('');
+    setAllergies([]);
+    setAllergyDraft('');
     setTemperature('');
     setPulseRate('');
     setRespiratoryRate('');
@@ -289,12 +491,86 @@ export default function KardexPage() {
   const weightError = validateWeightKg(weightKg);
   const liveBmi = computeBmi(heightCm, weightKg);
 
+  const isSupervisor = user?.role === 'head_nurse';
+  const pendingReviewCount = kardexHistory.filter((e) => e.status === 'submitted').length;
+  // Head nurses work through a queue — surface what needs a decision first,
+  // without hiding or reordering anything a staff nurse would see.
+  const displayedHistory = isSupervisor
+    ? [...kardexHistory].sort(
+        (a, b) => (a.status === 'submitted' ? 0 : 1) - (b.status === 'submitted' ? 0 : 1)
+      )
+    : kardexHistory;
+
+  const handlePrintHistoryEntry = async (entry: KardexHistory) => {
+    try {
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) throw new Error('popup blocked');
+      printWindow.document.write(buildHistoryPrintHtml(entry));
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => printWindow.print(), 300);
+    } catch {
+      try {
+        await navigator.clipboard.writeText(buildHistoryPrintText(entry));
+        toast.info('Print window was blocked', {
+          description: 'Copied a text version of this kardex to your clipboard instead.',
+        });
+      } catch {
+        toast.error('Unable to print or copy this kardex');
+      }
+    }
+  };
+
   return (
     <div className="p-4 pb-24 space-y-6 max-w-5xl mx-auto">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Kardex</h1>
         <p className="text-gray-600">Patient Summary & Care Plan</p>
+      </div>
+
+      {/* Live patient summary — preview of what's been entered so far */}
+      <div className="bg-white border border-blue-200 rounded-lg p-4 space-y-2">
+        <div className="flex items-center gap-1.5 text-blue-700">
+          <UserRound className="w-4 h-4" />
+          <span className="text-xs font-bold tracking-wide">PATIENT</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-bold text-gray-900 text-lg truncate">
+            {[firstName, middleName, lastName].filter(Boolean).join(' ') || 'New patient'}
+          </h3>
+          <span className="inline-flex items-center gap-1.5 bg-green-50 border border-green-200 text-green-700 text-xs font-semibold px-2 py-1 rounded-full shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-600" />
+            Admitted
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-sm text-gray-600 flex-wrap">
+          <span>{age ? `${age} yrs` : 'Age —'}</span>
+          <span className="text-gray-300">•</span>
+          <span>{gender || 'Sex —'}</span>
+          <span className="text-gray-300">•</span>
+          <span className="inline-flex items-center gap-1">
+            <MapPin className="w-3 h-3 text-gray-400" />
+            {room ? `Room ${room}` : 'Room —'}
+          </span>
+          {bedNumber && (
+            <>
+              <span className="text-gray-300">•</span>
+              <span className="inline-flex items-center gap-1">
+                <BedDouble className="w-3 h-3 text-gray-400" />
+                Bed {bedNumber}
+              </span>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+          <span>
+            Admitted: <strong className="text-gray-700">{admissionDate || 'Not yet entered'}</strong>
+          </span>
+          <span>
+            Attending: <strong className="text-gray-700">{attendingPhysician || 'Not yet entered'}</strong>
+          </span>
+        </div>
       </div>
 
       {/* Patient Demographics */}
@@ -377,14 +653,13 @@ export default function KardexPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="admissionDate">
-                Admission Date <span className="text-red-500">*</span>
-              </Label>
+              <Label htmlFor="birthday">Birthday</Label>
               <Input
-                id="admissionDate"
+                id="birthday"
                 type="date"
-                value={admissionDate}
-                onChange={(e) => setAdmissionDate(e.target.value)}
+                value={birthday}
+                max={todayIso()}
+                onChange={(e) => setBirthday(e.target.value)}
               />
             </div>
           </div>
@@ -423,7 +698,19 @@ export default function KardexPage() {
             </p>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="admissionDate">
+                Admission Date <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="admissionDate"
+                type="date"
+                value={admissionDate}
+                max={todayIso()}
+                onChange={(e) => setAdmissionDate(e.target.value)}
+              />
+            </div>
             <div className="space-y-2">
               <Label htmlFor="room">
                 Room <span className="text-red-500">*</span>
@@ -500,14 +787,69 @@ export default function KardexPage() {
             />
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="diet">Diet</Label>
+              <Input
+                id="diet"
+                value={diet}
+                onChange={(e) => setDiet(e.target.value)}
+                placeholder="e.g., NPO, Regular, Low-sodium"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="ivf">IVF</Label>
+              <Input
+                id="ivf"
+                value={ivf}
+                onChange={(e) => setIvf(e.target.value)}
+                placeholder="e.g., D5LR 1L @ 80cc/hr"
+              />
+            </div>
+          </div>
+
           <div className="space-y-2">
-            <Label htmlFor="diet">Diet</Label>
-            <Input
-              id="diet"
-              value={diet}
-              onChange={(e) => setDiet(e.target.value)}
-              placeholder="e.g., NPO, Regular, Low-sodium"
-            />
+            <Label htmlFor="allergyDraft">Allergies</Label>
+            <div className="flex gap-2">
+              <Input
+                id="allergyDraft"
+                value={allergyDraft}
+                onChange={(e) => setAllergyDraft(e.target.value)}
+                placeholder="e.g., Penicillin, Latex, Shellfish"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addAllergy();
+                  }
+                }}
+              />
+              <Button type="button" onClick={addAllergy} disabled={!allergyDraft.trim()} size="icon">
+                <Plus className="w-4 h-4" />
+              </Button>
+            </div>
+            {allergies.length > 0 ? (
+              <div className="flex flex-wrap gap-2 pt-1">
+                {allergies.map((allergy, index) => (
+                  <span
+                    key={`${allergy}-${index}`}
+                    className="inline-flex items-center gap-1.5 bg-orange-50 border border-orange-200 text-orange-700 text-xs font-medium px-2.5 py-1 rounded-full"
+                  >
+                    <AlertTriangle className="w-3 h-3" />
+                    {allergy}
+                    <button
+                      type="button"
+                      onClick={() => removeAllergy(index)}
+                      className="hover:text-orange-900"
+                      aria-label={`Remove ${allergy}`}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">No known allergies recorded.</p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -633,42 +975,77 @@ export default function KardexPage() {
         </CardContent>
       </Card>
 
-      {/* Recent Kardex History */}
+      {/* Laboratories / Medication Intake for the patient just saved */}
+      {savedPatient && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <FlaskConical className="w-5 h-5 text-blue-600" />
+                Laboratories & Medication Intake — {savedPatient.name}
+              </CardTitle>
+              <button
+                type="button"
+                onClick={() => setSavedPatient(null)}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="Dismiss"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <KardexLabsAndMedications patientId={savedPatient.id} />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Recent Kardex Activity */}
       {kardexHistory.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Clock className="w-5 h-5 text-purple-600" />
-              Recent Kardex History
+              Recent Kardex Activity
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              {kardexHistory.map((entry) => (
-                <div
+            <div>
+              {kardexHistory.slice(0, RECENT_ACTIVITY_LIMIT).map((entry, index) => (
+                <button
                   key={entry.id}
-                  className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50 transition-colors"
+                  type="button"
+                  onClick={() => handleViewHistory(entry)}
+                  className="flex items-start gap-3 w-full text-left py-2 hover:bg-gray-50 rounded-lg transition-colors"
                 >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-semibold text-gray-900">{entry.patientName}</h4>
-                      <Badge variant={STATUS_BADGE[entry.status].variant} className="text-xs">
-                        {STATUS_BADGE[entry.status].label}
-                      </Badge>
-                    </div>
-                    <p className="text-sm text-gray-600">Room: {entry.room}</p>
-                    <p className="text-xs text-gray-500 flex items-center gap-1 mt-1">
-                      <Calendar className="w-3 h-3" />
-                      {new Date(entry.savedAt).toLocaleString()}
+                  <div className="flex flex-col items-center pt-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-purple-500 shrink-0" />
+                    {index < Math.min(kardexHistory.length, RECENT_ACTIVITY_LIMIT) - 1 && (
+                      <span className="w-px flex-1 bg-gray-200 mt-1" style={{ minHeight: '28px' }} />
+                    )}
+                  </div>
+                  <div className="flex-1 pb-2 space-y-1">
+                    <p className="text-xs text-gray-500">{new Date(entry.savedAt).toLocaleString()}</p>
+                    <p className="text-sm text-gray-700">
+                      Kardex saved for <span className="font-semibold text-gray-900">{entry.patientName}</span>{' '}
+                      (Room {entry.room}) by {entry.savedBy}
                     </p>
+                    <Badge variant={STATUS_BADGE[entry.status].variant} className="text-xs">
+                      {STATUS_BADGE[entry.status].label}
+                    </Badge>
                   </div>
-                  <div className="text-right">
-                    <p className="text-sm text-gray-600">Saved by</p>
-                    <p className="font-semibold text-gray-900">{entry.savedBy}</p>
-                  </div>
-                </div>
+                </button>
               ))}
             </div>
+            {kardexHistory.length > RECENT_ACTIVITY_LIMIT && (
+              <button
+                type="button"
+                onClick={handleOpenHistoryList}
+                className="w-full text-center text-sm font-semibold text-purple-600 hover:text-purple-700 mt-1 pt-2 border-t"
+              >
+                View Full History ({kardexHistory.length})
+              </button>
+            )}
           </CardContent>
         </Card>
       )}
@@ -843,8 +1220,12 @@ export default function KardexPage() {
                     <Input value={selectedHistoryEntry.religion} readOnly className="bg-gray-50" />
                   </div>
                   <div className="space-y-2">
-                    <Label>Admission Date</Label>
-                    <Input value={selectedHistoryEntry.admissionDate} readOnly className="bg-gray-50" />
+                    <Label>Birthday</Label>
+                    <Input
+                      value={selectedHistoryEntry.birthday ? formatDisplayDate(selectedHistoryEntry.birthday) : 'N/A'}
+                      readOnly
+                      className="bg-gray-50"
+                    />
                   </div>
                 </div>
 
@@ -879,7 +1260,15 @@ export default function KardexPage() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                  <div className="space-y-2">
+                    <Label>Admission Date</Label>
+                    <Input
+                      value={formatDisplayDate(selectedHistoryEntry.admissionDate)}
+                      readOnly
+                      className="bg-gray-50"
+                    />
+                  </div>
                   <div className="space-y-2">
                     <Label>Room</Label>
                     <Input value={selectedHistoryEntry.room} readOnly className="bg-gray-50" />
@@ -923,9 +1312,33 @@ export default function KardexPage() {
                     <Label>Final Diagnosis</Label>
                     <Textarea value={selectedHistoryEntry.finalDiagnosis || 'N/A'} readOnly className="bg-gray-50" rows={2} />
                   </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Diet</Label>
+                      <Input value={selectedHistoryEntry.diet || 'N/A'} readOnly className="bg-gray-50" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>IVF</Label>
+                      <Input value={selectedHistoryEntry.ivf || 'N/A'} readOnly className="bg-gray-50" />
+                    </div>
+                  </div>
                   <div className="space-y-2">
-                    <Label>Diet</Label>
-                    <Input value={selectedHistoryEntry.diet || 'N/A'} readOnly className="bg-gray-50" />
+                    <Label>Allergies</Label>
+                    {selectedHistoryEntry.allergies?.length ? (
+                      <div className="flex flex-wrap gap-2">
+                        {selectedHistoryEntry.allergies.map((allergy, index) => (
+                          <span
+                            key={`${allergy}-${index}`}
+                            className="inline-flex items-center gap-1.5 bg-orange-50 border border-orange-200 text-orange-700 text-xs font-medium px-2.5 py-1 rounded-full"
+                          >
+                            <AlertTriangle className="w-3 h-3" />
+                            {allergy}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <Input value="None known" readOnly className="bg-gray-50" />
+                    )}
                   </div>
                 </div>
               </div>
@@ -1064,57 +1477,80 @@ export default function KardexPage() {
           ) : (
             /* List View */
             <div className="space-y-3">
-              {kardexHistory.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="flex items-center justify-between p-4 border-2 rounded-lg hover:shadow-md transition-all"
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <h4 className="font-bold text-gray-900 text-lg">{entry.patientName}</h4>
-                      <Badge variant={STATUS_BADGE[entry.status].variant} className="text-xs">
-                        {STATUS_BADGE[entry.status].label}
-                      </Badge>
-                      <Badge variant="secondary" className="text-xs">
-                        {entry.age}y • {entry.gender}
-                      </Badge>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-                      <p className="text-gray-600">
-                        <span className="font-semibold">Room:</span> {entry.room}
-                        {entry.bedNumber && ` - Bed ${entry.bedNumber}`}
-                      </p>
-                      <p className="text-gray-600">
-                        <span className="font-semibold">Physician:</span>{' '}
-                        {entry.attendingPhysician || 'Not specified'}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-4 mt-2">
-                      <p className="text-xs text-gray-500 flex items-center gap-1">
-                        <Calendar className="w-3 h-3" />
-                        {new Date(entry.savedAt).toLocaleString()}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        <span className="font-semibold">By:</span> {entry.savedBy}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="ml-4">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleViewHistory(entry)}
-                      className="border-2 border-purple-600 text-purple-600 hover:bg-purple-50"
-                    >
-                      <Eye className="w-4 h-4 mr-2" />
-                      View Details
-                    </Button>
-                  </div>
+              {isSupervisor && pendingReviewCount > 0 && (
+                <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <Clock className="w-4 h-4 text-blue-700" />
+                  <p className="text-sm text-blue-800 font-medium">
+                    {pendingReviewCount} {pendingReviewCount === 1 ? 'record' : 'records'} awaiting your
+                    review
+                  </p>
                 </div>
-              ))}
+              )}
+              {displayedHistory.map((entry) => {
+                const isPendingForReview = isSupervisor && entry.status === 'submitted';
+                return (
+                  <div
+                    key={entry.id}
+                    className={`flex items-center justify-between p-4 border-2 border-l-4 rounded-lg hover:shadow-md transition-all ${STATUS_ACCENT[entry.status]}`}
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <h4 className="font-bold text-gray-900 text-lg">{entry.patientName}</h4>
+                        <Badge variant={STATUS_BADGE[entry.status].variant} className="text-xs">
+                          {STATUS_BADGE[entry.status].label}
+                        </Badge>
+                        <Badge variant="secondary" className="text-xs">
+                          {entry.age}y • {entry.gender}
+                        </Badge>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                        <p className="text-gray-600">
+                          <span className="font-semibold">Room:</span> {entry.room}
+                          {entry.bedNumber && ` - Bed ${entry.bedNumber}`}
+                        </p>
+                        <p className="text-gray-600">
+                          <span className="font-semibold">Physician:</span>{' '}
+                          {entry.attendingPhysician || 'Not specified'}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-4 mt-2">
+                        <p className="text-xs text-gray-500 flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />
+                          {new Date(entry.savedAt).toLocaleString()}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          <span className="font-semibold">By:</span> {entry.savedBy}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="ml-4">
+                      {isPendingForReview ? (
+                        <Button
+                          size="sm"
+                          onClick={() => handleViewHistory(entry)}
+                          className="bg-blue-600 hover:bg-blue-700"
+                        >
+                          <CheckCircle2 className="w-4 h-4 mr-2" />
+                          Review
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleViewHistory(entry)}
+                          className="border-2 border-purple-600 text-purple-600 hover:bg-purple-50"
+                        >
+                          <Eye className="w-4 h-4 mr-2" />
+                          View Details
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
-          
+
           <DialogFooter className="sticky bottom-0 bg-white pt-4 border-t">
             {selectedHistoryEntry && (
               <Button
@@ -1123,6 +1559,12 @@ export default function KardexPage() {
                 className="mr-auto"
               >
                 ← Back to List
+              </Button>
+            )}
+            {selectedHistoryEntry && (
+              <Button variant="outline" onClick={() => handlePrintHistoryEntry(selectedHistoryEntry)}>
+                <Printer className="w-4 h-4 mr-2" />
+                Print
               </Button>
             )}
             <Button variant="outline" onClick={() => setShowHistoryDialog(false)}>
