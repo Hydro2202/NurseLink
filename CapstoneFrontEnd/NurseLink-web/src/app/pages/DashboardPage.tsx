@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router';
-import type { Patient, Task, WorkloadData } from '../types/domain';
-import { fetchPatients, fetchTasks, fetchWorkload, notifyPatientNurse } from '../api/nurselink';
+import type { Patient, Task, WorkloadData, DutyAssignment } from '../types/domain';
+import { fetchPatients, fetchTasks, fetchWorkload, fetchDutyAssignments, notifyPatientNurse } from '../api/nurselink';
 import { ApiError } from '../api/client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -27,6 +27,42 @@ import {
   ArrowRight,
 } from 'lucide-react';
 
+// Same local-calendar-day helpers as MyDutyPage.tsx — never toISOString(),
+// which converts to UTC and can shift the day.
+function pad(n: number) {
+  return String(n).padStart(2, '0');
+}
+function toIsoLocal(d: Date) {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function todayIso() {
+  return toIsoLocal(new Date());
+}
+function addDays(iso: string, days: number) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return toIsoLocal(d);
+}
+function formatTime(hhmm: string) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${pad(m)} ${period}`;
+}
+function combine(dateIso: string, hhmm: string): Date {
+  const [y, mo, da] = dateIso.split('-').map(Number);
+  const [h, m] = hhmm.split(':').map(Number);
+  return new Date(y, mo - 1, da, h, m, 0, 0);
+}
+// Same midnight-wrap rule as MyDutyPage.tsx: an end time at or before the
+// start time means the shift spills into the next calendar day.
+function scheduledRange(a: DutyAssignment): { start: Date; end: Date } {
+  const start = combine(a.dutyDate, a.startTime.slice(0, 5));
+  let end = combine(a.dutyDate, a.endTime.slice(0, 5));
+  if (end.getTime() <= start.getTime()) end = new Date(end.getTime() + 86400000);
+  return { start, end };
+}
+
 export default function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -35,6 +71,7 @@ export default function DashboardPage() {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
+  const [dutyAssignments, setDutyAssignments] = useState<DutyAssignment[]>([]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -45,15 +82,21 @@ export default function DashboardPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [patientData, taskData, workload] = await Promise.all([
+        const [patientData, taskData, workload, duty] = await Promise.all([
           fetchPatients(isStaffNurse ? { mine: true } : undefined),
           fetchTasks(isStaffNurse ? { mine: true } : undefined),
           isStaffNurse ? Promise.resolve([]) : fetchWorkload(),
+          // Yesterday too: a night shift that started before midnight is
+          // still "today's duty" until it ends.
+          isStaffNurse
+            ? fetchDutyAssignments({ dateFrom: addDays(todayIso(), -1), dateTo: todayIso() })
+            : Promise.resolve([]),
         ]);
         if (!cancelled) {
           setPatients(patientData);
           setTasks(taskData);
           setWorkloadData(workload);
+          setDutyAssignments(duty);
         }
       } catch (error) {
         console.error('Failed to load dashboard:', error);
@@ -69,7 +112,7 @@ export default function DashboardPage() {
   const overdueTasks = tasks.filter(t => t.status === 'overdue').length;
   const completedTasks = tasks.filter(t => t.status === 'completed').length;
   const totalTasks = tasks.length || 1;
-  const highRiskPatients = patients.filter(p => p.riskLevel === 'high').length;
+  const highRiskPatients = patients.filter(p => p.riskLevel === 'high' || p.riskLevel === 'critical').length;
   const completionRate = Math.round((completedTasks / totalTasks) * 100);
 
   const pendingCount = tasks.filter(t => t.status === 'pending').length;
@@ -96,12 +139,32 @@ export default function DashboardPage() {
     }));
   }, [patients]);
 
+  // The nurse's actual scheduled shift, per the Duty Roster — the ground
+  // truth for what they're working right now, as opposed to the stale
+  // NurseProfile.shift default.
+  const todayDuty = React.useMemo(() => {
+    const today = todayIso();
+    const yesterday = addDays(today, -1);
+    const relevant = dutyAssignments.filter(
+      (a) => (a.dutyDate === today || a.dutyDate === yesterday) && a.status !== 'cancelled'
+    );
+    const active = relevant.find((a) => {
+      if (a.status === 'completed' || a.actualEndTime) return false;
+      const { start, end } = scheduledRange(a);
+      return currentTime.getTime() >= start.getTime() && currentTime.getTime() < end.getTime();
+    });
+    return active || relevant.find((a) => a.dutyDate === today) || null;
+  }, [dutyAssignments, currentTime]);
+
+  // Deliberately does NOT fall back to NurseProfile.shift when there's no
+  // duty today — showing a shift the nurse isn't actually working is worse
+  // than showing nothing. Same wording as My Duty's own empty state.
   const shiftLabel = React.useMemo(() => {
-    const shift = user?.shift || 'morning';
-    if (shift === 'afternoon') return 'Afternoon Shift (15:00-23:00)';
-    if (shift === 'night') return 'Night Shift (23:00-07:00)';
-    return 'Morning Shift (07:00-15:00)';
-  }, [user?.shift]);
+    if (!todayDuty) return 'No Duty Assigned Today';
+    const start = formatTime(todayDuty.startTime.slice(0, 5));
+    const end = formatTime(todayDuty.endTime.slice(0, 5));
+    return `${todayDuty.shiftLabel} Shift (${start}-${end})`;
+  }, [todayDuty]);
 
   const safetyAlerts = React.useMemo(() => {
     const alerts: {
@@ -113,20 +176,26 @@ export default function DashboardPage() {
       patientId?: string;
       path?: string;
     }[] = [];
-    patients.filter(p => p.riskLevel === 'high').slice(0, 5).forEach(p => {
-      const vs = p.vitalSigns;
-      alerts.push({
-        key: `patient-${p.id}`,
-        variant: 'destructive',
-        title: `Critical - ${p.name} (${p.room})`,
-        description: vs
-          ? `Vital signs require attention. BP ${vs.bloodPressure}, HR ${vs.heartRate}, Temp ${vs.temperature}°C.`
-          : `${p.diagnosis || 'High-risk patient'} — immediate assessment required.`,
-        nurseName: p.assignedNurseName || undefined,
-        patientId: p.id,
-        path: '/workload',
+    patients
+      .filter(p => p.riskLevel === 'high' || p.riskLevel === 'critical')
+      // Critical patients surface before merely high-risk ones.
+      .sort((a, b) => (a.riskLevel === b.riskLevel ? 0 : a.riskLevel === 'critical' ? -1 : 1))
+      .slice(0, 5)
+      .forEach(p => {
+        const vs = p.vitalSigns;
+        const label = p.riskLevel === 'critical' ? 'Critical' : 'High Risk';
+        alerts.push({
+          key: `patient-${p.id}`,
+          variant: 'destructive',
+          title: `${label} - ${p.name} (${p.room})`,
+          description: vs
+            ? `Vital signs require attention. BP ${vs.bloodPressure}, HR ${vs.heartRate}, Temp ${vs.temperature}°C.`
+            : `${p.diagnosis || 'High-risk patient'} — immediate assessment required.`,
+          nurseName: p.assignedNurseName || undefined,
+          patientId: p.id,
+          path: '/workload',
+        });
       });
-    });
     tasks.filter(t => t.status === 'overdue').slice(0, 5).forEach(t => {
       alerts.push({
         key: `task-${t.id}`,
@@ -170,7 +239,7 @@ export default function DashboardPage() {
       const room = (p.room || '').toUpperCase();
       const key = room.includes('ICU') ? 'ICU' : room.includes('ER') || room.includes('EMERGENCY') ? 'ER' : 'Ward';
       buckets[key].total += 1;
-      if (p.riskLevel === 'high') buckets[key].critical += 1;
+      if (p.riskLevel === 'high' || p.riskLevel === 'critical') buckets[key].critical += 1;
       else buckets[key].stable += 1;
     });
     return Object.values(buckets);
@@ -443,14 +512,16 @@ export default function DashboardPage() {
               <CardDescription>Patients requiring close monitoring</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {patients.filter(p => p.riskLevel === 'high').map(patient => (
+              {patients.filter(p => p.riskLevel === 'high' || p.riskLevel === 'critical').map(patient => (
                 <div key={patient.id} className="p-4 border border-destructive/20 bg-destructive/5 rounded-lg">
                   <div className="flex items-start justify-between mb-3">
                     <div>
                       <h4 className="font-semibold text-foreground">{patient.name}</h4>
                       <p className="text-sm text-muted-foreground">{patient.room}  {patient.diagnosis}</p>
                     </div>
-                    <Badge variant="destructive" className="font-medium">HIGH RISK</Badge>
+                    <Badge variant="destructive" className="font-medium">
+                      {patient.riskLevel === 'critical' ? 'CRITICAL' : 'HIGH RISK'}
+                    </Badge>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
                     <div className="flex items-center gap-2 text-sm">
@@ -570,24 +641,32 @@ export default function DashboardPage() {
             value={String(workloadData.length)}
             subtitle="Staff nurses in database"
             icon={Users}
+            iconBg="bg-blue-100"
+            iconColor="text-blue-600"
           />
           <StatCard
             title="Total Patients"
             value={String(patients.length)}
             subtitle="Across all units"
             icon={Heart}
+            iconBg="bg-purple-100"
+            iconColor="text-purple-600"
           />
           <StatCard
             title="Task Completion"
             value={`${tasks.length ? completionRate : 0}%`}
             subtitle={`${completedTasks} of ${tasks.length} tasks`}
             icon={CheckCircle}
+            iconBg="bg-green-100"
+            iconColor="text-green-600"
           />
           <StatCard
             title="Critical Alerts"
             value={String(highRiskPatients)}
             subtitle="High-risk patients"
             icon={AlertTriangle}
+            iconBg="bg-red-100"
+            iconColor="text-red-600"
           />
         </div>
 

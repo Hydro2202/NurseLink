@@ -89,6 +89,8 @@ export default function AllPatientsPage() {
 
   const getRiskColor = (risk: string) => {
     switch (risk) {
+      case 'critical':
+        return 'bg-red-200 text-red-900 border-red-400';
       case 'high':
         return 'bg-red-100 text-red-800 border-red-300';
       case 'medium':
@@ -175,6 +177,7 @@ export default function AllPatientsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Risk Levels</SelectItem>
+              <SelectItem value="critical">Critical Risk</SelectItem>
               <SelectItem value="high">High Risk</SelectItem>
               <SelectItem value="medium">Medium Risk</SelectItem>
               <SelectItem value="low">Low Risk</SelectItem>
@@ -183,7 +186,7 @@ export default function AllPatientsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
@@ -192,6 +195,20 @@ export default function AllPatientsPage() {
                 <p className="text-2xl font-bold text-gray-900">{patients.length}</p>
               </div>
               <User className="w-8 h-8 text-blue-600" />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-gray-600">Critical</p>
+                <p className="text-2xl font-bold text-red-700">
+                  {patients.filter((p) => p.riskLevel === 'critical').length}
+                </p>
+              </div>
+              <AlertCircle className="w-8 h-8 text-red-700" />
             </div>
           </CardContent>
         </Card>

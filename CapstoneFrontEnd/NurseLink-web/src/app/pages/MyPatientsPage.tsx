@@ -146,6 +146,8 @@ export default function MyPatientsPage() {
 
   const getRiskBadgeVariant = (risk: string) => {
     switch (risk) {
+      case 'critical':
+        return 'destructive';
       case 'high':
         return 'destructive';
       case 'medium':
@@ -221,6 +223,7 @@ export default function MyPatientsPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Risk Levels</SelectItem>
+                    <SelectItem value="critical">Critical Risk</SelectItem>
                     <SelectItem value="high">High Risk</SelectItem>
                     <SelectItem value="medium">Medium Risk</SelectItem>
                     <SelectItem value="low">Low Risk</SelectItem>
@@ -271,7 +274,9 @@ export default function MyPatientsPage() {
               >
                 <Card
                   className={`border-l-4 hover:shadow-lg transition-shadow ${
-                    patient.riskLevel === 'high'
+                    patient.riskLevel === 'critical'
+                      ? 'border-l-red-700 bg-red-50/50'
+                      : patient.riskLevel === 'high'
                       ? 'border-l-red-500 bg-red-50/30'
                       : patient.riskLevel === 'medium'
                       ? 'border-l-yellow-500 bg-yellow-50/30'
