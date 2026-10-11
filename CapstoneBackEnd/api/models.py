@@ -51,6 +51,10 @@ class NurseProfile(models.Model):
     department = models.CharField(max_length=120, blank=True, default='')
     license_number = models.CharField(max_length=50, blank=True, default='')
     middle_name = models.CharField(max_length=100, blank=True, default='')
+    # New-signup-wizard field (signup-v2). Additive/nullable-by-default —
+    # the old signup flow never collects a phone number, so this is blank
+    # for every account created before it existed.
+    phone_number = models.CharField(max_length=20, blank=True, default='')
     # Holds either an http(s) URL or a self-contained data: URI. Profile
     # photos are uploaded from the device and normalised to a small JPEG
     # before they land here, so there is no media server to configure and

@@ -182,6 +182,11 @@ from .serializers import (
     ResendOtpSerializer,
     SendOtpSerializer,
     SignupSerializer,
+    SignupV2RegisterSerializer,
+    SignupV2ResendOtpSerializer,
+    SignupV2SendOtpSerializer,
+    SignupV2StartSerializer,
+    SignupV2VerifyOtpSerializer,
     TaskHandoverSerializer,
     TaskSerializer,
     VitalSignsSerializer,
@@ -282,6 +287,54 @@ class SignupView(APIView):
                 'detail': 'Application received. It is waiting for administrator approval.',
                 'approvalStatus': 'pending',
                 'user': UserSerializer(user).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class SignupV2StartView(APIView):
+    """
+    Step 3 "Send OTP" kickoff for the new 4-step signup wizard. Creates a
+    bare RegistrationSession (email only — no PRC/face steps) so the
+    existing OTP-issuing service (otp_service.issue_otp) has somewhere to
+    attach the code. The frontend calls this first, then immediately calls
+    the signup-v2 send-otp endpoint below with the returned session id.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    # Anonymous by design (registration). See SignupView above.
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = SignupV2StartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        session = serializer.save()
+        return Response(
+            {'registrationSessionId': str(session.session_id), 'email': session.email},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class SignupV2RegisterView(APIView):
+    """Final step ("Create Account") of the new 4-step signup wizard."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = SignupV2RegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        # Same fan-out as the old SignupView — the admin approval queue is
+        # generic (keys off NurseProfile.approval_status), so this new
+        # pending account needs no separate admin-side handling.
+        notify_admin_new_registration(user)
+        # No token: a pending applicant cannot use the app until an admin
+        # approves the registration, so none is issued here.
+        return Response(
+            {
+                'success': True,
+                'message': "Registration submitted! Your account is pending admin approval. You'll be able to log in once approved.",
             },
             status=status.HTTP_201_CREATED,
         )
@@ -2055,6 +2108,136 @@ class VerifyRegistrationOtpView(APIView):
     )
     def post(self, request):
         serializer = VerifyOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        session = serializer.validated_data['registrationSessionId']
+        code = serializer.validated_data['otp']
+
+        verified, message, error_code = verify_otp(session, code)
+
+        if verified:
+            return Response(
+                {
+                    'verified': True,
+                    'success': True,
+                    'status': 'email_verified',
+                    'method': 'EMAIL_OTP',
+                    'message': message,
+                }
+            )
+
+        status_map = {
+            'NOT_FOUND': status.HTTP_404_NOT_FOUND,
+            'EXPIRED': status.HTTP_400_BAD_REQUEST,
+            'MAX_ATTEMPTS': status.HTTP_429_TOO_MANY_REQUESTS,
+            'INVALID': status.HTTP_400_BAD_REQUEST,
+        }
+        return Response(
+            {'verified': False, 'success': False, 'message': message},
+            status=status_map.get(error_code, status.HTTP_400_BAD_REQUEST),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Signup V2 OTP (send/verify/resend) — parallel to SendRegistrationOtpView /
+# ResendRegistrationOtpView / VerifyRegistrationOtpView above, which all gate
+# on session.face_locked (only true after three failed face attempts). The
+# new 4-step wizard's RegistrationSession never attempts face verification,
+# so it can never pass that gate — these views reuse the same otp_service
+# functions with gating appropriate to a fresh, face-less session, without
+# touching the existing OTP views/serializers (hard scope rule).
+# ---------------------------------------------------------------------------
+
+
+class SignupV2SendOtpView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'registration_otp_send'
+
+    def post(self, request):
+        serializer = SignupV2SendOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        session = serializer.validated_data['registrationSessionId']
+
+        try:
+            issue_otp(session)
+        except EmailValidationError as exc:
+            return Response({'success': False, 'message': exc.default_detail}, status=status.HTTP_400_BAD_REQUEST)
+        except OtpCooldownError as exc:
+            return Response(
+                {
+                    'success': False,
+                    'message': f'Please wait {exc.retry_after}s before requesting another code.',
+                    'retryAfter': exc.retry_after,
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        except OtpDeliveryError as exc:
+            return Response({'success': False, 'message': exc.default_detail}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response(
+            {
+                'success': True,
+                'status': 'otp_sent',
+                'message': 'A verification code has been sent to your email address.',
+                'expiresIn': 300,
+                'resendCooldown': 60,
+                'registrationSessionId': str(session.session_id),
+            }
+        )
+
+
+class SignupV2ResendOtpView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'registration_otp_send'
+
+    def post(self, request):
+        serializer = SignupV2ResendOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        session = serializer.validated_data['registrationSessionId']
+
+        try:
+            issue_otp(session, is_resend=True)
+        except EmailValidationError as exc:
+            return Response({'success': False, 'message': exc.default_detail}, status=status.HTTP_400_BAD_REQUEST)
+        except OtpCooldownError as exc:
+            return Response(
+                {
+                    'success': False,
+                    'message': f'Please wait {exc.retry_after}s before requesting another code.',
+                    'retryAfter': exc.retry_after,
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        except OtpResendLimitError as exc:
+            return Response(
+                {'success': False, 'message': exc.default_detail}, status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        except OtpDeliveryError as exc:
+            return Response({'success': False, 'message': exc.default_detail}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response(
+            {
+                'success': True,
+                'status': 'otp_sent',
+                'message': 'A new verification code has been sent to your email address.',
+                'expiresIn': 300,
+                'resendCooldown': 60,
+                'registrationSessionId': str(session.session_id),
+            }
+        )
+
+
+class SignupV2VerifyOtpView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'registration_otp_verify'
+
+    def post(self, request):
+        serializer = SignupV2VerifyOtpSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         session = serializer.validated_data['registrationSessionId']
         code = serializer.validated_data['otp']

@@ -308,6 +308,210 @@ class SignupSerializer(serializers.Serializer):
         return user
 
 
+# ---------------------------------------------------------------------------
+# Signup V2 — the new 4-step wizard (Personal Info -> Role -> Email+Phone OTP
+# -> Credentials). Identity here is proven by Email OTP alone; there is no
+# PRC ID scan or face match, unlike the SignupSerializer flow above. Kept
+# entirely separate (new serializers/views/urls) rather than editing the
+# classes above, per this feature's hard scope rule.
+# ---------------------------------------------------------------------------
+
+#: Philippine mobile number: 09XXXXXXXXX (11 digits) or +639XXXXXXXXX (13 chars).
+PH_PHONE_REGEX = re.compile(r'^(?:0\d{10}|\+63\d{10})$')
+
+#: Letters, spaces, hyphens, periods, apostrophes — matches the old flow's
+#: id_field_validation name rules.
+NAME_PART_REGEX = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ '\-.]{0,99}$")
+
+
+def _validate_ph_phone(value):
+    cleaned = (value or '').strip()
+    if not PH_PHONE_REGEX.match(cleaned):
+        raise serializers.ValidationError(
+            'Enter a valid Philippine mobile number, e.g. 09123456789 or +639123456789.'
+        )
+    return cleaned
+
+
+def _validate_name_part(value, field_label, required=True):
+    cleaned = (value or '').strip()
+    if not cleaned:
+        if required:
+            raise serializers.ValidationError(f'{field_label} is required.')
+        return ''
+    if not NAME_PART_REGEX.match(cleaned):
+        raise serializers.ValidationError(
+            f'{field_label} may only contain letters, spaces, hyphens, periods, and apostrophes.'
+        )
+    return cleaned
+
+
+class SignupV2StartSerializer(serializers.Serializer):
+    """
+    Kicks off the new wizard's Step 3 (Verification): creates a bare
+    RegistrationSession carrying only an email, so the existing OTP-issuing
+    machinery (otp_service.issue_otp, via SendRegistrationOtpView) has a
+    session to attach to. Phone is validated for format here but
+    intentionally never persisted — RegistrationSession has no phone column;
+    the frontend carries it in local wizard state until SignupV2RegisterView.
+    """
+
+    email = serializers.EmailField()
+    phone = serializers.CharField()
+
+    def validate_phone(self, value):
+        return _validate_ph_phone(value)
+
+    def create(self, validated_data):
+        return RegistrationSession.objects.create(email=validated_data['email'].lower().strip())
+
+
+class SignupV2RegisterSerializer(serializers.Serializer):
+    """
+    Final step of the new wizard. Mirrors SignupSerializer's security pattern
+    (role is always stored as `requested_role`; the real NurseProfile.role is
+    hard-set to 'staff_nurse') but gates on Email OTP verification instead of
+    PRC ID + face/OTP verification.
+    """
+
+    lastName = serializers.CharField()
+    firstName = serializers.CharField()
+    middleName = serializers.CharField(required=False, allow_blank=True, default='')
+    role = serializers.ChoiceField(choices=[c[0] for c in NurseProfile.ROLE_CHOICES])
+    personalEmail = serializers.EmailField()
+    phone = serializers.CharField()
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
+    confirmPassword = serializers.CharField(write_only=True)
+    registrationSessionId = serializers.UUIDField()
+
+    def validate_lastName(self, value):
+        return _validate_name_part(value, 'Last name')
+
+    def validate_firstName(self, value):
+        return _validate_name_part(value, 'First name')
+
+    def validate_middleName(self, value):
+        return _validate_name_part(value, 'Middle name', required=False)
+
+    def validate_phone(self, value):
+        return _validate_ph_phone(value)
+
+    def validate_email(self, value):
+        # Same case-insensitive uniqueness check as SignupSerializer.validate_email.
+        normalized = value.lower()
+        if User.objects.filter(username=normalized).exists() or User.objects.filter(email=normalized).exists():
+            raise serializers.ValidationError('A user with this email already exists.')
+        return normalized
+
+    def validate_password(self, value):
+        validate_password(value)
+        # AUTH_PASSWORD_VALIDATORS (settings.py) only configures length,
+        # similarity, common-password and numeric checks — none of them
+        # enforce upper/lower/digit/special-character composition, so the
+        # wizard's stated password rule is enforced explicitly here too.
+        if len(value) < 8:
+            raise serializers.ValidationError('Password must be at least 8 characters long.')
+        if not re.search(r'[A-Z]', value):
+            raise serializers.ValidationError('Password must contain at least one uppercase letter.')
+        if not re.search(r'[a-z]', value):
+            raise serializers.ValidationError('Password must contain at least one lowercase letter.')
+        if not re.search(r'\d', value):
+            raise serializers.ValidationError('Password must contain at least one digit.')
+        if not re.search(r'[^A-Za-z0-9]', value):
+            raise serializers.ValidationError('Password must contain at least one special character.')
+        return value
+
+    def validate_registrationSessionId(self, value):
+        session = RegistrationSession.objects.filter(session_id=value).first()
+        if not session:
+            raise serializers.ValidationError('Registration session not found. Please restart verification.')
+        if session.user_id:
+            raise serializers.ValidationError('This registration session has already been used.')
+        if not session.otp_verified:
+            raise serializers.ValidationError('Email verification has not been completed.')
+        return session
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['confirmPassword']:
+            raise serializers.ValidationError({'confirmPassword': 'Passwords do not match.'})
+        session = attrs['registrationSessionId']
+        registered = (session.email or '').strip().lower()
+        if registered and attrs['personalEmail'].strip().lower() != registered:
+            raise serializers.ValidationError({
+                'personalEmail': f'Use the email you registered and verified ({registered}).',
+            })
+        return attrs
+
+    def create(self, validated_data):
+        session = validated_data['registrationSessionId']
+        email = validated_data['email']
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=email,
+                email=email,
+                password=validated_data['password'],
+                first_name=validated_data['firstName'],
+                last_name=validated_data['lastName'],
+            )
+            NurseProfile.objects.create(
+                user=user,
+                role='staff_nurse',
+                requested_role=validated_data['role'],
+                middle_name=validated_data.get('middleName') or '',
+                phone_number=validated_data['phone'],
+                approval_status='pending',
+                verification_method='EMAIL_OTP',
+                shift='',
+                department='',
+            )
+            session.user = user
+            session.save(update_fields=['user', 'updated_at'])
+        return user
+
+
+# ---- Signup V2 OTP (send/verify/resend) -----------------------------------
+#
+# SendOtpSerializer / ResendOtpSerializer / VerifyOtpSerializer (below, used
+# by the OLD flow) all gate on `session.face_locked` — only reachable after
+# three failed face-verification attempts. A signup-v2 session never attempts
+# face verification at all, so it can never satisfy that gate. Rather than
+# touch those existing serializers/views (hard scope rule), these parallel
+# ones reuse the same otp_service functions with gating appropriate to a
+# fresh, face-less wizard session.
+
+
+class SignupV2SendOtpSerializer(serializers.Serializer):
+    registrationSessionId = serializers.UUIDField()
+
+    def validate_registrationSessionId(self, value):
+        session = RegistrationSession.objects.filter(session_id=value).first()
+        if not session:
+            raise serializers.ValidationError('Registration session not found. Please restart verification.')
+        if session.user_id:
+            raise serializers.ValidationError('This registration session has already been used.')
+        if not session.email:
+            raise serializers.ValidationError('No registered email address is associated with this registration.')
+        return session
+
+
+class SignupV2ResendOtpSerializer(SignupV2SendOtpSerializer):
+    pass
+
+
+class SignupV2VerifyOtpSerializer(serializers.Serializer):
+    otp = serializers.RegexField(r'^\d{6}$', error_messages={'invalid': 'OTP must be exactly 6 digits.'})
+    registrationSessionId = serializers.UUIDField()
+
+    def validate_registrationSessionId(self, value):
+        session = RegistrationSession.objects.filter(session_id=value).first()
+        if not session:
+            raise serializers.ValidationError('Registration session not found. Please restart verification.')
+        if session.user_id:
+            raise serializers.ValidationError('This registration session has already been used.')
+        return session
+
+
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField(
         help_text='Account email, e.g. nurse@hospital.com',

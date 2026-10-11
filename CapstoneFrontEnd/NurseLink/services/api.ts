@@ -540,6 +540,82 @@ export async function verifyRegistrationOtpRequest(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Signup V2 — the new 4-step wizard (Personal Info -> Role -> Email+Phone OTP
+// -> Credentials). Kept separate from the requests above: the old flow's OTP
+// endpoints only unlock after three failed face-verification attempts, which
+// a signup-v2 session (no face step at all) can never reach, so this wizard
+// uses its own parallel start/OTP/register endpoints instead.
+// ---------------------------------------------------------------------------
+
+export type SignupV2StartResponse = {
+  registrationSessionId: string;
+  email: string;
+};
+
+export async function startSignupV2Request(email: string, phone: string): Promise<SignupV2StartResponse> {
+  return apiRequest<SignupV2StartResponse>('/auth/signup-v2/start/', {
+    method: 'POST',
+    body: { email, phone },
+    auth: false,
+  });
+}
+
+export async function sendSignupV2OtpRequest(registrationSessionId: string): Promise<OtpSendResponse> {
+  return apiRequest<OtpSendResponse>('/auth/signup-v2/send-otp/', {
+    method: 'POST',
+    body: { registrationSessionId },
+    auth: false,
+  });
+}
+
+export async function resendSignupV2OtpRequest(registrationSessionId: string): Promise<OtpSendResponse> {
+  return apiRequest<OtpSendResponse>('/auth/signup-v2/resend-otp/', {
+    method: 'POST',
+    body: { registrationSessionId },
+    auth: false,
+  });
+}
+
+export async function verifySignupV2OtpRequest(
+  otp: string,
+  registrationSessionId: string
+): Promise<OtpVerifyResponse> {
+  return apiRequest<OtpVerifyResponse>('/auth/signup-v2/verify-otp/', {
+    method: 'POST',
+    body: { otp, registrationSessionId },
+    auth: false,
+  });
+}
+
+export type SignupV2RegisterPayload = {
+  lastName: string;
+  firstName: string;
+  middleName?: string;
+  role: UserRole;
+  personalEmail: string;
+  phone: string;
+  email: string;
+  password: string;
+  confirmPassword: string;
+  registrationSessionId: string;
+};
+
+export type SignupV2RegisterResponse = {
+  success: boolean;
+  message: string;
+};
+
+export async function registerSignupV2Request(
+  payload: SignupV2RegisterPayload
+): Promise<SignupV2RegisterResponse> {
+  return apiRequest<SignupV2RegisterResponse>('/auth/signup-v2/register/', {
+    method: 'POST',
+    body: payload,
+    auth: false,
+  });
+}
+
 export async function logoutRequest(): Promise<void> {
   try {
     await apiRequest('/auth/logout/', { method: 'POST' });

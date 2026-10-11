@@ -55,6 +55,13 @@ urlpatterns = [
         views.ResendRegistrationOtpView.as_view(),
         name='resend-registration-otp',
     ),
+    # New 4-step signup wizard (signup-v2) — kept entirely separate from the
+    # routes above per this feature's hard scope rule.
+    path('auth/signup-v2/start/', views.SignupV2StartView.as_view(), name='signup-v2-start'),
+    path('auth/signup-v2/register/', views.SignupV2RegisterView.as_view(), name='signup-v2-register'),
+    path('auth/signup-v2/send-otp/', views.SignupV2SendOtpView.as_view(), name='signup-v2-send-otp'),
+    path('auth/signup-v2/verify-otp/', views.SignupV2VerifyOtpView.as_view(), name='signup-v2-verify-otp'),
+    path('auth/signup-v2/resend-otp/', views.SignupV2ResendOtpView.as_view(), name='signup-v2-resend-otp'),
     path('auth/login/', views.LoginView.as_view(), name='login'),
     path('auth/token/', views.OAuthTokenView.as_view(), name='oauth-token'),
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
