@@ -8,6 +8,7 @@ import { PreferencesProvider } from '../contexts/PreferencesContext';
 import { ThemeProvider } from '../contexts/ThemeContext';
 import { NotificationsProvider } from '../contexts/NotificationsContext';
 import SplashScreen from '../components/SplashScreen';
+import { AppErrorBoundary } from '../components/AppErrorBoundary';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet, Platform } from 'react-native';
@@ -78,21 +79,23 @@ function RootNavigator() {
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.root}>
-      <ToastProvider>
-        <AuthProvider>
-          <PreferencesProvider>
-            <ThemeProvider>
-              <RealtimeProvider>
-                <LiveProvider>
-                  <NotificationsProvider>
-                    <RootNavigator />
-                  </NotificationsProvider>
-                </LiveProvider>
-              </RealtimeProvider>
-            </ThemeProvider>
-          </PreferencesProvider>
-        </AuthProvider>
-      </ToastProvider>
+      <AppErrorBoundary>
+        <ToastProvider>
+          <AuthProvider>
+            <PreferencesProvider>
+              <ThemeProvider>
+                <RealtimeProvider>
+                  <LiveProvider>
+                    <NotificationsProvider>
+                      <RootNavigator />
+                    </NotificationsProvider>
+                  </LiveProvider>
+                </RealtimeProvider>
+              </ThemeProvider>
+            </PreferencesProvider>
+          </AuthProvider>
+        </ToastProvider>
+      </AppErrorBoundary>
     </GestureHandlerRootView>
   );
 }
