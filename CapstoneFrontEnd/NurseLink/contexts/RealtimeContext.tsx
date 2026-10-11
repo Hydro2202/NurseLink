@@ -248,7 +248,13 @@ export function useRealtime(): RealtimeContextType {
 export function useRealtimeNotifications(handler: Listener) {
   const { subscribe } = useRealtime();
   const ref = useRef(handler);
-  ref.current = handler;
+
+  // Synced via an effect, not during render — React Compiler can memoize a
+  // render and skip re-running it, which would silently leave this ref
+  // pointing at a stale closure of handler.
+  useEffect(() => {
+    ref.current = handler;
+  }, [handler]);
 
   useEffect(() => subscribe((event) => ref.current(event)), [subscribe]);
 }

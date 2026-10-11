@@ -211,7 +211,13 @@ export function useLiveRefresh(area: keyof Omit<LiveState, 'unreadCount'>, onCha
   const revision = revisions[area];
   const previous = useRef<string | null>(null);
   const handler = useRef(onChange);
-  handler.current = onChange;
+
+  // Keeps the ref in sync via an effect rather than during render — React
+  // Compiler can memoize a render and skip re-running it, which would
+  // silently leave this ref pointing at a stale closure of onChange.
+  useEffect(() => {
+    handler.current = onChange;
+  }, [onChange]);
 
   useEffect(() => {
     if (!revision) return;
