@@ -374,10 +374,12 @@ DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'NurseLink <no-reply@n
 # EMAIL_HOST/EMAIL_HOST_PASSWORD above can never actually deliver mail once
 # deployed there — confirmed in production: a real send attempt hung ~139s
 # (OS-level TCP timeout, nothing answering) then failed, while the identical
-# settings worked in seconds locally. Resend sends over HTTPS instead, which
+# settings worked in seconds locally. Brevo sends over HTTPS instead, which
 # Render does not block. When set, api.otp_service prefers this over SMTP;
-# SMTP stays as the local-dev path (no RESEND_API_KEY needed there).
-RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '').strip()
+# SMTP stays as the local-dev path (no BREVO_API_KEY needed there).
+BREVO_API_KEY = os.environ.get('BREVO_API_KEY', '').strip()
+BREVO_SENDER_EMAIL = os.environ.get('BREVO_SENDER_EMAIL', '').strip()
+BREVO_SENDER_NAME = os.environ.get('BREVO_SENDER_NAME', 'NurseLink').strip()
 
 # Local-development escape hatch for the registration OTP. When True and no
 # SMTP host is configured, the code is written to the server log instead of

@@ -59,40 +59,39 @@ def _generate_code() -> str:
     return ''.join(secrets.choice('0123456789') for _ in range(OTP_LENGTH))
 
 
-def _send_via_resend(email: str, subject: str, message: str) -> None:
+def _send_via_brevo(email: str, subject: str, message: str) -> None:
     """
     HTTPS delivery (port 443), not SMTP. Needed because Render blocks
     outbound SMTP (ports 25/465/587/2525) on every plan — confirmed in
     production: a real send via the SMTP path below hung ~139s (nothing
     answering the TCP handshake) then failed, while the identical EMAIL_*
     settings deliver in seconds on a non-Render machine. Preferred over SMTP
-    whenever RESEND_API_KEY is set; see _send_otp_email.
+    whenever BREVO_API_KEY is set; see _send_otp_email.
 
-    Sandbox limitation: without a verified sending domain on the Resend
-    account, Resend only accepts `from: onboarding@resend.dev` and only
-    delivers `to` the address that owns the Resend API key — not arbitrary
-    recipients. Fine for this project's own demo/testing; verify a domain on
-    resend.com before relying on it for real end users.
+    Unlike a sandbox-mode provider, Brevo delivers to any recipient once the
+    BREVO_SENDER_EMAIL address itself has been verified on the Brevo account
+    (Settings -> Senders) — no recipient allowlist and no domain required.
     """
     try:
         response = requests.post(
-            'https://api.resend.com/emails',
+            'https://api.brevo.com/v3/smtp/email',
             headers={
-                'Authorization': f'Bearer {settings.RESEND_API_KEY}',
+                'api-key': settings.BREVO_API_KEY,
                 'Content-Type': 'application/json',
+                'Accept': 'application/json',
             },
             json={
-                'from': 'NurseLink <onboarding@resend.dev>',
-                'to': [email],
+                'sender': {'name': settings.BREVO_SENDER_NAME, 'email': settings.BREVO_SENDER_EMAIL},
+                'to': [{'email': email}],
                 'subject': subject,
-                'text': message,
+                'textContent': message,
             },
             timeout=15,
         )
         response.raise_for_status()
     except requests.RequestException as exc:
         body = getattr(exc.response, 'text', '') if getattr(exc, 'response', None) else ''
-        logger.error('Resend OTP email delivery failed for %s: %s %s', email, exc, body)
+        logger.error('Brevo OTP email delivery failed for %s: %s %s', email, exc, body)
         raise OtpDeliveryError(
             "We couldn't send the verification code. Please try again."
         ) from exc
@@ -101,10 +100,10 @@ def _send_via_resend(email: str, subject: str, message: str) -> None:
 def _send_otp_email(email: str, code: str) -> None:
     backend = (getattr(settings, 'EMAIL_BACKEND', '') or '').lower()
     host = (getattr(settings, 'EMAIL_HOST', '') or '').strip()
-    resend_key = getattr(settings, 'RESEND_API_KEY', '') or ''
+    brevo_key = getattr(settings, 'BREVO_API_KEY', '') or ''
 
     # Reject console-only delivery so registration OTP always goes through a
-    # real provider (Resend or SMTP) configured via environment variables.
+    # real provider (Brevo or SMTP) configured via environment variables.
     #
     # ALLOW_CONSOLE_OTP is the deliberate exception for local development,
     # where there is often no SMTP account to hand and the alternative is
@@ -112,14 +111,14 @@ def _send_otp_email(email: str, code: str) -> None:
     # on explicitly and prints the code to the server log, so it is only ever
     # safe on a machine where that log is already trusted. Never enable it
     # anywhere real: a code in a log is a code anyone with log access can use.
-    if not resend_key and not getattr(settings, 'ALLOW_CONSOLE_OTP', False):
+    if not brevo_key and not getattr(settings, 'ALLOW_CONSOLE_OTP', False):
         if 'console' in backend or not host:
             raise OtpNotConfiguredError(
                 'Email delivery is not configured on the server. '
-                'Set RESEND_API_KEY, or EMAIL_HOST/EMAIL_HOST_USER/EMAIL_HOST_PASSWORD/DEFAULT_FROM_EMAIL, '
+                'Set BREVO_API_KEY/BREVO_SENDER_EMAIL, or EMAIL_HOST/EMAIL_HOST_USER/EMAIL_HOST_PASSWORD/DEFAULT_FROM_EMAIL, '
                 'in the backend .env, then restart the API.'
             )
-    elif not resend_key and ('console' in backend or not host):
+    elif not brevo_key and ('console' in backend or not host):
         logger.warning(
             'ALLOW_CONSOLE_OTP is on — printing the code instead of emailing it. '
             'Development only.\n'
@@ -142,8 +141,8 @@ def _send_otp_email(email: str, code: str) -> None:
         'NurseLink'
     )
 
-    if resend_key:
-        _send_via_resend(email, subject, message)
+    if brevo_key:
+        _send_via_brevo(email, subject, message)
         return
 
     try:
