@@ -250,6 +250,7 @@ const styles = StyleSheet.create({
     minHeight: 72,
     padding: 10,
     textAlignVertical: 'top',
+    fontSize: 16,
     color: Colors.foreground,
   },
   footer: { flexDirection: 'row', gap: 10, padding: 16, borderTopWidth: 1, borderTopColor: Colors.border },

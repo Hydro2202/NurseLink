@@ -80,7 +80,10 @@ const styles = StyleSheet.create({
     // which isn't worth reproducing here just for pixel parity.
     height: 44,
     paddingHorizontal: 12,
-    fontSize: 14,
+    // 16, not 14 — iOS Safari auto-zooms the whole page in on focus for any
+    // input below 16px, which would hijack the layout every time someone
+    // taps a field (login, signup, every form in the app uses this).
+    fontSize: 16,
     color: Colors.foreground,
   },
   leftIcon: {

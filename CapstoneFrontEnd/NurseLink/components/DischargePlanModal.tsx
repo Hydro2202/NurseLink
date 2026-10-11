@@ -341,7 +341,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.inputBackground,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 14,
+    fontSize: 16,
     color: Colors.foreground,
     lineHeight: 20,
   },

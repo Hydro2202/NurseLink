@@ -432,7 +432,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 14,
+    fontSize: 16,
     color: Colors.foreground,
     backgroundColor: Colors.inputBackground,
   },

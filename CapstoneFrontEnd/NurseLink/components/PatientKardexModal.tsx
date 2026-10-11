@@ -683,6 +683,7 @@ const styles = StyleSheet.create({
     padding: 10,
     minHeight: 64,
     textAlignVertical: 'top',
+    fontSize: 16,
     color: Colors.foreground,
     backgroundColor: Colors.inputBackground,
   },

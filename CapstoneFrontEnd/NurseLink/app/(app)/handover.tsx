@@ -1032,7 +1032,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     padding: 12,
     minHeight: 80,
-    fontSize: 14,
+    fontSize: 16,
     color: Colors.foreground,
     marginBottom: 16,
   },
