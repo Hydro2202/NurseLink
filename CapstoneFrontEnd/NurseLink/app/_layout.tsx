@@ -78,8 +78,8 @@ function RootNavigator() {
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.root}>
-      <AuthProvider>
-        <ToastProvider>
+      <ToastProvider>
+        <AuthProvider>
           <PreferencesProvider>
             <ThemeProvider>
               <RealtimeProvider>
@@ -91,8 +91,8 @@ export default function RootLayout() {
               </RealtimeProvider>
             </ThemeProvider>
           </PreferencesProvider>
-        </ToastProvider>
-      </AuthProvider>
+        </AuthProvider>
+      </ToastProvider>
     </GestureHandlerRootView>
   );
 }

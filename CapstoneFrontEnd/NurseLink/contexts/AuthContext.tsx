@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AppState, AppStateStatus, Alert } from 'react-native';
+import { AppState, AppStateStatus, Alert, Platform } from 'react-native';
 import {
   fetchMe,
   loginRequest,
@@ -14,6 +14,7 @@ import {
 import * as authStorage from '../services/authStorage';
 import { migrateLegacyAsyncStorageToken } from '../services/secureToken';
 import { USER_KEY } from '../services/config';
+import { useToast } from './ToastContext';
 import type { User, UserRole } from '../types/user';
 
 export type { User, UserRole };
@@ -48,6 +49,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const lastActivity = useRef(Date.now());
+  const toast = useToast();
+
+  // Alert.alert() is a documented no-op on react-native-web (no polyfill),
+  // so on web these session notices would otherwise fail completely
+  // silently — the user is logged out with zero explanation. Native keeps
+  // its real Alert.alert dialog unchanged.
+  const notify = useCallback(
+    (title: string, message: string) => {
+      if (Platform.OS === 'web') {
+        toast.warning(title, { description: message });
+      } else {
+        Alert.alert(title, message);
+      }
+    },
+    [toast]
+  );
 
   // Shared by the boot-time check below and by the global 401 handler
   // registered further down — both cases mean the same thing: the token on
@@ -59,11 +76,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await authStorage.removeItem(USER_KEY);
     setUser(null);
     if (notifyReason === 'expired') {
-      Alert.alert('Session Expired', 'Your session expired, please log in again.');
+      notify('Session Expired', 'Your session expired, please log in again.');
     } else if (notifyReason === 'blocked') {
-      Alert.alert('Signed Out', 'Your account access has changed. Please log in again.');
+      notify('Signed Out', 'Your account access has changed. Please log in again.');
     }
-  }, []);
+  }, [notify]);
 
   useEffect(() => {
     (async () => {
@@ -145,7 +162,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const checkTimeout = () => {
       if (Date.now() - lastActivity.current > SESSION_TIMEOUT) {
         logout();
-        Alert.alert(
+        notify(
           'Session Expired',
           'Your session has expired due to inactivity. Please login again.'
         );
@@ -167,7 +184,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       clearInterval(interval);
       sub.remove();
     };
-  }, [user, logout, updateActivity]);
+  }, [user, logout, updateActivity, notify]);
 
   // Rethrows on failure (same reasoning as updateUser below): a pending or
   // rejected account gets a real, specific message from LoginView — that is

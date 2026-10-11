@@ -371,7 +371,7 @@ export default function WorkloadPage() {
                     />
                     <Metric
                       label="Done"
-                      value={`${Math.round((nurse.completedTasks / nurse.taskCount) * 100)}%`}
+                      value={`${nurse.taskCount ? Math.round((nurse.completedTasks / nurse.taskCount) * 100) : 0}%`}
                       color={Colors.green600}
                     />
                     <Metric
