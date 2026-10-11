@@ -370,6 +370,15 @@ EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'NurseLink <no-reply@nurselink.local>')
 # Locmem/console backends are allowed only for automated tests via EMAIL_BACKEND override.
 
+# Render blocks outbound SMTP (ports 25/465/587/2525) on every plan, so
+# EMAIL_HOST/EMAIL_HOST_PASSWORD above can never actually deliver mail once
+# deployed there — confirmed in production: a real send attempt hung ~139s
+# (OS-level TCP timeout, nothing answering) then failed, while the identical
+# settings worked in seconds locally. Resend sends over HTTPS instead, which
+# Render does not block. When set, api.otp_service prefers this over SMTP;
+# SMTP stays as the local-dev path (no RESEND_API_KEY needed there).
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '').strip()
+
 # Local-development escape hatch for the registration OTP. When True and no
 # SMTP host is configured, the code is written to the server log instead of
 # being emailed, so the OTP fallback can be exercised without an SMTP account.
