@@ -430,7 +430,7 @@ const styles = StyleSheet.create({
   badgeRow: { flexDirection: 'row', gap: 8, marginTop: 14, flexWrap: 'wrap' },
   rejectionNote: { fontSize: 12.5, color: Colors.red700, marginTop: 10 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 18 },
-  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  btnLabel: { color: Colors.white, fontWeight: '700', fontSize: 13.5 },
+  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 },
+  btnLabel: { color: Colors.white, fontWeight: '700', fontSize: 13.5, flexShrink: 1 },
   footer: { flexDirection: 'row', gap: 12, marginTop: 20 },
 });

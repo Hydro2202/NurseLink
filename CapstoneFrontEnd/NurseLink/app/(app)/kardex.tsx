@@ -1866,16 +1866,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    // Without these, this nested row won't shrink below its label's
+    // unwrapped width on web — it overflows past the button's own
+    // flex-constrained edge instead of letting the text wrap/shrink.
+    minWidth: 0,
+    flexShrink: 1,
   },
   btnTextWhite: {
     color: Colors.white,
     fontWeight: '600',
     fontSize: 14,
+    flexShrink: 1,
   },
   btnTextDark: {
     color: Colors.foreground,
     fontWeight: '600',
     fontSize: 14,
+    flexShrink: 1,
   },
   requiredHint: {
     fontSize: 11,

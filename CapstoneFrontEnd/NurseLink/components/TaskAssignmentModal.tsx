@@ -444,7 +444,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: Colors.border,
   },
-  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 },
   reviewBox: {
     backgroundColor: Colors.blue50,
     borderWidth: 1,

@@ -642,7 +642,7 @@ export function TaskVitalSignsBars({
                       >
                         <View style={styles.btnInner}>
                           <Check size={14} color={Colors.white} />
-                          <Text style={{ color: Colors.white, fontWeight: '600' }}>Save Reading</Text>
+                          <Text style={{ color: Colors.white, fontWeight: '600', flexShrink: 1 }}>Save Reading</Text>
                         </View>
                       </Button>
                     </View>
@@ -1076,7 +1076,7 @@ const styles = StyleSheet.create({
   yesNoBtnText: { fontSize: 13, fontWeight: '600', color: Colors.gray600 },
   yesNoBtnTextActive: { color: Colors.blue700 },
   entryActions: { flexDirection: 'row', gap: 8 },
-  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 },
   addSlotBtn: {
     flexDirection: 'row',
     alignItems: 'center',

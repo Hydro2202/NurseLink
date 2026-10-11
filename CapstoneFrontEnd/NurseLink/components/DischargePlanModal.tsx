@@ -297,6 +297,7 @@ const styles = StyleSheet.create({
     color: Colors.blue700,
     fontWeight: '600',
     fontSize: 14,
+    flexShrink: 1,
   },
   aiNote: {
     fontSize: 12,
@@ -308,6 +309,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    minWidth: 0,
+    flexShrink: 1,
   },
   field: { gap: 6 },
   labelRow: {

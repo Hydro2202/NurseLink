@@ -657,16 +657,20 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     flexDirection: 'row',
     alignItems: 'center',
     gap: space(8),
+    minWidth: 0,
+    flexShrink: 1,
   },
   btnTextWhite: {
     color: c.white,
     fontWeight: '600',
     fontSize: scale(14),
+    flexShrink: 1,
   },
   btnTextDark: {
     color: c.foreground,
     fontWeight: '600',
     fontSize: scale(14),
+    flexShrink: 1,
   },
   passwordBtn: {
     borderWidth: 1,

@@ -931,8 +931,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  btnTextWhite: { color: Colors.white, fontWeight: '700', fontSize: 13 },
+  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 },
+  btnTextWhite: { color: Colors.white, fontWeight: '700', fontSize: 13, flexShrink: 1 },
   emptyText: { fontSize: 13, color: Colors.mutedForeground, paddingVertical: 8 },
 
   // Each lab/medication is a stacked card instead of a wide table row —

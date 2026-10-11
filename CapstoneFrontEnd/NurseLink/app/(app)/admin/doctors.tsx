@@ -245,8 +245,8 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   title: { fontSize: 20, fontWeight: '900', color: Colors.gray900 },
   subtitle: { fontSize: 12.5, color: Colors.mutedForeground, marginTop: 2 },
-  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  btnLabel: { color: Colors.white, fontWeight: '700', fontSize: 13 },
+  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 },
+  btnLabel: { color: Colors.white, fontWeight: '700', fontSize: 13, flexShrink: 1 },
   empty: { textAlign: 'center', color: Colors.mutedForeground, marginTop: 32, fontSize: 13 },
   list: { gap: 10 },
   row: {
