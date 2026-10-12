@@ -4,7 +4,10 @@ import { Link } from 'expo-router';
 import { User2 } from 'lucide-react-native';
 import { Input } from '../Input';
 import { Button } from '../Button';
+import { Alert, AlertDescription } from '../Alert';
 import { Colors } from '../../constants/colors';
+import { checkSignupV2NameRequest } from '../../services/api';
+import { extractErrorMessage } from './errorUtils';
 
 /** Letters, spaces, hyphens, apostrophes and full stops — matches the server
  *  (api/serializers.py SignupV2RegisterSerializer._validate_name_part). */
@@ -30,11 +33,36 @@ interface Step1PersonalInfoProps {
 
 export function Step1PersonalInfo({ data, onChange, onNext }: Step1PersonalInfoProps) {
   const [touched, setTouched] = React.useState<Record<string, boolean>>({});
+  const [checking, setChecking] = React.useState(false);
+  const [nameError, setNameError] = React.useState('');
 
   const lastNameValid = isValidNamePart(data.lastName, true);
   const firstNameValid = isValidNamePart(data.firstName, true);
   const middleNameValid = isValidNamePart(data.middleName, false);
-  const canContinue = lastNameValid && firstNameValid && middleNameValid;
+  const canContinue = lastNameValid && firstNameValid && middleNameValid && !checking;
+
+  const handleContinue = async () => {
+    setTouched({ lastName: true, firstName: true, middleName: true });
+    if (!lastNameValid || !firstNameValid || !middleNameValid) return;
+    setNameError('');
+    setChecking(true);
+    try {
+      const result = await checkSignupV2NameRequest(
+        data.lastName.trim(),
+        data.firstName.trim(),
+        data.middleName.trim()
+      );
+      if (!result.available) {
+        setNameError(result.message || 'An account with this name already exists. Contact an administrator.');
+        return;
+      }
+      onNext();
+    } catch (err) {
+      setNameError(extractErrorMessage(err, 'Could not check this name right now. Please try again.'));
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const errorFor = (field: 'lastName' | 'firstName' | 'middleName', valid: boolean, label: string) => {
     if (!touched[field] || valid) return undefined;
@@ -56,7 +84,10 @@ export function Step1PersonalInfo({ data, onChange, onNext }: Step1PersonalInfoP
         label="Last Name *"
         placeholder="Dela Cruz"
         value={data.lastName}
-        onChangeText={(v) => onChange({ lastName: v })}
+        onChangeText={(v) => {
+          onChange({ lastName: v });
+          setNameError('');
+        }}
         onBlur={() => setTouched((t) => ({ ...t, lastName: true }))}
         error={errorFor('lastName', lastNameValid, 'Last name')}
         autoCapitalize="words"
@@ -65,7 +96,10 @@ export function Step1PersonalInfo({ data, onChange, onNext }: Step1PersonalInfoP
         label="First Name *"
         placeholder="Juan"
         value={data.firstName}
-        onChangeText={(v) => onChange({ firstName: v })}
+        onChangeText={(v) => {
+          onChange({ firstName: v });
+          setNameError('');
+        }}
         onBlur={() => setTouched((t) => ({ ...t, firstName: true }))}
         error={errorFor('firstName', firstNameValid, 'First name')}
         autoCapitalize="words"
@@ -74,18 +108,25 @@ export function Step1PersonalInfo({ data, onChange, onNext }: Step1PersonalInfoP
         label="Middle Name"
         placeholder="Optional"
         value={data.middleName}
-        onChangeText={(v) => onChange({ middleName: v })}
+        onChangeText={(v) => {
+          onChange({ middleName: v });
+          setNameError('');
+        }}
         onBlur={() => setTouched((t) => ({ ...t, middleName: true }))}
         error={errorFor('middleName', middleNameValid, 'Middle name')}
         autoCapitalize="words"
       />
 
+      {nameError ? (
+        <Alert variant="destructive">
+          <AlertDescription>{nameError}</AlertDescription>
+        </Alert>
+      ) : null}
+
       <Button
-        onPress={() => {
-          setTouched({ lastName: true, firstName: true, middleName: true });
-          if (canContinue) onNext();
-        }}
+        onPress={handleContinue}
         disabled={!canContinue}
+        loading={checking}
         size="lg"
         style={styles.continueBtn}
       >

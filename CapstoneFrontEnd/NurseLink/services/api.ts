@@ -588,6 +588,23 @@ export async function verifySignupV2OtpRequest(
   });
 }
 
+export type SignupV2CheckNameResponse = {
+  available: boolean;
+  message?: string;
+};
+
+export async function checkSignupV2NameRequest(
+  lastName: string,
+  firstName: string,
+  middleName: string
+): Promise<SignupV2CheckNameResponse> {
+  return apiRequest<SignupV2CheckNameResponse>('/auth/signup-v2/check-name/', {
+    method: 'POST',
+    body: { lastName, firstName, middleName },
+    auth: false,
+  });
+}
+
 export type SignupV2RegisterPayload = {
   lastName: string;
   firstName: string;
@@ -595,7 +612,6 @@ export type SignupV2RegisterPayload = {
   role: UserRole;
   personalEmail: string;
   phone: string;
-  email: string;
   password: string;
   confirmPassword: string;
   registrationSessionId: string;

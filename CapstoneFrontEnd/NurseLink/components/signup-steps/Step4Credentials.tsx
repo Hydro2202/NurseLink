@@ -7,6 +7,7 @@ import { Button } from '../Button';
 import { Alert, AlertDescription } from '../Alert';
 import { Colors, Radius } from '../../constants/colors';
 import { registerSignupV2Request } from '../../services/api';
+import { useAuth } from '../../contexts/AuthContext';
 import type { UserRole } from '../../types/user';
 import { extractErrorMessage } from './errorUtils';
 
@@ -59,7 +60,6 @@ const STRENGTH_LABEL: Record<ReturnType<typeof passwordStrength>, string> = {
 };
 
 export interface CredentialsData {
-  email: string;
   password: string;
   confirmPassword: string;
 }
@@ -82,13 +82,19 @@ interface Step4CredentialsProps {
 
 export function Step4Credentials({ data, onChange, onBack }: Step4CredentialsProps) {
   const router = useRouter();
+  const { logout } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
 
-  const emailValid = EMAIL_REGEX.test(data.email.trim());
+  // The account email IS the verified personalEmail — there is nothing left
+  // to type here. Step 3 only proves ownership of whatever address is typed
+  // there; if this step let someone type a *different*, unverified email for
+  // the actual login/account, the account would be created against an
+  // address nobody ever confirmed, defeating the point of OTP verification.
+  const emailValid = EMAIL_REGEX.test(data.personalEmail.trim());
   const checks = passwordChecks(data.password);
   const passwordValid = Object.values(checks).every(Boolean);
   const confirmValid = data.confirmPassword.length > 0 && data.confirmPassword === data.password;
@@ -97,9 +103,17 @@ export function Step4Credentials({ data, onChange, onBack }: Step4CredentialsPro
 
   useEffect(() => {
     if (!success) return;
-    const timer = setTimeout(() => router.replace('/login'), 4000);
+    // Clears any session already in this browser before landing on /login —
+    // otherwise the root layout's isAuthenticated redirect bounces straight
+    // to whoever was already signed in here, past the login screen entirely,
+    // which looks exactly like "my brand-new account already has someone
+    // else's tasks" when it's actually just the old session never having
+    // been signed out.
+    const timer = setTimeout(() => {
+      void logout().finally(() => router.replace('/login'));
+    }, 4000);
     return () => clearTimeout(timer);
-  }, [success, router]);
+  }, [success, router, logout]);
 
   const handleSubmit = async () => {
     if (!canSubmit || !data.registrationSessionId || !data.role) return;
@@ -113,7 +127,6 @@ export function Step4Credentials({ data, onChange, onBack }: Step4CredentialsPro
         role: data.role,
         personalEmail: data.personalEmail.trim().toLowerCase(),
         phone: data.phone.trim(),
-        email: data.email.trim().toLowerCase(),
         password: data.password,
         confirmPassword: data.confirmPassword,
         registrationSessionId: data.registrationSessionId,
@@ -136,7 +149,11 @@ export function Step4Credentials({ data, onChange, onBack }: Step4CredentialsPro
         <Text style={styles.successText}>
           Your account is pending admin approval. You&apos;ll be able to log in once approved.
         </Text>
-        <Button onPress={() => router.replace('/login')} size="lg" style={styles.continueBtnFull}>
+        <Button
+          onPress={() => void logout().finally(() => router.replace('/login'))}
+          size="lg"
+          style={styles.continueBtnFull}
+        >
           Go to Login
         </Button>
       </View>
@@ -151,14 +168,15 @@ export function Step4Credentials({ data, onChange, onBack }: Step4CredentialsPro
         </Alert>
       ) : null}
 
-      <Input
-        label="Email (used to log in) *"
-        placeholder="juan.delacruz@nurselink.com"
-        value={data.email}
-        onChangeText={(v) => onChange({ email: v })}
-        keyboardType="email-address"
-        autoCapitalize="none"
-      />
+      <View style={styles.field}>
+        <Text style={styles.fieldLabel}>Email (used to log in)</Text>
+        <View style={styles.verifiedEmailBox}>
+          <Text style={styles.verifiedEmailText}>{data.personalEmail}</Text>
+        </View>
+        <Text style={styles.fieldHint}>
+          This is the email you verified in the previous step.
+        </Text>
+      </View>
 
       <View style={{ gap: 8 }}>
         <Input
@@ -238,6 +256,19 @@ export function Step4Credentials({ data, onChange, onBack }: Step4CredentialsPro
 
 const styles = StyleSheet.create({
   stepBody: { gap: 16 },
+  field: { gap: 6 },
+  fieldLabel: { fontSize: 14, fontWeight: '500', color: Colors.foreground },
+  verifiedEmailBox: {
+    height: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.gray50,
+  },
+  verifiedEmailText: { fontSize: 14, color: Colors.foreground, flexShrink: 1 },
+  fieldHint: { fontSize: 12, color: Colors.gray500 },
   continueBtnFull: { backgroundColor: Colors.blue600, borderRadius: 9999, minHeight: 48, marginTop: 8 },
   strengthBox: { gap: 6 },
   strengthHeader: { flexDirection: 'row', justifyContent: 'space-between', minWidth: 0 },

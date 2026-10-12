@@ -34,7 +34,6 @@ type WizardData = {
   phone: string;
   registrationSessionId: string | null;
   otpVerified: boolean;
-  email: string;
   password: string;
   confirmPassword: string;
 };
@@ -48,7 +47,6 @@ const INITIAL_DATA: WizardData = {
   phone: '',
   registrationSessionId: null,
   otpVerified: false,
-  email: '',
   password: '',
   confirmPassword: '',
 };

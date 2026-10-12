@@ -57,6 +57,7 @@ urlpatterns = [
     ),
     # New 4-step signup wizard (signup-v2) — kept entirely separate from the
     # routes above per this feature's hard scope rule.
+    path('auth/signup-v2/check-name/', views.SignupV2CheckNameView.as_view(), name='signup-v2-check-name'),
     path('auth/signup-v2/start/', views.SignupV2StartView.as_view(), name='signup-v2-start'),
     path('auth/signup-v2/register/', views.SignupV2RegisterView.as_view(), name='signup-v2-register'),
     path('auth/signup-v2/send-otp/', views.SignupV2SendOtpView.as_view(), name='signup-v2-send-otp'),

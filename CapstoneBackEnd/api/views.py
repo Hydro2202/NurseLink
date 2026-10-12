@@ -158,6 +158,7 @@ from .serializers import (
     DoctorSerializer,
     DutyAssignmentSerializer,
     FaceVerificationAttemptSerializer,
+    find_name_collision,
     RegistrationSessionSerializer,
     StructureChartSerializer,
     StructureChartResponseSerializer,
@@ -182,6 +183,7 @@ from .serializers import (
     ResendOtpSerializer,
     SendOtpSerializer,
     SignupSerializer,
+    SignupV2CheckNameSerializer,
     SignupV2RegisterSerializer,
     SignupV2ResendOtpSerializer,
     SignupV2SendOtpSerializer,
@@ -290,6 +292,33 @@ class SignupView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class SignupV2CheckNameView(APIView):
+    """
+    Step 1's "Next" button calls this before advancing to Step 2, so a name
+    collision is caught immediately instead of at the very end of the
+    wizard. Deliberately read-only and side-effect-free (no session, no
+    rate-limit concern beyond the default anonymous throttle) — just a
+    yes/no check the applicant can retry freely while editing their name.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = SignupV2CheckNameSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        collision = find_name_collision(data['firstName'], data['middleName'], data['lastName'])
+        if collision:
+            return Response(
+                {
+                    'available': False,
+                    'message': 'An account with this name already exists. Contact an administrator.',
+                }
+            )
+        return Response({'available': True})
 
 
 class SignupV2StartView(APIView):

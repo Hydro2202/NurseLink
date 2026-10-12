@@ -346,6 +346,22 @@ def _validate_name_part(value, field_label, required=True):
     return cleaned
 
 
+def find_name_collision(first_name: str, middle_name: str, last_name: str):
+    """
+    First name alone is allowed to repeat (e.g. two "Juan"s) -- the collision
+    is on the (first, middle, last) combination, matching an existing nurse
+    account exactly, case-insensitively. Matches regardless of
+    approval_status: a pending or even rejected account still occupies the
+    name until an admin deletes it, which is the deliberate "contact an
+    administrator" escape hatch this check's error message points to.
+    """
+    return NurseProfile.objects.filter(
+        user__first_name__iexact=(first_name or '').strip(),
+        user__last_name__iexact=(last_name or '').strip(),
+        middle_name__iexact=(middle_name or '').strip(),
+    ).exists()
+
+
 class SignupV2StartSerializer(serializers.Serializer):
     """
     Kicks off the new wizard's Step 3 (Verification): creates a bare
@@ -366,6 +382,29 @@ class SignupV2StartSerializer(serializers.Serializer):
         return RegistrationSession.objects.create(email=validated_data['email'].lower().strip())
 
 
+class SignupV2CheckNameSerializer(serializers.Serializer):
+    """
+    Step 1's live check, called before letting the applicant move on to
+    Step 2 -- catches a name collision immediately instead of at the very
+    end of the wizard. Not itself authoritative: SignupV2RegisterSerializer
+    re-checks the same thing right before account creation, since this
+    endpoint alone can't stop two people racing it from two tabs.
+    """
+
+    lastName = serializers.CharField()
+    firstName = serializers.CharField()
+    middleName = serializers.CharField(required=False, allow_blank=True, default='')
+
+    def validate_lastName(self, value):
+        return _validate_name_part(value, 'Last name')
+
+    def validate_firstName(self, value):
+        return _validate_name_part(value, 'First name')
+
+    def validate_middleName(self, value):
+        return _validate_name_part(value, 'Middle name', required=False)
+
+
 class SignupV2RegisterSerializer(serializers.Serializer):
     """
     Final step of the new wizard. Mirrors SignupSerializer's security pattern
@@ -380,7 +419,6 @@ class SignupV2RegisterSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=[c[0] for c in NurseProfile.ROLE_CHOICES])
     personalEmail = serializers.EmailField()
     phone = serializers.CharField()
-    email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
     confirmPassword = serializers.CharField(write_only=True)
     registrationSessionId = serializers.UUIDField()
@@ -397,9 +435,14 @@ class SignupV2RegisterSerializer(serializers.Serializer):
     def validate_phone(self, value):
         return _validate_ph_phone(value)
 
-    def validate_email(self, value):
-        # Same case-insensitive uniqueness check as SignupSerializer.validate_email.
-        normalized = value.lower()
+    def validate_personalEmail(self, value):
+        # This is also the account/login email now -- Step 4 of the wizard
+        # no longer asks for a separate one. Letting it collect a second,
+        # different, never-verified email there defeated the entire point
+        # of the OTP step: the account would be created against an address
+        # nobody ever proved ownership of. Same case-insensitive uniqueness
+        # check as SignupSerializer.validate_email.
+        normalized = value.strip().lower()
         if User.objects.filter(username=normalized).exists() or User.objects.filter(email=normalized).exists():
             raise serializers.ValidationError('A user with this email already exists.')
         return normalized
@@ -441,11 +484,20 @@ class SignupV2RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'personalEmail': f'Use the email you registered and verified ({registered}).',
             })
+        # Re-checked here, not just in SignupV2CheckNameSerializer (Step 1's
+        # live check) -- that one only guards the UI; two people can still
+        # race it from two tabs, so the account-creating step needs its own
+        # authoritative check right before create().
+        existing = find_name_collision(attrs['firstName'], attrs['middleName'], attrs['lastName'])
+        if existing:
+            raise serializers.ValidationError({
+                'lastName': 'An account with this name already exists. Contact an administrator.',
+            })
         return attrs
 
     def create(self, validated_data):
         session = validated_data['registrationSessionId']
-        email = validated_data['email']
+        email = validated_data['personalEmail']
         with transaction.atomic():
             user = User.objects.create_user(
                 username=email,
