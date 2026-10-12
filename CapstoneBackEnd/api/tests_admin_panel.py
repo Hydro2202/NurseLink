@@ -235,9 +235,11 @@ class RegistrationSessionAdminTests(APITestCase):
         self.assertEqual(response.status_code, 403)
         self.assertTrue(RegistrationSession.objects.filter(pk=self.session.pk).exists())
 
-    def test_deleting_a_session_never_touches_the_linked_account(self):
-        # SET_NULL on RegistrationSession.user, so wiping the audit trail
-        # can never take the real account down with it.
+    def test_deleting_a_session_also_deletes_its_linked_account(self):
+        # Deleting a registration IS how an admin undoes a signup — leaving
+        # the account behind (as a plain SET_NULL delete would) permanently
+        # occupied that email/name with no way for the applicant to sign up
+        # again, even though the admin had just "removed" them.
         applicant = User.objects.create_user(username='applicant@hospital.com', email='applicant@hospital.com')
         self.session.user = applicant
         self.session.save(update_fields=['user'])
@@ -245,7 +247,15 @@ class RegistrationSessionAdminTests(APITestCase):
         self.client.force_authenticate(self.admin)
         response = self.client.delete(f'/api/admin/registration-sessions/{self.session.pk}/')
         self.assertEqual(response.status_code, 204)
-        self.assertTrue(User.objects.filter(pk=applicant.pk).exists())
+        self.assertFalse(User.objects.filter(pk=applicant.pk).exists())
+
+    def test_deleting_a_session_with_no_linked_account_still_works(self):
+        # An abandoned/never-completed session has no user at all — the
+        # delete must not choke on that.
+        self.client.force_authenticate(self.admin)
+        response = self.client.delete(f'/api/admin/registration-sessions/{self.session.pk}/')
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(RegistrationSession.objects.filter(pk=self.session.pk).exists())
 
     def test_clear_abandoned_deletes_only_truly_empty_sessions(self):
         # A real signup session, and a genuinely abandoned one (Step 1 only,

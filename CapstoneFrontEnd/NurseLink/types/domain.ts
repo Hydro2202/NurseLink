@@ -675,6 +675,14 @@ export interface AdminRegistrationSession {
   isVerified: boolean;
   userId: string | null;
   userEmail: string;
+  // Only ever populated for verificationMethod === 'EMAIL_OTP' (the 4-step
+  // wizard), once registration completes — read from the created account,
+  // since none of this is stored on the session itself.
+  firstName: string;
+  lastName: string;
+  middleName: string;
+  phone: string;
+  requestedRole: string;
   createdAt: string;
   updatedAt: string;
 }

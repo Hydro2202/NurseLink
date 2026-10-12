@@ -4647,9 +4647,32 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
         # not a soft-hidden record the API keeps returning under a filter.
         instance.delete()
 
+    def _sync_nurse_department(self, assignment):
+        """
+        NurseProfile.department (the nurse's persistent ward, shown on the
+        Workload "Team" tab and used for patient-assignment eligibility) and
+        DutyAssignment.department (this one roster entry) used to be two
+        completely independent fields — nothing ever kept them in sync, so a
+        head nurse scheduling a nurse into a new department here had no
+        effect on the nurse's actual recorded department until someone
+        separately went to Workload and used "Assign" to update it by hand,
+        and the two could silently drift apart. The duty roster is the real,
+        day-to-day source of truth for where a nurse is actually working, so
+        creating or editing an assignment now updates it directly.
+        """
+        profile = getattr(assignment.nurse, 'nurse_profile', None)
+        if profile and profile.department != assignment.department.name:
+            profile.department = assignment.department.name
+            profile.save(update_fields=['department'])
+
+    def perform_create(self, serializer):
+        assignment = serializer.save()
+        self._sync_nurse_department(assignment)
+
     def perform_update(self, serializer):
         previous_status = serializer.instance.status
         assignment = serializer.save()
+        self._sync_nurse_department(assignment)
 
         # A head nurse can also mark a shift Completed from the roster's
         # plain edit form (Status dropdown), not just via /close/. Without
@@ -5428,6 +5451,19 @@ class RegistrationSessionViewSet(viewsets.ModelViewSet):
         # should not exist ("no create/update here") but nothing had
         # actually disabled.
         raise MethodNotAllowed('POST')
+
+    def perform_destroy(self, instance):
+        # RegistrationSession.user is SET_NULL, so deleting just this audit
+        # row left the actual account (User + NurseProfile, cascade-deleted
+        # with it) completely untouched — the email/name stayed permanently
+        # taken even after an admin "deleted" the registration, with no way
+        # for that person to sign up again. Deleting the registration is
+        # exactly how an admin undoes a signup here, so the account has to
+        # go with it.
+        user = instance.user
+        instance.delete()
+        if user is not None:
+            user.delete()
 
     def get_queryset(self):
         qs = RegistrationSession.objects.select_related('user').order_by('-created_at')

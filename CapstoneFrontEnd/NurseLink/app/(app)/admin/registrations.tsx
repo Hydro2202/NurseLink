@@ -71,7 +71,11 @@ export default function AdminRegistrationsPage() {
 
   useEffect(() => {
     (() => {
-      if (!selected) {
+      // The EMAIL_OTP wizard never runs face verification, so there is
+      // nothing this call could ever return for it — skip the request
+      // entirely rather than show an empty "No face attempts" section for
+      // a method that was never face-based in the first place.
+      if (!selected || selected.verificationMethod === 'EMAIL_OTP') {
         setAttempts([]);
         return;
       }
@@ -204,7 +208,9 @@ export default function AdminRegistrationsPage() {
               <>
                 <View style={styles.dialogHeader}>
                   <Text style={styles.dialogTitle}>
-                    {selected.idFirstName || selected.email} {selected.idLastName}
+                    {selected.verificationMethod === 'EMAIL_OTP'
+                      ? `${selected.firstName || selected.email} ${selected.lastName}`.trim()
+                      : `${selected.idFirstName || selected.email} ${selected.idLastName}`}
                   </Text>
                   <View style={styles.dialogHeaderActions}>
                     <Pressable onPress={() => setConfirmDeleteOpen(true)} hitSlop={8}>
@@ -216,47 +222,70 @@ export default function AdminRegistrationsPage() {
                   </View>
                 </View>
 
-                <View style={styles.detailGrid}>
-                  <DetailRow label="Email" value={selected.email || '—'} />
-                  <DetailRow label="Verification method" value={selected.verificationMethod || '—'} />
-                  <DetailRow label="Face verified" value={selected.faceVerified ? 'Yes' : 'No'} />
-                  <DetailRow label="Face attempts" value={String(selected.faceAttempts)} />
-                  <DetailRow label="Face locked" value={selected.faceLocked ? 'Yes' : 'No'} />
-                  <DetailRow label="OTP verified" value={selected.otpVerified ? 'Yes' : 'No'} />
-                  <DetailRow label="ID name" value={`${selected.idFirstName} ${selected.idMiddleName} ${selected.idLastName}`.trim() || '—'} />
-                  <DetailRow label="ID registration #" value={selected.idRegistrationNo || '—'} />
-                  <DetailRow label="ID verification status" value={selected.idVerificationStatus || '—'} />
-                  <DetailRow label="Linked account" value={selected.userEmail || 'Not yet signed up'} />
-                  <DetailRow label="Started" value={formatDateTime(selected.createdAt)} />
-                  <DetailRow label="Last updated" value={formatDateTime(selected.updatedAt)} />
-                </View>
-
-                <Text style={styles.attemptsHeading}>Face verification attempts</Text>
-                {attemptsLoading ? (
-                  <ActivityIndicator color={Colors.blue600} style={{ marginTop: 8 }} />
-                ) : attempts.length === 0 ? (
-                  <Text style={styles.empty}>No face attempts recorded.</Text>
-                ) : (
-                  <View style={{ gap: 8 }}>
-                    {attempts.map((a) => (
-                      <View key={a.id} style={styles.attemptRow}>
-                        {a.matched ? (
-                          <CheckCircle2 size={16} color={Colors.green600} />
-                        ) : (
-                          <XCircle size={16} color={Colors.red600} />
-                        )}
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.attemptText}>
-                            {a.matched ? 'Match' : a.reasonLabel || 'No match'}
-                            {a.confidence ? ` · ${Math.round(a.confidence * 100)}% confidence` : ''}
-                          </Text>
-                          <Text style={styles.attemptMeta}>
-                            {formatDateTime(a.createdAt)}{a.countable ? '' : ' · not counted'}
-                          </Text>
-                        </View>
-                      </View>
-                    ))}
+                {selected.verificationMethod === 'EMAIL_OTP' ? (
+                  // The 4-step wizard's own signup — no PRC/face fields
+                  // apply to it at all, just what the applicant typed.
+                  <View style={styles.detailGrid}>
+                    <DetailRow
+                      label="Name"
+                      value={[selected.firstName, selected.middleName, selected.lastName].filter(Boolean).join(' ') || '—'}
+                    />
+                    <DetailRow label="Email" value={selected.email || '—'} />
+                    <DetailRow label="Phone" value={selected.phone || '—'} />
+                    <DetailRow
+                      label="Requested role"
+                      value={selected.requestedRole ? selected.requestedRole.replace('_', ' ') : '—'}
+                    />
+                    <DetailRow label="OTP verified" value={selected.otpVerified ? 'Yes' : 'No'} />
+                    <DetailRow label="Linked account" value={selected.userEmail || 'Not yet signed up'} />
+                    <DetailRow label="Started" value={formatDateTime(selected.createdAt)} />
+                    <DetailRow label="Last updated" value={formatDateTime(selected.updatedAt)} />
                   </View>
+                ) : (
+                  <>
+                    <View style={styles.detailGrid}>
+                      <DetailRow label="Email" value={selected.email || '—'} />
+                      <DetailRow label="Verification method" value={selected.verificationMethod || '—'} />
+                      <DetailRow label="Face verified" value={selected.faceVerified ? 'Yes' : 'No'} />
+                      <DetailRow label="Face attempts" value={String(selected.faceAttempts)} />
+                      <DetailRow label="Face locked" value={selected.faceLocked ? 'Yes' : 'No'} />
+                      <DetailRow label="OTP verified" value={selected.otpVerified ? 'Yes' : 'No'} />
+                      <DetailRow label="ID name" value={`${selected.idFirstName} ${selected.idMiddleName} ${selected.idLastName}`.trim() || '—'} />
+                      <DetailRow label="ID registration #" value={selected.idRegistrationNo || '—'} />
+                      <DetailRow label="ID verification status" value={selected.idVerificationStatus || '—'} />
+                      <DetailRow label="Linked account" value={selected.userEmail || 'Not yet signed up'} />
+                      <DetailRow label="Started" value={formatDateTime(selected.createdAt)} />
+                      <DetailRow label="Last updated" value={formatDateTime(selected.updatedAt)} />
+                    </View>
+
+                    <Text style={styles.attemptsHeading}>Face verification attempts</Text>
+                    {attemptsLoading ? (
+                      <ActivityIndicator color={Colors.blue600} style={{ marginTop: 8 }} />
+                    ) : attempts.length === 0 ? (
+                      <Text style={styles.empty}>No face attempts recorded.</Text>
+                    ) : (
+                      <View style={{ gap: 8 }}>
+                        {attempts.map((a) => (
+                          <View key={a.id} style={styles.attemptRow}>
+                            {a.matched ? (
+                              <CheckCircle2 size={16} color={Colors.green600} />
+                            ) : (
+                              <XCircle size={16} color={Colors.red600} />
+                            )}
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.attemptText}>
+                                {a.matched ? 'Match' : a.reasonLabel || 'No match'}
+                                {a.confidence ? ` · ${Math.round(a.confidence * 100)}% confidence` : ''}
+                              </Text>
+                              <Text style={styles.attemptMeta}>
+                                {formatDateTime(a.createdAt)}{a.countable ? '' : ' · not counted'}
+                              </Text>
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </>
                 )}
               </>
             ) : null}

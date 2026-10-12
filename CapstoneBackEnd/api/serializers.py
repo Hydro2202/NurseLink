@@ -4141,6 +4141,19 @@ class RegistrationSessionSerializer(serializers.ModelSerializer):
     userEmail = serializers.SerializerMethodField()
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+    # The EMAIL_OTP flow (the new 4-step wizard) never touches PRC/face
+    # verification at all, so every prc*/id*/face* field above is always
+    # blank/zero/False for it — not a missing value, just the wrong fields
+    # for what this signup method actually collects. These four surface
+    # what the applicant actually typed instead, read from the account once
+    # one exists (nothing to show before registration completes — none of
+    # this is persisted on the session itself, only on the User/NurseProfile
+    # created at the end of the wizard).
+    firstName = serializers.SerializerMethodField()
+    lastName = serializers.SerializerMethodField()
+    middleName = serializers.SerializerMethodField()
+    phone = serializers.SerializerMethodField()
+    requestedRole = serializers.SerializerMethodField()
 
     class Meta:
         model = RegistrationSession
@@ -4149,6 +4162,7 @@ class RegistrationSessionSerializer(serializers.ModelSerializer):
             'otpVerified', 'verificationMethod', 'prcVerified', 'prcLicenseNumber',
             'prcFullName', 'prcProfession', 'idLastName', 'idFirstName', 'idMiddleName',
             'idRegistrationNo', 'idVerificationStatus', 'isVerified', 'userId', 'userEmail',
+            'firstName', 'lastName', 'middleName', 'phone', 'requestedRole',
             'createdAt', 'updatedAt',
         ]
 
@@ -4157,6 +4171,29 @@ class RegistrationSessionSerializer(serializers.ModelSerializer):
 
     def get_userEmail(self, obj):
         return obj.user.email if obj.user_id else ''
+
+    def _profile(self, obj):
+        if not obj.user_id:
+            return None
+        return getattr(obj.user, 'nurse_profile', None)
+
+    def get_firstName(self, obj):
+        return obj.user.first_name if obj.user_id else ''
+
+    def get_lastName(self, obj):
+        return obj.user.last_name if obj.user_id else ''
+
+    def get_middleName(self, obj):
+        profile = self._profile(obj)
+        return profile.middle_name if profile else ''
+
+    def get_phone(self, obj):
+        profile = self._profile(obj)
+        return profile.phone_number if profile else ''
+
+    def get_requestedRole(self, obj):
+        profile = self._profile(obj)
+        return (profile.requested_role or profile.role) if profile else ''
 
 
 CORRECTABLE_FIELDS = ('firstName', 'middleName', 'lastName', 'licenseNumber', 'clinicalRole')
