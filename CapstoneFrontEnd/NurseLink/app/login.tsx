@@ -9,7 +9,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  useWindowDimensions,
   ViewStyle,
   ImageStyle,
 } from 'react-native';
@@ -23,7 +22,6 @@ import { Input } from '../components/Input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/Card';
 import { Alert, AlertDescription } from '../components/Alert';
 import { Colors, Shadows, Radius } from '../constants/colors';
-import { isDesktopBrowser } from '../utils/isDesktopBrowser';
 import { useToast } from '../contexts/ToastContext';
 
 // LoginView (CapstoneBackEnd/api/views.py) rejects a pending/rejected account
@@ -43,8 +41,6 @@ function approvalStatusFromError(err: unknown): 'pending' | 'rejected' | null {
 }
 
 export default function LoginPage() {
-  const { width } = useWindowDimensions();
-  const hideSignUp = isDesktopBrowser(width);
   const { login, logout, isLoading } = useAuth();
   const router = useRouter();
   const toast = useToast();
@@ -343,23 +339,13 @@ export default function LoginPage() {
                   {isLoading ? 'Signing In...' : 'Sign In'}
                 </Button>
 
-                {/* Registration needs a live camera for the PRC ID scan and
-                    face match, which desktops handle poorly or not at all —
-                    so desktop users are pointed at a phone instead. */}
                 <View style={styles.footer}>
-                  {hideSignUp ? (
-                    <Text style={styles.footerText}>
-                      New here? Registration is done in the NurseLink mobile app, which
-                      can scan your PRC ID and verify your face.
-                    </Text>
-                  ) : (
-                    <Text style={styles.footerText}>
-                      Don&apos;t have an account?{' '}
-                      <Link href="/signup" style={styles.link}>
-                        Sign Up
-                      </Link>
-                    </Text>
-                  )}
+                  <Text style={styles.footerText}>
+                    Don&apos;t have an account?{' '}
+                    <Link href="/signup" style={styles.link}>
+                      Sign Up
+                    </Link>
+                  </Text>
                 </View>
                   </>
                 )}
