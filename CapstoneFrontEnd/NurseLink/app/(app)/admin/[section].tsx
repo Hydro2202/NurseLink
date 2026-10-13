@@ -1,8 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator, Modal, Pressable } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
-import { Search, X } from 'lucide-react-native';
+import { Search, X, Pencil, Trash2 } from 'lucide-react-native';
 import {
+  updateAdminRecord,
+  deleteAdminRecord,
+  fetchNurses,
+  type AdminRecordType,
   fetchPatients,
   fetchTasks,
   fetchHandovers,
@@ -17,6 +21,9 @@ import {
 import { Input } from '../../../components/Input';
 import { Badge } from '../../../components/Badge';
 import { Select, type SelectOption } from '../../../components/Select';
+import { Button } from '../../../components/Button';
+import { ConfirmDialog } from '../../../components/ConfirmDialog';
+import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'info' | 'outline';
@@ -49,6 +56,23 @@ interface SectionFilter {
   match: (raw: any, value: string) => boolean;
 }
 
+/** Option lists that come from the server (departments, nurses). */
+interface EditContext {
+  departments: SelectOption[];
+  nurseIds: SelectOption[];
+  nurseNames: SelectOption[];
+}
+
+/** One field of a section's admin Edit form. `key` is the API field name;
+ * a dot ("sbar.situation") nests it in the request body. */
+interface EditField {
+  key: string;
+  label: string;
+  type?: 'text' | 'multiline' | 'number' | 'select' | 'list';
+  options?: SelectOption[] | ((ctx: EditContext) => SelectOption[]);
+  get: (raw: any) => unknown;
+}
+
 interface SectionConfig {
   title: string;
   description: string;
@@ -60,7 +84,17 @@ interface SectionConfig {
    * not hardcoded. Only `patients` sets this; every other section renders
    * exactly as before (search-only). */
   filters?: (raws: any[]) => SectionFilter[];
+  /** Admin edit/delete (api/admin_records.py). The id the endpoint expects. */
+  recordId?: (raw: any) => string;
+  editFields?: EditField[];
+  /** What else a delete removes, shown in the confirm dialog. */
+  deleteWarning?: string;
 }
+
+const opts = (...values: [string, string][]): SelectOption[] =>
+  values.map(([value, label]) => ({ value, label }));
+const SHIFT_OPTIONS = opts(['morning', 'Morning'], ['afternoon', 'Afternoon'], ['night', 'Night']);
+const GENDER_OPTIONS = opts(['Male', 'Male'], ['Female', 'Female']);
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -133,6 +167,34 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Discharged by', value: p.dischargedByName || '—' },
       { label: 'Last edited by', value: p.lastEditedByName || '—' },
       { label: 'Last edited at', value: p.lastEditedAt ? fmtDate(p.lastEditedAt) : '—' },
+    ],
+    recordId: (p) => p.id,
+    deleteWarning:
+      "Deleting this patient also deletes their tasks, Kardex, charting notes, vital signs and referrals for every account. This cannot be undone.",
+    editFields: [
+      { key: 'name', label: 'Full name', get: (p) => p.name },
+      { key: 'age', label: 'Age', type: 'number', get: (p) => p.age },
+      { key: 'gender', label: 'Gender', type: 'select', options: GENDER_OPTIONS, get: (p) => p.gender },
+      { key: 'room', label: 'Room', get: (p) => p.room },
+      { key: 'bedNumber', label: 'Bed number', get: (p) => p.bedNumber },
+      { key: 'departmentId', label: 'Department', type: 'select', options: (c) => c.departments, get: (p) => p.departmentId },
+      {
+        key: 'status', label: 'Status', type: 'select',
+        options: opts(['admitted', 'Admitted'], ['observation', 'Under Observation'], ['discharged', 'Discharged']),
+        get: (p) => p.status,
+      },
+      {
+        key: 'riskLevel', label: 'Risk level', type: 'select',
+        options: opts(['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['critical', 'Critical']),
+        get: (p) => p.riskLevel,
+      },
+      { key: 'diagnosis', label: 'Diagnosis', type: 'multiline', get: (p) => p.diagnosis },
+      { key: 'attendingPhysician', label: 'Attending physician', get: (p) => p.attendingPhysician },
+      { key: 'contactNumber', label: 'Contact number', get: (p) => p.contactNumber },
+      { key: 'address', label: 'Address', get: (p) => p.address },
+      { key: 'allergies', label: 'Allergies (comma separated)', type: 'list', get: (p) => p.allergies },
+      { key: 'medications', label: 'Medications (comma separated)', type: 'list', get: (p) => p.medications },
+      { key: 'alerts', label: 'Alerts (comma separated)', type: 'list', get: (p) => p.alerts },
     ],
     filters: (raws) => {
       const nurseNames = Array.from(
@@ -223,6 +285,30 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Created', value: fmtDate(t.createdAt) },
       { label: 'Completed', value: t.completedAt ? fmtDate(t.completedAt) : '—' },
     ],
+    recordId: (t) => t.id,
+    deleteWarning: 'Deletes this task for every nurse and head nurse. This cannot be undone.',
+    editFields: [
+      { key: 'title', label: 'Title', get: (t) => t.title },
+      { key: 'description', label: 'Description', type: 'multiline', get: (t) => t.description },
+      { key: 'assignedTo', label: 'Assigned to', type: 'select', options: (c) => c.nurseNames, get: (t) => t.assignedTo },
+      {
+        key: 'priority', label: 'Priority', type: 'select',
+        options: opts(['urgent', 'Urgent'], ['routine', 'Routine'], ['completed', 'Completed']),
+        get: (t) => t.priority,
+      },
+      {
+        key: 'status', label: 'Status', type: 'select',
+        options: opts(['pending', 'Pending'], ['in_progress', 'In Progress'], ['completed', 'Completed'], ['overdue', 'Overdue']),
+        get: (t) => t.status,
+      },
+      {
+        key: 'category', label: 'Category', type: 'select',
+        options: opts(['medication', 'Medication'], ['vital_signs', 'Vital Signs'], ['care', 'Care'], ['assessment', 'Assessment'], ['documentation', 'Documentation']),
+        get: (t) => t.category,
+      },
+      { key: 'dueTime', label: 'Due time', get: (t) => t.dueTime },
+      { key: 'doctorOrder', label: "Doctor's order", type: 'multiline', get: (t) => t.doctorOrder },
+    ],
   },
   handovers: {
     title: 'Referral Notes',
@@ -258,6 +344,14 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Photos attached', value: h.photos?.length ? String(h.photos.length) : '0' },
       { label: 'Adopted tasks', value: joinOrDash(h.adoptedTasks) },
     ],
+    recordId: (h) => h.id,
+    deleteWarning: 'Deletes this referral for the sender, the receiving nurse and head nurses. This cannot be undone.',
+    editFields: [
+      { key: 'sbar.situation', label: 'Situation', type: 'multiline', get: (h) => h.sbar?.situation },
+      { key: 'sbar.background', label: 'Background', type: 'multiline', get: (h) => h.sbar?.background },
+      { key: 'sbar.assessment', label: 'Assessment', type: 'multiline', get: (h) => h.sbar?.assessment },
+      { key: 'sbar.recommendation', label: 'Recommendation', type: 'multiline', get: (h) => h.sbar?.recommendation },
+    ],
   },
   'task-handovers': {
     title: 'Task Handovers',
@@ -284,6 +378,19 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Verified at', value: h.verifiedAt ? fmtDate(h.verifiedAt) : '—' },
       { label: 'Rejection reason', value: h.rejectionReason || '—', multiline: true },
       { label: 'Created', value: fmtDate(h.createdAt) },
+    ],
+    recordId: (h) => h.id,
+    deleteWarning: 'Deletes this task handover for both nurses and head nurses. This cannot be undone.',
+    editFields: [
+      { key: 'taskDescription', label: 'Task description', type: 'multiline', get: (h) => h.taskDescription },
+      { key: 'shift', label: 'Shift', type: 'select', options: SHIFT_OPTIONS, get: (h) => h.shift },
+      { key: 'notes', label: 'Notes', type: 'multiline', get: (h) => h.notes },
+      {
+        key: 'status', label: 'Status', type: 'select',
+        options: opts(['pending', 'Pending Verification'], ['verified', 'Verified'], ['rejected', 'Rejected']),
+        get: (h) => h.status,
+      },
+      { key: 'rejectionReason', label: 'Rejection reason', type: 'multiline', get: (h) => h.rejectionReason },
     ],
   },
   charting: {
@@ -320,6 +427,16 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Edit history entries', value: String(c.editHistory?.length || 0) },
       { label: 'Charted at', value: fmtDate(c.timestamp) },
     ],
+    recordId: (c) => c.id,
+    deleteWarning: 'Deletes this charting note from the patient record for every account. This cannot be undone.',
+    editFields: [
+      { key: 'content', label: 'Content', type: 'multiline', get: (c) => c.content },
+      { key: 'focus', label: 'Focus', type: 'multiline', get: (c) => c.focus },
+      { key: 'data', label: 'Data', type: 'multiline', get: (c) => c.data },
+      { key: 'action', label: 'Action', type: 'multiline', get: (c) => c.action },
+      { key: 'response', label: 'Response', type: 'multiline', get: (c) => c.response },
+      { key: 'attendingPhysician', label: 'Attending physician', get: (c) => c.attendingPhysician },
+    ],
   },
   duty: {
     title: 'Duty Assignments',
@@ -349,6 +466,22 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Actual overtime hours', value: String(d.actualOvertimeHours ?? 0) },
       { label: 'End recorded by (head nurse)', value: d.actualEndRecordedBy || '—' },
       { label: 'Created by', value: d.createdBy || '—' },
+    ],
+    recordId: (d) => String(d.id),
+    deleteWarning: "Removes this shift from the roster; the nurse's shift and department update everywhere. This cannot be undone.",
+    editFields: [
+      { key: 'nurseId', label: 'Nurse', type: 'select', options: (c) => c.nurseIds, get: (d) => d.nurseId },
+      { key: 'departmentId', label: 'Department', type: 'select', options: (c) => c.departments, get: (d) => d.departmentId },
+      { key: 'dutyDate', label: 'Duty date (YYYY-MM-DD)', get: (d) => d.dutyDate },
+      { key: 'shift', label: 'Shift', type: 'select', options: SHIFT_OPTIONS, get: (d) => d.shift },
+      { key: 'startTime', label: 'Start time (HH:MM)', get: (d) => d.startTime },
+      { key: 'endTime', label: 'End time (HH:MM)', get: (d) => d.endTime },
+      {
+        key: 'status', label: 'Status', type: 'select',
+        options: opts(['scheduled', 'Scheduled'], ['in_progress', 'In Progress'], ['completed', 'Completed'], ['cancelled', 'Cancelled']),
+        get: (d) => d.status,
+      },
+      { key: 'notes', label: 'Notes', type: 'multiline', get: (d) => d.notes },
     ],
   },
   kardex: {
@@ -388,6 +521,30 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Reviewed at', value: k.reviewedAt ? fmtDate(k.reviewedAt) : '—' },
       { label: 'Review notes', value: k.reviewNotes || '—', multiline: true },
     ],
+    recordId: (k) => String(k.id),
+    deleteWarning: 'Deletes this Kardex record for every account. The patient itself is kept. This cannot be undone.',
+    editFields: [
+      { key: 'firstName', label: 'First name', get: (k) => k.firstName },
+      { key: 'middleName', label: 'Middle name', get: (k) => k.middleName },
+      { key: 'lastName', label: 'Last name', get: (k) => k.lastName },
+      { key: 'age', label: 'Age', type: 'number', get: (k) => k.age },
+      { key: 'gender', label: 'Gender', type: 'select', options: GENDER_OPTIONS, get: (k) => k.gender },
+      { key: 'room', label: 'Room', get: (k) => k.room },
+      { key: 'bedNumber', label: 'Bed number', get: (k) => k.bedNumber },
+      { key: 'attendingPhysician', label: 'Attending physician', get: (k) => k.attendingPhysician },
+      { key: 'chiefComplaint', label: 'Chief complaint', type: 'multiline', get: (k) => k.chiefComplaint },
+      { key: 'admittingDiagnosis', label: 'Admitting diagnosis', type: 'multiline', get: (k) => k.admittingDiagnosis },
+      { key: 'finalDiagnosis', label: 'Final diagnosis', type: 'multiline', get: (k) => k.finalDiagnosis },
+      { key: 'diet', label: 'Diet', get: (k) => k.diet },
+      { key: 'ivf', label: 'IVF', get: (k) => k.ivf },
+      { key: 'allergies', label: 'Allergies (comma separated)', type: 'list', get: (k) => k.allergies },
+      { key: 'temperature', label: 'Temperature', get: (k) => k.temperature },
+      { key: 'pulseRate', label: 'Pulse rate', get: (k) => k.pulseRate },
+      { key: 'respiratoryRate', label: 'Respiratory rate', get: (k) => k.respiratoryRate },
+      { key: 'bloodPressure', label: 'Blood pressure', get: (k) => k.bloodPressure },
+      { key: 'oxygenSaturation', label: 'Oxygen saturation', get: (k) => k.oxygenSaturation },
+      { key: 'specialEndorsements', label: 'Special endorsements', type: 'multiline', get: (k) => k.specialEndorsements },
+    ],
   },
   vitals: {
     title: 'Vital Signs',
@@ -415,14 +572,61 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Recorded by', value: v.recordedByName || 'System' },
       { label: 'Recorded at', value: fmtDate(v.recordedAt) },
     ],
+    recordId: (v) => String(v.id),
+    deleteWarning: 'Deletes this vital signs reading from the patient record for every account. This cannot be undone.',
+    editFields: [
+      { key: 'heartRate', label: 'Heart rate', type: 'number', get: (v) => v.heartRate },
+      { key: 'bloodPressure', label: 'Blood pressure', get: (v) => v.bloodPressure },
+      { key: 'temperature', label: 'Temperature (°C)', type: 'number', get: (v) => v.temperature },
+      { key: 'oxygenSaturation', label: 'Oxygen saturation (%)', type: 'number', get: (v) => v.oxygenSaturation },
+      { key: 'respiratoryRate', label: 'Respiratory rate', type: 'number', get: (v) => v.respiratoryRate },
+      { key: 'painScale', label: 'Pain scale (0-10)', type: 'number', get: (v) => v.painScale },
+      { key: 'notes', label: 'Notes', type: 'multiline', get: (v) => v.notes },
+    ],
   },
   departments: {
     title: 'Departments',
-    description: 'Reference list of hospital departments (fixed — seeded, not editable).',
+    description: 'Reference list of hospital departments.',
     fetch: () => fetchDepartments(),
     toRow: (d) => ({ key: String(d.id), title: d.name, meta: [], search: d.name }),
+    detailFields: (d) => [{ label: 'Name', value: d.name }],
+    recordId: (d) => String(d.id),
+    deleteWarning:
+      'Deletes this department. A department still used by doctors or duty assignments cannot be deleted until those are moved.',
+    editFields: [{ key: 'name', label: 'Name', get: (d) => d.name }],
   },
 };
+
+function toFormValue(field: EditField, raw: any): string {
+  const value = field.get(raw);
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.join(', ');
+  return String(value);
+}
+
+/** Only the fields the admin actually changed, typed for the API. */
+function buildPayload(fields: EditField[], raw: any, form: Record<string, string>) {
+  const body: Record<string, any> = {};
+  for (const field of fields) {
+    const next = (form[field.key] ?? '').trim();
+    if (next === toFormValue(field, raw).trim()) continue;
+    let value: unknown = next;
+    if (field.type === 'number') value = next === '' ? null : Number(next);
+    if (field.type === 'list') value = next ? next.split(',').map((x) => x.trim()).filter(Boolean) : [];
+    const [head, child] = field.key.split('.');
+    if (child) {
+      body[head] = { ...(body[head] || {}), [child]: value };
+    } else {
+      body[head] = value;
+    }
+  }
+  return body;
+}
+
+function errorText(err: unknown): string {
+  if (!(err instanceof ApiError)) return 'Please try again.';
+  return err.message;
+}
 
 export default function AdminGenericSectionPage() {
   const { section } = useLocalSearchParams<{ section: string }>();
@@ -433,6 +637,15 @@ export default function AdminGenericSectionPage() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Row | null>(null);
   const [filterValues, setFilterValues] = useState<Record<string, string>>({});
+  const toast = useToast();
+  const [editing, setEditing] = useState<Row | null>(null);
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [toDelete, setToDelete] = useState<Row | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [ctx, setCtx] = useState<EditContext>({ departments: [], nurseIds: [], nurseNames: [] });
+  const canEdit = !!(config?.recordId && config.editFields);
 
   const load = useCallback(async () => {
     if (!config) return;
@@ -474,6 +687,68 @@ export default function AdminGenericSectionPage() {
     if (!q) return result;
     return result.filter((r) => r.search.toLowerCase().includes(q));
   }, [rows, search, activeFilters, filterValues]);
+
+  const loadOptions = async () => {
+    if (ctx.departments.length || ctx.nurseIds.length) return;
+    try {
+      const [departments, nurses] = await Promise.all([fetchDepartments(), fetchNurses()]);
+      setCtx({
+        departments: departments.map((d: any) => ({ value: String(d.id), label: d.name })),
+        nurseIds: nurses.map((n) => ({ value: n.id, label: `${n.name}${n.email ? ` (${n.email})` : ''}` })),
+        nurseNames: nurses.map((n) => ({ value: n.name, label: n.name })),
+      });
+    } catch {
+      // Selects just show fewer choices; the rest of the form still works.
+    }
+  };
+
+  const openEdit = (row: Row) => {
+    if (!config?.editFields) return;
+    const values: Record<string, string> = {};
+    for (const field of config.editFields) values[field.key] = toFormValue(field, row.raw);
+    setForm(values);
+    setFormError('');
+    setSelected(null);
+    setEditing(row);
+    void loadOptions();
+  };
+
+  const saveEdit = async () => {
+    if (!config?.editFields || !config.recordId || !editing) return;
+    const body = buildPayload(config.editFields, editing.raw, form);
+    if (!Object.keys(body).length) {
+      setEditing(null);
+      return;
+    }
+    setSaving(true);
+    setFormError('');
+    try {
+      await updateAdminRecord(section as AdminRecordType, config.recordId(editing.raw), body);
+      setEditing(null);
+      toast.success('Saved', { description: 'The change is now visible to every account.' });
+      await load();
+    } catch (err) {
+      setFormError(errorText(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!config?.recordId || !toDelete) return;
+    setDeleting(true);
+    try {
+      await deleteAdminRecord(section as AdminRecordType, config.recordId(toDelete.raw));
+      setRows((prev) => prev.filter((r) => r.key !== toDelete.key));
+      setToDelete(null);
+      setSelected(null);
+      toast.success('Deleted', { description: 'Removed for every account.' });
+    } catch (err) {
+      toast.error('Could not delete', { description: errorText(err) });
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   if (!config) {
     return (
@@ -530,6 +805,28 @@ export default function AdminGenericSectionPage() {
                   {row.meta.filter(Boolean).map((line, i) => (
                     <Text key={i} style={styles.rowMeta} numberOfLines={2}>{line}</Text>
                   ))}
+                  {canEdit ? (
+                    <View style={styles.rowActions}>
+                      <Pressable
+                        onPress={() => openEdit(row)}
+                        hitSlop={6}
+                        style={styles.actionBtn}
+                        accessibilityLabel={`Edit ${row.title}`}
+                      >
+                        <Pencil size={14} color={Colors.blue700} />
+                        <Text style={styles.actionEdit}>Edit</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => setToDelete(row)}
+                        hitSlop={6}
+                        style={styles.actionBtn}
+                        accessibilityLabel={`Delete ${row.title}`}
+                      >
+                        <Trash2 size={14} color={Colors.red600} />
+                        <Text style={styles.actionDelete}>Delete</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
                 </View>
               </Pressable>
             ))}
@@ -545,9 +842,21 @@ export default function AdminGenericSectionPage() {
                 <>
                   <View style={styles.dialogHeader}>
                     <Text style={styles.dialogTitle}>{selected.title}</Text>
-                    <Pressable onPress={() => setSelected(null)} hitSlop={8}>
-                      <X size={20} color={Colors.gray500} />
-                    </Pressable>
+                    <View style={styles.dialogHeaderActions}>
+                      {canEdit ? (
+                        <>
+                          <Pressable onPress={() => openEdit(selected)} hitSlop={8} accessibilityLabel="Edit">
+                            <Pencil size={18} color={Colors.blue700} />
+                          </Pressable>
+                          <Pressable onPress={() => setToDelete(selected)} hitSlop={8} accessibilityLabel="Delete">
+                            <Trash2 size={18} color={Colors.red600} />
+                          </Pressable>
+                        </>
+                      ) : null}
+                      <Pressable onPress={() => setSelected(null)} hitSlop={8}>
+                        <X size={20} color={Colors.gray500} />
+                      </Pressable>
+                    </View>
                   </View>
                   <View style={styles.detailGrid}>
                     {detailFields?.map((field) =>
@@ -570,6 +879,78 @@ export default function AdminGenericSectionPage() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <Modal visible={!!editing} transparent animationType="fade" onRequestClose={() => setEditing(null)}>
+        <Pressable style={styles.backdrop} onPress={() => !saving && setEditing(null)}>
+          <Pressable style={styles.dialogWrap} onPress={(e) => e.stopPropagation()}>
+            <ScrollView
+              style={[styles.dialog, Shadows.xl]}
+              contentContainerStyle={styles.formContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={styles.dialogHeader}>
+                <Text style={styles.dialogTitle}>Edit {editing?.title}</Text>
+                <Pressable onPress={() => !saving && setEditing(null)} hitSlop={8}>
+                  <X size={20} color={Colors.gray500} />
+                </Pressable>
+              </View>
+              {config.editFields?.map((field) => {
+                const value = form[field.key] ?? '';
+                const onChange = (v: string) => setForm((prev) => ({ ...prev, [field.key]: v }));
+                if (field.type === 'select') {
+                  const base = typeof field.options === 'function' ? field.options(ctx) : field.options || [];
+                  // Keep the current value selectable even if it isn't in the list.
+                  const options = value && !base.some((o) => o.value === value)
+                    ? [{ value, label: value }, ...base]
+                    : base;
+                  return (
+                    <Select
+                      key={field.key}
+                      label={field.label}
+                      value={value}
+                      onValueChange={onChange}
+                      options={options}
+                      searchable={options.length > 8}
+                    />
+                  );
+                }
+                return (
+                  <Input
+                    key={field.key}
+                    label={field.label}
+                    value={value}
+                    onChangeText={onChange}
+                    multiline={field.type === 'multiline'}
+                    numberOfLines={field.type === 'multiline' ? 3 : undefined}
+                    keyboardType={field.type === 'number' ? 'numeric' : 'default'}
+                    style={field.type === 'multiline' ? styles.multiline : undefined}
+                  />
+                );
+              })}
+              {formError ? <Text style={styles.formError}>{formError}</Text> : null}
+              <View style={styles.formButtons}>
+                <Button variant="outline" onPress={() => setEditing(null)} disabled={saving} style={styles.flex1}>
+                  Cancel
+                </Button>
+                <Button onPress={saveEdit} loading={saving} style={styles.flex1}>
+                  Save changes
+                </Button>
+              </View>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <ConfirmDialog
+        open={!!toDelete}
+        onOpenChange={(open) => !open && setToDelete(null)}
+        title={`Delete ${toDelete?.title ?? 'this record'}?`}
+        description={config.deleteWarning || 'This removes the record for every account. This cannot be undone.'}
+        confirmLabel="Delete"
+        destructive
+        loading={deleting}
+        onConfirm={confirmDelete}
+      />
     </View>
   );
 }
@@ -594,6 +975,16 @@ const styles = StyleSheet.create({
   rowTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   rowTitle: { fontSize: 14, fontWeight: '800', color: Colors.gray900, flex: 1 },
   rowMeta: { fontSize: 12, color: Colors.mutedForeground },
+  rowActions: { flexDirection: 'row', gap: 18, marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: Colors.border },
+  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  actionEdit: { fontSize: 12.5, fontWeight: '700', color: Colors.blue700 },
+  actionDelete: { fontSize: 12.5, fontWeight: '700', color: Colors.red600 },
+  dialogHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  formContent: { gap: 12 },
+  multiline: { minHeight: 72, textAlignVertical: 'top' },
+  formError: { color: Colors.red700, fontSize: 12.5 },
+  formButtons: { flexDirection: 'row', gap: 10, marginTop: 4, marginBottom: 8 },
+  flex1: { flex: 1 },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',

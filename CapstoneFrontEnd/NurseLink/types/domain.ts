@@ -641,7 +641,12 @@ export interface AdminVitalReading {
 export interface AdminAccount {
   id: string;
   name: string;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
   email: string;
+  phoneNumber?: string;
+  specialization?: string;
   role: 'staff_nurse' | 'head_nurse';
   department: string;
   licenseNumber: string;

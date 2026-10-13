@@ -13,6 +13,8 @@ import {
   UserCheck,
   KeyRound,
   Trash2,
+  Pencil,
+  Phone,
 } from 'lucide-react-native';
 import {
   fetchAdminAccounts,
@@ -22,6 +24,7 @@ import {
   reactivateAdminAccount,
   setAdminAccountPassword,
   deleteAdminAccount,
+  updateAdminAccount,
   ApiError,
 } from '../../../services/api';
 import type { AdminAccount } from '../../../types/domain';
@@ -84,6 +87,9 @@ export default function AdminAccountsPage() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmDeactivate, setConfirmDeactivate] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [editError, setEditError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -185,6 +191,61 @@ export default function AdminAccountsPage() {
     }
   };
 
+  const EDIT_FIELDS: { key: string; label: string }[] = [
+    { key: 'firstName', label: 'First name *' },
+    { key: 'middleName', label: 'Middle name' },
+    { key: 'lastName', label: 'Last name *' },
+    { key: 'email', label: 'Email *' },
+    { key: 'phoneNumber', label: 'Phone number' },
+    { key: 'department', label: 'Department' },
+    { key: 'clinicalRole', label: 'Clinical role (e.g. RN)' },
+    { key: 'specialization', label: 'Specialization' },
+    { key: 'licenseNumber', label: 'License number' },
+  ];
+
+  const openEdit = () => {
+    if (!selected) return;
+    const values: Record<string, string> = {};
+    for (const f of EDIT_FIELDS) values[f.key] = String((selected as any)[f.key] ?? '');
+    setEditForm(values);
+    setEditError('');
+    setEditOpen(true);
+  };
+
+  const handleEditSave = async () => {
+    if (!selected) return;
+    const body: Record<string, string> = {};
+    for (const f of EDIT_FIELDS) {
+      const next = (editForm[f.key] ?? '').trim();
+      if (next !== String((selected as any)[f.key] ?? '').trim()) body[f.key] = next;
+    }
+    if (!Object.keys(body).length) {
+      setEditOpen(false);
+      return;
+    }
+    setBusy(true);
+    setEditError('');
+    try {
+      const updated = await updateAdminAccount(selected.id, body);
+      setSelected(updated);
+      setEditOpen(false);
+      await load();
+      toast.success('Account updated', { description: 'The new details show for every account.' });
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const fields = err.data;
+        const first = fields && typeof fields === 'object'
+          ? Object.values(fields as Record<string, unknown>).flat().find((v) => typeof v === 'string')
+          : null;
+        setEditError((first as string) || err.message);
+      } else {
+        setEditError('Please try again.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!selected) return;
     setBusy(true);
@@ -281,6 +342,12 @@ export default function AdminAccountsPage() {
                   <Mail size={14} color={Colors.gray500} />
                   <Text style={styles.detailText}>{selected.email}</Text>
                 </View>
+                {selected.phoneNumber ? (
+                  <View style={styles.detailRow}>
+                    <Phone size={14} color={Colors.gray500} />
+                    <Text style={styles.detailText}>{selected.phoneNumber}</Text>
+                  </View>
+                ) : null}
                 <View style={styles.detailRow}>
                   <Building2 size={14} color={Colors.gray500} />
                   <Text style={styles.detailText}>{selected.department || 'No department assigned'}</Text>
@@ -301,6 +368,12 @@ export default function AdminAccountsPage() {
                 ) : null}
 
                 <View style={styles.actions}>
+                  <Button variant="outline" onPress={openEdit} disabled={busy}>
+                    <View style={styles.btnInner}>
+                      <Pencil size={16} color={Colors.foreground} />
+                      <Text style={[styles.btnLabel, { color: Colors.foreground }]}>Edit Details</Text>
+                    </View>
+                  </Button>
                   {selected.approvalStatus !== 'approved' ? (
                     <Button onPress={handleApprove} disabled={busy} loading={busy}>
                       <View style={styles.btnInner}>
@@ -374,6 +447,37 @@ export default function AdminAccountsPage() {
                 Reject
               </Button>
             </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={editOpen} transparent animationType="fade" onRequestClose={() => setEditOpen(false)}>
+        <Pressable style={styles.backdrop} onPress={() => !busy && setEditOpen(false)}>
+          <Pressable style={[styles.dialog, Shadows.xl, { maxHeight: '85%' }]} onPress={(e) => e.stopPropagation()}>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Text style={styles.dialogTitle}>Edit {selected?.name}</Text>
+              <Text style={styles.dialogSub}>Saved to the account itself, so every screen shows the change.</Text>
+              {EDIT_FIELDS.map((f) => (
+                <Input
+                  key={f.key}
+                  label={f.label}
+                  value={editForm[f.key] ?? ''}
+                  onChangeText={(v) => setEditForm((prev) => ({ ...prev, [f.key]: v }))}
+                  autoCapitalize={f.key === 'email' ? 'none' : 'words'}
+                  keyboardType={f.key === 'email' ? 'email-address' : f.key === 'phoneNumber' ? 'phone-pad' : 'default'}
+                  containerStyle={{ marginTop: 10 }}
+                />
+              ))}
+              {editError ? <Text style={styles.rejectionNote}>{editError}</Text> : null}
+              <View style={styles.footer}>
+                <Button variant="outline" onPress={() => setEditOpen(false)} style={{ flex: 1 }} disabled={busy}>
+                  Cancel
+                </Button>
+                <Button onPress={handleEditSave} style={{ flex: 1 }} loading={busy}>
+                  Save
+                </Button>
+              </View>
+            </ScrollView>
           </Pressable>
         </Pressable>
       </Modal>
