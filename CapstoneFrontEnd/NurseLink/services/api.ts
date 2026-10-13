@@ -1294,6 +1294,14 @@ export async function setAdminAccountPassword(id: string, password: string): Pro
   await apiRequest(`/admin/users/${id}/set-password/`, { method: 'POST', body: { password } });
 }
 
+// Permanently removes the account -- unlike reject/deactivate (reversible,
+// keep the record), this is the one genuinely destructive action, for when
+// the account itself needs to be gone (e.g. to free its email/name for a
+// real re-signup).
+export async function deleteAdminAccount(id: string): Promise<void> {
+  await apiRequest(`/admin/users/${id}/`, { method: 'DELETE' });
+}
+
 export async function fetchAdminRegistrationSessions(options?: {
   email?: string;
   verified?: boolean;

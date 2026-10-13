@@ -4647,32 +4647,42 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
         # not a soft-hidden record the API keeps returning under a filter.
         instance.delete()
 
-    def _sync_nurse_department(self, assignment):
+    def _sync_nurse_profile(self, assignment):
         """
-        NurseProfile.department (the nurse's persistent ward, shown on the
-        Workload "Team" tab and used for patient-assignment eligibility) and
-        DutyAssignment.department (this one roster entry) used to be two
+        NurseProfile.department/shift (the nurse's persistent ward and shift,
+        shown on the Workload "Team" tab and on the nurse's own profile) and
+        DutyAssignment.department/shift (this one roster entry) used to be
         completely independent fields — nothing ever kept them in sync, so a
-        head nurse scheduling a nurse into a new department here had no
-        effect on the nurse's actual recorded department until someone
-        separately went to Workload and used "Assign" to update it by hand,
-        and the two could silently drift apart. The duty roster is the real,
-        day-to-day source of truth for where a nurse is actually working, so
-        creating or editing an assignment now updates it directly.
+        head nurse scheduling a nurse here had no effect on the nurse's
+        actual recorded department/shift until someone separately went to
+        Workload and used "Assign" to update it by hand, and the two could
+        silently drift apart. The duty roster is the real, day-to-day source
+        of truth for where and when a nurse is actually working, so creating
+        or editing an assignment now updates both directly. (An earlier pass
+        at this fix only synced department, not shift — same bug, just the
+        other field.)
         """
         profile = getattr(assignment.nurse, 'nurse_profile', None)
-        if profile and profile.department != assignment.department.name:
+        if not profile:
+            return
+        changed = []
+        if profile.department != assignment.department.name:
             profile.department = assignment.department.name
-            profile.save(update_fields=['department'])
+            changed.append('department')
+        if profile.shift != assignment.shift:
+            profile.shift = assignment.shift
+            changed.append('shift')
+        if changed:
+            profile.save(update_fields=changed)
 
     def perform_create(self, serializer):
         assignment = serializer.save()
-        self._sync_nurse_department(assignment)
+        self._sync_nurse_profile(assignment)
 
     def perform_update(self, serializer):
         previous_status = serializer.instance.status
         assignment = serializer.save()
-        self._sync_nurse_department(assignment)
+        self._sync_nurse_profile(assignment)
 
         # A head nurse can also mark a shift Completed from the roster's
         # plain edit form (Status dropdown), not just via /close/. Without
@@ -5380,6 +5390,26 @@ class AdminUserViewSet(viewsets.ViewSet):
         profile.is_active_staff = True
         profile.save(update_fields=['is_active_staff'])
         return Response(_admin_user_payload(profile))
+
+    def destroy(self, request, pk=None):
+        """
+        Permanently removes the account (the User, cascade-deleting its
+        NurseProfile) rather than just blocking it the way reject/deactivate
+        do. Reject/deactivate are deliberately reversible and keep the
+        record (a rejection reason to show, a history to look back on) --
+        this is the one genuinely destructive action here, for when an
+        admin wants the account actually gone: freeing its email/name for
+        a real re-signup, not just hidden behind a status flag. Does not
+        require or depend on any RegistrationSession existing for this
+        account (unlike deleting via Registrations, which only reaches an
+        account through whichever session happens to be linked to it) --
+        this reaches the account directly, so it's reliable even when a
+        person has multiple/duplicate/unlinked registration sessions.
+        """
+        profile = get_object_or_404(NurseProfile, user_id=pk)
+        user = profile.user
+        user.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
         request=inline_serializer(

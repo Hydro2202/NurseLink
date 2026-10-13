@@ -156,19 +156,24 @@ export default function AdminRegistrationsPage() {
                   <View style={{ flex: 1 }}>
                     <View style={styles.rowTop}>
                       <Text style={styles.rowName}>
-                        {session.idFirstName || session.prcFullName || session.email || 'Unknown'}{' '}
-                        {session.idLastName}
+                        {session.verificationMethod === 'EMAIL_OTP'
+                          ? `${session.firstName || session.email || 'Unknown'} ${session.lastName}`.trim()
+                          : `${session.idFirstName || session.prcFullName || session.email || 'Unknown'} ${session.idLastName}`}
                       </Text>
                       {session.isVerified ? (
                         <Badge variant="success">verified</Badge>
                       ) : (
                         <Badge variant="secondary">unverified</Badge>
                       )}
-                      {session.faceLocked ? <Badge variant="destructive">face locked</Badge> : null}
+                      {session.verificationMethod !== 'EMAIL_OTP' && session.faceLocked ? (
+                        <Badge variant="destructive">face locked</Badge>
+                      ) : null}
                     </View>
                     <Text style={styles.rowMeta}>{session.email || 'No email yet'}</Text>
                     <Text style={styles.rowMeta}>
-                      {session.faceAttempts} face attempt{session.faceAttempts === 1 ? '' : 's'}
+                      {session.verificationMethod === 'EMAIL_OTP'
+                        ? (session.otpVerified ? 'Email verified' : 'Email not yet verified')
+                        : `${session.faceAttempts} face attempt${session.faceAttempts === 1 ? '' : 's'}`}
                       {session.verificationMethod ? ` · via ${session.verificationMethod}` : ''}
                       {' · '}{formatDateTime(session.createdAt)}
                     </Text>

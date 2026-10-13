@@ -245,7 +245,9 @@ export default function SettingsScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.profileName}>{user?.name}</Text>
               <Text style={styles.profileMeta}>{roleLabel}</Text>
-              <Text style={styles.profileMeta}>{user?.department}</Text>
+              {user?.role === 'staff_nurse' ? (
+                <Text style={styles.profileMeta}>{user?.department}</Text>
+              ) : null}
               <Text style={styles.profileEmail}>{user?.email}</Text>
             </View>
           </View>
@@ -497,9 +499,11 @@ export default function SettingsScreen() {
         <Text style={styles.systemInfoLine}>
           Session: {user?.email || 'Not signed in'}
         </Text>
-        <Text style={styles.systemInfoLine}>
-          Department: {user?.department || '—'}
-        </Text>
+        {user?.role === 'staff_nurse' ? (
+          <Text style={styles.systemInfoLine}>
+            Department: {user?.department || '—'}
+          </Text>
+        ) : null}
         <Text style={styles.systemInfoCopy}>
           © {new Date().getFullYear()} NurseLink. Clinical documentation system.
         </Text>

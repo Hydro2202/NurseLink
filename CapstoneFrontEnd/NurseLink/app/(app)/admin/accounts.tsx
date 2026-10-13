@@ -12,6 +12,7 @@ import {
   UserX,
   UserCheck,
   KeyRound,
+  Trash2,
 } from 'lucide-react-native';
 import {
   fetchAdminAccounts,
@@ -20,6 +21,7 @@ import {
   deactivateAdminAccount,
   reactivateAdminAccount,
   setAdminAccountPassword,
+  deleteAdminAccount,
   ApiError,
 } from '../../../services/api';
 import type { AdminAccount } from '../../../types/domain';
@@ -81,6 +83,7 @@ export default function AdminAccountsPage() {
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmDeactivate, setConfirmDeactivate] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -177,6 +180,22 @@ export default function AdminAccountsPage() {
       toast.success(updated.isActiveStaff ? 'Account reactivated' : 'Account deactivated');
     } catch (err) {
       toast.error('Could not update account', { description: err instanceof ApiError ? err.message : undefined });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await deleteAdminAccount(selected.id);
+      setConfirmDelete(false);
+      setSelected(null);
+      await load();
+      toast.success('Account deleted');
+    } catch (err) {
+      toast.error('Could not delete account', { description: err instanceof ApiError ? err.message : undefined });
     } finally {
       setBusy(false);
     }
@@ -316,6 +335,12 @@ export default function AdminAccountsPage() {
                       <Text style={[styles.btnLabel, { color: Colors.foreground }]}>Reset Password</Text>
                     </View>
                   </Button>
+                  <Button variant="destructive" onPress={() => setConfirmDelete(true)} disabled={busy}>
+                    <View style={styles.btnInner}>
+                      <Trash2 size={16} color={Colors.white} />
+                      <Text style={styles.btnLabel}>Delete Account</Text>
+                    </View>
+                  </Button>
                 </View>
               </>
             ) : null}
@@ -396,6 +421,17 @@ export default function AdminAccountsPage() {
         destructive={selected?.isActiveStaff}
         loading={busy}
         onConfirm={handleDeactivateToggle}
+      />
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Delete ${selected?.name}?`}
+        description="Permanently removes this account. Unlike Deactivate, this cannot be undone -- it frees their email and name for a new signup. Use this only if you actually want them gone, not just blocked."
+        confirmLabel="Delete"
+        destructive
+        loading={busy}
+        onConfirm={handleDelete}
       />
     </View>
   );

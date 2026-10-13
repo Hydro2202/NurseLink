@@ -237,19 +237,31 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
                   <Text style={styles.roleBold}>Role: </Text>
                   {roleLabel}
                 </Text>
-                <Text style={styles.roleText}>
-                  <Text style={styles.roleBold}>Department: </Text>
-                  {user?.department || '—'}
-                </Text>
-                <Text style={styles.roleText}>
-                  <Text style={styles.roleBold}>Shift: </Text>
-                  {user?.shift
-                    ? user.shift.charAt(0).toUpperCase() + user.shift.slice(1)
-                    : '—'}
-                </Text>
-                <Text style={styles.roleHint}>
-                  Role, department and shift are set by your head nurse. Contact them for changes.
-                </Text>
+                {user?.role === 'staff_nurse' ? (
+                  <>
+                    <Text style={styles.roleText}>
+                      <Text style={styles.roleBold}>Department: </Text>
+                      {user?.department || '—'}
+                    </Text>
+                    <Text style={styles.roleText}>
+                      <Text style={styles.roleBold}>Shift: </Text>
+                      {user?.shift
+                        ? user.shift.charAt(0).toUpperCase() + user.shift.slice(1)
+                        : '—'}
+                    </Text>
+                    <Text style={styles.roleHint}>
+                      Role, department and shift are set by your head nurse. Contact them for changes.
+                    </Text>
+                  </>
+                ) : (
+                  // A head nurse or admin has no duty-roster department/shift
+                  // of their own — those only describe a staff nurse's
+                  // scheduled ward assignment, so showing them here (and
+                  // worse, showing them stale/wrong, since nothing ever
+                  // assigns a head nurse or admin a duty shift) was
+                  // confusing rather than informative.
+                  <Text style={styles.roleHint}>Your role is managed by an administrator.</Text>
+                )}
               </View>
             </View>
           </ScrollView>
