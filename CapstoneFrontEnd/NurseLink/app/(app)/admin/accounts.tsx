@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import {
   Search,
   Mail,
@@ -101,6 +101,17 @@ export default function AdminAccountsPage() {
       await load();
     })();
   }, [load]);
+
+  // expo-router keeps screens mounted, so an admin who deletes a
+  // registration in the Registrations tab and switches back to this
+  // already-mounted Accounts tab would otherwise still see the account
+  // that registration was linked to — this list was built before that
+  // delete happened and nothing was re-fetching it on return.
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load])
+  );
 
   // A new signup notifies every admin immediately (see
   // notify_admin_new_registration) — this keeps the list itself in sync

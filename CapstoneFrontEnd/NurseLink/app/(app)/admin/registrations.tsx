@@ -1,14 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
-import { Search, X, CheckCircle2, XCircle, Trash2, Sparkles } from 'lucide-react-native';
+import { Search, X, Trash2, Sparkles } from 'lucide-react-native';
 import {
   fetchAdminRegistrationSessions,
-  fetchAdminFaceVerificationAttempts,
   deleteAdminRegistrationSession,
   clearAbandonedRegistrationSessions,
   ApiError,
 } from '../../../services/api';
-import type { AdminRegistrationSession, AdminFaceVerificationAttempt } from '../../../types/domain';
+import type { AdminRegistrationSession } from '../../../types/domain';
 import { Input } from '../../../components/Input';
 import { Badge } from '../../../components/Badge';
 import { Tabs, type TabItem } from '../../../components/Tabs';
@@ -44,8 +43,6 @@ export default function AdminRegistrationsPage() {
   const [search, setSearch] = useState('');
   const [verifiedFilter, setVerifiedFilter] = useState('all');
   const [selected, setSelected] = useState<AdminRegistrationSession | null>(null);
-  const [attempts, setAttempts] = useState<AdminFaceVerificationAttempt[]>([]);
-  const [attemptsLoading, setAttemptsLoading] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -69,23 +66,6 @@ export default function AdminRegistrationsPage() {
     })();
   }, [load]);
 
-  useEffect(() => {
-    (() => {
-      // The EMAIL_OTP wizard never runs face verification, so there is
-      // nothing this call could ever return for it — skip the request
-      // entirely rather than show an empty "No face attempts" section for
-      // a method that was never face-based in the first place.
-      if (!selected || selected.verificationMethod === 'EMAIL_OTP') {
-        setAttempts([]);
-        return;
-      }
-      setAttemptsLoading(true);
-      fetchAdminFaceVerificationAttempts(selected.sessionId)
-        .then(setAttempts)
-        .catch(() => setAttempts([]))
-        .finally(() => setAttemptsLoading(false));
-    })();
-  }, [selected]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -257,34 +237,6 @@ export default function AdminRegistrationsPage() {
                       <DetailRow label="Started" value={formatDateTime(selected.createdAt)} />
                       <DetailRow label="Last updated" value={formatDateTime(selected.updatedAt)} />
                     </View>
-
-                    <Text style={styles.attemptsHeading}>Face verification attempts</Text>
-                    {attemptsLoading ? (
-                      <ActivityIndicator color={Colors.blue600} style={{ marginTop: 8 }} />
-                    ) : attempts.length === 0 ? (
-                      <Text style={styles.empty}>No face attempts recorded.</Text>
-                    ) : (
-                      <View style={{ gap: 8 }}>
-                        {attempts.map((a) => (
-                          <View key={a.id} style={styles.attemptRow}>
-                            {a.matched ? (
-                              <CheckCircle2 size={16} color={Colors.green600} />
-                            ) : (
-                              <XCircle size={16} color={Colors.red600} />
-                            )}
-                            <View style={{ flex: 1 }}>
-                              <Text style={styles.attemptText}>
-                                {a.matched ? 'Match' : a.reasonLabel || 'No match'}
-                                {a.confidence ? ` · ${Math.round(a.confidence * 100)}% confidence` : ''}
-                              </Text>
-                              <Text style={styles.attemptMeta}>
-                                {formatDateTime(a.createdAt)}{a.countable ? '' : ' · not counted'}
-                              </Text>
-                            </View>
-                          </View>
-                        ))}
-                      </View>
-                    )}
                   </>
                 )}
               </>
@@ -298,7 +250,7 @@ export default function AdminRegistrationsPage() {
         open={confirmDeleteOpen}
         onOpenChange={setConfirmDeleteOpen}
         title="Delete this registration session?"
-        description="Removes the identity-verification audit trail and its face-attempt history. If this session already has a signed-up account, the account itself is not affected."
+        description="Removes the identity-verification audit trail. If this session already has a signed-up account linked to it, that account is deleted too — this cannot be undone."
         confirmLabel="Delete"
         destructive
         loading={busy}
@@ -382,15 +334,4 @@ const styles = StyleSheet.create({
   detailItem: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
   detailLabel: { fontSize: 12.5, color: Colors.mutedForeground, flexShrink: 0 },
   detailValue: { fontSize: 12.5, color: Colors.foreground, fontWeight: '600', flex: 1, textAlign: 'right' },
-  attemptsHeading: { fontSize: 13, fontWeight: '800', color: Colors.gray500, marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4 },
-  attemptRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: Colors.gray50,
-    borderRadius: Radius.md,
-    padding: 10,
-  },
-  attemptText: { fontSize: 12.5, fontWeight: '700', color: Colors.foreground },
-  attemptMeta: { fontSize: 11, color: Colors.mutedForeground, marginTop: 2 },
 });
