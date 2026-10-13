@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from . import views
+from . import admin_records, views
 
 router = DefaultRouter()
 router.register(r'patients', views.PatientViewSet, basename='patient')
@@ -72,6 +72,12 @@ urlpatterns = [
     path('auth/email-change/confirm/', views.EmailChangeConfirmView.as_view(), name='email-change-confirm'),
     path('auth/corrections/', views.CorrectionRequestView.as_view(), name='correction-request'),
     path('admin/face-unlock/', views.AdminFaceUnlockView.as_view(), name='admin-face-unlock'),
+    path(
+        'admin/records/<str:record_type>/<str:record_id>/',
+        admin_records.AdminRecordView.as_view(),
+        name='admin-record',
+    ),
+    path('admin/audit-log/', admin_records.AdminAuditLogView.as_view(), name='admin-audit-log'),
     path('auth/me/', views.MeView.as_view(), name='me'),
     path('auth/change-password/', views.ChangePasswordView.as_view(), name='change-password'),
     path('workload/', views.WorkloadView.as_view(), name='workload'),

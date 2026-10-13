@@ -15,10 +15,16 @@ import {
   HeartPulse,
   ChevronRight,
   AlertTriangle,
+  History,
 } from 'lucide-react-native';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useLiveRefresh } from '../../../contexts/LiveContext';
-import { fetchAdminAccounts, fetchPatients } from '../../../services/api';
+import {
+  fetchAdminAccounts,
+  fetchAdminAuditLog,
+  fetchPatients,
+  type AdminAuditEntry,
+} from '../../../services/api';
 import { Card, CardContent } from '../../../components/Card';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 
@@ -34,8 +40,8 @@ interface SectionLink {
 // Doctors, Duty assignments, Referral notes, Kardex records, Patients,
 // Task handovers, Tasks, Vital signs...) as tappable cards. Accounts and
 // Registrations get their own dedicated screens (real workflows, not just a
-// browse view); everything else routes through the generic read-only
-// browser at admin/[section].
+// browse view); everything else routes through admin/[section], where every
+// record has Edit and Delete.
 const SECTIONS: SectionLink[] = [
   { key: 'patients', name: 'Patients', description: 'Every admitted, observed, and discharged patient.', icon: Users, href: '/(app)/admin/patients' },
   { key: 'tasks', name: 'Tasks', description: 'Every care task across every nurse.', icon: ClipboardList, href: '/(app)/admin/tasks' },
@@ -55,6 +61,7 @@ export default function AdminIndexPage() {
   const [pendingCount, setPendingCount] = useState<number | null>(null);
   const [totalAccounts, setTotalAccounts] = useState<number | null>(null);
   const [totalPatients, setTotalPatients] = useState<number | null>(null);
+  const [audit, setAudit] = useState<AdminAuditEntry[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -64,6 +71,11 @@ export default function AdminIndexPage() {
       setTotalPatients(patients.length);
     } catch {
       // Non-critical stat — the section grid below still works without it.
+    }
+    try {
+      setAudit(await fetchAdminAuditLog(8));
+    } catch {
+      // Same: the audit card just stays empty.
     }
   }, []);
 
@@ -133,7 +145,7 @@ export default function AdminIndexPage() {
           <ShieldCheck size={20} color={Colors.blue600} />
           <View style={{ flex: 1 }}>
             <Text style={styles.wideLinkTitle}>Accounts</Text>
-            <Text style={styles.wideLinkDesc}>Approve, reject, deactivate, or reset a password.</Text>
+            <Text style={styles.wideLinkDesc}>Edit details, approve, reject, deactivate, reset a password, or delete.</Text>
           </View>
           <ChevronRight size={18} color={Colors.gray400} />
         </View>
@@ -170,9 +182,49 @@ export default function AdminIndexPage() {
           );
         })}
       </View>
+
+      <Text style={styles.sectionHeading}>Recent Admin Changes</Text>
+      <View style={[styles.auditCard, Shadows.sm]}>
+        {audit.length === 0 ? (
+          <Text style={styles.auditEmpty}>No admin edits or deletes yet.</Text>
+        ) : (
+          audit.map((entry) => (
+            <View key={entry.id} style={styles.auditRow}>
+              <History size={15} color={entry.action === 'delete' ? Colors.red600 : Colors.blue600} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.auditTitle} numberOfLines={1}>
+                  {entry.action === 'delete' ? 'Deleted' : 'Edited'} {RECORD_NOUN[entry.recordType] || entry.recordType}
+                  {entry.recordLabel ? ` · ${entry.recordLabel}` : ''}
+                </Text>
+                <Text style={styles.auditMeta} numberOfLines={1}>
+                  {entry.actorName || 'Admin'} · {new Date(entry.createdAt).toLocaleString()}
+                  {entry.action === 'update' && Object.keys(entry.changes || {}).length
+                    ? ` · ${Object.keys(entry.changes).join(', ')}`
+                    : ''}
+                </Text>
+              </View>
+            </View>
+          ))
+        )}
+      </View>
     </ScrollView>
   );
 }
+
+const RECORD_NOUN: Record<string, string> = {
+  patients: 'patient',
+  tasks: 'task',
+  handovers: 'referral',
+  'task-handovers': 'task handover',
+  charting: 'charting note',
+  duty: 'duty assignment',
+  kardex: 'kardex record',
+  vitals: 'vital signs',
+  departments: 'department',
+  doctors: 'doctor',
+  accounts: 'account',
+  registrations: 'registration',
+};
 
 const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: Colors.background },
@@ -218,6 +270,18 @@ const styles = StyleSheet.create({
   wideLinkDesc: { fontSize: 12, color: Colors.mutedForeground, marginTop: 2 },
   sectionHeading: { fontSize: 13, fontWeight: '800', color: Colors.gray500, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.4 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  auditCard: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: 14,
+    gap: 12,
+  },
+  auditEmpty: { fontSize: 12.5, color: Colors.mutedForeground },
+  auditRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  auditTitle: { fontSize: 13, fontWeight: '700', color: Colors.gray900 },
+  auditMeta: { fontSize: 11.5, color: Colors.mutedForeground, marginTop: 2 },
   gridItem: { width: '47%', minWidth: 150 },
   gridCard: {
     backgroundColor: Colors.white,

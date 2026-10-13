@@ -5434,8 +5434,83 @@ class AdminUserViewSet(viewsets.ViewSet):
         profile = get_object_or_404(NurseProfile, user_id=pk)
         # Also clears this person's rows in Registrations, so the two admin
         # lists never disagree about whether the account exists.
+        from .admin_records import _log
+
+        snapshot = _admin_user_payload(profile)
         delete_account_completely(user=profile.user)
+        _log(request, 'delete', 'accounts', pk, snapshot['name'], snapshot)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @extend_schema(
+        request=inline_serializer(
+            name='AdminEditAccountRequest',
+            fields={
+                'firstName': serializers.CharField(required=False),
+                'middleName': serializers.CharField(required=False, allow_blank=True),
+                'lastName': serializers.CharField(required=False),
+                'email': serializers.EmailField(required=False),
+                'phoneNumber': serializers.CharField(required=False, allow_blank=True),
+                'department': serializers.CharField(required=False, allow_blank=True),
+                'clinicalRole': serializers.CharField(required=False, allow_blank=True),
+                'specialization': serializers.CharField(required=False, allow_blank=True),
+                'licenseNumber': serializers.CharField(required=False, allow_blank=True),
+            },
+        ),
+        summary="Edit an account's details (admin only)",
+    )
+    def partial_update(self, request, pk=None):
+        """Admin edit of the details a nurse entered at sign-up (never the
+        password -- that stays on set-password). Saved on the account itself,
+        so the new name/department shows for every user right away."""
+        from .admin_records import _log
+
+        profile = get_object_or_404(NurseProfile.objects.select_related('user'), user_id=pk)
+        user = profile.user
+        data = request.data
+        before = _admin_user_payload(profile) | {'phoneNumber': profile.phone_number}
+        errors = {}
+
+        if 'email' in data:
+            email = (data.get('email') or '').strip().lower()
+            if not email or '@' not in email:
+                errors['email'] = 'Enter a valid email address.'
+            elif User.objects.filter(Q(username__iexact=email) | Q(email__iexact=email)).exclude(pk=user.pk).exists():
+                errors['email'] = 'Another account already uses this email address.'
+            else:
+                user.email = email
+                user.username = email
+        for src, attr, required in (('firstName', 'first_name', True), ('lastName', 'last_name', True)):
+            if src in data:
+                value = ' '.join((data.get(src) or '').split())
+                if required and not value:
+                    errors[src] = 'This field is required.'
+                setattr(user, attr, value)
+        if errors:
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+
+        profile_fields = {
+            'middleName': 'middle_name',
+            'phoneNumber': 'phone_number',
+            'department': 'department',
+            'clinicalRole': 'clinical_role',
+            'specialization': 'specialization',
+            'licenseNumber': 'license_number',
+        }
+        changed = []
+        for src, attr in profile_fields.items():
+            if src in data:
+                setattr(profile, attr, ' '.join(str(data.get(src) or '').split()))
+                changed.append(attr)
+        with transaction.atomic():
+            user.save()
+            if changed:
+                profile.save(update_fields=changed)
+            after = _admin_user_payload(profile) | {'phoneNumber': profile.phone_number}
+            _log(
+                request, 'update', 'accounts', user.pk, full_name(user),
+                {k: [before.get(k), after.get(k)] for k in after if before.get(k) != after.get(k)},
+            )
+        return Response(after)
 
     @extend_schema(
         request=inline_serializer(
@@ -5502,10 +5577,15 @@ def _admin_user_payload(profile: NurseProfile) -> dict:
     return {
         'id': str(user.pk),
         'name': full_name(user),
+        'firstName': user.first_name,
+        'middleName': profile.middle_name,
+        'lastName': user.last_name,
         'email': user.email,
+        'phoneNumber': profile.phone_number,
         'role': profile.role,
         'department': profile.department,
         'licenseNumber': profile.license_number,
+        'specialization': profile.specialization,
         'hospitalName': profile.hospital_name,
         'employeeId': profile.employee_id,
         'clinicalRole': profile.clinical_role,
@@ -5558,7 +5638,11 @@ class RegistrationSessionViewSet(viewsets.ModelViewSet):
         # attempt) and only the last one is linked to the account, so the
         # account is also found by email -- otherwise deleting one of the
         # unlinked rows left the email permanently "already exists".
+        from .admin_records import _log
+
+        label = full_name(instance.user) if instance.user_id else instance.email
         delete_account_completely(user=instance.user, email=instance.email, session=instance)
+        _log(self.request, 'delete', 'registrations', instance.pk, label or 'Unknown', {'email': instance.email})
 
     def get_queryset(self):
         qs = RegistrationSession.objects.select_related('user', 'user__nurse_profile').order_by('-created_at')

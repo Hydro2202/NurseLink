@@ -1302,6 +1302,52 @@ export async function deleteAdminAccount(id: string): Promise<void> {
   await apiRequest(`/admin/users/${id}/`, { method: 'DELETE' });
 }
 
+// ---- Admin: edit/delete any hospital record ---------------------------------
+// One admin-only endpoint (api/admin_records.py) behind every Hospital Records
+// section. Changes land in the shared tables, so every account sees them.
+
+export type AdminRecordType =
+  | 'patients' | 'tasks' | 'handovers' | 'task-handovers' | 'charting'
+  | 'duty' | 'kardex' | 'vitals' | 'departments' | 'doctors';
+
+export async function updateAdminRecord(
+  type: AdminRecordType,
+  id: string | number,
+  body: Record<string, unknown>
+): Promise<unknown> {
+  return apiRequest(`/admin/records/${type}/${encodeURIComponent(String(id))}/`, { method: 'PATCH', body });
+}
+
+export async function deleteAdminRecord(type: AdminRecordType, id: string | number): Promise<void> {
+  await apiRequest(`/admin/records/${type}/${encodeURIComponent(String(id))}/`, { method: 'DELETE' });
+}
+
+export interface AdminAuditEntry {
+  id: number;
+  actorName: string;
+  action: 'update' | 'delete';
+  recordType: string;
+  recordId: string;
+  recordLabel: string;
+  changes: Record<string, unknown>;
+  createdAt: string;
+}
+
+export async function fetchAdminAuditLog(limit = 20): Promise<AdminAuditEntry[]> {
+  return apiRequest<AdminAuditEntry[]>(`/admin/audit-log/?limit=${limit}`);
+}
+
+export async function updateAdminAccount(
+  id: string,
+  body: Partial<{
+    firstName: string; middleName: string; lastName: string; email: string;
+    phoneNumber: string; department: string; clinicalRole: string;
+    specialization: string; licenseNumber: string;
+  }>
+): Promise<AdminAccount> {
+  return apiRequest<AdminAccount>(`/admin/users/${id}/`, { method: 'PATCH', body });
+}
+
 export async function fetchAdminRegistrationSessions(options?: {
   email?: string;
   verified?: boolean;

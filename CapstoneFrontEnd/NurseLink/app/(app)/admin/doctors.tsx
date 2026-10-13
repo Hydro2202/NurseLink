@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
-import { Search, Plus, X, Stethoscope } from 'lucide-react-native';
+import { Search, Plus, X, Stethoscope, Trash2 } from 'lucide-react-native';
 import {
   fetchDoctors,
   createDoctor,
   updateDoctor,
+  deleteAdminRecord,
   fetchDepartments,
   ApiError,
 } from '../../../services/api';
@@ -13,6 +14,7 @@ import { Input } from '../../../components/Input';
 import { Badge } from '../../../components/Badge';
 import { Button } from '../../../components/Button';
 import { Select } from '../../../components/Select';
+import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 
@@ -37,6 +39,25 @@ export default function AdminDoctorsPage() {
   const [form, setForm] = useState<DoctorForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    if (!editing) return;
+    setDeleting(true);
+    try {
+      await deleteAdminRecord('doctors', editing.id);
+      setDoctors((prev) => prev.filter((d) => d.id !== editing.id));
+      setConfirmDelete(false);
+      setFormOpen(false);
+      setEditing(null);
+      toast.success('Doctor deleted');
+    } catch (err) {
+      toast.error('Could not delete doctor', { description: err instanceof ApiError ? err.message : undefined });
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -231,9 +252,33 @@ export default function AdminDoctorsPage() {
                 Save
               </Button>
             </View>
+            {editing ? (
+              <Button
+                variant="destructive"
+                onPress={() => setConfirmDelete(true)}
+                disabled={saving}
+                style={{ marginTop: 10 }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Trash2 size={16} color={Colors.white} />
+                  <Text style={{ color: Colors.white, fontWeight: '700' }}>Delete Doctor</Text>
+                </View>
+              </Button>
+            ) : null}
           </Pressable>
         </Pressable>
       </Modal>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Delete ${editing?.fullName ?? 'this doctor'}?`}
+        description="Removes the doctor from the directory and from every patient's and task's care team. To keep their history, set them to Inactive instead."
+        confirmLabel="Delete"
+        destructive
+        loading={deleting}
+        onConfirm={handleDelete}
+      />
     </View>
   );
 }
