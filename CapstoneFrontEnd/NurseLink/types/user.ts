@@ -11,6 +11,8 @@ export interface User {
   lastName?: string;
   role: UserRole;
   email: string;
+  /** Mobile number entered at sign-up (blank for older accounts). */
+  phoneNumber?: string;
   department: string;
   licenseNumber?: string;
   avatar?: string;

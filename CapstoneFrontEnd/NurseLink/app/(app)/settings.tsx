@@ -202,6 +202,7 @@ export default function SettingsScreen() {
         middleName: user.middleName || '',
         lastName: user.lastName || user.name.split(' ').slice(1).join(' ') || '',
         email: user.email,
+        phoneNumber: user.phoneNumber || '',
         role: user.role as ProfileUser['role'],
         department: user.department,
         shift: user.shift,
@@ -249,6 +250,9 @@ export default function SettingsScreen() {
                 <Text style={styles.profileMeta}>{user?.department}</Text>
               ) : null}
               <Text style={styles.profileEmail}>{user?.email}</Text>
+              {user?.phoneNumber ? (
+                <Text style={styles.profileMeta}>{user.phoneNumber}</Text>
+              ) : null}
             </View>
           </View>
 

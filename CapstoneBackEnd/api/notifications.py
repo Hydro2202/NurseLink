@@ -18,6 +18,7 @@ from django.contrib.auth.models import User
 from django.core.mail import send_mail
 
 from .models import Notification, NurseProfile
+from .names import full_name, name_variants
 from .realtime import push_notification
 
 logger = logging.getLogger(__name__)
@@ -124,14 +125,8 @@ def resolve_nurse(name: str):
 
     key = ' '.join(name.lower().split())
     matches = []
-    for user in User.objects.all():
-        candidates = {
-            ' '.join(user.get_full_name().lower().split()),
-            user.username.lower().strip(),
-            (user.email or '').lower().strip(),
-        }
-        candidates.discard('')
-        if key in candidates:
+    for user in User.objects.select_related('nurse_profile'):
+        if key in name_variants(user):
             matches.append(user)
 
     if len(matches) == 1:
@@ -283,7 +278,7 @@ def notify_handover_acknowledged(handover, nurse):
     if not wants(recipient, 'handover_notifications'):
         return None
 
-    nurse_name = nurse.get_full_name().strip() or nurse.username
+    nurse_name = full_name(nurse)
     return notify(
         recipient,
         notification_type='info',
@@ -318,7 +313,7 @@ def notify_handover_accepted(handover, nurse, adopted_tasks):
     if not wants(recipient, 'handover_notifications'):
         return None
 
-    nurse_name = nurse.get_full_name().strip() or nurse.username
+    nurse_name = full_name(nurse)
     count = len(adopted_tasks)
     if count == 1:
         tail = ' 1 unfinished task moved to their list.'
@@ -356,7 +351,7 @@ def notify_handover_declined(handover, nurse, reason):
     if not wants(recipient, 'handover_notifications'):
         return None
 
-    nurse_name = nurse.get_full_name().strip() or nurse.username
+    nurse_name = full_name(nurse)
     tail = f' Reason: {reason}' if reason else ''
     return notify(
         recipient,
@@ -386,7 +381,7 @@ def notify_handover_completed(handover, nurse):
     if not wants(recipient, 'handover_notifications'):
         return None
 
-    nurse_name = nurse.get_full_name().strip() or nurse.username
+    nurse_name = full_name(nurse)
     return notify(
         recipient,
         notification_type='success',
@@ -483,7 +478,7 @@ def notify_task_assigned(task, actor=None):
 
     who = ''
     if actor is not None:
-        who = f'{actor.get_full_name().strip() or actor.username} assigned you '
+        who = f'{full_name(actor)} assigned you '
     patient = f' for {task.patient_name}' if task.patient_name else ''
 
     return notify(
@@ -527,7 +522,7 @@ def notify_kardex_reviewed(kardex, reviewer):
     }
     notification_type, title, verb = outcomes.get(kardex.status, ('info', 'Kardex reviewed', 'reviewed your kardex for'))
 
-    reviewer_name = reviewer.get_full_name().strip() or reviewer.username
+    reviewer_name = full_name(reviewer)
     patient_label = kardex.patient_name or 'a patient'
     tail = f' {kardex.review_notes}' if kardex.status in ('returned', 'rejected') and kardex.review_notes else ''
 
@@ -561,7 +556,7 @@ def notify_task_handover_verified(handover):
     if not wants(recipient, 'task_notifications'):
         return None
 
-    sender_name = handover.from_nurse.get_full_name().strip() or handover.from_nurse.username
+    sender_name = full_name(handover.from_nurse)
     task_label = handover.task.title if handover.task_id else (handover.task_description or 'a task')
     tail = f' Notes: {handover.notes}' if handover.notes else ''
 
@@ -590,7 +585,7 @@ def notify_task_handover_accepted(handover):
     if not wants(recipient, 'task_notifications'):
         return None
 
-    receiver_name = handover.to_nurse.get_full_name().strip() or handover.to_nurse.username
+    receiver_name = full_name(handover.to_nurse)
     return notify(
         recipient,
         notification_type='success',
@@ -613,10 +608,10 @@ def notify_task_handover_rejected(handover):
         return None
 
     supervisor_name = (
-        handover.supervisor.get_full_name().strip() or handover.supervisor.username
+        full_name(handover.supervisor)
         if handover.supervisor else 'A head nurse'
     )
-    receiver_name = handover.to_nurse.get_full_name().strip() or handover.to_nurse.username
+    receiver_name = full_name(handover.to_nurse)
     tail = f' Reason: {handover.rejection_reason}' if handover.rejection_reason else ''
 
     return notify(
@@ -656,7 +651,7 @@ def notify_nurse_reassigned(profile, actor, *, changed_department, changed_shift
     if not parts:
         return None
 
-    actor_name = actor.get_full_name().strip() or actor.username if actor else 'A head nurse'
+    actor_name = full_name(actor) if actor else 'A head nurse'
     return notify(
         recipient,
         notification_type='info',
@@ -695,7 +690,7 @@ def notify_safety_alert(patient, actor, *, message):
         )
         return None
 
-    actor_name = actor.get_full_name().strip() or actor.username if actor else 'A head nurse'
+    actor_name = full_name(actor) if actor else 'A head nurse'
     return notify(
         recipient,
         notification_type='critical',
@@ -732,7 +727,7 @@ def notify_admin_new_registration(new_user):
     # admin is told what was asked for, not what the account is.
     requested = profile.requested_role if profile else ''
     role_label = 'Head Nurse' if requested == 'head_nurse' else 'Staff Nurse'
-    name = new_user.get_full_name().strip() or new_user.username
+    name = full_name(new_user)
 
     admins = User.objects.filter(is_staff=True)
     created = []

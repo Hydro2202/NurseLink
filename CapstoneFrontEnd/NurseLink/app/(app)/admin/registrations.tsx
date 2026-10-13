@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { Search, X, Trash2, Sparkles } from 'lucide-react-native';
 import {
   fetchAdminRegistrationSessions,
@@ -18,10 +19,22 @@ import { Colors, Shadows, Radius } from '../../../constants/colors';
 // Matches the backend's clear-abandoned filter exactly (RegistrationSessionViewSet.clear_abandoned)
 // — used here only to show a live count before the admin commits to it.
 function isAbandoned(s: AdminRegistrationSession): boolean {
+  return !s.email && !s.isVerified && !s.otpVerified && !s.userId;
+}
+
+/** "First Middle Last" as entered at sign-up, else the email. */
+function displayName(s: AdminRegistrationSession): string {
   return (
-    !s.email && !s.idFirstName && !s.idLastName
-    && !s.faceVerified && !s.otpVerified && !s.userId
+    s.fullName
+    || [s.firstName, s.middleName, s.lastName].filter(Boolean).join(' ')
+    || s.email
+    || 'Unknown'
   );
+}
+
+function formatRole(role: string): string {
+  if (!role) return '—';
+  return role === 'head_nurse' ? 'Head Nurse' : role === 'staff_nurse' ? 'Staff Nurse' : role.replace('_', ' ');
 }
 
 const VERIFIED_TABS: TabItem[] = [
@@ -60,11 +73,14 @@ export default function AdminRegistrationsPage() {
     }
   }, [toast]);
 
-  useEffect(() => {
-    (async () => {
-      await load();
-    })();
-  }, [load]);
+  // Loads on first focus, and again on every return: screens stay mounted
+  // when switching admin tabs, so re-fetching here means an
+  // account deleted elsewhere (Accounts / Registrations) is gone here too.
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load])
+  );
 
 
   const filtered = useMemo(() => {
@@ -74,9 +90,8 @@ export default function AdminRegistrationsPage() {
       if (!q) return true;
       return (
         s.email.toLowerCase().includes(q)
-        || s.idFirstName.toLowerCase().includes(q)
-        || s.idLastName.toLowerCase().includes(q)
-        || s.prcFullName.toLowerCase().includes(q)
+        || displayName(s).toLowerCase().includes(q)
+        || (s.phone || '').includes(q)
       );
     });
   }, [sessions, search, verifiedFilter]);
@@ -88,10 +103,16 @@ export default function AdminRegistrationsPage() {
     setBusy(true);
     try {
       await deleteAdminRegistrationSession(selected.id);
-      setSessions((prev) => prev.filter((s) => s.id !== selected.id));
+      // The backend removes every row for this person (same email) plus
+      // their account, so drop them all locally and re-sync.
+      const email = (selected.email || '').toLowerCase();
+      setSessions((prev) =>
+        prev.filter((s) => s.id !== selected.id && !(email && s.email.toLowerCase() === email))
+      );
       setConfirmDeleteOpen(false);
       setSelected(null);
-      toast.success('Registration session deleted');
+      toast.success('Registration and account deleted');
+      void load();
     } catch (err) {
       toast.error('Could not delete', { description: err instanceof ApiError ? err.message : undefined });
     } finally {
@@ -120,7 +141,7 @@ export default function AdminRegistrationsPage() {
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Registrations</Text>
         <Text style={styles.subtitle}>
-          The identity-verification audit trail behind every signup — evidence for each Accounts decision.
+          Every sign-up and the details the applicant entered — the basis for each Accounts decision.
         </Text>
 
         {abandonedCount > 0 ? (
@@ -129,7 +150,7 @@ export default function AdminRegistrationsPage() {
               <Sparkles size={18} color={Colors.blue600} />
               <Text style={styles.abandonedText}>
                 {abandonedCount} abandoned session{abandonedCount === 1 ? '' : 's'} — nobody ever
-                finished Step 1 (no name, no email, no verification).
+                finished the first step (no name, no email, no verification).
               </Text>
               <Text style={styles.abandonedAction}>Clear</Text>
             </View>
@@ -155,26 +176,19 @@ export default function AdminRegistrationsPage() {
                 <View style={[styles.row, Shadows.sm]}>
                   <View style={{ flex: 1 }}>
                     <View style={styles.rowTop}>
-                      <Text style={styles.rowName}>
-                        {session.verificationMethod === 'EMAIL_OTP'
-                          ? `${session.firstName || session.email || 'Unknown'} ${session.lastName}`.trim()
-                          : `${session.idFirstName || session.prcFullName || session.email || 'Unknown'} ${session.idLastName}`}
-                      </Text>
+                      <Text style={styles.rowName}>{displayName(session)}</Text>
                       {session.isVerified ? (
                         <Badge variant="success">verified</Badge>
                       ) : (
                         <Badge variant="secondary">unverified</Badge>
                       )}
-                      {session.verificationMethod !== 'EMAIL_OTP' && session.faceLocked ? (
-                        <Badge variant="destructive">face locked</Badge>
-                      ) : null}
                     </View>
-                    <Text style={styles.rowMeta}>{session.email || 'No email yet'}</Text>
                     <Text style={styles.rowMeta}>
-                      {session.verificationMethod === 'EMAIL_OTP'
-                        ? (session.otpVerified ? 'Email verified' : 'Email not yet verified')
-                        : `${session.faceAttempts} face attempt${session.faceAttempts === 1 ? '' : 's'}`}
-                      {session.verificationMethod ? ` · via ${session.verificationMethod}` : ''}
+                      {session.email || 'No email yet'}
+                      {session.phone ? ` · ${session.phone}` : ''}
+                    </Text>
+                    <Text style={styles.rowMeta}>
+                      {session.userId ? 'Account created' : 'Sign-up not finished'}
                       {' · '}{formatDateTime(session.createdAt)}
                     </Text>
                   </View>
@@ -192,11 +206,7 @@ export default function AdminRegistrationsPage() {
             {selected ? (
               <>
                 <View style={styles.dialogHeader}>
-                  <Text style={styles.dialogTitle}>
-                    {selected.verificationMethod === 'EMAIL_OTP'
-                      ? `${selected.firstName || selected.email} ${selected.lastName}`.trim()
-                      : `${selected.idFirstName || selected.email} ${selected.idLastName}`}
-                  </Text>
+                  <Text style={styles.dialogTitle}>{displayName(selected)}</Text>
                   <View style={styles.dialogHeaderActions}>
                     <Pressable onPress={() => setConfirmDeleteOpen(true)} hitSlop={8}>
                       <Trash2 size={19} color={Colors.red600} />
@@ -207,43 +217,22 @@ export default function AdminRegistrationsPage() {
                   </View>
                 </View>
 
-                {selected.verificationMethod === 'EMAIL_OTP' ? (
-                  // The 4-step wizard's own signup — no PRC/face fields
-                  // apply to it at all, just what the applicant typed.
-                  <View style={styles.detailGrid}>
-                    <DetailRow
-                      label="Name"
-                      value={[selected.firstName, selected.middleName, selected.lastName].filter(Boolean).join(' ') || '—'}
-                    />
-                    <DetailRow label="Email" value={selected.email || '—'} />
-                    <DetailRow label="Phone" value={selected.phone || '—'} />
-                    <DetailRow
-                      label="Requested role"
-                      value={selected.requestedRole ? selected.requestedRole.replace('_', ' ') : '—'}
-                    />
-                    <DetailRow label="OTP verified" value={selected.otpVerified ? 'Yes' : 'No'} />
-                    <DetailRow label="Linked account" value={selected.userEmail || 'Not yet signed up'} />
-                    <DetailRow label="Started" value={formatDateTime(selected.createdAt)} />
-                    <DetailRow label="Last updated" value={formatDateTime(selected.updatedAt)} />
-                  </View>
-                ) : (
-                  <>
-                    <View style={styles.detailGrid}>
-                      <DetailRow label="Email" value={selected.email || '—'} />
-                      <DetailRow label="Verification method" value={selected.verificationMethod || '—'} />
-                      <DetailRow label="Face verified" value={selected.faceVerified ? 'Yes' : 'No'} />
-                      <DetailRow label="Face attempts" value={String(selected.faceAttempts)} />
-                      <DetailRow label="Face locked" value={selected.faceLocked ? 'Yes' : 'No'} />
-                      <DetailRow label="OTP verified" value={selected.otpVerified ? 'Yes' : 'No'} />
-                      <DetailRow label="ID name" value={`${selected.idFirstName} ${selected.idMiddleName} ${selected.idLastName}`.trim() || '—'} />
-                      <DetailRow label="ID registration #" value={selected.idRegistrationNo || '—'} />
-                      <DetailRow label="ID verification status" value={selected.idVerificationStatus || '—'} />
-                      <DetailRow label="Linked account" value={selected.userEmail || 'Not yet signed up'} />
-                      <DetailRow label="Started" value={formatDateTime(selected.createdAt)} />
-                      <DetailRow label="Last updated" value={formatDateTime(selected.updatedAt)} />
-                    </View>
-                  </>
-                )}
+                {/* Only what the applicant entered at sign-up (never the password). */}
+                <View style={styles.detailGrid}>
+                  <DetailRow label="First name" value={selected.firstName || '—'} />
+                  <DetailRow label="Middle name" value={selected.middleName || '—'} />
+                  <DetailRow label="Last name" value={selected.lastName || '—'} />
+                  <DetailRow label="Email" value={selected.email || '—'} />
+                  <DetailRow label="Phone number" value={selected.phone || '—'} />
+                  <DetailRow label="Requested role" value={formatRole(selected.requestedRole)} />
+                  <DetailRow label="Email verified" value={selected.otpVerified ? 'Yes' : 'No'} />
+                  <DetailRow
+                    label="Account status"
+                    value={selected.userId ? (selected.approvalStatus || '—') : 'Not yet signed up'}
+                  />
+                  <DetailRow label="Started" value={formatDateTime(selected.createdAt)} />
+                  <DetailRow label="Last updated" value={formatDateTime(selected.updatedAt)} />
+                </View>
               </>
             ) : null}
             </ScrollView>
@@ -254,8 +243,8 @@ export default function AdminRegistrationsPage() {
       <ConfirmDialog
         open={confirmDeleteOpen}
         onOpenChange={setConfirmDeleteOpen}
-        title="Delete this registration session?"
-        description="Removes the identity-verification audit trail. If this session already has a signed-up account linked to it, that account is deleted too — this cannot be undone."
+        title="Delete this registration?"
+        description="Removes this sign-up and the person's account (it disappears from Accounts too). Their email can be used to sign up again. This cannot be undone."
         confirmLabel="Delete"
         destructive
         loading={busy}

@@ -349,7 +349,9 @@ export default function WorkloadPage() {
                   <View style={styles.nurseHeader}>
                     <View style={styles.flex1}>
                       <Text style={styles.nurseName}>{nurse.nurseName}</Text>
-                      <Text style={styles.nurseShift}>{nurse.shift}</Text>
+                      <Text style={styles.nurseShift}>
+                        {nurse.shift ? `${nurse.shift.charAt(0).toUpperCase() + nurse.shift.slice(1)} shift` : 'No duty assigned'}
+                      </Text>
                     </View>
                     <Badge
                       variant={
@@ -417,7 +419,9 @@ export default function WorkloadPage() {
                               account "Assign" below is about to change. */}
                           <Text style={styles.nurseEmail}>{nurse.nurseEmail}</Text>
                           <Text style={styles.nurseShift}>
-                            {nurse.shift.charAt(0).toUpperCase() + nurse.shift.slice(1)} shift
+                            {nurse.shift
+                              ? `${nurse.shift.charAt(0).toUpperCase() + nurse.shift.slice(1)} shift`
+                              : 'No duty assigned'}
                           </Text>
                         </View>
                         <Button

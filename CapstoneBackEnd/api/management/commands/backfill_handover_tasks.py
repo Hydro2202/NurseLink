@@ -14,6 +14,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from api.handover_tasks import create_handover_tasks
+from api.names import full_name
 from api.models import HandoverNote
 
 ACKNOWLEDGED_STATUSES = ('acknowledged', 'received', 'completed')
@@ -66,7 +67,7 @@ class Command(BaseCommand):
                     % (
                         handover.handover_code,
                         handover.status,
-                        owner.get_full_name().strip() or owner.username,
+                        full_name(owner),
                     )
                 )
                 created_total += 1

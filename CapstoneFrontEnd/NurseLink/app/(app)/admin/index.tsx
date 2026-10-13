@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import {
   ShieldCheck,
   IdCard,
@@ -67,11 +67,14 @@ export default function AdminIndexPage() {
     }
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      await load();
-    })();
-  }, [load]);
+  // Loads on first focus, and again on every return: screens stay mounted
+  // when switching admin tabs, so re-fetching here means an
+  // account deleted elsewhere (Accounts / Registrations) is gone here too.
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load])
+  );
 
   // A new signup notifies every admin (see notify_admin_new_registration on
   // the backend) — that notification moving the shared 'notifications'

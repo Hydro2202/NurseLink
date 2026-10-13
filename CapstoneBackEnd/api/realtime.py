@@ -15,6 +15,7 @@ from channels.layers import get_channel_layer
 from django.db import transaction
 
 from .consumers import user_group
+from .names import full_name
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def _payload(notification):
             notification.handover.handover_code if notification.handover_id else None
         ),
         'senderName': (
-            (sender.get_full_name().strip() or sender.username) if sender else None
+            full_name(sender) if sender else None
         ),
         'createdAt': notification.created_at.isoformat(),
     }

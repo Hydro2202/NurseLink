@@ -23,6 +23,7 @@ import logging
 import re
 
 from .models import Task
+from .names import full_name
 from .utils import next_code
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def _entries(handover):
 
 
 def _display_name(user):
-    return user.get_full_name().strip() or user.username
+    return full_name(user)
 
 
 def create_handover_tasks(handover):

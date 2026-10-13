@@ -15,9 +15,9 @@ import datetime
 
 from django.contrib.auth.models import User
 from django.test import TestCase
-from django.utils import timezone
 from rest_framework.test import APIClient
 
+from .duty_status import local_today
 from .models import Department, DutyAssignment, NurseProfile, Patient, Task
 
 
@@ -132,38 +132,71 @@ class WorkloadViewTests(TestCase):
         nurse = make_nurse('raiden41@hospital.com', 'Raiden', 'Villapando', department='', shift='')
         icu = Department.objects.create(name='ICU')
         DutyAssignment.objects.create(
-            nurse=nurse, department=icu, duty_date=timezone.localdate(), shift='morning',
+            nurse=nurse, department=icu, duty_date=local_today(), shift='morning',
             start_time=datetime.time(7, 0), end_time=datetime.time(15, 0),
         )
 
         response = self.client.get('/api/workload/')
         row = next(r for r in response.data if r['nurseEmail'] == 'raiden41@hospital.com')
         self.assertEqual(row['department'], 'ICU')
-        self.assertEqual(row['shift'], 'Morning')
+        self.assertEqual(row['shift'], 'morning')
 
-    def test_manually_assigned_profile_department_wins_over_duty_roster(self):
+    def test_duty_roster_department_wins_over_stale_profile(self):
+        # The head nurse's duty assignment is the source of truth: changing
+        # a nurse's department on the roster moves them on the Team tab.
         nurse = make_nurse('ben@hospital.com', 'Ben', 'Diaz', department='ER', shift='night')
         icu = Department.objects.create(name='ICU')
         DutyAssignment.objects.create(
-            nurse=nurse, department=icu, duty_date=timezone.localdate(), shift='morning',
+            nurse=nurse, department=icu, duty_date=local_today(), shift='morning',
             start_time=datetime.time(7, 0), end_time=datetime.time(15, 0),
         )
 
         response = self.client.get('/api/workload/')
         row = next(r for r in response.data if r['nurseEmail'] == 'ben@hospital.com')
-        self.assertEqual(row['department'], 'ER')
-        self.assertEqual(row['shift'], 'night')
+        self.assertEqual(row['department'], 'ICU')
+        self.assertEqual(row['shift'], 'morning')
+
+    def test_upcoming_duty_counts_and_no_duty_means_no_shift(self):
+        rostered = make_nurse('dee@hospital.com', 'Dee', 'Lim', department='', shift='')
+        idle = make_nurse('eli@hospital.com', 'Eli', 'Tan', department='ER', shift='morning')
+        icu = Department.objects.create(name='ICU')
+        DutyAssignment.objects.create(
+            nurse=rostered, department=icu, duty_date=local_today() + datetime.timedelta(days=2),
+            shift='night', start_time=datetime.time(23, 0), end_time=datetime.time(7, 0),
+        )
+
+        response = self.client.get('/api/workload/')
+        rows = {r['nurseEmail']: r for r in response.data}
+        self.assertEqual(rows['dee@hospital.com']['shift'], 'night')
+        self.assertEqual(rows['dee@hospital.com']['department'], 'ICU')
+        # No duty: the old 'morning' profile default is not shown as a shift,
+        # but the department the head nurse assigned still groups them.
+        self.assertEqual(rows['eli@hospital.com']['shift'], '')
+        self.assertEqual(rows['eli@hospital.com']['department'], 'ER')
+
+    def test_pending_rejected_and_deactivated_accounts_are_excluded(self):
+        make_nurse('ok@hospital.com', 'Ok', 'Nurse')
+        pending = make_nurse('pending@hospital.com', 'Pen', 'Ding')
+        NurseProfile.objects.filter(user=pending).update(approval_status='pending')
+        rejected = make_nurse('rejected@hospital.com', 'Re', 'Jected')
+        NurseProfile.objects.filter(user=rejected).update(approval_status='rejected')
+        inactive = make_nurse('inactive@hospital.com', 'In', 'Active')
+        NurseProfile.objects.filter(user=inactive).update(is_active_staff=False)
+
+        response = self.client.get('/api/workload/')
+        emails = {r['nurseEmail'] for r in response.data}
+        self.assertEqual(emails, {'ok@hospital.com'})
 
     def test_a_cancelled_or_non_todays_duty_assignment_is_not_used_as_a_fallback(self):
         nurse = make_nurse('cora@hospital.com', 'Cora', 'Reyes', department='', shift='')
         icu = Department.objects.create(name='ICU')
         er = Department.objects.create(name='ER')
         DutyAssignment.objects.create(
-            nurse=nurse, department=er, duty_date=timezone.localdate() - datetime.timedelta(days=1),
+            nurse=nurse, department=er, duty_date=local_today() - datetime.timedelta(days=1),
             shift='morning', start_time=datetime.time(7, 0), end_time=datetime.time(15, 0),
         )
         DutyAssignment.objects.create(
-            nurse=nurse, department=icu, duty_date=timezone.localdate(), shift='night',
+            nurse=nurse, department=icu, duty_date=local_today(), shift='night',
             start_time=datetime.time(23, 0), end_time=datetime.time(7, 0), status='cancelled',
         )
 

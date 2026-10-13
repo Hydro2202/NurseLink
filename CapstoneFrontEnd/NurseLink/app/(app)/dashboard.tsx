@@ -861,7 +861,7 @@ export default function DashboardPage() {
                 <View style={styles.workloadHeader}>
                   <View>
                     <Text style={styles.patientName}>{nurse.nurseName}</Text>
-                    <Text style={styles.patientMeta}>{nurse.shift}</Text>
+                    <Text style={styles.patientMeta}>{nurse.shift ? `${nurse.shift} shift` : 'No duty assigned'}</Text>
                   </View>
                   <Badge
                     variant={
