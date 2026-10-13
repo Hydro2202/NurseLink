@@ -384,7 +384,10 @@ export interface Nurse {
   id: string;
   name: string;
   role: 'RN' | 'LPN' | 'Charge Nurse' | 'Clinical Nurse Specialist' | string;
+  /** Blank when the nurse has no duty on the roster. */
   shift: 'morning' | 'afternoon' | 'night' | string;
+  hasDuty?: boolean;
+  dutyDate?: string | null;
   specialization?: string;
   email?: string;
   department?: string;
@@ -652,37 +655,28 @@ export interface AdminAccount {
   dateJoined: string | null;
 }
 
-/** A signup wizard's identity-verification progress — the evidence behind
- * an approve/reject decision on an AdminAccount. Read-only. */
+/** A sign-up as the admin Registrations screen shows it: what the applicant
+ * entered (never the password) and whether their email was verified.
+ * Read-only. Name/phone/role come from the created account, so they are
+ * blank until the wizard's final step completes. */
 export interface AdminRegistrationSession {
   id: number;
   sessionId: string;
   email: string;
-  faceAttempts: number;
-  faceVerified: boolean;
-  faceLocked: boolean;
   otpVerified: boolean;
   verificationMethod: string;
-  prcVerified: boolean;
-  prcLicenseNumber: string;
-  prcFullName: string;
-  prcProfession: string;
-  idLastName: string;
-  idFirstName: string;
-  idMiddleName: string;
-  idRegistrationNo: string;
-  idVerificationStatus: string;
   isVerified: boolean;
   userId: string | null;
   userEmail: string;
-  // Only ever populated for verificationMethod === 'EMAIL_OTP' (the 4-step
-  // wizard), once registration completes — read from the created account,
-  // since none of this is stored on the session itself.
   firstName: string;
-  lastName: string;
   middleName: string;
+  lastName: string;
+  fullName: string;
   phone: string;
   requestedRole: string;
+  role: string;
+  department: string;
+  approvalStatus: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -33,6 +33,8 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .email_validation import EmailValidationError
+from .duty_status import current_duties, duty_fields
+from .names import full_name, name_match_q, name_variants
 from .face_match import (
     FaceModelError,
     FaceVerificationOutcome,
@@ -3226,7 +3228,7 @@ class PatientViewSet(viewsets.ModelViewSet):
             message = f'{patient.name} ({patient.room}) requires immediate attention.'
 
         notify_safety_alert(patient, request.user, message=message)
-        nurse_name = patient.assigned_nurse.get_full_name().strip() or patient.assigned_nurse.username
+        nurse_name = full_name(patient.assigned_nurse)
         return Response({'detail': f'{nurse_name} has been notified.'})
 
 
@@ -3328,11 +3330,9 @@ class TaskViewSet(viewsets.ModelViewSet):
         # queryset, so a hole here was a real "complete someone else's task
         # via ?assignedTo=<their name>" IDOR, not just an over-broad list.
         if role == 'staff_nurse':
-            name = self.request.user.get_full_name().strip() or self.request.user.username
-            qs = qs.filter(Q(assigned_nurse=self.request.user) | Q(assigned_to__iexact=name))
+            qs = qs.filter(Q(assigned_nurse=self.request.user) | name_match_q('assigned_to', self.request.user))
         elif mine in ('1', 'true', 'True'):
-            name = self.request.user.get_full_name().strip() or self.request.user.username
-            qs = qs.filter(Q(assigned_nurse=self.request.user) | Q(assigned_to__iexact=name))
+            qs = qs.filter(Q(assigned_nurse=self.request.user) | name_match_q('assigned_to', self.request.user))
         elif assigned_to:
             qs = qs.filter(assigned_to__iexact=assigned_to)
         if status_filter:
@@ -3367,10 +3367,9 @@ class TaskViewSet(viewsets.ModelViewSet):
         # silently start working for the wrong nurse again if that scoping
         # ever changes.
         if get_user_role(request.user) == 'staff_nurse':
-            name = request.user.get_full_name().strip() or request.user.username
             is_owner = task.assigned_nurse_id == request.user.pk or (
-                task.assigned_to or ''
-            ).strip().lower() == name.lower()
+                ' '.join((task.assigned_to or '').lower().split()) in name_variants(request.user)
+            )
             if not is_owner:
                 return Response(
                     {'detail': 'You can only complete your own tasks.'},
@@ -3467,6 +3466,20 @@ class HandoverViewSet(viewsets.ModelViewSet):
         # staff nurse's own visibility is unaffected: CanManageReferral and
         # _ensure_recipient still mean they only ever create/act on their
         # own referrals; this only changes what a head nurse can *see*.
+        #
+        # A staff nurse, though, sees only the referrals they are part of:
+        # the ones sent TO them (to view and accept) and the ones they sent.
+        # Previously every nurse saw every referral, which confused nurses
+        # who were not the recipient.
+        if get_user_role(self.request.user) == 'staff_nurse':
+            user = self.request.user
+            qs = qs.filter(
+                Q(nurse_to_user=user)
+                | Q(created_by=user)
+                # Legacy rows written before nurse_to_user existed carry only
+                # the typed recipient name.
+                | (Q(nurse_to_user__isnull=True) & name_match_q('nurse_to', user))
+            )
         return qs
 
     def update(self, request, *args, **kwargs):
@@ -3576,7 +3589,7 @@ class HandoverViewSet(viewsets.ModelViewSet):
             'recipients': [
                 {
                     'id': str(nurse.pk),
-                    'name': nurse.get_full_name().strip() or nurse.username,
+                    'name': full_name(nurse),
                     'role': nurse.nurse_profile.clinical_role or 'RN',
                     'specialization': nurse.nurse_profile.specialization or '',
                     'email': nurse.email,
@@ -3594,7 +3607,7 @@ class HandoverViewSet(viewsets.ModelViewSet):
         history.append({
             'status': status,
             'by': user.pk if user else None,
-            'byName': (user.get_full_name().strip() or user.username) if user else '',
+            'byName': full_name(user) if user else '',
             'at': timezone.now().isoformat(),
             'note': note,
         })
@@ -3870,7 +3883,7 @@ class TaskHandoverViewSet(viewsets.ModelViewSet):
             results.append(
                 {
                     'id': str(nurse.pk),
-                    'name': nurse.get_full_name().strip() or nurse.username,
+                    'name': full_name(nurse),
                     'departmentId': assignment.department_id,
                     'departmentName': assignment.department.name,
                     'shift': assignment.shift,
@@ -3906,7 +3919,7 @@ class TaskHandoverViewSet(viewsets.ModelViewSet):
 
         if handover.task_id and handover.task.status in TASK_HANDOVER_REASSIGNABLE_STATUSES:
             handover.task.assigned_nurse = handover.to_nurse
-            handover.task.assigned_to = handover.to_nurse.get_full_name().strip() or handover.to_nurse.username
+            handover.task.assigned_to = full_name(handover.to_nurse)
             handover.task.save(update_fields=['assigned_nurse', 'assigned_to', 'updated_at'])
 
         notify_task_handover_verified(handover)
@@ -4153,7 +4166,7 @@ class ChartingViewSet(viewsets.ModelViewSet):
             )
         _check_patient_care_scope(request, patient, 'chart notes')
 
-        nurse_name = request.user.get_full_name().strip() or request.user.username
+        nurse_name = full_name(request.user)
         now = timezone.now()
 
         # Vitals for THIS note must come from what the nurse actually typed in
@@ -4714,7 +4727,7 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
                 event='duty_closed_by_head_nurse',
                 title='Your shift was closed out',
                 message=(
-                    f'{self.request.user.get_full_name().strip() or self.request.user.username} '
+                    f'{full_name(self.request.user)} '
                     f'marked your {assignment.get_shift_display()} shift at '
                     f'{assignment.department.name} as completed. Contact them if the recorded '
                     'time looks wrong.'
@@ -4786,7 +4799,7 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
                 event='duty_started_late',
                 title='Nurse started shift late',
                 message=(
-                    f'{assignment.nurse.get_full_name().strip() or assignment.nurse.username} '
+                    f'{full_name(assignment.nurse)} '
                     f'started their {assignment.get_shift_display()} shift at '
                     f'{assignment.department.name} at '
                     f'{now.astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).strftime("%I:%M %p")}, '
@@ -4843,7 +4856,7 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
                 event='duty_overtime_recorded',
                 title='Nurse worked overtime',
                 message=(
-                    f'{assignment.nurse.get_full_name().strip() or assignment.nurse.username} '
+                    f'{full_name(assignment.nurse)} '
                     f'worked {assignment.actual_overtime_hours}h of overtime on their '
                     f'{assignment.get_shift_display()} shift at {assignment.department.name}.'
                 ),
@@ -4894,7 +4907,7 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
             event='duty_closed_by_head_nurse',
             title='Your shift was closed out',
             message=(
-                f'{request.user.get_full_name().strip() or request.user.username} closed out your '
+                f'{full_name(request.user)} closed out your '
                 f'{assignment.get_shift_display()} shift at {assignment.department.name} on your behalf, '
                 'since it was not ended. Contact them if the recorded time looks wrong.'
             ),
@@ -5159,6 +5172,7 @@ class NurseViewSet(viewsets.ViewSet):
         if search:
             nurses = nurses.filter(
                 Q(first_name__icontains=search)
+                | Q(nurse_profile__middle_name__icontains=search)
                 | Q(last_name__icontains=search)
                 | Q(username__icontains=search)
                 | Q(email__icontains=search)
@@ -5192,18 +5206,26 @@ class NurseViewSet(viewsets.ViewSet):
             )
             nurses = nurses.filter(pk__in=scheduled_nurse_ids)
 
+        nurses = list(nurses)
+        duties = current_duties(n.pk for n in nurses)
         results = []
         for nurse in nurses:
             profile = nurse.nurse_profile
+            duty = duties.get(nurse.pk)
+            # No duty on the roster -> no shift shown (the old profile default
+            # made every unscheduled nurse look like a morning-shift nurse).
+            duty_shift, department = duty_fields(profile, duty)
             results.append(
                 {
                     'id': str(nurse.pk),
-                    'name': nurse.get_full_name().strip() or nurse.username,
+                    'name': full_name(nurse),
                     'role': profile.clinical_role or 'RN',
-                    'shift': profile.shift or 'morning',
+                    'shift': duty_shift,
+                    'hasDuty': duty is not None,
+                    'dutyDate': duty.duty_date.isoformat() if duty else None,
                     'specialization': profile.specialization or '',
                     'email': nurse.email,
-                    'department': profile.department,
+                    'department': department,
                     'burnoutRisk': profile.burnout_risk,
                     'overtimeHours': profile.overtime_hours,
                     'patientCount': nurse.patient_count,
@@ -5219,16 +5241,19 @@ class NurseViewSet(viewsets.ViewSet):
         except User.DoesNotExist:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         profile = getattr(nurse, 'nurse_profile', None)
+        duty = current_duties([nurse.pk]).get(nurse.pk)
+        duty_shift, department = duty_fields(profile, duty)
         return Response(
             filter_nurse_fields(
                 {
                     'id': str(nurse.pk),
-                    'name': nurse.get_full_name().strip() or nurse.username,
+                    'name': full_name(nurse),
                     'role': profile.clinical_role if profile else 'RN',
-                    'shift': profile.shift if profile else 'morning',
+                    'shift': duty_shift,
+                    'hasDuty': duty is not None,
                     'specialization': profile.specialization if profile else '',
                     'email': nurse.email,
-                    'department': profile.department if profile else '',
+                    'department': department,
                 },
                 request.user,
             )
@@ -5277,9 +5302,9 @@ class NurseViewSet(viewsets.ViewSet):
 
         return Response({
             'id': str(nurse.pk),
-            'name': nurse.get_full_name().strip() or nurse.username,
+            'name': full_name(nurse),
             'department': profile.department,
-            'shift': profile.shift or 'morning',
+            'shift': profile.shift or '',
         })
 
 
@@ -5407,8 +5432,9 @@ class AdminUserViewSet(viewsets.ViewSet):
         person has multiple/duplicate/unlinked registration sessions.
         """
         profile = get_object_or_404(NurseProfile, user_id=pk)
-        user = profile.user
-        user.delete()
+        # Also clears this person's rows in Registrations, so the two admin
+        # lists never disagree about whether the account exists.
+        delete_account_completely(user=profile.user)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
@@ -5434,11 +5460,48 @@ class AdminUserViewSet(viewsets.ViewSet):
         return Response({'detail': 'Password updated.'})
 
 
+def delete_account_completely(user=None, email='', session=None):
+    """
+    Remove a signup end to end: the account(s) and every registration-session
+    row for the same person, matched by linked user and by email. Admin
+    accounts are never touched. Afterwards the email (and name) are free for a
+    fresh sign-up. Clinical records the nurse authored survive -- their user
+    FKs are SET_NULL.
+    """
+    emails = set()
+    if email:
+        emails.add(email.strip().lower())
+    users = {}
+    if user is not None and not user.is_staff:
+        users[user.pk] = user
+        for e in (user.email, user.username):
+            if e and '@' in e:
+                emails.add(e.strip().lower())
+    with transaction.atomic():
+        if emails:
+            email_q = Q()
+            for e in emails:
+                email_q |= Q(email__iexact=e) | Q(username__iexact=e)
+            for u in User.objects.filter(email_q, is_staff=False, is_superuser=False):
+                users[u.pk] = u
+        session_q = Q(user_id__in=list(users))
+        for e in emails:
+            session_q |= Q(email__iexact=e)
+        sessions = RegistrationSession.objects.filter(session_q)
+        if session is not None and session.pk:
+            sessions = sessions | RegistrationSession.objects.filter(pk=session.pk)
+        sessions.delete()
+        for u in users.values():
+            u.delete()
+    for u in users.values():
+        logger.info('Account deleted by admin: user=%s email=%s', u.pk, u.email)
+
+
 def _admin_user_payload(profile: NurseProfile) -> dict:
     user = profile.user
     return {
         'id': str(user.pk),
-        'name': user.get_full_name().strip() or user.username,
+        'name': full_name(user),
         'email': user.email,
         'role': profile.role,
         'department': profile.department,
@@ -5451,7 +5514,7 @@ def _admin_user_payload(profile: NurseProfile) -> dict:
         'isActiveStaff': profile.is_active_staff,
         'verificationMethod': profile.verification_method,
         'requestedRole': profile.requested_role,
-        'roleGrantedBy': profile.role_granted_by.get_full_name().strip() if profile.role_granted_by_id else None,
+        'roleGrantedBy': full_name(profile.role_granted_by) if profile.role_granted_by_id else None,
         'roleGrantedAt': profile.role_granted_at.isoformat() if profile.role_granted_at else None,
         'dateJoined': user.date_joined.isoformat() if user.date_joined else None,
     }
@@ -5490,13 +5553,15 @@ class RegistrationSessionViewSet(viewsets.ModelViewSet):
         # for that person to sign up again. Deleting the registration is
         # exactly how an admin undoes a signup here, so the account has to
         # go with it.
-        user = instance.user
-        instance.delete()
-        if user is not None:
-            user.delete()
+        #
+        # The same person often has several sessions (one per sign-up
+        # attempt) and only the last one is linked to the account, so the
+        # account is also found by email -- otherwise deleting one of the
+        # unlinked rows left the email permanently "already exists".
+        delete_account_completely(user=instance.user, email=instance.email, session=instance)
 
     def get_queryset(self):
-        qs = RegistrationSession.objects.select_related('user').order_by('-created_at')
+        qs = RegistrationSession.objects.select_related('user', 'user__nurse_profile').order_by('-created_at')
         email = self.request.query_params.get('email')
         verified = self.request.query_params.get('verified')
         if email:
@@ -5550,12 +5615,19 @@ class WorkloadView(APIView):
 
     @extend_schema(tags=['Analytics'], summary='Workload summary')
     def get(self, request):
+        # Only real, current staff: pending/rejected sign-ups and deactivated
+        # accounts don't belong in Overview, Team or Trends.
         nurses = list(
-            User.objects.filter(nurse_profile__role='staff_nurse', nurse_profile__is_active_staff=True)
+            User.objects.filter(
+                is_active=True,
+                nurse_profile__role='staff_nurse',
+                nurse_profile__is_active_staff=True,
+                nurse_profile__approval_status='approved',
+            )
             .select_related('nurse_profile')
         )
         nurse_ids = [n.pk for n in nurses]
-        names_by_id = {n.pk: (n.get_full_name().strip() or n.username) for n in nurses}
+        names_by_id = {n.pk: full_name(n) for n in nurses}
 
         # One aggregate query for every nurse's patient count, instead of one
         # .count() query per nurse in the loop below.
@@ -5575,12 +5647,17 @@ class WorkloadView(APIView):
         # isn't meant to make). One bulk fetch, grouped in Python, replaces
         # 2 queries (total + completed) per nurse.
         name_lower_to_ids: dict[str, list] = {}
-        for nid, name in names_by_id.items():
-            name_lower_to_ids.setdefault(name.lower(), []).append(nid)
-
         name_match = Q()
-        for name in names_by_id.values():
-            name_match |= Q(assigned_to__iexact=name)
+        for n in nurses:
+            # Older tasks name the nurse "First Last", newer ones may carry
+            # the middle name too -- both count.
+            for form in {full_name(n), n.get_full_name().strip()}:
+                if not form:
+                    continue
+                ids = name_lower_to_ids.setdefault(' '.join(form.lower().split()), [])
+                if n.pk not in ids:
+                    ids.append(n.pk)
+                name_match |= Q(assigned_to__iexact=form)
         relevant_tasks = Task.objects.filter(
             Q(assigned_nurse_id__in=nurse_ids) | name_match
         ).only('id', 'assigned_nurse_id', 'assigned_to', 'status')
@@ -5591,35 +5668,23 @@ class WorkloadView(APIView):
             matched_ids = set()
             if task.assigned_nurse_id in names_by_id:
                 matched_ids.add(task.assigned_nurse_id)
-            matched_ids.update(name_lower_to_ids.get((task.assigned_to or '').lower(), ()))
+            matched_ids.update(name_lower_to_ids.get(' '.join((task.assigned_to or '').lower().split()), ()))
             for nid in matched_ids:
                 task_totals[nid] = task_totals.get(nid, 0) + 1
                 if task.status == 'completed':
                     task_completed[nid] = task_completed.get(nid, 0) + 1
 
-        # profile.department/shift are only ever set by someone manually
-        # clicking "Assign" on this screen — a nurse who's actually working
-        # today via the Duty Roster (DutyAssignment) but was never
-        # separately "Assign"-ed here used to fall into "Unassigned" even
-        # though the system already knows their department. Fall back to
-        # today's duty assignment (earliest shift if more than one) so the
-        # Team tab's grouping reflects the real roster automatically.
-        today = timezone.localdate()
-        duty_today = (
-            DutyAssignment.objects.filter(nurse_id__in=nurse_ids, duty_date=today)
-            .exclude(status='cancelled')
-            .select_related('department')
-            .order_by('nurse_id', 'start_time')
-        )
-        duty_by_nurse = {}
-        for duty in duty_today:
-            duty_by_nurse.setdefault(duty.nurse_id, duty)
+        # Team groups by the department the head nurse put the nurse on: the
+        # current/next duty on the Duty Roster first, else the department
+        # last assigned to them. A shift is shown only while they have a duty.
+        duty_by_nurse = current_duties(nurse_ids)
 
         data = []
         for nurse in nurses:
             profile = nurse.nurse_profile
             name = names_by_id[nurse.pk]
             duty = duty_by_nurse.get(nurse.pk)
+            duty_shift, department = duty_fields(profile, duty)
             data.append(
                 {
                     'nurseId': str(nurse.pk),
@@ -5630,8 +5695,8 @@ class WorkloadView(APIView):
                     # head nurse reassigning "RAIDEN VILLAPANDO" here has no
                     # way to tell which of several accounts they just picked.
                     'nurseEmail': nurse.email,
-                    'shift': profile.shift or (duty.get_shift_display() if duty else ''),
-                    'department': profile.department or (duty.department.name if duty else ''),
+                    'shift': duty_shift,
+                    'department': department,
                     'patientCount': patient_counts.get(nurse.pk, 0),
                     'taskCount': task_totals.get(nurse.pk, 0),
                     'completedTasks': task_completed.get(nurse.pk, 0),
@@ -6071,7 +6136,7 @@ class AdminCorrectionViewSet(viewsets.ViewSet):
             {
                 'id': c.pk,
                 'userId': str(c.user_id),
-                'name': c.user.get_full_name().strip() or c.user.username,
+                'name': full_name(c.user),
                 'email': c.user.email,
                 'requested': c.requested,
                 'reason': c.reason,

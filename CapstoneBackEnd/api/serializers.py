@@ -46,6 +46,7 @@ from .notifications import (
     notify_task_assigned,
     resolve_nurse,
 )
+from .names import full_name, name_variants
 from .utils import next_code
 from .vitals_detection import detect_vital_mentions
 
@@ -58,6 +59,7 @@ class UserSerializer(serializers.ModelSerializer):
     firstName = serializers.CharField(source='first_name', required=False)
     middleName = serializers.SerializerMethodField()
     lastName = serializers.CharField(source='last_name', required=False)
+    phoneNumber = serializers.SerializerMethodField()
     role = serializers.SerializerMethodField()
     department = serializers.SerializerMethodField()
     licenseNumber = serializers.SerializerMethodField()
@@ -76,6 +78,7 @@ class UserSerializer(serializers.ModelSerializer):
             'middleName',
             'lastName',
             'email',
+            'phoneNumber',
             'role',
             'department',
             'licenseNumber',
@@ -90,12 +93,15 @@ class UserSerializer(serializers.ModelSerializer):
         return str(obj.pk)
 
     def get_name(self, obj):
-        full = obj.get_full_name().strip()
-        return full or obj.username
+        return full_name(obj)
 
     def get_middleName(self, obj):
         profile = getattr(obj, 'nurse_profile', None)
         return profile.middle_name if profile else ''
+
+    def get_phoneNumber(self, obj):
+        profile = getattr(obj, 'nurse_profile', None)
+        return profile.phone_number if profile else ''
 
     def get_role(self, obj):
         if obj.is_staff:
@@ -116,8 +122,15 @@ class UserSerializer(serializers.ModelSerializer):
         return profile.avatar if profile else ''
 
     def get_shift(self, obj):
+        # Only a real duty on the roster gives a nurse a shift; the old
+        # 'morning' profile default made everyone look scheduled.
         profile = getattr(obj, 'nurse_profile', None)
-        return profile.shift if profile else ''
+        if not profile or obj.is_staff:
+            return ''
+        from .duty_status import current_duties
+
+        duty = current_duties([obj.pk]).get(obj.pk)
+        return duty.shift if duty else ''
 
     def get_clinicalRole(self, obj):
         profile = getattr(obj, 'nurse_profile', None)
@@ -822,6 +835,13 @@ class UpdateMeSerializer(serializers.Serializer):
             'licenseNumber': profile.license_number if profile else '',
             'clinicalRole': profile.clinical_role if profile else '',
         }
+        # The displayed name now includes the middle name; a client echoing
+        # that back unchanged is not an edit (and must not be re-split into
+        # first/last below, which would fold the middle name into the surname).
+        if 'name' in attrs and ' '.join((attrs['name'] or '').split()) == full_name(
+            user, fallback_username=False
+        ):
+            attrs.pop('name')
         locked = []
         for field, stored in current.items():
             if field not in attrs:
@@ -1015,7 +1035,7 @@ def medical_team_snapshot(patient):
 def nurse_display_name(user):
     if not user:
         return ''
-    return user.get_full_name().strip() or user.username
+    return full_name(user)
 
 
 def editor_role_label(user):
@@ -1287,7 +1307,7 @@ class PatientSerializer(serializers.ModelSerializer):
     def get_dischargedByName(self, obj):
         if not obj.discharged_by_id:
             return None
-        return obj.discharged_by.get_full_name().strip() or obj.discharged_by.username
+        return full_name(obj.discharged_by)
 
     def _current_duty_assignment(self, obj):
         if not obj.department_id:
@@ -1304,7 +1324,7 @@ class PatientSerializer(serializers.ModelSerializer):
         if not assignment:
             return None
         nurse = assignment.nurse
-        return nurse.get_full_name().strip() or nurse.username
+        return full_name(nurse)
 
     def validate_status(self, value):
         # Discharging is a distinct, audited action (PatientViewSet.discharge)
@@ -1381,7 +1401,7 @@ class PatientSerializer(serializers.ModelSerializer):
 
     def get_assignedNurseName(self, obj):
         if obj.assigned_nurse:
-            return obj.assigned_nurse.get_full_name().strip() or obj.assigned_nurse.username
+            return full_name(obj.assigned_nurse)
         if obj.status == 'discharged':
             visit = self._last_closed_visit(obj)
             if visit and visit.assigned_nurse_name:
@@ -1410,7 +1430,7 @@ class PatientSerializer(serializers.ModelSerializer):
         if assignment is None or assignment.assigned_by is None:
             return None
         user = assignment.assigned_by
-        return user.get_full_name().strip() or user.username
+        return full_name(user)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -1902,15 +1922,14 @@ class TaskSerializer(serializers.ModelSerializer):
         assigned_nurse = None
         if assigned_to:
             for user in User.objects.select_related('nurse_profile').all():
-                full = user.get_full_name().strip()
-                if full == assigned_to or user.username == assigned_to:
+                if ' '.join((assigned_to or '').lower().split()) in name_variants(user):
                     assigned_nurse = user
                     break
         if not assigned_nurse and request and request.user.is_authenticated:
             assigned_nurse = request.user
             if not (validated_data.get('assigned_to') or '').strip():
                 validated_data['assigned_to'] = (
-                    request.user.get_full_name().strip() or request.user.username
+                    full_name(request.user)
                 )
         if assigned_nurse:
             validated_data['assigned_nurse'] = assigned_nurse
@@ -1936,8 +1955,7 @@ class TaskSerializer(serializers.ModelSerializer):
         if 'assigned_to' in validated_data:
             assigned_to = validated_data.get('assigned_to') or ''
             for user in User.objects.select_related('nurse_profile').all():
-                full = user.get_full_name().strip()
-                if full == assigned_to or user.username == assigned_to:
+                if ' '.join((assigned_to or '').lower().split()) in name_variants(user):
                     validated_data['assigned_nurse'] = user
                     break
         if doctors is not None:
@@ -2173,7 +2191,7 @@ class HandoverSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'nurseToId': 'Nurse not found.'})
             validated_data['nurse_to_user'] = recipient
             validated_data.setdefault(
-                'nurse_to', recipient.get_full_name().strip() or recipient.username
+                'nurse_to', full_name(recipient)
             )
             return
         # Older clients and the API docs send only a name; fall back to matching
@@ -2592,7 +2610,7 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
             validated_data['nurse'] = request.user
             validated_data.setdefault(
                 'nurse_name',
-                request.user.get_full_name().strip() or request.user.username,
+                full_name(request.user),
             )
         validated_data.setdefault('structured_data', {})
         validated_data['confirmed'] = False
@@ -2623,7 +2641,7 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
             history = list(instance.edit_history or [])
             editor = ''
             if request and request.user.is_authenticated:
-                editor = request.user.get_full_name().strip() or request.user.username
+                editor = full_name(request.user)
             history.append(
                 {
                     'editedBy': editor,
@@ -2725,7 +2743,7 @@ class VitalSignsSerializer(serializers.ModelSerializer):
     def get_recordedByName(self, obj):
         if not obj.recorded_by_id:
             return None
-        return obj.recorded_by.get_full_name().strip() or obj.recorded_by.username
+        return full_name(obj.recorded_by)
 
     def create(self, validated_data):
         request = self.context.get('request')
@@ -2806,7 +2824,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     def get_senderName(self, obj):
         if not obj.sender_id:
             return None
-        return obj.sender.get_full_name().strip() or obj.sender.username
+        return full_name(obj.sender)
 
     def get_id(self, obj):
         return str(obj.pk)
@@ -2906,8 +2924,7 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
             nurse = User.objects.filter(pk=nurse_id).first()
         if not nurse and nurse_name:
             for user in User.objects.select_related('nurse_profile').all():
-                full = user.get_full_name().strip()
-                if full == nurse_name or user.username == nurse_name:
+                if ' '.join((nurse_name or '').lower().split()) in name_variants(user):
                     nurse = user
                     break
         if not nurse:
@@ -2922,7 +2939,7 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
         assignment = PatientAssignment.objects.create(
             patient=patient,
             assigned_nurse=nurse,
-            assigned_nurse_name=nurse.get_full_name().strip() or nurse.username,
+            assigned_nurse_name=full_name(nurse),
             ward=validated_data.get('ward') or '',
             priority=validated_data.get('priority') or 'routine',
             notes=validated_data.get('notes') or '',
@@ -2951,15 +2968,14 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
             nurse = User.objects.filter(pk=nurse_id).first()
         if not nurse and nurse_name:
             for user in User.objects.select_related('nurse_profile').all():
-                full = user.get_full_name().strip()
-                if full == nurse_name or user.username == nurse_name:
+                if ' '.join((nurse_name or '').lower().split()) in name_variants(user):
                     nurse = user
                     break
         if nurse_id or nurse_name:
             if not nurse:
                 raise serializers.ValidationError({'assignedNurseId': 'Nurse not found.'})
             instance.assigned_nurse = nurse
-            instance.assigned_nurse_name = nurse.get_full_name().strip() or nurse.username
+            instance.assigned_nurse_name = full_name(nurse)
             instance.patient.assigned_nurse = nurse
             instance.patient.save(update_fields=['assigned_nurse'])
 
@@ -3045,18 +3061,18 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
         return obj.schedule_window_label()
 
     def get_nurseName(self, obj):
-        return obj.nurse.get_full_name().strip() or obj.nurse.username
+        return full_name(obj.nurse)
 
     def get_actualEndRecordedBy(self, obj):
         if not obj.actual_end_recorded_by_id:
             return None
         user = obj.actual_end_recorded_by
-        return user.get_full_name().strip() or user.username
+        return full_name(user)
 
     def get_createdBy(self, obj):
         if not obj.created_by:
             return ''
-        return obj.created_by.get_full_name().strip() or obj.created_by.username
+        return full_name(obj.created_by)
 
     def validate(self, attrs):
         nurse = attrs.get('nurse', getattr(self.instance, 'nurse', None))
@@ -3153,15 +3169,15 @@ class TaskHandoverSerializer(serializers.ModelSerializer):
         return obj.task.title if obj.task_id else ''
 
     def get_fromNurseName(self, obj):
-        return obj.from_nurse.get_full_name().strip() or obj.from_nurse.username
+        return full_name(obj.from_nurse)
 
     def get_toNurseName(self, obj):
-        return obj.to_nurse.get_full_name().strip() or obj.to_nurse.username
+        return full_name(obj.to_nurse)
 
     def get_supervisorName(self, obj):
         if not obj.supervisor_id:
             return None
-        return obj.supervisor.get_full_name().strip() or obj.supervisor.username
+        return full_name(obj.supervisor)
 
     def validate(self, attrs):
         request = self.context.get('request')
@@ -3683,7 +3699,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
     def get_reviewedBy(self, obj):
         if obj.reviewed_by_id is None:
             return None
-        return obj.reviewed_by.get_full_name().strip() or obj.reviewed_by.username
+        return full_name(obj.reviewed_by)
 
     def get_bmi(self, obj):
         return compute_bmi(obj.height_cm, obj.weight_kg)
@@ -3729,7 +3745,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
         first = (validated_data.get('first_name') or '').strip()
         last = (validated_data.get('last_name') or '').strip()
         middle = (validated_data.get('middle_name') or '').strip()
-        full_name = ' '.join(p for p in [first, middle, last] if p).strip() or 'Unknown Patient'
+        patient_full_name = ' '.join(p for p in [first, middle, last] if p).strip() or 'Unknown Patient'
 
         age_raw = validated_data.get('age') or '0'
         try:
@@ -3788,7 +3804,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
         # Only a risk when this kardex is registering a brand-new patient —
         # patientId means it is explicitly updating one that already exists.
         if not patient_id and not confirm_duplicate:
-            matches = find_possible_duplicate_patients(full_name, age)
+            matches = find_possible_duplicate_patients(patient_full_name, age)
             if matches:
                 raise serializers.ValidationError(duplicate_patient_payload(matches))
 
@@ -3797,7 +3813,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
                 patient = Patient.objects.filter(patient_code=patient_id).first()
                 if not patient:
                     raise serializers.ValidationError({'patientId': 'Patient not found.'})
-                patient.name = full_name
+                patient.name = patient_full_name
                 patient.age = age or patient.age
                 patient.gender = gender
                 patient.room = room
@@ -3821,7 +3837,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
                     patient_code=next_code(Patient, 'patient_code', 'P'),
                     height_cm=validated_data.get('height_cm'),
                     weight_kg=validated_data.get('weight_kg'),
-                    name=full_name,
+                    name=patient_full_name,
                     age=age,
                     gender=gender,
                     room=room,
@@ -3840,7 +3856,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
                     PatientAssignment.objects.create(
                         patient=patient,
                         assigned_nurse=user,
-                        assigned_nurse_name=user.get_full_name().strip() or user.username,
+                        assigned_nurse_name=full_name(user),
                         ward='',
                         priority='routine',
                         notes='Created from Kardex submission',
@@ -3851,7 +3867,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
             validated_data['patient'] = patient
             if user:
                 validated_data['saved_by'] = user
-                validated_data['saved_by_name'] = user.get_full_name().strip() or user.username
+                validated_data['saved_by_name'] = full_name(user)
 
             return KardexRecord.objects.create(**validated_data)
 
@@ -4117,52 +4133,40 @@ class FaceVerificationAttemptSerializer(serializers.ModelSerializer):
 
 
 class RegistrationSessionSerializer(serializers.ModelSerializer):
-    """Admin-only read view of a signup's identity-verification progress —
-    the audit trail behind every account approve/reject decision."""
+    """Admin-only read view of a sign-up: what the applicant entered (name,
+    email, phone, requested role) and whether their email was verified.
+
+    The old PRC-ID / face-verification fields are deliberately not exposed --
+    no sign-up path in the app collects them any more -- and the password is
+    never part of this (or any) response."""
 
     id = serializers.IntegerField(read_only=True)
     sessionId = serializers.UUIDField(source='session_id', read_only=True)
-    faceAttempts = serializers.IntegerField(source='face_attempts', read_only=True)
-    faceVerified = serializers.BooleanField(source='face_verified', read_only=True)
-    faceLocked = serializers.BooleanField(source='face_locked', read_only=True)
     otpVerified = serializers.BooleanField(source='otp_verified', read_only=True)
     verificationMethod = serializers.CharField(source='verification_method', read_only=True)
-    prcVerified = serializers.BooleanField(source='prc_verified', read_only=True)
-    prcLicenseNumber = serializers.CharField(source='prc_license_number', read_only=True)
-    prcFullName = serializers.CharField(source='prc_full_name', read_only=True)
-    prcProfession = serializers.CharField(source='prc_profession', read_only=True)
-    idLastName = serializers.CharField(source='id_last_name', read_only=True)
-    idFirstName = serializers.CharField(source='id_first_name', read_only=True)
-    idMiddleName = serializers.CharField(source='id_middle_name', read_only=True)
-    idRegistrationNo = serializers.CharField(source='id_registration_no', read_only=True)
-    idVerificationStatus = serializers.CharField(source='id_verification_status', read_only=True)
     isVerified = serializers.BooleanField(source='is_verified', read_only=True)
     userId = serializers.SerializerMethodField()
     userEmail = serializers.SerializerMethodField()
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
-    # The EMAIL_OTP flow (the new 4-step wizard) never touches PRC/face
-    # verification at all, so every prc*/id*/face* field above is always
-    # blank/zero/False for it — not a missing value, just the wrong fields
-    # for what this signup method actually collects. These four surface
-    # what the applicant actually typed instead, read from the account once
-    # one exists (nothing to show before registration completes — none of
-    # this is persisted on the session itself, only on the User/NurseProfile
-    # created at the end of the wizard).
+    # Read from the account once one exists -- nothing to show before the
+    # wizard's final step creates the User/NurseProfile.
     firstName = serializers.SerializerMethodField()
-    lastName = serializers.SerializerMethodField()
     middleName = serializers.SerializerMethodField()
+    lastName = serializers.SerializerMethodField()
+    fullName = serializers.SerializerMethodField()
     phone = serializers.SerializerMethodField()
     requestedRole = serializers.SerializerMethodField()
+    role = serializers.SerializerMethodField()
+    department = serializers.SerializerMethodField()
+    approvalStatus = serializers.SerializerMethodField()
 
     class Meta:
         model = RegistrationSession
         fields = [
-            'id', 'sessionId', 'email', 'faceAttempts', 'faceVerified', 'faceLocked',
-            'otpVerified', 'verificationMethod', 'prcVerified', 'prcLicenseNumber',
-            'prcFullName', 'prcProfession', 'idLastName', 'idFirstName', 'idMiddleName',
-            'idRegistrationNo', 'idVerificationStatus', 'isVerified', 'userId', 'userEmail',
-            'firstName', 'lastName', 'middleName', 'phone', 'requestedRole',
+            'id', 'sessionId', 'email', 'otpVerified', 'verificationMethod', 'isVerified',
+            'userId', 'userEmail', 'firstName', 'middleName', 'lastName', 'fullName',
+            'phone', 'requestedRole', 'role', 'department', 'approvalStatus',
             'createdAt', 'updatedAt',
         ]
 
@@ -4187,6 +4191,9 @@ class RegistrationSessionSerializer(serializers.ModelSerializer):
         profile = self._profile(obj)
         return profile.middle_name if profile else ''
 
+    def get_fullName(self, obj):
+        return full_name(obj.user, fallback_username=False) if obj.user_id else ''
+
     def get_phone(self, obj):
         profile = self._profile(obj)
         return profile.phone_number if profile else ''
@@ -4194,6 +4201,18 @@ class RegistrationSessionSerializer(serializers.ModelSerializer):
     def get_requestedRole(self, obj):
         profile = self._profile(obj)
         return (profile.requested_role or profile.role) if profile else ''
+
+    def get_role(self, obj):
+        profile = self._profile(obj)
+        return profile.role if profile else ''
+
+    def get_department(self, obj):
+        profile = self._profile(obj)
+        return profile.department if profile else ''
+
+    def get_approvalStatus(self, obj):
+        profile = self._profile(obj)
+        return profile.approval_status if profile else ''
 
 
 CORRECTABLE_FIELDS = ('firstName', 'middleName', 'lastName', 'licenseNumber', 'clinicalRole')

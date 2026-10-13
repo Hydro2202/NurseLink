@@ -186,7 +186,10 @@ class ReferralWorkflowTests(APITestCase):
         handover = self.make_handover()
         self.client.force_authenticate(user=self.other_nurse)
         response = self.client.post(f'/api/handovers/{handover.handover_code}/accept/')
-        self.assertEqual(response.status_code, 403)
+        # The referral isn't visible to a nurse who isn't part of it.
+        self.assertEqual(response.status_code, 404)
+        handover.refresh_from_db()
+        self.assertNotEqual(handover.status, 'accepted')
 
     def test_status_cannot_be_set_by_direct_patch(self):
         handover = self.make_handover()

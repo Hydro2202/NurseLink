@@ -295,7 +295,8 @@ export function TaskAssignmentModal({
                 value={selectedNurse}
                 onValueChange={setSelectedNurse}
                 options={nurses.map((nurse) => ({
-                  label: `${nurse.name} — ${nurse.role} • ${nurse.shift} shift${nurse.specialization ? ` • ${nurse.specialization}` : ''}`,
+                  // Shift only when the nurse actually has a duty on the roster.
+                  label: `${nurse.name} — ${nurse.role}${nurse.shift ? ` • ${nurse.shift} shift` : ''}${nurse.specialization ? ` • ${nurse.specialization}` : ''}`,
                   value: nurse.id,
                   keywords: nurse.department || '',
                 }))}

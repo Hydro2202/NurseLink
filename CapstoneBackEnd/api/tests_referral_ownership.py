@@ -55,14 +55,15 @@ class ReferralOwnershipTests(TestCase):
         res = self.client_for(self.outsider).patch(
             self.url, {'nurseTo': 'Cara Nurse', 'sbar': {'situation': 'tampered'}}, format='json',
         )
-        self.assertEqual(res.status_code, 403)
+        # Not 403: an unrelated nurse can't see the referral at all.
+        self.assertEqual(res.status_code, 404)
         self.referral.refresh_from_db()
         self.assertEqual(self.referral.situation, 'original situation')
         self.assertEqual(self.referral.nurse_to, 'Ben Nurse')
 
     def test_outsider_cannot_replace_with_put(self):
         res = self.client_for(self.outsider).put(self.url, {'nurseTo': 'Cara Nurse'}, format='json')
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 404)
 
     def test_receiver_cannot_edit(self):
         res = self.client_for(self.receiver).patch(self.url, {'nurseTo': 'Someone'}, format='json')
@@ -76,7 +77,7 @@ class ReferralOwnershipTests(TestCase):
 
     def test_outsider_cannot_delete(self):
         res = self.client_for(self.outsider).delete(self.url)
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 404)
         self.assertTrue(HandoverNote.objects.filter(pk=self.referral.pk).exists())
 
     def test_head_nurse_cannot_delete(self):
@@ -94,7 +95,21 @@ class ReferralOwnershipTests(TestCase):
         self.assertEqual(res.status_code, 204)
         self.assertFalse(HandoverNote.objects.filter(pk=self.referral.pk).exists())
 
-    def test_outsider_can_still_read(self):
-        # Reading is unchanged: the ward shares referral visibility.
+    def test_outsider_cannot_read(self):
+        # A referral is private to its sender and receiving nurse; other
+        # nurses neither see it in the list nor can open it directly.
         res = self.client_for(self.outsider).get(self.url)
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 404)
+        listed = self.client_for(self.outsider).get('/api/handovers/')
+        self.assertEqual(listed.status_code, 200)
+        codes = [r.get('id') or r.get('handoverCode') for r in (listed.data.get('results', listed.data) if isinstance(listed.data, dict) else listed.data)]
+        self.assertNotIn(self.referral.handover_code, codes)
+
+    def test_receiver_and_sender_can_read(self):
+        for user in (self.receiver, self.sender):
+            res = self.client_for(user).get(self.url)
+            self.assertEqual(res.status_code, 200, res.content)
+
+    def test_head_nurse_can_still_read(self):
+        res = self.client_for(self.head).get(self.url)
+        self.assertEqual(res.status_code, 200, res.content)

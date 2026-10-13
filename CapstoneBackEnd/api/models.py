@@ -8,6 +8,8 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
+from .names import full_name
+
 
 class ClinicalRole(models.TextChoices):
     """The only clinical roles an account may hold. Used by the model, the
@@ -63,7 +65,7 @@ class NurseProfile(models.Model):
     clinical_role = models.CharField(
         max_length=40, choices=CLINICAL_ROLE_CHOICES, default='RN', blank=True
     )
-    shift = models.CharField(max_length=20, choices=SHIFT_CHOICES, default='morning', blank=True)
+    shift = models.CharField(max_length=20, choices=SHIFT_CHOICES, default='', blank=True)
     specialization = models.CharField(max_length=120, blank=True, default='')
     overtime_hours = models.FloatField(default=0, validators=[MinValueValidator(0)])
     burnout_risk = models.CharField(max_length=10, choices=BURNOUT_CHOICES, default='low')
@@ -114,7 +116,7 @@ class NurseProfile(models.Model):
 
     @property
     def display_name(self):
-        return self.user.get_full_name().strip() or self.user.username
+        return full_name(self.user)
 
 
 def compute_bmi(height_cm, weight_kg):
@@ -965,7 +967,7 @@ class PatientAssignment(models.Model):
     def save(self, *args, **kwargs):
         if self.assigned_nurse and not self.assigned_nurse_name:
             self.assigned_nurse_name = (
-                self.assigned_nurse.get_full_name().strip() or self.assigned_nurse.username
+                full_name(self.assigned_nurse)
             )
         if self.patient and not self.ward:
             self.ward = self.patient.room.split('-')[0] if '-' in self.patient.room else self.patient.room
@@ -1064,7 +1066,7 @@ class DutyAssignment(models.Model):
         ]
 
     def __str__(self):
-        nurse_name = self.nurse.get_full_name().strip() or self.nurse.username
+        nurse_name = full_name(self.nurse)
         return f'{nurse_name} — {self.department.name} — {self.duty_date}'
 
     @staticmethod

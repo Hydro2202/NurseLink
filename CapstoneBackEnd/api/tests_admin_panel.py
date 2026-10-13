@@ -181,7 +181,9 @@ class RegistrationSessionAdminTests(APITestCase):
         emails = {row['email'] for row in response.data}
         self.assertIn('applicant@hospital.com', emails)
         row = next(row for row in response.data if row['email'] == 'applicant@hospital.com')
-        self.assertEqual(row['idFirstName'], 'ANA')
+        # PRC-ID / face fields are no longer part of the admin view.
+        self.assertNotIn('idFirstName', row)
+        self.assertNotIn('faceAttempts', row)
         self.assertTrue(row['isVerified'])
 
     def test_the_generic_create_action_is_blocked_even_for_an_admin(self):

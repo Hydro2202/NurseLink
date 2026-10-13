@@ -232,6 +232,13 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
                 error={errors.email}
               />
 
+              <Input
+                label="Phone Number"
+                value={user?.phoneNumber || ''}
+                placeholder="Not provided at sign-up"
+                editable={false}
+              />
+
               <View style={styles.roleBox}>
                 <Text style={styles.roleText}>
                   <Text style={styles.roleBold}>Role: </Text>
@@ -247,7 +254,7 @@ export function ProfileEditModal({ open, onOpenChange, user, onSave }: ProfileEd
                       <Text style={styles.roleBold}>Shift: </Text>
                       {user?.shift
                         ? user.shift.charAt(0).toUpperCase() + user.shift.slice(1)
-                        : '—'}
+                        : 'No duty assigned'}
                     </Text>
                     <Text style={styles.roleHint}>
                       Role, department and shift are set by your head nurse. Contact them for changes.
