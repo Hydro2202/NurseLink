@@ -2764,13 +2764,16 @@ class PatientViewSet(viewsets.ModelViewSet):
             )
         return qs
 
-    def _current_duty_by_department(self):
+    def _current_duties(self):
         """
-        One nurse per department who is actually on shift right now, per the
-        Duty Roster — computed once per request (cached on the instance,
-        since a ViewSet is instantiated fresh per request) rather than once
-        per patient row, so a ward list of any size costs exactly one extra
-        query for this instead of an N+1.
+        Who is actually on shift right now, per the Duty Roster: one duty per
+        department, plus one per nurse. Computed once per request (cached on
+        the instance, since a ViewSet is instantiated fresh per request), so a
+        ward list of any size costs one extra query instead of an N+1.
+
+        A duty counts as current when the nurse has clocked in and not yet
+        out, or when now falls inside its scheduled hours and the nurse
+        hasn't clocked out (and it isn't cancelled or completed).
         """
         if hasattr(self, '_duty_cache'):
             return self._duty_cache
@@ -2778,21 +2781,29 @@ class PatientViewSet(viewsets.ModelViewSet):
         local_today = local_now.date()
         candidates = (
             DutyAssignment.objects.filter(duty_date__in=(local_today, local_today - timedelta(days=1)))
-            .exclude(status='cancelled')
-            .select_related('nurse')
+            .exclude(status__in=['cancelled', 'completed'])
+            .select_related('nurse', 'nurse__nurse_profile')
+            .order_by('duty_date', 'start_time')
         )
-        result = {}
-        for candidate in candidates:
-            if candidate.department_id in result:
+        by_department, by_nurse = {}, {}
+        # Clocked-in shifts first, so they win over a merely scheduled one.
+        for candidate in sorted(candidates, key=lambda d: d.actual_start_time is None):
+            if candidate.actual_end_time is not None:
+                continue  # already clocked out
+            clocked_in = candidate.actual_start_time is not None
+            in_window = candidate.scheduled_start_datetime() <= local_now <= candidate.scheduled_end_datetime()
+            if not (clocked_in or in_window):
                 continue
-            if candidate.scheduled_start_datetime() <= local_now <= candidate.scheduled_end_datetime():
-                result[candidate.department_id] = candidate
-        self._duty_cache = result
-        return result
+            by_department.setdefault(candidate.department_id, candidate)
+            by_nurse.setdefault(candidate.nurse_id, candidate)
+        self._duty_cache = (by_department, by_nurse)
+        return self._duty_cache
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context['current_duty_by_department'] = self._current_duty_by_department()
+        by_department, by_nurse = self._current_duties()
+        context['current_duty_by_department'] = by_department
+        context['current_duty_by_nurse'] = by_nurse
         return context
 
     def get_permissions(self):
