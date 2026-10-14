@@ -25,6 +25,7 @@ import {
   setAdminAccountPassword,
   deleteAdminAccount,
   updateAdminAccount,
+  grantAdminAccountRole,
   ApiError,
 } from '../../../services/api';
 import type { AdminAccount } from '../../../types/domain';
@@ -150,9 +151,25 @@ export default function AdminAccountsPage() {
     try {
       const updated = await approveAdminAccount(selected.id);
       refreshSelected(updated);
-      toast.success('Account approved');
+      toast.success(`Account approved as ${ROLE_BADGE[updated.role].label}`);
     } catch (err) {
       toast.error('Could not approve', { description: err instanceof ApiError ? err.message : undefined });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRoleChange = async (role: string) => {
+    if (!selected || (role !== 'staff_nurse' && role !== 'head_nurse') || role === selected.role) return;
+    setBusy(true);
+    try {
+      const updated = await grantAdminAccountRole(selected.id, role);
+      refreshSelected(updated);
+      toast.success(`Role changed to ${ROLE_BADGE[updated.role].label}`, {
+        description: 'They sign in with this role from now on.',
+      });
+    } catch (err) {
+      toast.error('Could not change role', { description: err instanceof ApiError ? err.message : undefined });
     } finally {
       setBusy(false);
     }
@@ -315,6 +332,11 @@ export default function AdminAccountsPage() {
                       <Badge variant={ROLE_BADGE[account.role].variant}>
                         {ROLE_BADGE[account.role].label}
                       </Badge>
+                      {account.approvalStatus !== 'approved'
+                        && account.requestedRole === 'head_nurse'
+                        && account.role !== 'head_nurse' ? (
+                        <Badge variant="warning">requests Head Nurse</Badge>
+                      ) : null}
                       {!account.isActiveStaff ? <Badge variant="secondary">deactivated</Badge> : null}
                     </View>
                     <Text style={styles.rowMeta}>{account.email}</Text>
@@ -363,6 +385,23 @@ export default function AdminAccountsPage() {
                     {selected.isActiveStaff ? 'active' : 'deactivated'}
                   </Badge>
                 </View>
+                {selected.requestedRole && selected.requestedRole !== selected.role ? (
+                  <Text style={styles.requestNote}>
+                    Signed up as {selected.requestedRole === 'head_nurse' ? 'Head Nurse' : 'Nurse'}
+                    {selected.approvalStatus !== 'approved' ? ' — approving gives them this role.' : '.'}
+                  </Text>
+                ) : null}
+                {selected.approvalStatus === 'approved' ? (
+                  <Select
+                    label="Role"
+                    value={selected.role}
+                    onValueChange={handleRoleChange}
+                    options={[
+                      { label: 'Nurse', value: 'staff_nurse' },
+                      { label: 'Head Nurse', value: 'head_nurse' },
+                    ]}
+                  />
+                ) : null}
                 {selected.approvalStatus === 'rejected' && selected.rejectionReason ? (
                   <Text style={styles.rejectionNote}>Reason: {selected.rejectionReason}</Text>
                 ) : null}
@@ -378,7 +417,9 @@ export default function AdminAccountsPage() {
                     <Button onPress={handleApprove} disabled={busy} loading={busy}>
                       <View style={styles.btnInner}>
                         <CheckCircle size={16} color={Colors.white} />
-                        <Text style={styles.btnLabel}>Approve</Text>
+                        <Text style={styles.btnLabel}>
+                          Approve as {(selected.requestedRole || selected.role) === 'head_nurse' ? 'Head Nurse' : 'Nurse'}
+                        </Text>
                       </View>
                     </Button>
                   ) : null}
@@ -579,6 +620,7 @@ const styles = StyleSheet.create({
   detailRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
   detailText: { fontSize: 13, color: Colors.foreground },
   badgeRow: { flexDirection: 'row', gap: 8, marginTop: 14, flexWrap: 'wrap' },
+  requestNote: { fontSize: 12.5, fontWeight: '700', color: Colors.blue700, marginTop: 8 },
   rejectionNote: { fontSize: 12.5, color: Colors.red700, marginTop: 10 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 18 },
   btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 },

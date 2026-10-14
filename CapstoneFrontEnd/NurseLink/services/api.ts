@@ -1278,6 +1278,13 @@ export async function approveAdminAccount(id: string): Promise<AdminAccount> {
   return apiRequest<AdminAccount>(`/admin/users/${id}/approve/`, { method: 'POST' });
 }
 
+export async function grantAdminAccountRole(
+  id: string,
+  role: 'staff_nurse' | 'head_nurse'
+): Promise<AdminAccount> {
+  return apiRequest<AdminAccount>(`/admin/users/${id}/grant-role/`, { method: 'POST', body: { role } });
+}
+
 export async function rejectAdminAccount(id: string, reason: string): Promise<AdminAccount> {
   return apiRequest<AdminAccount>(`/admin/users/${id}/reject/`, { method: 'POST', body: { reason } });
 }
