@@ -208,6 +208,14 @@ LOGIN_THROTTLE = {
 TRUSTED_PROXIES = [
     entry.strip() for entry in os.environ.get('TRUSTED_PROXIES', '').split(',') if entry.strip()
 ]
+# On Render every request arrives from Render's own load balancer on a
+# private address, so without this every user shared ONE "IP" for the login
+# lockout: 20 wrong passwords from anyone locked everybody out. Render sets
+# RENDER=true; trust its private-network proxies so the real client address
+# (the right-most untrusted X-Forwarded-For hop, which a client can't forge)
+# is used. An explicit TRUSTED_PROXIES env var still wins.
+if not TRUSTED_PROXIES and env_bool('RENDER', False):
+    TRUSTED_PROXIES = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', '127.0.0.1/32']
 
 # --- Session token lifetime (api/authentication.py, api/consumers.py) ----
 # An AuthSession older than this is rejected on both the REST API and the

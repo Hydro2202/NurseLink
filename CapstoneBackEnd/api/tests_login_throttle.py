@@ -8,6 +8,7 @@ endpoints, counting only failures, with responses that never reveal whether
 an account exists.
 """
 
+import os
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -202,3 +203,55 @@ class StoreFailureTests(LoginThrottleTestCase):
         with patch('api.login_throttle._cache', side_effect=RuntimeError('store down')):
             with self.assertLogs('api.login_throttle', level='ERROR'):
                 self.assertEqual(self.login(password=PASSWORD).status_code, 200)
+
+
+class RenderProxyAndUnlockTests(LoginThrottleTestCase):
+    """On Render every request comes from Render's proxy on a private
+    address. The settings trust that range when RENDER is set, so lockouts
+    follow the real visitor, not "everyone at once"."""
+
+    @override_settings(TRUSTED_PROXIES=['10.0.0.0/8'])
+    def test_users_behind_the_same_proxy_are_counted_separately(self):
+        for i in range(20):
+            self.login(email=f'user{i}@hospital.com', ip='10.1.2.3', HTTP_X_FORWARDED_FOR='203.0.113.7')
+        # The one visitor who guessed 20 times is locked...
+        blocked = self.login(email='fresh@hospital.com', ip='10.1.2.3', HTTP_X_FORWARDED_FOR='203.0.113.7')
+        self.assertEqual(blocked.status_code, 429)
+        # ...but a different visitor through the same proxy can still sign in.
+        ok = self.login(password=PASSWORD, ip='10.1.2.3', HTTP_X_FORWARDED_FOR='198.51.100.20')
+        self.assertEqual(ok.status_code, 200)
+
+    def test_lockout_message_says_how_long_to_wait(self):
+        for _ in range(5):
+            self.login()
+        res = self.login()
+        self.assertEqual(res.status_code, 429)
+        self.assertIn('15 minutes', res.data['detail'])
+
+    def test_admin_can_unlock_an_account(self):
+        for _ in range(5):
+            self.login()
+        self.assertEqual(self.login(password=PASSWORD).status_code, 429)
+        admin = User.objects.create_user(username='admin@admin.com', email='admin@admin.com', password='x', is_staff=True)
+        self.client.force_authenticate(admin)
+        res = self.client.post(f'/api/admin/users/{self.user.pk}/clear-login-lock/')
+        self.assertEqual(res.status_code, 200)
+        self.client.force_authenticate(None)
+        self.assertEqual(self.login(password=PASSWORD).status_code, 200)
+
+    def test_nurse_cannot_unlock(self):
+        self.client.force_authenticate(self.user)
+        res = self.client.post(f'/api/admin/users/{self.user.pk}/clear-login-lock/')
+        self.assertEqual(res.status_code, 403)
+
+    def test_management_command_clears_locks(self):
+        from django.core.management import call_command
+
+        for _ in range(5):
+            self.login()
+        call_command('clear_login_locks', email='nurse@hospital.com', stdout=open(os.devnull, 'w'))
+        self.assertEqual(self.login(password=PASSWORD).status_code, 200)
+        for _ in range(5):
+            self.login()
+        call_command('clear_login_locks', stdout=open(os.devnull, 'w'))
+        self.assertEqual(self.login(password=PASSWORD).status_code, 200)

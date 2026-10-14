@@ -1285,6 +1285,10 @@ export async function grantAdminAccountRole(
   return apiRequest<AdminAccount>(`/admin/users/${id}/grant-role/`, { method: 'POST', body: { role } });
 }
 
+export async function clearAdminAccountLoginLock(id: string): Promise<void> {
+  await apiRequest(`/admin/users/${id}/clear-login-lock/`, { method: 'POST' });
+}
+
 export async function rejectAdminAccount(id: string, reason: string): Promise<AdminAccount> {
   return apiRequest<AdminAccount>(`/admin/users/${id}/reject/`, { method: 'POST', body: { reason } });
 }
