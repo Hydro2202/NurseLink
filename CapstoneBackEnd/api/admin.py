@@ -70,13 +70,19 @@ class NurseProfileAdmin(admin.ModelAdmin):
         for profile in queryset.exclude(approval_status='approved'):
             profile.approval_status = 'approved'
             profile.rejection_reason = ''
-            profile.save(update_fields=['approval_status', 'rejection_reason'])
+            # Accept the role asked for at sign-up (see apply_requested_role).
+            role_fields = profile.apply_requested_role(request.user)
+            profile.save(update_fields=['approval_status', 'rejection_reason', *role_fields])
+            role_label = 'Head Nurse' if profile.role == 'head_nurse' else 'Nurse'
             notify(
                 profile.user,
                 notification_type='success',
                 event='account_approved',
                 title='Account approved',
-                message='Your NurseLink registration has been approved. You can now sign in.',
+                message=(
+                    f'Your NurseLink registration has been approved as {role_label}. '
+                    f'Sign in with the {role_label} option.'
+                ),
             )
             count += 1
         self.message_user(request, f'{count} account(s) approved.')

@@ -657,6 +657,10 @@ export interface AdminAccount {
   rejectionReason: string;
   isActiveStaff: boolean;
   verificationMethod: string;
+  /** The role picked at sign-up; approving applies it. */
+  requestedRole?: string;
+  roleGrantedBy?: string | null;
+  roleGrantedAt?: string | null;
   dateJoined: string | null;
 }
 

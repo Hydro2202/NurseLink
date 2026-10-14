@@ -118,6 +118,25 @@ class NurseProfile(models.Model):
     def display_name(self):
         return full_name(self.user)
 
+    def apply_requested_role(self, granted_by):
+        """
+        Approving an account accepts the role the applicant asked for at
+        sign-up (sign-up itself only records it in requested_role). Returns
+        the changed field names for save(update_fields=...). Does nothing
+        once an admin has deliberately set the role via grant-role
+        (role_granted_at), so a later approval never undoes that choice.
+        """
+        if (
+            self.requested_role not in ('staff_nurse', 'head_nurse')
+            or self.role_granted_at is not None
+            or self.role == self.requested_role
+        ):
+            return []
+        self.role = self.requested_role
+        self.role_granted_by = granted_by
+        self.role_granted_at = timezone.now()
+        return ['role', 'role_granted_by', 'role_granted_at']
+
 
 def compute_bmi(height_cm, weight_kg):
     """weight_kg / (height_cm/100)**2, rounded to 1 decimal — shared by

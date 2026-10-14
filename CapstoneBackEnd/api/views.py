@@ -5347,13 +5347,28 @@ class AdminUserViewSet(viewsets.ViewSet):
         profile = get_object_or_404(NurseProfile, user_id=pk)
         profile.approval_status = 'approved'
         profile.rejection_reason = ''
-        profile.save(update_fields=['approval_status', 'rejection_reason'])
+        update_fields = ['approval_status', 'rejection_reason']
+        # Sign-up only records the role the applicant asked for; approving
+        # accepts it. Without this a head-nurse applicant was approved as a
+        # staff nurse and could never sign in as head nurse.
+        role_fields = profile.apply_requested_role(request.user)
+        if role_fields:
+            update_fields += role_fields
+            logger.info(
+                'Role applied on approval: user=%s -> %s by admin=%s',
+                profile.user_id, profile.role, request.user.pk,
+            )
+        profile.save(update_fields=update_fields)
+        role_label = 'Head Nurse' if profile.role == 'head_nurse' else 'Nurse'
         notify(
             profile.user,
             notification_type='success',
             event='account_approved',
             title='Account approved',
-            message='Your NurseLink registration has been approved. You can now sign in.',
+            message=(
+                f'Your NurseLink registration has been approved as {role_label}. '
+                f'Sign in with the {role_label} option.'
+            ),
         )
         return Response(_admin_user_payload(profile))
 
