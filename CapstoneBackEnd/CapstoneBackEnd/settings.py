@@ -436,11 +436,6 @@ N8N_WEBHOOKS = {
     # still separate env vars in case they ever diverge.
     'verify_id': os.environ.get('N8N_VERIFY_ID_PATH', 'identity-verify'),
     'face_verify': os.environ.get('N8N_FACE_VERIFY_PATH', 'identity-verify'),
-    # AI-draft a M.E.T.H.O.D. discharge plan from a patient's charted notes —
-    # see PatientViewSet.generate_discharge_plan. Unlike structure_chart,
-    # this one degrades to a deterministic fallback rather than erroring out
-    # when unset/offline, so it's safe to leave unconfigured.
-    'discharge_plan': os.environ.get('N8N_DISCHARGE_PLAN_PATH', 'discharge-plan'),
 }
 
 # Direct full-URL override for the verify_id webhook specifically, for
@@ -454,10 +449,6 @@ N8N_IDENTITY_VERIFY_WEBHOOK = os.environ.get('N8N_IDENTITY_VERIFY_WEBHOOK', '').
 # instances — composing one base URL for all of them silently sends charting
 # traffic to whichever instance identity verification happens to use.
 N8N_AUTO_CHARTING_WEBHOOK_URL = os.environ.get('N8N_AUTO_CHARTING_WEBHOOK_URL', '').strip()
-
-# Full-URL override for the discharge-plan workflow — same reasoning as
-# N8N_AUTO_CHARTING_WEBHOOK_URL above. Leave blank to use the composed URL.
-N8N_DISCHARGE_PLAN_WEBHOOK_URL = os.environ.get('N8N_DISCHARGE_PLAN_WEBHOOK_URL', '').strip()
 
 # n8n workflows that call an LLM or a vision model are slow; a short timeout
 # would abort a run that was going to succeed.

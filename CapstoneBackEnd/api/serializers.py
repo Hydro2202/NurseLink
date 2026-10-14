@@ -1062,8 +1062,8 @@ def open_patient_visit(patient):
 
 # M.E.T.H.O.D. discharge plan — Medications, Environment, Treatment, Health
 # Teaching, Outpatient Referral, Diet. camelCase key -> PatientVisit model
-# field name, shared by the discharge action's request parsing, the AI-draft
-# endpoint's response shape, and PatientVisitSerializer.get_dischargePlan.
+# field name, shared by the discharge action's request parsing and
+# PatientVisitSerializer.get_dischargePlan.
 DISCHARGE_PLAN_FIELD_MAP = {
     'medications': 'discharge_plan_medications',
     'environment': 'discharge_plan_environment',
@@ -1082,54 +1082,8 @@ def discharge_plan_has_content(plan: dict) -> bool:
     return any((plan.get(key) or '').strip() for key in DISCHARGE_PLAN_FIELD_MAP)
 
 
-def discharge_plan_from_context(patient) -> dict:
-    """
-    Deterministic Discharge Plan draft built only from what's already on
-    file for this patient — never invents clinical content. Used both as
-    the AI-draft endpoint's fallback when the n8n workflow is unset/
-    unavailable, and to seed whatever fields it doesn't return.
-
-    Medications: the patient's current medications list (Patient.medications).
-    Diet: the most recent Kardex record's diet field, if one exists.
-    Treatment: the most recent charting note's Action/interventions text —
-    what's actually been done for this patient is the closest available
-    proxy for "ongoing treatment".
-    Environment / Health Teaching / Outpatient Referral: no reliable
-    structured source exists in this data model, so these are left blank
-    for the nurse (or the n8n workflow, which sees the same charted notes)
-    to fill in — guessing here would mean inventing clinical content.
-    """
-    medications = ', '.join(str(m).strip() for m in (patient.medications or []) if str(m).strip())
-
-    diet = ''
-    latest_kardex = patient.kardex_records.order_by('-id').first()
-    if latest_kardex is not None:
-        diet = latest_kardex.diet or ''
-
-    treatment = ''
-    latest_note = ChartingNote.objects.filter(patient=patient).order_by('-timestamp').first()
-    if latest_note is not None:
-        if latest_note.note_format == 'fdar':
-            treatment = latest_note.action or ''
-        else:
-            structured = latest_note.structured_data if isinstance(latest_note.structured_data, dict) else {}
-            interventions = structured.get('interventions') or []
-            if isinstance(interventions, list):
-                treatment = '\n'.join(f'- {str(i).strip()}' for i in interventions if str(i).strip())
-
-    return {
-        'medications': medications,
-        'environment': '',
-        'treatment': treatment,
-        'healthTeaching': '',
-        'outpatientReferral': '',
-        'diet': diet,
-    }
-
-
 class DischargePlanInputSerializer(serializers.Serializer):
-    """Request body for PatientViewSet.discharge's dischargePlan field, and
-    the response shape of PatientViewSet.generate_discharge_plan."""
+    """Request body for PatientViewSet.discharge's dischargePlan field."""
 
     medications = serializers.CharField(required=False, allow_blank=True, default='')
     environment = serializers.CharField(required=False, allow_blank=True, default='')
