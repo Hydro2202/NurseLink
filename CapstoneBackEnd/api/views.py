@@ -3974,6 +3974,37 @@ class TaskHandoverViewSet(viewsets.ModelViewSet):
         return Response(TaskHandoverSerializer(handover, context={'request': request}).data)
 
 
+def _as_text(value) -> str:
+    """
+    The n8n workflow's LLM doesn't keep a fixed output shape: the same field
+    comes back as a string one run and as a list or an object the next. Every
+    narrative field the app shows is plain text, so flatten whatever arrived
+    (lists -> one item per line, objects -> "key: value" lines) instead of
+    crashing on it ("Could not generate the note", HTTP 500).
+    """
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return '\n'.join(text for text in (_as_text(item).strip() for item in value) if text)
+    if isinstance(value, dict):
+        lines = []
+        for key, item in value.items():
+            text = _as_text(item).strip()
+            if text:
+                lines.append(f'{key}: {text}')
+        return '\n'.join(lines)
+    return str(value)
+
+
+# Free-text sections of a structured note -- always strings in the response.
+_CHART_TEXT_FIELDS = (
+    'assessment', 'patientResponse', 'clinicalSummary', 'plan',
+    'focus', 'data', 'action', 'response', 'date', 'time',
+)
+
+
 def _documented_vital(value):
     """
     A vital-sign value is only "documented" when it's a real, non-zero
@@ -4290,16 +4321,27 @@ class ChartingViewSet(viewsets.ModelViewSet):
         if not isinstance(result, dict):
             result = {}
 
-        note_text = (
+        note_text = _as_text(
             result.get('note')
             or result.get('text')
             or result.get('content')
             or result.get('output')
             or ''
-        )
+        ).strip()
         structured = result.get('structured') or result.get('sections') or {}
         if not isinstance(structured, dict):
             structured = {}
+        # Normalise the workflow's shapes before anything reads them.
+        for key in _CHART_TEXT_FIELDS:
+            if key in structured:
+                structured[key] = _as_text(structured[key])
+        interventions = structured.get('interventions')
+        if interventions is not None:
+            if not isinstance(interventions, (list, tuple)):
+                interventions = [interventions]
+            structured['interventions'] = [
+                text for text in (_as_text(item).strip() for item in interventions) if text
+            ]
 
         # The workflow sometimes answers 200 with nothing usable (seen live:
         # {"title": "Empty Chart", "summary": "No data was provided...",
