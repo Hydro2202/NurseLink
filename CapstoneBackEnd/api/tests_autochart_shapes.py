@@ -6,11 +6,15 @@ instead of a string.
 """
 
 import datetime
+import http.client
+import json
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 from .models import KardexLaboratory, KardexMedication, MedicationIntake, NurseProfile, Patient
@@ -65,3 +69,64 @@ class AutochartResponseShapeTests(TestCase):
                     res = self.generate(reply, save=save)
                     self.assertEqual(res.status_code, 200, res.content)
                     self.assertIsInstance(res.data['structured']['assessment'], str)
+
+
+class _FakeResponse:
+    def __init__(self, body):
+        self._body = body
+        self.status = 200
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@override_settings(N8N_AUTO_CHARTING_WEBHOOK_URL='https://n8n.test/webhook/structure-chart')
+class AutochartRealPayloadTests(AutochartResponseShapeTests):
+    """Runs the real n8n client (only the network is faked), so the request
+    payload is actually serialised -- the step that crashed in production."""
+
+    def setUp(self):
+        super().setUp()
+        Patient.objects.filter(patient_code='P619').update(height_cm=Decimal('170.5'), weight_kg=Decimal('65.2'))
+
+    def post(self):
+        return self.client.post(URL, {
+            'patientId': 'P619',
+            'assessment': (
+                'Patient alert and oriented x4. Vital signs: BP 118/76, HR 72, RR 16, '
+                'Temp 36.8C, SpO2 98% on room air.'
+            ),
+            'noteType': 'progress',
+        }, format='json')
+
+    def test_patient_with_height_and_weight_generates_a_note(self):
+        sent = {}
+
+        def fake_urlopen(request, timeout=None):
+            sent['body'] = json.loads(request.data)
+            return _FakeResponse(json.dumps({'note': 'Structured.', 'structured': {'assessment': 'A&O x4'}}).encode())
+
+        with patch('api.n8n_client.urllib.request.urlopen', side_effect=fake_urlopen):
+            res = self.post()
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(sent['body']['patient']['heightCm'], 170.5)
+        self.assertEqual(res.data['note'], 'Structured.')
+        self.assertEqual(res.data['structured']['vitalSigns']['heartRate'], 72)
+
+    def test_dropped_connection_is_a_clean_error_not_a_500(self):
+        with patch('api.n8n_client.urllib.request.urlopen', side_effect=http.client.RemoteDisconnected('closed')):
+            res = self.post()
+        self.assertEqual(res.status_code, 502, res.content)
+        self.assertIn('detail', res.data)
+
+    def test_unexpected_ai_error_falls_back_to_the_nurses_text(self):
+        with patch('api.views.call_workflow', side_effect=RuntimeError('boom')):
+            res = self.post()
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.data['fallback'])

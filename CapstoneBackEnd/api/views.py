@@ -4238,8 +4238,8 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 'diagnosis': patient.diagnosis,
                 'riskLevel': patient.risk_level,
                 'attendingPhysician': patient.attending_physician,
-                'heightCm': patient.height_cm,
-                'weightKg': patient.weight_kg,
+                'heightCm': float(patient.height_cm) if patient.height_cm is not None else None,
+                'weightKg': float(patient.weight_kg) if patient.weight_kg is not None else None,
                 'bmi': patient.bmi,
                 'allergies': patient.allergies or [],
                 'medications': patient.medications or [],
@@ -4312,6 +4312,12 @@ class ChartingViewSet(viewsets.ModelViewSet):
                 time.monotonic() - started, exc,
             )
             return Response(error_response_body(exc), status=exc.http_status)
+        except Exception:
+            # Anything unexpected in the AI step must not cost the nurse their
+            # note: log it and fall through to the local fallback below
+            # (organises the nurse's own text, flagged for review).
+            logger.exception('autochart unexpected error patient=%s', patient.patient_code)
+            result = {}
 
         logger.info(
             'autochart n8n ok patient=%s in %.2fs',

@@ -24,6 +24,7 @@ retried face check would burn a second verification attempt — so a caller
 that wants a retry has to ask for one explicitly.
 """
 
+import http.client
 import json
 import logging
 import urllib.error
@@ -32,6 +33,7 @@ from typing import Any
 
 import requests
 from django.conf import settings
+from django.core.serializers.json import DjangoJSONEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +157,10 @@ def call_workflow(workflow: str, payload: dict, *, timeout: float | None = None)
             workflow=workflow,
         )
 
-    body = json.dumps(payload).encode('utf-8')
+    # DjangoJSONEncoder: payloads carry model values such as Decimal
+    # (Patient.height_cm/weight_kg), dates and UUIDs that plain json.dumps
+    # rejects -- that TypeError used to escape as an HTTP 500.
+    body = json.dumps(payload, cls=DjangoJSONEncoder).encode('utf-8')
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
@@ -206,6 +211,11 @@ def call_workflow(workflow: str, payload: dict, *, timeout: float | None = None)
         # The raw socket/DNS error goes to the log only — never into the
         # client-facing message, which could otherwise echo internal
         # networking details back to whoever triggered the request.
+        raise N8nUnavailable(workflow=workflow) from exc
+    except (http.client.HTTPException, OSError) as exc:
+        # Dropped/reset connections (RemoteDisconnected, ConnectionResetError,
+        # IncompleteRead) aren't URLErrors and used to escape as a 500.
+        logger.warning('n8n connection error workflow=%s: %s', workflow, type(exc).__name__)
         raise N8nUnavailable(workflow=workflow) from exc
 
     if not raw.strip():
