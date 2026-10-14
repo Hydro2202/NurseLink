@@ -18,6 +18,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import Department, DutyAssignment, NurseProfile, Patient, PatientAssignment
+from .names import full_name
 
 # DISCHARGE_PLAN_REQUIRED defaults to True (see settings.py), so /discharge/
 # rejects an incomplete plan — a full M.E.T.H.O.D. plan to post alongside it.
@@ -170,7 +171,7 @@ class OnDutyNurseResolutionTests(PatientDischargeTestCase):
         # Duty-roster "today" is the facility's local calendar day (see
         # DUTY_LOCAL_TIMEZONE), not Django's own TIME_ZONE (UTC) —
         # timezone.localdate() can be a day off from what
-        # PatientViewSet._current_duty_by_department() actually resolves.
+        # PatientViewSet._current_duties() actually resolves.
         today = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
         DutyAssignment.objects.create(
             nurse=on_shift_nurse, department=self.dept, duty_date=today,
@@ -210,3 +211,55 @@ class OnDutyNurseResolutionTests(PatientDischargeTestCase):
         self.client.force_authenticate(self.supervisor)
         response = self.client.get(f'/api/patients/{self.patient.patient_code}/')
         self.assertIsNone(response.data['onDutyNurseId'])
+
+
+class AssignedNurseOnDutyTests(PatientDischargeTestCase):
+    """The patient's assigned nurse on shift anywhere shows as on duty -- not
+    "off duty" just because the duty is in another department."""
+
+    def today(self):
+        return timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)).date()
+
+    def on_duty_name(self):
+        self.client.force_authenticate(self.supervisor)
+        return self.client.get(f'/api/patients/{self.patient.patient_code}/').data['onDutyNurseName']
+
+    def test_assigned_nurse_on_duty_in_another_department(self):
+        other_dept, _ = Department.objects.get_or_create(name='Emergency Room')
+        DutyAssignment.objects.create(
+            nurse=self.nurse, department=other_dept, duty_date=self.today(),
+            shift='morning', start_time=dtime(0, 0), end_time=dtime(23, 59),
+        )
+        self.assertEqual(self.on_duty_name(), full_name(self.nurse))
+
+    def test_assigned_nurse_wins_over_another_nurse_in_the_patients_department(self):
+        other = make_user('other@hospital.com', 'Other', 'Nurse')
+        for nurse in (other, self.nurse):
+            DutyAssignment.objects.create(
+                nurse=nurse, department=self.dept, duty_date=self.today(),
+                shift='morning', start_time=dtime(0, 0), end_time=dtime(23, 59),
+            )
+        self.assertEqual(self.on_duty_name(), full_name(self.nurse))
+
+    def test_clocked_in_outside_scheduled_hours_counts(self):
+        # Scheduled for a window that isn't now, but the nurse clocked in.
+        now_local = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
+        start = (now_local + timedelta(hours=3)).time().replace(second=0, microsecond=0)
+        end = (now_local + timedelta(hours=4)).time().replace(second=0, microsecond=0)
+        DutyAssignment.objects.create(
+            nurse=self.nurse, department=self.dept, duty_date=self.today(),
+            shift='morning', start_time=start, end_time=end, actual_start_time=timezone.now(),
+        )
+        self.assertEqual(self.on_duty_name(), full_name(self.nurse))
+
+    def test_clocked_out_or_cancelled_is_off_duty(self):
+        DutyAssignment.objects.create(
+            nurse=self.nurse, department=self.dept, duty_date=self.today(),
+            shift='morning', start_time=dtime(0, 0), end_time=dtime(23, 59),
+            actual_start_time=timezone.now() - timedelta(hours=1), actual_end_time=timezone.now(),
+        )
+        DutyAssignment.objects.create(
+            nurse=self.nurse, department=self.dept, duty_date=self.today(),
+            shift='night', start_time=dtime(0, 0), end_time=dtime(23, 59), status='cancelled',
+        )
+        self.assertIsNone(self.on_duty_name())

@@ -1310,6 +1310,14 @@ class PatientSerializer(serializers.ModelSerializer):
         return full_name(obj.discharged_by)
 
     def _current_duty_assignment(self, obj):
+        # The patient's own assigned nurse, if they are on shift right now
+        # (in any department) -- otherwise they showed as "off duty" whenever
+        # their duty was in a different department than the patient's, or
+        # the patient had no department. Falls back to whoever is on shift
+        # in the patient's department.
+        by_nurse = self.context.get('current_duty_by_nurse') or {}
+        if obj.assigned_nurse_id and obj.assigned_nurse_id in by_nurse:
+            return by_nurse[obj.assigned_nurse_id]
         if not obj.department_id:
             return None
         lookup = self.context.get('current_duty_by_department') or {}
