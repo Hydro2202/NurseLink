@@ -15,6 +15,7 @@ import {
   Trash2,
   Pencil,
   Phone,
+  Unlock,
 } from 'lucide-react-native';
 import {
   fetchAdminAccounts,
@@ -26,6 +27,7 @@ import {
   deleteAdminAccount,
   updateAdminAccount,
   grantAdminAccountRole,
+  clearAdminAccountLoginLock,
   ApiError,
 } from '../../../services/api';
 import type { AdminAccount } from '../../../types/domain';
@@ -154,6 +156,19 @@ export default function AdminAccountsPage() {
       toast.success(`Account approved as ${ROLE_BADGE[updated.role].label}`);
     } catch (err) {
       toast.error('Could not approve', { description: err instanceof ApiError ? err.message : undefined });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleClearLock = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await clearAdminAccountLoginLock(selected.id);
+      toast.success('Sign-in unlocked', { description: `${selected.name} can try signing in again now.` });
+    } catch (err) {
+      toast.error('Could not unlock', { description: err instanceof ApiError ? err.message : undefined });
     } finally {
       setBusy(false);
     }
@@ -441,6 +456,12 @@ export default function AdminAccountsPage() {
                       <Text style={[styles.btnLabel, { color: Colors.foreground }]}>
                         {selected.isActiveStaff ? 'Deactivate' : 'Reactivate'}
                       </Text>
+                    </View>
+                  </Button>
+                  <Button variant="outline" onPress={handleClearLock} disabled={busy}>
+                    <View style={styles.btnInner}>
+                      <Unlock size={16} color={Colors.foreground} />
+                      <Text style={[styles.btnLabel, { color: Colors.foreground }]}>Unlock Sign-in</Text>
                     </View>
                   </Button>
                   <Button variant="outline" onPress={() => setPasswordOpen(true)} disabled={busy}>

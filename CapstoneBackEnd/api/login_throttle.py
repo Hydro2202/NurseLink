@@ -195,3 +195,9 @@ def _log_lockout(kind: str, *, identifier: str, ip: str, duration: int, level):
         kind, (identifier or '').strip().lower(), ip, duration, level if level is not None else '-',
         datetime.now(dt_timezone.utc).isoformat(timespec='seconds'),
     )
+
+
+def clear_account(identifier: str) -> None:
+    """Lift one account's lockout now (admin action / management command)."""
+    acct = _account_key(identifier)
+    _cache().delete_many([f'login:acct:{part}:{acct}' for part in ('lock', 'fail', 'level')])

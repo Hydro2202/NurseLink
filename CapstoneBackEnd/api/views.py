@@ -234,7 +234,11 @@ def _login_blocked_response(seconds: int, *, oauth: bool) -> Response:
     429 for a throttled login. Identical whether or not the account exists:
     it is decided before any user lookup, and says nothing about the account.
     """
-    message = login_throttle.BLOCKED_MESSAGE
+    minutes = max(1, -(-seconds // 60))
+    message = (
+        f'Too many sign-in attempts. Please wait {minutes} minute'
+        f'{"" if minutes == 1 else "s"} and try again.'
+    )
     body = (
         {'error': 'too_many_requests', 'error_description': message}
         if oauth else {'detail': message}
@@ -5427,6 +5431,15 @@ class AdminUserViewSet(viewsets.ViewSet):
             profile.user_id, previous, role, request.user.pk,
         )
         return Response(_admin_user_payload(profile))
+
+    @extend_schema(request=None, summary='Lift a "too many sign-in attempts" lockout (admin only)')
+    @action(detail=True, methods=['post'], url_path='clear-login-lock')
+    def clear_login_lock(self, request, pk=None):
+        profile = get_object_or_404(NurseProfile.objects.select_related('user'), user_id=pk)
+        for identifier in {profile.user.email, profile.user.username}:
+            if identifier:
+                login_throttle.clear_account(identifier)
+        return Response({'detail': 'Sign-in lockout cleared.'})
 
     @action(detail=True, methods=['post'])
     def deactivate(self, request, pk=None):
