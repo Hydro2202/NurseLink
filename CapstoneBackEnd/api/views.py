@@ -198,7 +198,6 @@ from .serializers import (
     UserPreferencesSerializer,
     UserSerializer,
     DISCHARGE_PLAN_FIELD_MAP,
-    discharge_plan_from_context,
     discharge_plan_has_content,
     medical_team_snapshot,
     nurse_display_name,
@@ -2819,11 +2818,6 @@ class PatientViewSet(viewsets.ModelViewSet):
         # a pending nurse through.
         if self.action in ('create', 'discharge', 'readmit', 'notify_nurse'):
             return [permissions.IsAuthenticated(), IsApprovedNurse(), IsSupervisor()]
-        # Drafting a discharge plan doesn't discharge anyone — any approved
-        # nurse can propose one for a head nurse to review/finalize via
-        # discharge above, which stays head-nurse-only.
-        if self.action == 'generate_discharge_plan':
-            return [permissions.IsAuthenticated(), IsApprovedNurse()]
         # Admin gets list/retrieve here (SAFE_METHODS) for the Admin panel's
         # Patients oversight screen — never write, since discharge/create
         # above already lock write access to a head nurse.
@@ -2917,94 +2911,6 @@ class PatientViewSet(viewsets.ModelViewSet):
             visit.save()
 
         return Response(PatientSerializer(patient, context=self.get_serializer_context()).data)
-
-    @extend_schema(
-        request=None,
-        responses={200: DischargePlanInputSerializer},
-        summary='AI-draft a Discharge Plan (M.E.T.H.O.D.) from this patient’s charted notes',
-        description=(
-            'No request body. Any approved nurse — not head-nurse-only, since this only drafts a '
-            'proposal for review, it never discharges anyone. Reads the patient’s Medications, '
-            'most recent Kardex diet entry, and most recent charting note’s documented '
-            'interventions, and asks the n8n discharge-plan workflow to turn those (plus the '
-            'patient’s recent charted assessments) into Environment / Health Teaching / '
-            'Outpatient Referral text — the workflow is instructed never to invent facts not '
-            'present in that context. If n8n is unavailable or unconfigured, falls back to a '
-            'deterministic draft built only from the fields above (Environment, Health '
-            'Teaching, and Outpatient Referral are left blank in that case — there is no '
-            'reliable source to draw them from without a model). Either way, the response is '
-            'always a draft: a nurse reviews and edits it before /discharge/ persists anything.'
-        ),
-    )
-    @action(detail=True, methods=['post'], url_path='discharge-plan-generate')
-    def generate_discharge_plan(self, request, patient_code=None):
-        patient = self.get_object()
-        fallback = discharge_plan_from_context(patient)
-
-        recent_notes = ChartingNote.objects.filter(patient=patient).order_by('-timestamp')[:10]
-        notes_context = []
-        for note in recent_notes:
-            if note.note_format == 'fdar':
-                text = '\n'.join(
-                    filter(None, [
-                        f'Focus: {note.focus}' if note.focus else '',
-                        f'Data: {note.data}' if note.data else '',
-                        f'Action: {note.action}' if note.action else '',
-                        f'Response: {note.response}' if note.response else '',
-                    ])
-                )
-            else:
-                text = note.content or ''
-            if text.strip():
-                notes_context.append({'timestamp': note.timestamp.isoformat(), 'text': text.strip()})
-
-        payload = {
-            'patientId': patient.patient_code,
-            'patientName': patient.name,
-            'diagnosis': patient.diagnosis,
-            'medications': list(patient.medications or []),
-            'allergies': list(patient.allergies or []),
-            'currentDraft': fallback,
-            'chartedNotes': notes_context,
-            'instructions': (
-                'Draft a M.E.T.H.O.D. discharge plan (Medications, Environment, Treatment, '
-                'Health Teaching, Outpatient Referral, Diet) as six string fields named '
-                'medications, environment, treatment, healthTeaching, outpatientReferral, diet. '
-                'Use ONLY the medications, diagnosis, allergies, and chartedNotes provided — do '
-                'not invent medications, appointments, contact information, or clinical facts not '
-                'present in that input. currentDraft already has Medications/Treatment/Diet '
-                'filled from the patient record where available; keep those unless chartedNotes '
-                'clearly supersedes them, and focus your own drafting on Environment, Health '
-                'Teaching, and Outpatient Referral, which currentDraft leaves blank. If nothing '
-                'in the input supports a section, return it as an empty string rather than '
-                'inventing content.'
-            ),
-        }
-
-        logger.info('discharge-plan-generate start patient=%s nurse=%s', patient.patient_code, request.user.pk)
-        started = time.monotonic()
-        try:
-            result = call_workflow('discharge_plan', payload)
-        except N8nError as exc:
-            # Unlike chart-note generation, the fallback here is never
-            # fabricated — it's real stored data reorganized — so an n8n
-            # outage degrades to a smaller draft instead of failing the
-            # request outright.
-            logger.warning(
-                'discharge-plan-generate n8n unavailable patient=%s type=%s after=%.2fs: %s — using fallback',
-                patient.patient_code, type(exc).__name__, time.monotonic() - started, exc,
-            )
-            result = {}
-
-        draft = dict(fallback)
-        if isinstance(result, dict):
-            for camel in DISCHARGE_PLAN_FIELD_MAP:
-                value = result.get(camel)
-                if isinstance(value, str) and value.strip():
-                    draft[camel] = value.strip()
-
-        draft['aiGenerated'] = True
-        return Response(draft)
 
     @extend_schema(
         request=inline_serializer(

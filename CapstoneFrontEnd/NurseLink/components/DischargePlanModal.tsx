@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, View, Text, ScrollView, StyleSheet, Pressable, TextInput, ActivityIndicator } from 'react-native';
-import { ClipboardCheck, Sparkles, X } from 'lucide-react-native';
+import { Modal, View, Text, ScrollView, StyleSheet, Pressable, TextInput } from 'react-native';
+import { ClipboardCheck, X } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Alert, AlertDescription } from './Alert';
-import { generateDischargePlan, ApiError, type DischargePlanDraft } from '../services/api';
+import type { DischargePlanInput } from '../services/api';
 import type { Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 
@@ -68,7 +68,7 @@ interface DischargePlanModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   patient: Patient | null;
-  onConfirm: (plan: DischargePlanDraft) => Promise<void>;
+  onConfirm: (plan: DischargePlanInput) => Promise<void>;
   /** Defaults to "Complete Discharge". */
   confirmLabel?: string;
 }
@@ -76,16 +76,13 @@ interface DischargePlanModalProps {
 export function DischargePlanModal({ open, onOpenChange, patient, onConfirm, confirmLabel }: DischargePlanModalProps) {
   const toast = useToast();
   const [fields, setFields] = useState<Record<PlanFieldKey, string>>(EMPTY_PLAN);
-  const [aiGenerated, setAiGenerated] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<PlanFieldKey, string>>>({});
-  const [generating, setGenerating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     (() => {
       if (!open) {
         setFields(EMPTY_PLAN);
-        setAiGenerated(false);
         setErrors({});
         setSubmitting(false);
       }
@@ -95,36 +92,6 @@ export function DischargePlanModal({ open, onOpenChange, patient, onConfirm, con
   const setField = (key: PlanFieldKey, value: string) => {
     setFields((prev) => ({ ...prev, [key]: value }));
     setErrors((prev) => ({ ...prev, [key]: undefined }));
-    // Once the nurse edits anything, the plan is no longer purely AI output —
-    // it's been reviewed and changed, so the record should say "manual" too.
-    setAiGenerated(false);
-  };
-
-  const handleGenerate = async () => {
-    if (!patient) return;
-    setGenerating(true);
-    try {
-      const draft: DischargePlanDraft = await generateDischargePlan(patient.id);
-      setFields({
-        medications: draft.medications || '',
-        environment: draft.environment || '',
-        treatment: draft.treatment || '',
-        healthTeaching: draft.healthTeaching || '',
-        outpatientReferral: draft.outpatientReferral || '',
-        diet: draft.diet || '',
-      });
-      setAiGenerated(true);
-      setErrors({});
-      toast.success('Discharge plan drafted', {
-        description: 'Review each section below — fill in anything left blank before discharging.',
-      });
-    } catch (error) {
-      toast.error('Could not draft a discharge plan', {
-        description: error instanceof ApiError ? error.message : 'Please try again, or fill it in manually.',
-      });
-    } finally {
-      setGenerating(false);
-    }
   };
 
   const handleConfirm = async () => {
@@ -144,13 +111,13 @@ export function DischargePlanModal({ open, onOpenChange, patient, onConfirm, con
 
     setSubmitting(true);
     try {
-      await onConfirm({ ...fields, aiGenerated });
+      await onConfirm({ ...fields });
     } finally {
       setSubmitting(false);
     }
   };
 
-  const busy = generating || submitting;
+  const busy = submitting;
 
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => !busy && onOpenChange(false)}>
@@ -178,31 +145,6 @@ export function DischargePlanModal({ open, onOpenChange, patient, onConfirm, con
                   All six sections are required before this patient can be discharged.
                 </AlertDescription>
               </Alert>
-
-              <Button
-                variant="outline"
-                onPress={handleGenerate}
-                disabled={busy || !patient}
-                style={styles.aiButton}
-              >
-                {generating ? (
-                  <View style={styles.btnInner}>
-                    <ActivityIndicator size="small" color={Colors.blue600} />
-                    <Text style={styles.aiButtonText}>Drafting from charted notes...</Text>
-                  </View>
-                ) : (
-                  <View style={styles.btnInner}>
-                    <Sparkles size={16} color={Colors.blue600} />
-                    <Text style={styles.aiButtonText}>AI-Generate Discharge Plan</Text>
-                  </View>
-                )}
-              </Button>
-              {aiGenerated ? (
-                <Text style={styles.aiNote}>
-                  Drafted from this patient&apos;s medications, diet, and charted notes. Review each
-                  section before discharging — editing any field marks it reviewed.
-                </Text>
-              ) : null}
 
               {FIELDS.map(({ key, letter, label, placeholder, hint }) => (
                 <View key={key} style={styles.field}>
@@ -289,29 +231,6 @@ const styles = StyleSheet.create({
   },
   scroll: { flexGrow: 0 },
   form: { gap: 16, paddingBottom: 8 },
-  aiButton: {
-    borderColor: Colors.blue200,
-    backgroundColor: Colors.blue50,
-  },
-  aiButtonText: {
-    color: Colors.blue700,
-    fontWeight: '600',
-    fontSize: 14,
-    flexShrink: 1,
-  },
-  aiNote: {
-    fontSize: 12,
-    color: Colors.blue700,
-    lineHeight: 16,
-    marginTop: -8,
-  },
-  btnInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    minWidth: 0,
-    flexShrink: 1,
-  },
   field: { gap: 6 },
   labelRow: {
     flexDirection: 'row',

@@ -728,7 +728,6 @@ export async function dischargePatient(
     healthTeaching: string;
     outpatientReferral: string;
     diet: string;
-    aiGenerated?: boolean;
   }
 ): Promise<Patient> {
   return apiRequest<Patient>(`/patients/${patientCode}/discharge/`, {
@@ -737,25 +736,15 @@ export async function dischargePatient(
   });
 }
 
-export type DischargePlanDraft = {
+/** The M.E.T.H.O.D. discharge plan the nurse types before discharging. */
+export type DischargePlanInput = {
   medications: string;
   environment: string;
   treatment: string;
   healthTeaching: string;
   outpatientReferral: string;
   diet: string;
-  aiGenerated: boolean;
 };
-
-/** Any approved nurse. AI-drafts a Discharge Plan from this patient's medications,
- * most recent Kardex diet entry, and charted notes — a starting point to review/edit,
- * never persisted until dischargePatient() is called. */
-export async function generateDischargePlan(patientCode: string): Promise<DischargePlanDraft> {
-  return apiRequest<DischargePlanDraft>(`/patients/${patientCode}/discharge-plan-generate/`, {
-    method: 'POST',
-    timeoutMs: 60000,
-  });
-}
 
 /** Head-nurse-only. Reactivates a discharged patient under their existing
  * profile (same id) for a new admission, rather than creating a duplicate. */

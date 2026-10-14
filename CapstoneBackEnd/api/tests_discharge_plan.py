@@ -5,19 +5,16 @@ Teaching, Outpatient Referral, Diet.
 Persisted onto the PatientVisit being closed by PatientViewSet.discharge
 (see api/tests_patient_discharge.py / api/tests_patient_visits.py for the
 discharge action's own behavior — these tests focus on the plan itself:
-required-vs-optional, visibility via /visits/, and the AI-draft endpoint's
-fallback when n8n is unconfigured).
+required-vs-optional and visibility via /visits/). The plan is always typed
+by the nurse; there is no AI-draft endpoint.
 """
-
-from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .models import ChartingNote, KardexRecord, NurseProfile, Patient, PatientVisit
-from .n8n_client import N8nWorkflowOffline
+from .models import NurseProfile, Patient, PatientVisit
 
 DISCHARGE_PLAN_PAYLOAD = {
     'dischargePlan': {
@@ -135,71 +132,8 @@ class DischargePlanVisibleInVisitHistoryTests(DischargePlanTestCase):
         self.assertIsNone(open_visit['dischargePlan'])
 
 
-class GenerateDischargePlanTests(DischargePlanTestCase):
-    def test_any_approved_nurse_can_generate_a_draft_not_just_head_nurse(self):
-        self.client.force_authenticate(self.nurse)
-        with patch('api.views.call_workflow', side_effect=N8nWorkflowOffline()):
-            response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge-plan-generate/')
-        self.assertEqual(response.status_code, 200, response.content)
-
-    def test_draft_pulls_medications_from_the_patient_record(self):
-        self.client.force_authenticate(self.nurse)
-        with patch('api.views.call_workflow', side_effect=N8nWorkflowOffline()):
-            # n8n offline -> N8nError, caught internally, falls back to the
-            # deterministic draft rather than failing the request.
-            response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge-plan-generate/')
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertIn('Metformin 500mg', response.data['medications'])
-        self.assertIn('Lisinopril 10mg', response.data['medications'])
-        self.assertTrue(response.data['aiGenerated'])
-        # No reliable source for these in the fallback — left blank rather
-        # than invented.
-        self.assertEqual(response.data['environment'], '')
-        self.assertEqual(response.data['healthTeaching'], '')
-        self.assertEqual(response.data['outpatientReferral'], '')
-
-    def test_draft_pulls_diet_from_the_most_recent_kardex_record(self):
-        KardexRecord.objects.create(
-            patient=self.patient, last_name='Patient', first_name='Test',
-            diet='NPO except for medications',
-        )
-        self.client.force_authenticate(self.nurse)
-        with patch('api.views.call_workflow', side_effect=N8nWorkflowOffline()):
-            response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge-plan-generate/')
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.data['diet'], 'NPO except for medications')
-
-    def test_draft_pulls_treatment_from_the_latest_fdar_notes_action_field(self):
-        ChartingNote.objects.create(
-            note_code='C-9001', patient=self.patient, patient_name=self.patient.name,
-            nurse=self.nurse, nurse_name='Juan Dela Cruz', timestamp=timezone.now(),
-            note_type='progress', content='...', note_format='fdar',
-            focus='Wound care', data='Incision clean, dry, intact.',
-            action='Dressing changed, site cleaned with saline.', response='Tolerated well.',
-        )
-        self.client.force_authenticate(self.nurse)
-        with patch('api.views.call_workflow', side_effect=N8nWorkflowOffline()):
-            response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge-plan-generate/')
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertIn('Dressing changed', response.data['treatment'])
-
-    def test_workflow_supplied_fields_override_the_fallback(self):
-        self.client.force_authenticate(self.nurse)
-        with patch('api.views.call_workflow') as mock_call:
-            mock_call.return_value = {
-                'environment': 'Second-floor walk-up apartment; no elevator.',
-                'healthTeaching': 'Taught proper insulin injection technique.',
-                'outpatientReferral': 'Cardiology follow-up in 2 weeks.',
-            }
-            response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge-plan-generate/')
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.data['environment'], 'Second-floor walk-up apartment; no elevator.')
-        self.assertEqual(response.data['healthTeaching'], 'Taught proper insulin injection technique.')
-        self.assertEqual(response.data['outpatientReferral'], 'Cardiology follow-up in 2 weeks.')
-        # Fallback-sourced fields stay intact when the workflow doesn't
-        # mention them.
-        self.assertIn('Metformin 500mg', response.data['medications'])
-
-    def test_unauthenticated_cannot_generate(self):
+class NoAiDraftEndpointTests(DischargePlanTestCase):
+    def test_ai_draft_endpoint_is_gone(self):
+        self.client.force_authenticate(self.supervisor)
         response = self.client.post(f'/api/patients/{self.patient.patient_code}/discharge-plan-generate/')
-        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.status_code, 404)
