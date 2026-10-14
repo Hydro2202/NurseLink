@@ -11,7 +11,7 @@ from django.core.mail import send_mail
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.core.cache import cache
 from django.db.models import Count, Max, Prefetch, Q
 from django.utils import timezone
@@ -358,7 +358,19 @@ class SignupV2RegisterView(APIView):
     def post(self, request):
         serializer = SignupV2RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
+        try:
+            user = serializer.save()
+        except IntegrityError:
+            # The serializer's own uniqueness check (validate_personalEmail)
+            # already rejects a known-duplicate email, but two submissions of
+            # the exact same email at the exact same instant can both pass
+            # that check before either has committed a row — the second
+            # create_user() then hits the database's real unique constraint
+            # on username/email instead. Surface that race the same way as
+            # the ordinary validation error, not as a raw 500.
+            raise serializers.ValidationError(
+                {'personalEmail': ['A user with this email already exists.']}
+            )
         # Same fan-out as the old SignupView — the admin approval queue is
         # generic (keys off NurseProfile.approval_status), so this new
         # pending account needs no separate admin-side handling.
