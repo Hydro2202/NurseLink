@@ -39,6 +39,7 @@ import type { Doctor, DuplicatePatientMatch, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 import { assessRiskLevel } from '../utils/riskLevel';
 import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
+import { sanitizeName } from '../utils/textSanitize';
 import { KardexLabsAndMedications } from './KardexLabsAndMedications';
 import { RiskBadge } from './RiskBadge';
 
@@ -363,13 +364,25 @@ export function PatientKardexModal({
             <Text style={styles.groupHeading}>Personal Information</Text>
             <View style={styles.rowWrap}>
               <View style={[styles.field, styles.colThird]}>
-                <Input label="Last Name *" value={form.lastName} onChangeText={(v) => setField('lastName', v)} />
+                <Input
+                  label="Last Name *"
+                  value={form.lastName}
+                  onChangeText={(v) => setField('lastName', sanitizeName(v))}
+                />
               </View>
               <View style={[styles.field, styles.colThird]}>
-                <Input label="First Name *" value={form.firstName} onChangeText={(v) => setField('firstName', v)} />
+                <Input
+                  label="First Name *"
+                  value={form.firstName}
+                  onChangeText={(v) => setField('firstName', sanitizeName(v))}
+                />
               </View>
               <View style={[styles.field, styles.colThird]}>
-                <Input label="Middle Name" value={form.middleName} onChangeText={(v) => setField('middleName', v)} />
+                <Input
+                  label="Middle Name"
+                  value={form.middleName}
+                  onChangeText={(v) => setField('middleName', sanitizeName(v))}
+                />
               </View>
             </View>
             <View style={styles.rowWrap}>

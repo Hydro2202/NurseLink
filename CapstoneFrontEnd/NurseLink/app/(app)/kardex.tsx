@@ -52,6 +52,7 @@ import {
 } from '../../services/api';
 import type { DuplicatePatientMatch, KardexHistory } from '../../types/domain';
 import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../../utils/bmi';
+import { sanitizeName } from '../../utils/textSanitize';
 
 const STATUS_BADGE: Record<
   KardexHistory['status'],
@@ -573,7 +574,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
               <RequiredLabel text="Last Name" />
               <Input
                 value={lastName}
-                onChangeText={setLastName}
+                onChangeText={(v) => setLastName(sanitizeName(v))}
                 placeholder="Enter last name"
               />
             </View>
@@ -581,7 +582,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
               <RequiredLabel text="First Name" />
               <Input
                 value={firstName}
-                onChangeText={setFirstName}
+                onChangeText={(v) => setFirstName(sanitizeName(v))}
                 placeholder="Enter first name"
               />
             </View>
@@ -589,7 +590,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
               <FieldLabel text="Middle Name" />
               <Input
                 value={middleName}
-                onChangeText={setMiddleName}
+                onChangeText={(v) => setMiddleName(sanitizeName(v))}
                 placeholder="Enter middle name"
               />
             </View>
