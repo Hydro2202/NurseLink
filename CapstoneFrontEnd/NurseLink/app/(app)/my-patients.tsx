@@ -22,6 +22,7 @@ import {
   Trash2,
   Building2,
   FlaskConical,
+  ListChecks,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { fetchPatients, deletePatient, ApiError } from '../../services/api';
@@ -329,8 +330,10 @@ export default function MyPatientsPage() {
                   <FlaskConical size={14} color={Colors.blue700} />
                   <Text style={styles.actionText}>Labs &amp; Meds</Text>
                 </Button>
-                <Pressable
-                  style={styles.viewTasksBtn}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  style={styles.actionBtn}
                   onPress={() =>
                     router.push({
                       pathname: '/(app)/tasks',
@@ -338,8 +341,9 @@ export default function MyPatientsPage() {
                     } as any)
                   }
                 >
-                  <Text style={styles.viewTasksText}>View tasks</Text>
-                </Pressable>
+                  <ListChecks size={14} color={Colors.blue700} />
+                  <Text style={styles.actionText}>View Tasks</Text>
+                </Button>
               </View>
             </CardContent>
           </Card>
@@ -465,13 +469,6 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   alertText: { flex: 1, fontSize: 12, color: Colors.orange700 },
-  viewTasksBtn: {
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    paddingTop: 10,
-    alignItems: 'center',
-  },
-  viewTasksText: { fontSize: 13, fontWeight: '600', color: Colors.blue600 },
   actionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   actionBtn: { minHeight: 36 },
   actionText: { fontSize: 12, fontWeight: '600', color: Colors.blue700 },

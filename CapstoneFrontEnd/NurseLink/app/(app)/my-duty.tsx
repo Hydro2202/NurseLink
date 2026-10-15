@@ -243,7 +243,21 @@ export default function MyDutyPage() {
       const s = computeLiveStatus(a, now);
       return s === 'onduty' || s === 'overtime';
     });
-    return active || relevant.find((a) => a.dutyDate === today) || null;
+    if (active) return active;
+
+    // Nothing currently in progress — among today's own assignments (not
+    // yesterday's spillover), a not-yet-started shift always wins over one
+    // that's already completed. Without this, a head nurse assigning a
+    // second shift later the same day (e.g. a 5–10pm after the 7am–3pm one
+    // already finished) stayed invisible: the plain first-match below kept
+    // returning whichever row the API happened to list first, which was the
+    // finished one. Sorted soonest-first so multiple upcoming shifts still
+    // resolve to the next one, not an arbitrary one.
+    const todays = relevant
+      .filter((a) => a.dutyDate === today)
+      .sort((a, b) => scheduledStart(a).getTime() - scheduledStart(b).getTime());
+    const upcoming = todays.find((a) => computeLiveStatus(a, now) === 'upcoming');
+    return upcoming || todays[todays.length - 1] || null;
   }, [assignments, today, yesterday, now]);
 
   const todayLiveStatus = todayAssignment ? computeLiveStatus(todayAssignment, now) : null;
