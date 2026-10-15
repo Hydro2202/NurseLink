@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AppState, AppStateStatus, Alert, Platform } from 'react-native';
+import { AppState, AppStateStatus, Alert, Platform, View, StyleSheet } from 'react-native';
 import {
   fetchMe,
   loginRequest,
@@ -186,6 +186,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [user, logout, updateActivity, notify]);
 
+  // The AppState listener above only resets the clock when the app is
+  // *reopened* — it never fires while the nurse is actively using an
+  // already-foregrounded app, so a nurse who never backgrounds the app got
+  // force-logged-out after exactly 30 minutes regardless of how much they'd
+  // actually been tapping around. mousemove/keydown/scroll/click/touch on
+  // web cover the desktop/browser case (mouse-only use, typing a long note
+  // without re-clicking); the capture-phase responder props on the wrapper
+  // View below cover real taps on native. Neither claims the responder
+  // (returns false) or calls preventDefault, so normal touch/click handling
+  // for every button and input is completely unaffected.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const events: (keyof WindowEventMap)[] = [
+      'mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click', 'wheel',
+    ];
+    events.forEach((event) => window.addEventListener(event, updateActivity, { passive: true }));
+    return () => {
+      events.forEach((event) => window.removeEventListener(event, updateActivity));
+    };
+  }, [updateActivity]);
+
   // Rethrows on failure (same reasoning as updateUser below): a pending or
   // rejected account gets a real, specific message from LoginView — that is
   // lost if this just returns false, leaving the caller with nothing but
@@ -279,10 +300,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateActivity,
       }}
     >
-      {children}
+      <View
+        style={styles.flex}
+        onStartShouldSetResponderCapture={() => {
+          updateActivity();
+          return false;
+        }}
+        onMoveShouldSetResponderCapture={() => {
+          updateActivity();
+          return false;
+        }}
+      >
+        {children}
+      </View>
     </AuthContext.Provider>
   );
 };
+
+const styles = StyleSheet.create({
+  flex: { flex: 1 },
+});
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
