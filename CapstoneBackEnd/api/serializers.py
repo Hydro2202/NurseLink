@@ -22,6 +22,7 @@ from .models import (
     FaceVerificationAttempt,
     HandoverNote,
     HandoverPatient,
+    KardexDepartmentVisit,
     KardexLaboratory,
     KardexMedication,
     KardexRecord,
@@ -1172,13 +1173,15 @@ class PatientSerializer(serializers.ModelSerializer):
         source='weight_kg', max_digits=5, decimal_places=1, required=False, allow_null=True
     )
     bmi = serializers.SerializerMethodField(read_only=True)
-    # Kardex Laboratories / Medication Intake sections — read-only here;
-    # writes go through their own KardexLaboratoryViewSet/
-    # KardexMedicationViewSet/MedicationIntakeViewSet endpoints, not through
-    # a Patient update, same split PatientSerializer already has for e.g.
-    # assignedDoctors.
+    # Kardex Laboratories / Medication Intake / Required Department Visits
+    # sections — read-only here; writes go through their own
+    # KardexLaboratoryViewSet/KardexMedicationViewSet/
+    # KardexDepartmentVisitViewSet/MedicationIntakeViewSet endpoints, not
+    # through a Patient update, same split PatientSerializer already has
+    # for e.g. assignedDoctors.
     laboratories = serializers.SerializerMethodField(read_only=True)
     medicationOrders = serializers.SerializerMethodField(read_only=True)
+    departmentVisits = serializers.SerializerMethodField(read_only=True)
     assignedNurseId = serializers.SerializerMethodField(read_only=True)
     assignedNurseName = serializers.SerializerMethodField(read_only=True)
     assignedBy = serializers.SerializerMethodField(read_only=True)
@@ -1238,6 +1241,7 @@ class PatientSerializer(serializers.ModelSerializer):
             'bmi',
             'laboratories',
             'medicationOrders',
+            'departmentVisits',
             'allergies',
             'medications',
             'alerts',
@@ -1324,6 +1328,11 @@ class PatientSerializer(serializers.ModelSerializer):
         prefetched = getattr(obj, 'prefetched_medication_orders', None)
         meds = prefetched if prefetched is not None else obj.medication_orders.all()
         return KardexMedicationSerializer(meds, many=True, context=self.context).data
+
+    def get_departmentVisits(self, obj):
+        prefetched = getattr(obj, 'prefetched_department_visits', None)
+        visits = prefetched if prefetched is not None else obj.department_visits.ordered_for_display()
+        return KardexDepartmentVisitSerializer(visits, many=True, context=self.context).data
 
     def get_assignedDoctors(self, obj):
         """The patient's Kardex care team — see PatientDoctor. Reads the
@@ -3683,9 +3692,17 @@ class KardexMedicationSerializer(serializers.ModelSerializer):
     dose = serializers.CharField(required=False, allow_blank=True)
     route = serializers.ChoiceField(choices=KardexMedication.ROUTE_CHOICES, required=False, default='Oral')
     frequency = serializers.CharField(required=False, allow_blank=True)
+    scheduledTimes = serializers.CharField(source='scheduled_times', required=False, allow_blank=True)
     startDate = serializers.DateField(source='start_date')
     endDate = serializers.DateField(source='end_date', required=False, allow_null=True)
-    isActive = serializers.BooleanField(source='is_active', required=False)
+    # Blank on create -> the patient's attending physician, see create()
+    # below. Never required: an order with nobody recorded is still valid.
+    prescribedBy = serializers.CharField(source='prescribed_by', required=False, allow_blank=True)
+    status = serializers.ChoiceField(choices=KardexMedication.STATUS_CHOICES, required=False, default='ACTIVE')
+    # Derived from `status` (see KardexMedication.save()) — read-only so a
+    # client can't set it independently of status and have the model
+    # silently override it back on save; status is the one write path.
+    isActive = serializers.BooleanField(source='is_active', read_only=True)
     remarks = serializers.CharField(required=False, allow_blank=True)
     createdByName = serializers.SerializerMethodField(read_only=True)
     createdByRole = serializers.SerializerMethodField(read_only=True)
@@ -3700,8 +3717,8 @@ class KardexMedicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = KardexMedication
         fields = [
-            'id', 'patientId', 'medicationName', 'dose', 'route', 'frequency',
-            'startDate', 'endDate', 'isActive', 'remarks',
+            'id', 'patientId', 'medicationName', 'dose', 'route', 'frequency', 'scheduledTimes',
+            'startDate', 'endDate', 'prescribedBy', 'status', 'isActive', 'remarks',
             'createdByName', 'createdByRole', 'updatedByName', 'updatedByRole',
             'createdAt', 'updatedAt', 'lastGiven', 'intakes', 'isOverdue',
         ]
@@ -3749,6 +3766,9 @@ class KardexMedicationSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        if not (validated_data.get('prescribed_by') or '').strip():
+            patient = validated_data.get('patient')
+            validated_data['prescribed_by'] = (patient.attending_physician or '') if patient else ''
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             validated_data['created_by'] = request.user
@@ -3759,6 +3779,72 @@ class KardexMedicationSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             validated_data['updated_by'] = request.user
+        return super().update(instance, validated_data)
+
+
+class KardexDepartmentVisitSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(read_only=True)
+    patientId = serializers.SlugRelatedField(
+        source='patient', slug_field='patient_code', queryset=Patient.objects.all(), write_only=True
+    )
+    departmentId = serializers.PrimaryKeyRelatedField(source='department', queryset=Department.objects.all())
+    departmentName = serializers.CharField(source='department.name', read_only=True)
+    purpose = serializers.CharField()
+    scheduledDatetime = serializers.DateTimeField(source='scheduled_datetime', required=False, allow_null=True)
+    priority = serializers.ChoiceField(
+        choices=KardexDepartmentVisit.PRIORITY_CHOICES, required=False, default='ROUTINE'
+    )
+    preparationNotes = serializers.CharField(source='preparation_notes', required=False, allow_blank=True)
+    status = serializers.ChoiceField(choices=KardexDepartmentVisit.STATUS_CHOICES, required=False, default='PENDING')
+    orderedBy = serializers.CharField(source='ordered_by', required=False, allow_blank=True)
+    completedAt = serializers.DateTimeField(source='completed_at', read_only=True, allow_null=True)
+    createdByName = serializers.SerializerMethodField(read_only=True)
+    createdByRole = serializers.SerializerMethodField(read_only=True)
+    updatedByName = serializers.SerializerMethodField(read_only=True)
+    updatedByRole = serializers.SerializerMethodField(read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+
+    class Meta:
+        model = KardexDepartmentVisit
+        fields = [
+            'id', 'patientId', 'departmentId', 'departmentName', 'purpose', 'scheduledDatetime',
+            'priority', 'preparationNotes', 'status', 'orderedBy', 'completedAt',
+            'createdByName', 'createdByRole', 'updatedByName', 'updatedByRole', 'createdAt', 'updatedAt',
+        ]
+
+    def get_createdByName(self, obj):
+        return nurse_display_name(obj.created_by) if obj.created_by_id else None
+
+    def get_createdByRole(self, obj):
+        return editor_role_label(obj.created_by) if obj.created_by_id else None
+
+    def get_updatedByName(self, obj):
+        return nurse_display_name(obj.updated_by) if obj.updated_by_id else None
+
+    def get_updatedByRole(self, obj):
+        return editor_role_label(obj.updated_by) if obj.updated_by_id else None
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
+            validated_data['updated_by'] = request.user
+        if validated_data.get('status') == 'DONE' and not validated_data.get('completed_at'):
+            validated_data['completed_at'] = timezone.now()
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['updated_by'] = request.user
+        new_status = validated_data.get('status')
+        if new_status == 'DONE' and instance.status != 'DONE':
+            validated_data['completed_at'] = timezone.now()
+        elif new_status and new_status != 'DONE':
+            # Reopening (e.g. Scheduled after being marked Done by mistake)
+            # clears the stale completion time rather than leaving it behind.
+            validated_data['completed_at'] = None
         return super().update(instance, validated_data)
 
 
@@ -3826,6 +3912,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
     # Patient rather than this record.
     laboratories = serializers.SerializerMethodField(read_only=True)
     medicationOrders = serializers.SerializerMethodField(read_only=True)
+    departmentVisits = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = KardexRecord
@@ -3844,6 +3931,7 @@ class KardexRecordSerializer(serializers.ModelSerializer):
             'bmi',
             'laboratories',
             'medicationOrders',
+            'departmentVisits',
             'birthday',
             'religion',
             'room',
@@ -3900,6 +3988,13 @@ class KardexRecordSerializer(serializers.ModelSerializer):
             return []
         return KardexMedicationSerializer(
             obj.patient.medication_orders.all(), many=True, context=self.context
+        ).data
+
+    def get_departmentVisits(self, obj):
+        if not obj.patient_id:
+            return []
+        return KardexDepartmentVisitSerializer(
+            obj.patient.department_visits.ordered_for_display(), many=True, context=self.context
         ).data
 
     def validate_heightCm(self, value):

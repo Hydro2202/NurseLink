@@ -12,6 +12,7 @@ import type {
   ChartingNote,
   ChartingHistoryDate,
   Department,
+  DepartmentVisit,
   Doctor,
   DutyAssignment,
   EligibleReceiverGroup,
@@ -1346,6 +1347,35 @@ export async function recordMedicationIntake(
   data: Partial<MedicationIntakeEntry> & { medicationId: number }
 ): Promise<MedicationIntakeEntry> {
   return apiRequest<MedicationIntakeEntry>('/medication-intakes/', { method: 'POST', body: data });
+}
+
+// Required Department Visits — same hangs-off-the-patient pattern as
+// Laboratories/Medications above; see api/models.py's KardexDepartmentVisit.
+
+export async function fetchDepartmentVisits(
+  patientId: string,
+  options?: { status?: DepartmentVisit['status'] }
+): Promise<DepartmentVisit[]> {
+  const params = new URLSearchParams({ patientId });
+  if (options?.status) params.set('status', options.status);
+  return apiRequest<DepartmentVisit[]>(`/kardex-department-visits/?${params}`);
+}
+
+export async function createDepartmentVisit(
+  data: Partial<DepartmentVisit> & { patientId: string; departmentId: number }
+): Promise<DepartmentVisit> {
+  return apiRequest<DepartmentVisit>('/kardex-department-visits/', { method: 'POST', body: data });
+}
+
+export async function updateDepartmentVisit(
+  id: number,
+  data: Partial<DepartmentVisit>
+): Promise<DepartmentVisit> {
+  return apiRequest<DepartmentVisit>(`/kardex-department-visits/${id}/`, { method: 'PATCH', body: data });
+}
+
+export async function deleteDepartmentVisit(id: number): Promise<void> {
+  await apiRequest(`/kardex-department-visits/${id}/`, { method: 'DELETE' });
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Modal as RNModal } from 'react-native';
-import { FlaskConical, Pill, Plus, X, History as HistoryIcon, ChevronDown, ChevronUp } from 'lucide-react-native';
+import {
+  FlaskConical,
+  Pill,
+  Building2,
+  Plus,
+  X,
+  History as HistoryIcon,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react-native';
 import { Card, CardContent, CardHeader, CardTitle } from './Card';
 import { Button } from './Button';
 import { Input } from './Input';
@@ -22,9 +31,14 @@ import {
   updateMedication,
   deleteMedication,
   recordMedicationIntake,
+  fetchDepartmentVisits,
+  createDepartmentVisit,
+  updateDepartmentVisit,
+  deleteDepartmentVisit,
+  fetchDepartments,
   ApiError,
 } from '../services/api';
-import type { LabEntry, MedicationOrder, MedicationIntakeEntry } from '../types/domain';
+import type { LabEntry, MedicationOrder, MedicationIntakeEntry, DepartmentVisit, Department } from '../types/domain';
 
 interface Props {
   /** The Patient's patient_code — labs/medications are linked to the
@@ -53,6 +67,54 @@ const ROUTE_OPTIONS = ['Oral', 'IV', 'IM', 'SubQ', 'Topical', 'Inhalation', 'Oth
   label: r,
   value: r,
 }));
+
+const MED_STATUS_BADGE: Record<
+  MedicationOrder['status'],
+  { label: string; variant: 'success' | 'warning' | 'secondary' }
+> = {
+  ACTIVE: { label: 'Active', variant: 'success' },
+  ON_HOLD: { label: 'On Hold', variant: 'warning' },
+  DISCONTINUED: { label: 'Discontinued', variant: 'secondary' },
+};
+
+const VISIT_PRIORITY_BADGE: Record<
+  DepartmentVisit['priority'],
+  { label: string; variant: 'destructive' | 'warning' | 'secondary' }
+> = {
+  STAT: { label: 'STAT', variant: 'destructive' },
+  URGENT: { label: 'Urgent', variant: 'warning' },
+  ROUTINE: { label: 'Routine', variant: 'secondary' },
+};
+
+const VISIT_STATUS_BADGE: Record<
+  DepartmentVisit['status'],
+  { label: string; variant: 'warning' | 'success' | 'secondary' }
+> = {
+  PENDING: { label: 'Pending', variant: 'warning' },
+  SCHEDULED: { label: 'Scheduled', variant: 'warning' },
+  DONE: { label: 'Done', variant: 'success' },
+  CANCELLED: { label: 'Cancelled', variant: 'secondary' },
+};
+
+const VISIT_PRIORITY_ORDER: Record<DepartmentVisit['priority'], number> = { STAT: 0, URGENT: 1, ROUTINE: 2 };
+
+/** Pending/Scheduled first, by priority (STAT -> Urgent -> Routine) then
+ * scheduled time; Done/Cancelled pushed to the end — the server already
+ * sorts this way (KardexDepartmentVisitQuerySet.ordered_for_display), this
+ * just keeps the list correctly ordered after a local optimistic update. */
+function sortVisits(visits: DepartmentVisit[]): DepartmentVisit[] {
+  const notDone = (v: DepartmentVisit) => v.status === 'PENDING' || v.status === 'SCHEDULED';
+  return [...visits].sort((a, b) => {
+    if (notDone(a) !== notDone(b)) return notDone(a) ? -1 : 1;
+    if (notDone(a)) {
+      if (VISIT_PRIORITY_ORDER[a.priority] !== VISIT_PRIORITY_ORDER[b.priority]) {
+        return VISIT_PRIORITY_ORDER[a.priority] - VISIT_PRIORITY_ORDER[b.priority];
+      }
+      return (a.scheduledDatetime || '').localeCompare(b.scheduledDatetime || '');
+    }
+    return (b.createdAt || '').localeCompare(a.createdAt || '');
+  });
+}
 
 function fmtDate(iso?: string | null): string {
   return iso ? formatDisplayDate(iso) : '—';
@@ -100,14 +162,24 @@ export function KardexLabsAndMedications({ patientId }: Props) {
 
   const [labs, setLabs] = useState<LabEntry[]>([]);
   const [meds, setMeds] = useState<MedicationOrder[]>([]);
+  const [visits, setVisits] = useState<DepartmentVisit[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [showDiscontinued, setShowDiscontinued] = useState(false);
+  const [showCompletedVisits, setShowCompletedVisits] = useState(false);
 
   const reload = useCallback(() => {
-    Promise.all([fetchLaboratories(patientId), fetchMedications(patientId)])
-      .then(([labsData, medsData]) => {
+    Promise.all([
+      fetchLaboratories(patientId),
+      fetchMedications(patientId),
+      fetchDepartmentVisits(patientId),
+      fetchDepartments(),
+    ])
+      .then(([labsData, medsData, visitsData, departmentsData]) => {
         setLabs(labsData);
         setMeds(medsData);
+        setVisits(visitsData);
+        setDepartments(departmentsData);
       })
       .catch((err) => {
         toast.error('Failed to load labs/medications', {
@@ -132,23 +204,64 @@ export function KardexLabsAndMedications({ patientId }: Props) {
   const [intakeMedication, setIntakeMedication] = useState<MedicationOrder | null>(null);
   const [historyMedication, setHistoryMedication] = useState<MedicationOrder | null>(null);
 
+  const [visitModalOpen, setVisitModalOpen] = useState(false);
+  const [editingVisit, setEditingVisit] = useState<DepartmentVisit | null>(null);
+  const [deletingVisit, setDeletingVisit] = useState<DepartmentVisit | null>(null);
+
   const sortedLabs = [...labs].sort((a, b) => {
     const order = { pending: 0, done: 1, cancelled: 2 };
     if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
     return b.dateOrdered.localeCompare(a.dateOrdered);
   });
-  const activeMeds = meds.filter((m) => m.isActive);
-  const discontinuedMeds = meds.filter((m) => !m.isActive);
+  const activeMeds = meds.filter((m) => m.status !== 'DISCONTINUED');
+  const discontinuedMeds = meds.filter((m) => m.status === 'DISCONTINUED');
+  const sortedVisits = sortVisits(visits);
+  const pendingVisits = sortedVisits.filter((v) => v.status === 'PENDING' || v.status === 'SCHEDULED');
+  const completedVisits = sortedVisits.filter((v) => v.status === 'DONE' || v.status === 'CANCELLED');
 
-  const handleDiscontinueMed = async (med: MedicationOrder) => {
+  const handleSetMedStatus = async (med: MedicationOrder, status: MedicationOrder['status']) => {
     try {
-      await updateMedication(med.id, { isActive: false });
-      toast.success('Medication discontinued');
+      await updateMedication(med.id, { status });
+      toast.success(
+        status === 'DISCONTINUED' ? 'Medication discontinued' : status === 'ON_HOLD' ? 'Medication put on hold' : 'Medication reactivated'
+      );
       reload();
     } catch (err) {
-      toast.error('Failed to discontinue medication', {
+      toast.error('Failed to update medication', {
         description: err instanceof ApiError ? err.message : undefined,
       });
+    }
+  };
+
+  const handleMarkVisitDone = async (visit: DepartmentVisit) => {
+    try {
+      await updateDepartmentVisit(visit.id, { status: 'DONE' });
+      toast.success('Department visit marked done');
+      reload();
+    } catch (err) {
+      toast.error('Failed to update visit', { description: err instanceof ApiError ? err.message : undefined });
+    }
+  };
+
+  const handleCancelVisit = async (visit: DepartmentVisit) => {
+    try {
+      await updateDepartmentVisit(visit.id, { status: 'CANCELLED' });
+      toast.success('Department visit cancelled');
+      reload();
+    } catch (err) {
+      toast.error('Failed to cancel visit', { description: err instanceof ApiError ? err.message : undefined });
+    }
+  };
+
+  const handleConfirmDeleteVisit = async () => {
+    if (!deletingVisit) return;
+    try {
+      await deleteDepartmentVisit(deletingVisit.id);
+      toast.success('Department visit deleted');
+      setDeletingVisit(null);
+      reload();
+    } catch (err) {
+      toast.error('Failed to delete visit', { description: err instanceof ApiError ? err.message : undefined });
     }
   };
 
@@ -186,74 +299,95 @@ export function KardexLabsAndMedications({ patientId }: Props) {
     }
   };
 
-  const renderMedRow = (med: MedicationOrder, active: boolean) => (
-    <View key={med.id} style={styles.rowCard}>
-      <View style={styles.rowCardHeader}>
-        <View style={{ flex: 1, flexShrink: 1 }}>
-          <Text style={styles.rowCardTitle}>{med.medicationName}</Text>
-          {med.isOverdue ? <Badge variant="destructive" style={styles.overdueBadge}>Overdue</Badge> : null}
+  const renderMedRow = (med: MedicationOrder) => {
+    const isActive = med.status === 'ACTIVE';
+    const isDiscontinued = med.status === 'DISCONTINUED';
+    return (
+      <View key={med.id} style={styles.rowCard}>
+        <View style={styles.rowCardHeader}>
+          <View style={{ flex: 1, flexShrink: 1 }}>
+            <Text style={styles.rowCardTitle}>{med.medicationName}</Text>
+            {med.isOverdue ? <Badge variant="destructive" style={styles.overdueBadge}>Overdue</Badge> : null}
+          </View>
+          <Badge variant={MED_STATUS_BADGE[med.status].variant}>{MED_STATUS_BADGE[med.status].label}</Badge>
         </View>
-        <Badge variant={active ? 'success' : 'secondary'}>{active ? 'Active' : 'Discontinued'}</Badge>
-      </View>
-      <View style={styles.fieldGrid}>
-        <View style={styles.fieldItem}>
-          <Text style={styles.fieldLabel}>Dose</Text>
-          <Text style={styles.fieldValue}>{med.dose || '—'}</Text>
+        <View style={styles.fieldGrid}>
+          <View style={styles.fieldItem}>
+            <Text style={styles.fieldLabel}>Dose</Text>
+            <Text style={styles.fieldValue}>{med.dose || '—'}</Text>
+          </View>
+          <View style={styles.fieldItem}>
+            <Text style={styles.fieldLabel}>Route</Text>
+            <Text style={styles.fieldValue}>{med.route}</Text>
+          </View>
+          <View style={styles.fieldItem}>
+            <Text style={styles.fieldLabel}>Frequency</Text>
+            <Text style={styles.fieldValue}>{med.frequency || '—'}</Text>
+          </View>
+          <View style={styles.fieldItem}>
+            <Text style={styles.fieldLabel}>Times</Text>
+            <Text style={styles.fieldValue}>{med.scheduledTimes || '—'}</Text>
+          </View>
+          <View style={styles.fieldItem}>
+            <Text style={styles.fieldLabel}>Last Given</Text>
+            <Text style={styles.fieldValue}>{fmtDateTime(med.lastGiven)}</Text>
+          </View>
+          <View style={styles.fieldItem}>
+            <Text style={styles.fieldLabel}>Prescribed By</Text>
+            <Text style={styles.fieldValue}>{med.prescribedBy || '—'}</Text>
+          </View>
         </View>
-        <View style={styles.fieldItem}>
-          <Text style={styles.fieldLabel}>Route</Text>
-          <Text style={styles.fieldValue}>{med.route}</Text>
+        <View style={styles.fieldItemFull}>
+          <Text style={styles.fieldLabel}>Start–End Date</Text>
+          <Text style={styles.fieldValue}>
+            {fmtDate(med.startDate)} – {med.endDate ? fmtDate(med.endDate) : 'ongoing'}
+          </Text>
         </View>
-        <View style={styles.fieldItem}>
-          <Text style={styles.fieldLabel}>Frequency</Text>
-          <Text style={styles.fieldValue}>{med.frequency || '—'}</Text>
-        </View>
-        <View style={styles.fieldItem}>
-          <Text style={styles.fieldLabel}>Last Given</Text>
-          <Text style={styles.fieldValue}>{fmtDateTime(med.lastGiven)}</Text>
-        </View>
-      </View>
-      <View style={styles.fieldItemFull}>
-        <Text style={styles.fieldLabel}>Start–End Date</Text>
-        <Text style={styles.fieldValue}>
-          {fmtDate(med.startDate)} – {med.endDate ? fmtDate(med.endDate) : 'ongoing'}
-        </Text>
-      </View>
-      <View style={styles.rowCardActions}>
-        {active ? (
+        <View style={styles.rowCardActions}>
+          {isActive ? (
+            <View style={styles.actionItem}>
+              <Pressable onPress={() => setIntakeMedication(med)}>
+                <Text style={styles.linkText}>Record Intake</Text>
+              </Pressable>
+            </View>
+          ) : null}
           <View style={styles.actionItem}>
-            <Pressable onPress={() => setIntakeMedication(med)}>
-              <Text style={styles.linkText}>Record Intake</Text>
+            <Pressable onPress={() => setHistoryMedication(med)}>
+              <Text style={styles.linkText}>History ({med.intakes.length})</Text>
             </Pressable>
           </View>
-        ) : null}
-        <View style={styles.actionItem}>
-          <Pressable onPress={() => setHistoryMedication(med)}>
-            <Text style={styles.linkText}>History ({med.intakes.length})</Text>
-          </Pressable>
-        </View>
-        <View style={styles.actionItem}>
-          <Pressable onPress={() => { setEditingMed(med); setMedModalOpen(true); }}>
-            <Text style={styles.linkText}>Edit</Text>
-          </Pressable>
-        </View>
-        {active ? (
           <View style={styles.actionItem}>
-            <Pressable onPress={() => handleDiscontinueMed(med)}>
-              <Text style={[styles.linkText, { color: Colors.orange600 }]}>Discontinue</Text>
+            <Pressable onPress={() => { setEditingMed(med); setMedModalOpen(true); }}>
+              <Text style={styles.linkText}>Edit</Text>
             </Pressable>
           </View>
-        ) : null}
-        {isHeadNurse ? (
-          <View style={styles.actionItem}>
-            <Pressable onPress={() => setDeletingMed(med)}>
-              <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
-            </Pressable>
-          </View>
-        ) : null}
+          {!isDiscontinued ? (
+            <View style={styles.actionItem}>
+              <Pressable onPress={() => handleSetMedStatus(med, isActive ? 'ON_HOLD' : 'ACTIVE')}>
+                <Text style={[styles.linkText, { color: Colors.orange600 }]}>
+                  {isActive ? 'Put On Hold' : 'Reactivate'}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {!isDiscontinued ? (
+            <View style={styles.actionItem}>
+              <Pressable onPress={() => handleSetMedStatus(med, 'DISCONTINUED')}>
+                <Text style={[styles.linkText, { color: Colors.red600 }]}>Discontinue</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {isHeadNurse ? (
+            <View style={styles.actionItem}>
+              <Pressable onPress={() => setDeletingMed(med)}>
+                <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
       </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <View style={{ gap: 16 }}>
@@ -366,10 +500,12 @@ export function KardexLabsAndMedications({ patientId }: Props) {
         <CardContent>
           {!loaded ? (
             <Text style={styles.emptyText}>Loading...</Text>
+          ) : meds.length === 0 ? (
+            <Text style={styles.emptyText}>No medications recorded.</Text>
           ) : activeMeds.length === 0 ? (
-            <Text style={styles.emptyText}>No active medications.</Text>
+            <Text style={styles.emptyText}>No active or on-hold medications.</Text>
           ) : (
-            <View style={{ gap: 10 }}>{activeMeds.map((med) => renderMedRow(med, true))}</View>
+            <View style={{ gap: 10 }}>{activeMeds.map((med) => renderMedRow(med))}</View>
           )}
 
           {discontinuedMeds.length > 0 ? (
@@ -381,12 +517,143 @@ export function KardexLabsAndMedications({ patientId }: Props) {
                   <ChevronDown size={16} color={Colors.mutedForeground} />
                 )}
                 <Text style={styles.collapseToggleText}>
-                  Discontinued Medications ({discontinuedMeds.length})
+                  Show discontinued ({discontinuedMeds.length})
                 </Text>
               </Pressable>
               {showDiscontinued ? (
                 <View style={{ gap: 10, marginTop: 8 }}>
-                  {discontinuedMeds.map((med) => renderMedRow(med, false))}
+                  {discontinuedMeds.map((med) => renderMedRow(med))}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {/* Required Department Visits */}
+      <Card>
+        <CardHeader>
+          <View style={styles.headerRow}>
+            <View style={styles.titleRow}>
+              <Building2 size={20} color={Colors.teal600} />
+              <CardTitle>Required Department Visits</CardTitle>
+            </View>
+            <Button
+              size="sm"
+              onPress={() => {
+                setEditingVisit(null);
+                setVisitModalOpen(true);
+              }}
+            >
+              <View style={styles.btnInner}>
+                <Plus size={14} color={Colors.white} />
+                <Text style={styles.btnTextWhite}>Add Department Visit</Text>
+              </View>
+            </Button>
+          </View>
+        </CardHeader>
+        <CardContent>
+          {!loaded ? (
+            <Text style={styles.emptyText}>Loading...</Text>
+          ) : visits.length === 0 ? (
+            <Text style={styles.emptyText}>No required department visits.</Text>
+          ) : (
+            <View style={{ gap: 10 }}>
+              {pendingVisits.length === 0 ? (
+                <Text style={styles.emptyText}>No pending or scheduled visits.</Text>
+              ) : (
+                pendingVisits.map((visit) => (
+                  <View key={visit.id} style={styles.rowCard}>
+                    <View style={styles.rowCardHeader}>
+                      <View style={{ flex: 1, flexShrink: 1 }}>
+                        <Text style={styles.rowCardTitle}>{visit.departmentName}</Text>
+                        <Text style={styles.fieldValue}>{visit.purpose}</Text>
+                      </View>
+                      <View style={{ gap: 6, alignItems: 'flex-end' }}>
+                        <Badge variant={VISIT_PRIORITY_BADGE[visit.priority].variant}>
+                          {VISIT_PRIORITY_BADGE[visit.priority].label}
+                        </Badge>
+                        <Badge variant={VISIT_STATUS_BADGE[visit.status].variant}>
+                          {VISIT_STATUS_BADGE[visit.status].label}
+                        </Badge>
+                      </View>
+                    </View>
+                    <View style={styles.fieldItemFull}>
+                      <Text style={styles.fieldLabel}>Scheduled</Text>
+                      <Text style={styles.fieldValue}>{fmtDateTime(visit.scheduledDatetime)}</Text>
+                    </View>
+                    {visit.preparationNotes ? (
+                      <View style={styles.fieldItemFull}>
+                        <Text style={styles.fieldLabel}>Preparation</Text>
+                        <Text style={[styles.fieldValue, { color: Colors.mutedForeground }]}>
+                          {visit.preparationNotes}
+                        </Text>
+                      </View>
+                    ) : null}
+                    <View style={styles.rowCardActions}>
+                      <View style={styles.actionItem}>
+                        <Pressable onPress={() => handleMarkVisitDone(visit)}>
+                          <Text style={[styles.linkText, { color: Colors.green600 }]}>Mark as Done</Text>
+                        </Pressable>
+                      </View>
+                      <View style={styles.actionItem}>
+                        <Pressable onPress={() => { setEditingVisit(visit); setVisitModalOpen(true); }}>
+                          <Text style={styles.linkText}>Edit</Text>
+                        </Pressable>
+                      </View>
+                      <View style={styles.actionItem}>
+                        <Pressable onPress={() => handleCancelVisit(visit)}>
+                          <Text style={[styles.linkText, { color: Colors.orange600 }]}>Cancel</Text>
+                        </Pressable>
+                      </View>
+                      {isHeadNurse ? (
+                        <View style={styles.actionItem}>
+                          <Pressable onPress={() => setDeletingVisit(visit)}>
+                            <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+                ))
+              )}
+            </View>
+          )}
+
+          {completedVisits.length > 0 ? (
+            <View style={styles.discontinuedBlock}>
+              <Pressable style={styles.collapseToggle} onPress={() => setShowCompletedVisits((s) => !s)}>
+                {showCompletedVisits ? (
+                  <ChevronUp size={16} color={Colors.mutedForeground} />
+                ) : (
+                  <ChevronDown size={16} color={Colors.mutedForeground} />
+                )}
+                <Text style={styles.collapseToggleText}>Show completed ({completedVisits.length})</Text>
+              </Pressable>
+              {showCompletedVisits ? (
+                <View style={{ gap: 10, marginTop: 8 }}>
+                  {completedVisits.map((visit) => (
+                    <View key={visit.id} style={styles.rowCard}>
+                      <View style={styles.rowCardHeader}>
+                        <View style={{ flex: 1, flexShrink: 1 }}>
+                          <Text style={styles.rowCardTitle}>{visit.departmentName}</Text>
+                          <Text style={styles.fieldValue}>{visit.purpose}</Text>
+                        </View>
+                        <Badge variant={VISIT_STATUS_BADGE[visit.status].variant}>
+                          {VISIT_STATUS_BADGE[visit.status].label}
+                        </Badge>
+                      </View>
+                      <View style={styles.rowCardActions}>
+                        {isHeadNurse ? (
+                          <View style={styles.actionItem}>
+                            <Pressable onPress={() => setDeletingVisit(visit)}>
+                              <Text style={[styles.linkText, { color: Colors.red600 }]}>Delete</Text>
+                            </Pressable>
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                  ))}
                 </View>
               ) : null}
             </View>
@@ -406,6 +673,14 @@ export function KardexLabsAndMedications({ patientId }: Props) {
         onOpenChange={setMedModalOpen}
         patientId={patientId}
         medication={editingMed}
+        onSaved={reload}
+      />
+      <DepartmentVisitFormModal
+        open={visitModalOpen}
+        onOpenChange={setVisitModalOpen}
+        patientId={patientId}
+        departments={departments}
+        visit={editingVisit}
         onSaved={reload}
       />
       <RecordIntakeModal
@@ -431,6 +706,15 @@ export function KardexLabsAndMedications({ patientId }: Props) {
         confirmLabel="Delete"
         destructive
         onConfirm={handleConfirmDeleteMed}
+      />
+      <ConfirmDialog
+        open={!!deletingVisit}
+        onOpenChange={(open) => !open && setDeletingVisit(null)}
+        title="Delete department visit?"
+        description={`This permanently removes "${deletingVisit?.purpose}" at ${deletingVisit?.departmentName} from this patient's Required Department Visits. This cannot be undone.`}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={handleConfirmDeleteVisit}
       />
     </View>
   );
@@ -594,17 +878,27 @@ interface MedicationFormModalProps {
   onSaved: () => void;
 }
 
+const MED_STATUS_OPTIONS = [
+  { label: 'Active', value: 'ACTIVE' },
+  { label: 'On Hold', value: 'ON_HOLD' },
+  { label: 'Discontinued', value: 'DISCONTINUED' },
+];
+
 function MedicationFormModal({ open, onOpenChange, patientId, medication, onSaved }: MedicationFormModalProps) {
   const toast = useToast();
   const [medicationName, setMedicationName] = useState('');
   const [dose, setDose] = useState('');
   const [route, setRoute] = useState('Oral');
   const [frequency, setFrequency] = useState('');
+  const [scheduledTimes, setScheduledTimes] = useState('');
   const [startDate, setStartDate] = useState(todayIso());
   const [endDate, setEndDate] = useState('');
+  const [prescribedBy, setPrescribedBy] = useState('');
+  const [status, setStatus] = useState<MedicationOrder['status']>('ACTIVE');
   const [remarks, setRemarks] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     (() => {
@@ -614,27 +908,38 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
         setDose(medication.dose);
         setRoute(medication.route);
         setFrequency(medication.frequency);
+        setScheduledTimes(medication.scheduledTimes || '');
         setStartDate(medication.startDate);
         setEndDate(medication.endDate || '');
+        setPrescribedBy(medication.prescribedBy || '');
+        setStatus(medication.status);
         setRemarks(medication.remarks);
       } else {
         setMedicationName('');
         setDose('');
         setRoute('Oral');
         setFrequency('');
+        setScheduledTimes('');
         setStartDate(todayIso());
         setEndDate('');
+        setPrescribedBy('');
+        setStatus('ACTIVE');
         setRemarks('');
       }
       setError('');
+      setTouched({});
     })();
   }, [open, medication]);
 
   const dateError = endDate && startDate && endDate < startDate ? 'End date cannot be before start date.' : '';
+  const nameError = touched.medicationName && !medicationName.trim() ? 'Drug name is required.' : '';
+  const doseError = touched.dose && !dose.trim() ? 'Dosage is required.' : '';
+  const frequencyError = touched.frequency && !frequency.trim() ? 'Frequency is required.' : '';
 
   const handleSave = async () => {
-    if (!medicationName.trim() || !startDate) {
-      setError('Medication name and start date are required.');
+    setTouched({ medicationName: true, dose: true, frequency: true });
+    if (!medicationName.trim() || !dose.trim() || !frequency.trim() || !startDate) {
+      setError('Drug name, dosage, route, and frequency are required.');
       return;
     }
     if (dateError) {
@@ -649,8 +954,11 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
         dose,
         route: route as MedicationOrder['route'],
         frequency,
+        scheduledTimes,
         startDate,
         endDate: endDate || null,
+        prescribedBy,
+        status,
         remarks,
       };
       if (medication) {
@@ -681,17 +989,25 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
           <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 460 }}>
             <View style={{ gap: 12 }}>
               {error ? <Text style={styles.formError}>{error}</Text> : null}
-              <Input label="Medication Name *" value={medicationName} onChangeText={setMedicationName} />
+              <Input
+                label="Drug Name *"
+                value={medicationName}
+                onChangeText={setMedicationName}
+                onBlur={() => setTouched((t) => ({ ...t, medicationName: true }))}
+                error={nameError || undefined}
+              />
               <View style={styles.rowWrap}>
                 <Input
-                  label="Dose"
+                  label="Dosage *"
                   value={dose}
                   onChangeText={setDose}
+                  onBlur={() => setTouched((t) => ({ ...t, dose: true }))}
+                  error={doseError || undefined}
                   placeholder="e.g. 500 mg"
                   containerStyle={styles.colHalf}
                 />
                 <Select
-                  label="Route"
+                  label="Route *"
                   value={route}
                   onValueChange={setRoute}
                   options={ROUTE_OPTIONS}
@@ -699,10 +1015,18 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
                 />
               </View>
               <Input
-                label="Frequency"
+                label="Frequency *"
                 value={frequency}
                 onChangeText={setFrequency}
-                placeholder="e.g. q8h, BID, OD, PRN"
+                onBlur={() => setTouched((t) => ({ ...t, frequency: true }))}
+                error={frequencyError || undefined}
+                placeholder="e.g. q8h, BID, Once daily, PRN"
+              />
+              <Input
+                label="Scheduled Times"
+                value={scheduledTimes}
+                onChangeText={setScheduledTimes}
+                placeholder="e.g. 08:00, 16:00, 00:00"
               />
               <View style={styles.rowWrap}>
                 <DatePicker label="Start Date *" value={startDate} onChange={setStartDate} style={styles.colHalf} />
@@ -714,7 +1038,188 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
                   style={styles.colHalf}
                 />
               </View>
-              <Input label="Remarks" value={remarks} onChangeText={setRemarks} multiline numberOfLines={2} style={styles.multiline} />
+              <Input
+                label="Prescribed By"
+                value={prescribedBy}
+                onChangeText={setPrescribedBy}
+                placeholder="Defaults to the attending physician"
+              />
+              {medication ? (
+                <Select
+                  label="Status"
+                  value={status}
+                  onValueChange={(v) => setStatus(v as MedicationOrder['status'])}
+                  options={MED_STATUS_OPTIONS}
+                />
+              ) : null}
+              <Input
+                label="Special Instructions"
+                value={remarks}
+                onChangeText={setRemarks}
+                multiline
+                numberOfLines={2}
+                style={styles.multiline}
+                placeholder="e.g. Give after meals, Hold if BP < 90/60"
+              />
+            </View>
+          </ScrollView>
+          <View style={styles.footer}>
+            <Button variant="outline" onPress={() => onOpenChange(false)} disabled={submitting} style={{ flex: 1 }}>
+              Cancel
+            </Button>
+            <Button onPress={handleSave} disabled={submitting} loading={submitting} style={{ flex: 1 }}>
+              {submitting ? 'Saving...' : 'Save'}
+            </Button>
+          </View>
+        </Pressable>
+      </Pressable>
+    </RNModal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+interface DepartmentVisitFormModalProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  patientId: string;
+  departments: Department[];
+  visit: DepartmentVisit | null;
+  onSaved: () => void;
+}
+
+const VISIT_PRIORITY_OPTIONS = [
+  { label: 'Routine', value: 'ROUTINE' },
+  { label: 'Urgent', value: 'URGENT' },
+  { label: 'STAT', value: 'STAT' },
+];
+
+function DepartmentVisitFormModal({
+  open, onOpenChange, patientId, departments, visit, onSaved,
+}: DepartmentVisitFormModalProps) {
+  const toast = useToast();
+  const [departmentId, setDepartmentId] = useState('');
+  const [purpose, setPurpose] = useState('');
+  const [scheduledDate, setScheduledDate] = useState('');
+  const [scheduledTime, setScheduledTime] = useState('');
+  const [priority, setPriority] = useState<DepartmentVisit['priority']>('ROUTINE');
+  const [preparationNotes, setPreparationNotes] = useState('');
+  const [orderedBy, setOrderedBy] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!open) return;
+    if (visit) {
+      setDepartmentId(String(visit.departmentId));
+      setPurpose(visit.purpose);
+      const split = splitIsoDateTime(visit.scheduledDatetime);
+      setScheduledDate(split.date);
+      setScheduledTime(split.time);
+      setPriority(visit.priority);
+      setPreparationNotes(visit.preparationNotes);
+      setOrderedBy(visit.orderedBy || '');
+    } else {
+      setDepartmentId('');
+      setPurpose('');
+      setScheduledDate('');
+      setScheduledTime('');
+      setPriority('ROUTINE');
+      setPreparationNotes('');
+      setOrderedBy('');
+    }
+    setError('');
+    setTouched({});
+  }, [open, visit]);
+
+  const departmentError = touched.departmentId && !departmentId ? 'Department is required.' : '';
+  const purposeError = touched.purpose && !purpose.trim() ? 'Purpose is required.' : '';
+
+  const handleSave = async () => {
+    setTouched({ departmentId: true, purpose: true });
+    if (!departmentId || !purpose.trim()) {
+      setError('Department and purpose are required.');
+      return;
+    }
+    setError('');
+    setSubmitting(true);
+    try {
+      const payload = {
+        departmentId: Number(departmentId),
+        purpose: purpose.trim(),
+        scheduledDatetime: scheduledDate ? toIsoDateTime(scheduledDate, scheduledTime) : null,
+        priority,
+        preparationNotes,
+        orderedBy,
+      };
+      if (visit) {
+        await updateDepartmentVisit(visit.id, payload);
+      } else {
+        await createDepartmentVisit({ ...payload, patientId });
+      }
+      toast.success(visit ? 'Department visit updated' : 'Department visit added');
+      onSaved();
+      onOpenChange(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to save department visit.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <RNModal visible={open} transparent animationType="fade" onRequestClose={() => !submitting && onOpenChange(false)}>
+      <Pressable style={styles.backdrop} onPress={() => !submitting && onOpenChange(false)}>
+        <Pressable style={[styles.dialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.headerRow}>
+            <Text style={styles.dialogTitle}>{visit ? 'Edit Department Visit' : 'Add Department Visit'}</Text>
+            <Pressable onPress={() => onOpenChange(false)}>
+              <X size={20} color={Colors.mutedForeground} />
+            </Pressable>
+          </View>
+          <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 460 }}>
+            <View style={{ gap: 12 }}>
+              {error ? <Text style={styles.formError}>{error}</Text> : null}
+              <Select
+                label="Department *"
+                value={departmentId}
+                onValueChange={(v) => { setDepartmentId(v); setTouched((t) => ({ ...t, departmentId: true })); }}
+                options={departments.map((d) => ({ label: d.name, value: String(d.id) }))}
+                searchable
+                searchPlaceholder="Search departments..."
+                placeholder="Select a department"
+                error={departmentError || undefined}
+              />
+              <Input
+                label="Purpose *"
+                value={purpose}
+                onChangeText={setPurpose}
+                onBlur={() => setTouched((t) => ({ ...t, purpose: true }))}
+                error={purposeError || undefined}
+                placeholder="e.g. Chest X-ray, CBC, Hemodialysis session"
+              />
+              <Text style={styles.fieldGroupLabel}>Scheduled</Text>
+              <View style={styles.rowWrap}>
+                <DatePicker value={scheduledDate} onChange={setScheduledDate} style={styles.colHalf} />
+                <TimePicker value={scheduledTime} onChange={setScheduledTime} style={styles.colHalf} />
+              </View>
+              <Select
+                label="Priority"
+                value={priority}
+                onValueChange={(v) => setPriority(v as DepartmentVisit['priority'])}
+                options={VISIT_PRIORITY_OPTIONS}
+              />
+              <Input
+                label="Preparation Notes"
+                value={preparationNotes}
+                onChangeText={setPreparationNotes}
+                multiline
+                numberOfLines={2}
+                style={styles.multiline}
+                placeholder="e.g. NPO after midnight, Bring previous films, Needs wheelchair"
+              />
+              <Input label="Ordered By" value={orderedBy} onChangeText={setOrderedBy} />
             </View>
           </ScrollView>
           <View style={styles.footer}>

@@ -77,6 +77,7 @@ from .models import (
     FaceVerificationAttempt,
     HandoverNote,
     HandoverPatient,
+    KardexDepartmentVisit,
     KardexLaboratory,
     KardexMedication,
     KardexRecord,
@@ -174,6 +175,7 @@ from .serializers import (
     FaceVerificationSerializer,
     FaceVerificationStatusSerializer,
     HandoverSerializer,
+    KardexDepartmentVisitSerializer,
     KardexLaboratorySerializer,
     KardexMedicationSerializer,
     KardexRecordSerializer,
@@ -2758,6 +2760,13 @@ class PatientViewSet(viewsets.ModelViewSet):
                 .prefetch_related('intakes__administered_by'),
                 to_attr='prefetched_medication_orders',
             ),
+            Prefetch(
+                'department_visits',
+                queryset=KardexDepartmentVisit.objects.select_related(
+                    'department', 'created_by', 'updated_by'
+                ).ordered_for_display(),
+                to_attr='prefetched_department_visits',
+            ),
         ).all()
         mine = self.request.query_params.get('mine')
         search = self.request.query_params.get('search')
@@ -5294,6 +5303,46 @@ class KardexMedicationViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         if get_user_role(self.request.user) != 'head_nurse':
             raise PermissionDenied('Only a head nurse can delete a medication order. Discontinue it instead.')
+        instance.delete()
+
+
+class KardexDepartmentVisitViewSet(viewsets.ModelViewSet):
+    """
+    Required Department Visits for a patient's Kardex — a place the
+    patient must go to (Radiology, the Laboratory, Dialysis, PT, OR, a CT
+    scan), distinct from KardexLaboratory (one ordered lab test) even
+    though the two share the same pending/done/cancelled-shaped pattern.
+    Deleting is head-nurse-only; a staff nurse cancels a visit instead
+    (status='CANCELLED' via a normal update), same split as labs/meds.
+    """
+
+    serializer_class = KardexDepartmentVisitSerializer
+    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
+
+    def get_queryset(self):
+        qs = KardexDepartmentVisit.objects.select_related(
+            'patient', 'department', 'created_by', 'updated_by'
+        ).ordered_for_display()
+        patient_id = self.request.query_params.get('patientId')
+        if patient_id:
+            qs = qs.filter(patient__patient_code=patient_id)
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter.upper())
+        return qs
+
+    def perform_create(self, serializer):
+        patient = serializer.validated_data.get('patient')
+        _check_patient_care_scope(self.request, patient, 'add department visits')
+        serializer.save()
+
+    def perform_update(self, serializer):
+        _check_patient_care_scope(self.request, serializer.instance.patient, 'update department visits')
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if get_user_role(self.request.user) != 'head_nurse':
+            raise PermissionDenied('Only a head nurse can delete a department visit. Cancel it instead.')
         instance.delete()
 
 

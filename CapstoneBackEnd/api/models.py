@@ -1549,9 +1549,17 @@ class KardexMedication(models.Model):
     """
     One medication order for a patient (drug, dose, route, frequency).
     Linked to Patient for the same reason KardexLaboratory is — see its
-    docstring. `is_active=False` is how a nurse "discontinues" an order
-    without deleting it (deletion is head-nurse-only, per the Kardex
-    permission split); its intake history stays intact either way.
+    docstring. Deletion is head-nurse-only, per the Kardex permission
+    split; a nurse instead moves `status` to ON_HOLD or DISCONTINUED,
+    which never touches intake history either way.
+
+    `is_active` predates `status` and is kept in sync by save() below
+    (True only while status=ACTIVE) rather than removed, since existing
+    code (the SBAR "Active Medications" line in HandoverModal.tsx, the
+    frontend's own active/discontinued split before this field existed)
+    already reads it — ON_HOLD and DISCONTINUED both count as "not
+    currently active" to any of that old code, same as before `status`
+    existed, without it needing to know about the new third state at all.
     """
 
     ROUTE_CHOICES = [
@@ -1563,14 +1571,27 @@ class KardexMedication(models.Model):
         ('Inhalation', 'Inhalation'),
         ('Other', 'Other'),
     ]
+    STATUS_CHOICES = [
+        ('ACTIVE', 'Active'),
+        ('ON_HOLD', 'On Hold'),
+        ('DISCONTINUED', 'Discontinued'),
+    ]
 
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='medication_orders')
     medication_name = models.CharField(max_length=200)
     dose = models.CharField(max_length=100, blank=True, default='')
     route = models.CharField(max_length=20, choices=ROUTE_CHOICES, default='Oral')
     frequency = models.CharField(max_length=100, blank=True, default='')
+    # Free text, e.g. "08:00, 16:00, 00:00" — same loose convention as
+    # `frequency` itself rather than a structured list, since dosing
+    # schedules are written by hand and vary in format ward to ward.
+    scheduled_times = models.CharField(max_length=200, blank=True, default='')
     start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
+    # Defaults to the patient's attending physician when left blank — see
+    # KardexMedicationSerializer.create().
+    prescribed_by = models.CharField(max_length=200, blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE', db_index=True)
     is_active = models.BooleanField(default=True)
     remarks = models.TextField(blank=True, default='')
     created_by = models.ForeignKey(
@@ -1594,10 +1615,17 @@ class KardexMedication(models.Model):
         ordering = ['-is_active', '-start_date']
         indexes = [
             models.Index(fields=['patient', 'is_active']),
+            models.Index(fields=['patient', 'status']),
         ]
 
     def __str__(self):
         return f'{self.medication_name} {self.dose} ({self.patient_id})'
+
+    def save(self, *args, **kwargs):
+        self.is_active = self.status == 'ACTIVE'
+        if self.status == 'DISCONTINUED' and not self.end_date:
+            self.end_date = timezone.localdate()
+        super().save(*args, **kwargs)
 
     @property
     def last_intake(self):
@@ -1611,6 +1639,102 @@ class KardexMedication(models.Model):
         # still "most recent" either way.
         intakes = self.intakes.all()
         return intakes[0] if intakes else None
+
+
+def _visit_status_order():
+    """Pending/Scheduled first (not yet done), then Done, then Cancelled —
+    same display-order trick as _lab_status_order above. Within the
+    not-yet-done group, KardexDepartmentVisitQuerySet.ordered_for_display()
+    further sorts by priority (STAT -> URGENT -> ROUTINE), then time."""
+    return models.Case(
+        models.When(status__in=('PENDING', 'SCHEDULED'), then=models.Value(0)),
+        models.When(status='DONE', then=models.Value(1)),
+        models.When(status='CANCELLED', then=models.Value(2)),
+        default=models.Value(3),
+        output_field=models.IntegerField(),
+    )
+
+
+def _visit_priority_order():
+    return models.Case(
+        models.When(priority='STAT', then=models.Value(0)),
+        models.When(priority='URGENT', then=models.Value(1)),
+        models.When(priority='ROUTINE', then=models.Value(2)),
+        default=models.Value(3),
+        output_field=models.IntegerField(),
+    )
+
+
+class KardexDepartmentVisitQuerySet(models.QuerySet):
+    def ordered_for_display(self):
+        """Not-done first, by priority (STAT -> Urgent -> Routine) then
+        scheduled time, with Done/Cancelled pushed to the end — every read
+        path for the Required Department Visits section uses this instead
+        of Meta.ordering, same reasoning as KardexLaboratoryQuerySet."""
+        return self.annotate(
+            _status_order=_visit_status_order(), _priority_order=_visit_priority_order(),
+        ).order_by('_status_order', '_priority_order', 'scheduled_datetime')
+
+
+class KardexDepartmentVisit(models.Model):
+    """
+    One place in the hospital a patient must go to — Radiology for an
+    X-ray, the Laboratory for blood work, Dialysis, PT, OR, a CT scan.
+    Linked to Patient, same reasoning as KardexLaboratory (not tied to one
+    append-only KardexRecord snapshot — a visit is scheduled and later
+    marked Done independently of whenever the Kardex form was last saved).
+    """
+
+    PRIORITY_CHOICES = [
+        ('ROUTINE', 'Routine'),
+        ('URGENT', 'Urgent'),
+        ('STAT', 'STAT'),
+    ]
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('SCHEDULED', 'Scheduled'),
+        ('DONE', 'Done'),
+        ('CANCELLED', 'Cancelled'),
+    ]
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='department_visits')
+    department = models.ForeignKey(Department, on_delete=models.PROTECT, related_name='kardex_visits')
+    purpose = models.CharField(max_length=200)
+    scheduled_datetime = models.DateTimeField(null=True, blank=True)
+    priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='ROUTINE', db_index=True)
+    preparation_notes = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING', db_index=True)
+    ordered_by = models.CharField(max_length=200, blank=True, default='')
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='department_visits_created',
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='department_visits_updated',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = KardexDepartmentVisitQuerySet.as_manager()
+
+    class Meta:
+        # Plain fallback (e.g. Django admin) — the Required Department
+        # Visits section itself reads via objects.ordered_for_display().
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['patient', 'status']),
+        ]
+
+    def __str__(self):
+        return f'{self.department.name} — {self.purpose} ({self.patient_id})'
 
 
 class MedicationIntake(models.Model):

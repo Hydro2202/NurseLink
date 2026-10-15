@@ -100,8 +100,15 @@ export interface MedicationOrder {
   dose: string;
   route: 'Oral' | 'IV' | 'IM' | 'SubQ' | 'Topical' | 'Inhalation' | 'Other';
   frequency: string;
+  /** Free text, e.g. "08:00, 16:00, 00:00". */
+  scheduledTimes?: string;
   startDate: string;
   endDate?: string | null;
+  /** Defaults server-side to the patient's attending physician when left blank on create. */
+  prescribedBy?: string;
+  status: 'ACTIVE' | 'ON_HOLD' | 'DISCONTINUED';
+  /** Derived from `status` (true only while ACTIVE) — read-only, kept for
+   * backward compat with code written before `status` existed. */
   isActive: boolean;
   remarks: string;
   createdByName?: string | null;
@@ -117,6 +124,29 @@ export interface MedicationOrder {
   /** Server-computed from `frequency` — best-effort, null/PRN medications
    * are never flagged. See api/serializers.py's frequency_interval_hours. */
   isOverdue: boolean;
+}
+
+/** One required department visit for a patient's Kardex — a place they
+ * must go to (Radiology, the Laboratory, Dialysis, PT, OR, a CT scan). See
+ * api/models.py's KardexDepartmentVisit. Linked to the patient for the
+ * same reason LabEntry/MedicationOrder are. */
+export interface DepartmentVisit {
+  id: number;
+  departmentId: number;
+  departmentName: string;
+  purpose: string;
+  scheduledDatetime?: string | null;
+  priority: 'ROUTINE' | 'URGENT' | 'STAT';
+  preparationNotes: string;
+  status: 'PENDING' | 'SCHEDULED' | 'DONE' | 'CANCELLED';
+  orderedBy?: string;
+  completedAt?: string | null;
+  createdByName?: string | null;
+  createdByRole?: string | null;
+  updatedByName?: string | null;
+  updatedByRole?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Patient {
@@ -149,6 +179,9 @@ export interface Patient {
    * services/api.ts), not by re-saving the Kardex form. */
   laboratories?: LabEntry[];
   medicationOrders?: MedicationOrder[];
+  /** Required Department Visits — read-only here; add/edit through the
+   * dedicated department-visit endpoints (see services/api.ts). */
+  departmentVisits?: DepartmentVisit[];
   attendingPhysician?: string;
   /** Registration/demographic detail — see api/models.py's Patient fields
    * added alongside the 103-patient seed feature. All optional since most
@@ -615,10 +648,11 @@ export interface KardexHistory {
   heightCm?: string;
   weightKg?: string;
   bmi?: number | null;
-  /** The linked patient's current labs/medication orders — not a snapshot
-   * of what this particular append-only kardex saw. */
+  /** The linked patient's current labs/medication orders/department
+   * visits — not a snapshot of what this particular append-only kardex saw. */
   laboratories?: LabEntry[];
   medicationOrders?: MedicationOrder[];
+  departmentVisits?: DepartmentVisit[];
   birthday: string;
   religion: string;
   room: string;

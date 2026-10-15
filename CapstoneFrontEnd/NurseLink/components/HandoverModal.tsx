@@ -270,7 +270,24 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       return;
     }
     const situation = `${patient.name} is a ${patient.age}-year-old ${patient.gender.toLowerCase()} admitted on ${patient.admissionDate} with ${patient.diagnosis}. Currently in ${patient.room}. Risk level: ${patient.riskLevel}.`;
-    const background = `Diagnosis: ${patient.diagnosis}\nAllergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}\nCurrent Medications: ${patient.medications.join(', ')}\nAdmission Date: ${patient.admissionDate}`;
+    // Current Medications now pulls from the structured, active
+    // KardexMedication orders (status === 'ACTIVE') rather than the old
+    // free-text Patient.medications list — that field still exists (old
+    // records keep showing whatever was typed there) but no longer feeds
+    // this line; see api/models.py's KardexMedication docstring.
+    const activeMeds = (patient.medicationOrders || []).filter((m) => m.status === 'ACTIVE');
+    const currentMedsText =
+      activeMeds.length > 0
+        ? activeMeds
+            .map(
+              (m) =>
+                `${m.medicationName} ${m.dose} ${m.route} ${m.frequency}${
+                  m.lastGiven ? ` (last given ${new Date(m.lastGiven).toLocaleString()})` : ' (not yet given)'
+                }`
+            )
+            .join('; ')
+        : 'None known';
+    const background = `Diagnosis: ${patient.diagnosis}\nAllergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}\nCurrent Medications: ${currentMedsText}\nAdmission Date: ${patient.admissionDate}`;
     const heightWeightLine =
       patient.heightCm != null || patient.weightKg != null
         ? `\nHeight: ${patient.heightCm != null ? `${patient.heightCm} cm` : 'N/A'} | Weight: ${
@@ -278,27 +295,32 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           } | BMI: ${patient.bmi != null ? `${patient.bmi} (${bmiCategory(patient.bmi)})` : 'N/A'}`
         : '';
     const pendingLabs = (patient.laboratories || []).filter((l) => l.status === 'pending');
-    const activeMeds = (patient.medicationOrders || []).filter((m) => m.isActive);
-    const labsAndMedsLine =
-      pendingLabs.length > 0 || activeMeds.length > 0
-        ? `\n\nPending Labs: ${
-            pendingLabs.length > 0 ? pendingLabs.map((l) => l.testName).join(', ') : 'None'
-          }\nActive Medications: ${
-            activeMeds.length > 0
-              ? activeMeds
-                  .map(
-                    (m) =>
-                      `${m.medicationName} ${m.dose} ${m.route} ${m.frequency}${
-                        m.lastGiven ? ` (last given ${new Date(m.lastGiven).toLocaleString()})` : ' (not yet given)'
-                      }`
-                  )
-                  .join('; ')
-              : 'None'
-          }`
-        : '';
-    const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min${heightWeightLine}${labsAndMedsLine}\n\nAlerts: ${patient.alerts.join('; ')}`;
+    const labsLine =
+      pendingLabs.length > 0 ? `\n\nPending Labs: ${pendingLabs.map((l) => l.testName).join(', ')}` : '';
+    const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min${heightWeightLine}${labsLine}\n\nAlerts: ${patient.alerts.join('; ')}`;
 
-    setFormData((prev) => ({ ...prev, situation, background, assessment, attendingPhysician: patient.attendingPhysician || '' }));
+    // Pending/scheduled department visits seed the Recommendation field —
+    // only while it's still blank, so this never overwrites what the
+    // nurse has already typed (Recommendation is the one SBAR field they
+    // own, unlike the auto-filled/read-only ones above).
+    const pendingVisits = (patient.departmentVisits || []).filter(
+      (v) => v.status === 'PENDING' || v.status === 'SCHEDULED'
+    );
+    const pendingVisitsLine =
+      pendingVisits.length > 0
+        ? `Pending: ${pendingVisits
+            .map((v) => `${v.departmentName} – ${v.purpose} (${v.priority})`)
+            .join('; ')}`
+        : '';
+
+    setFormData((prev) => ({
+      ...prev,
+      situation,
+      background,
+      assessment,
+      attendingPhysician: patient.attendingPhysician || '',
+      recommendation: prev.recommendation.trim() ? prev.recommendation : pendingVisitsLine,
+    }));
   }, [selectedPatient]);
 
   // Added/removed via the Unfinished Tasks section below; never blocks

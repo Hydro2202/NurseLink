@@ -21,6 +21,7 @@ router.register(r'duty-assignments', views.DutyAssignmentViewSet, basename='duty
 router.register(r'kardex', views.KardexViewSet, basename='kardex')
 router.register(r'kardex-laboratories', views.KardexLaboratoryViewSet, basename='kardex-laboratory')
 router.register(r'kardex-medications', views.KardexMedicationViewSet, basename='kardex-medication')
+router.register(r'kardex-department-visits', views.KardexDepartmentVisitViewSet, basename='kardex-department-visit')
 router.register(r'medication-intakes', views.MedicationIntakeViewSet, basename='medication-intake')
 router.register(r'nurses', views.NurseViewSet, basename='nurse')
 router.register(r'departments', views.DepartmentViewSet, basename='department')
