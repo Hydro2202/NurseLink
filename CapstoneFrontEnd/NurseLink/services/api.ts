@@ -118,6 +118,18 @@ type RequestOptions = {
 // backend is still legitimately working, so those calls get their own budget.
 const IDENTITY_VERIFICATION_TIMEOUT_MS = 65000;
 
+// A nurse submitting an Endorsement is often the first request to hit the
+// backend in a while (Render's free tier puts the dyno to sleep after idle,
+// and a cold start has been measured taking ~40s to wake). The default 15s
+// timeout fires well before that finishes, so the client shows "failed"/
+// keeps spinning past what feels reasonable even though the write actually
+// lands moments later — which is exactly why a nurse on the receiving end
+// sees it appear almost immediately while the sender's own screen looks
+// stuck or broken. A longer budget here lets the real response come back
+// instead of the client giving up on a request the server was always going
+// to finish.
+const ENDORSEMENT_SUBMIT_TIMEOUT_MS = 45000;
+
 function extractDetail(data: unknown, status: number): string {
   if (typeof data === 'object' && data) {
     if ('detail' in data) return String((data as { detail: unknown }).detail);
@@ -947,6 +959,7 @@ export async function createEndorsement(data: CreateEndorsementPayload): Promise
   return apiRequest<HandoverNote>('/endorsements/', {
     method: 'POST',
     body: { date: new Date().toISOString().slice(0, 10), ...data },
+    timeoutMs: ENDORSEMENT_SUBMIT_TIMEOUT_MS,
   });
 }
 
