@@ -374,7 +374,12 @@ export function PatientKardexModal({
             </View>
             <View style={styles.rowWrap}>
               <View style={[styles.field, styles.colThird]}>
-                <Input label="Age *" value={form.age} onChangeText={(v) => setField('age', v)} keyboardType="numeric" />
+                <Input
+                  label="Age *"
+                  value={form.age}
+                  onChangeText={(v) => setField('age', v.replace(/[^0-9]/g, ''))}
+                  keyboardType="numeric"
+                />
               </View>
               <View style={[styles.field, styles.colThird]}>
                 <Select

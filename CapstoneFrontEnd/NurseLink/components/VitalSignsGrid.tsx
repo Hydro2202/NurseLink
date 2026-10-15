@@ -15,6 +15,28 @@ interface VitalSignsGridProps {
   onOxygenSaturationChange: (v: string) => void;
 }
 
+// keyboardType only swaps which on-screen keyboard a phone shows — it never
+// blocks what actually lands in the field, and does nothing at all on web or
+// with a physical keyboard, so a nurse can type letters into every one of
+// these without it. Strip anything that isn't a legal character for that
+// field's own shape as it's typed, rather than only validating on submit.
+function sanitizeWholeNumber(v: string): string {
+  return v.replace(/[^0-9]/g, '');
+}
+function sanitizeDecimal(v: string): string {
+  const cleaned = v.replace(/[^0-9.]/g, '');
+  const firstDot = cleaned.indexOf('.');
+  if (firstDot === -1) return cleaned;
+  return cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, '');
+}
+// "120/80" — digits either side of a single slash.
+function sanitizeBloodPressure(v: string): string {
+  const cleaned = v.replace(/[^0-9/]/g, '');
+  const firstSlash = cleaned.indexOf('/');
+  if (firstSlash === -1) return cleaned;
+  return cleaned.slice(0, firstSlash + 1) + cleaned.slice(firstSlash + 1).replace(/\//g, '');
+}
+
 // Conservative adult reference ranges — flags a value as worth a second look
 // without diagnosing anything. Blank fields are never flagged.
 const isTemperatureAbnormal = (v: string) => {
@@ -97,7 +119,7 @@ export function VitalSignsGrid({
         <VitalBlock
           label="Temperature"
           value={temperature}
-          onChangeText={onTemperatureChange}
+          onChangeText={(v) => onTemperatureChange(sanitizeDecimal(v))}
           placeholder="36.5"
           unit="°C"
           keyboardType="decimal-pad"
@@ -107,7 +129,7 @@ export function VitalSignsGrid({
         <VitalBlock
           label="Pulse Rate"
           value={pulseRate}
-          onChangeText={onPulseRateChange}
+          onChangeText={(v) => onPulseRateChange(sanitizeWholeNumber(v))}
           placeholder="80"
           unit="bpm"
           keyboardType="numeric"
@@ -117,7 +139,7 @@ export function VitalSignsGrid({
         <VitalBlock
           label="Resp. Rate"
           value={respiratoryRate}
-          onChangeText={onRespiratoryRateChange}
+          onChangeText={(v) => onRespiratoryRateChange(sanitizeWholeNumber(v))}
           placeholder="18"
           unit="/min"
           keyboardType="numeric"
@@ -129,7 +151,7 @@ export function VitalSignsGrid({
         <VitalBlock
           label="Blood Pressure"
           value={bloodPressure}
-          onChangeText={onBloodPressureChange}
+          onChangeText={(v) => onBloodPressureChange(sanitizeBloodPressure(v))}
           placeholder="120/80"
           unit="mmHg"
           abnormal={isBloodPressureAbnormal(bloodPressure)}
@@ -138,7 +160,7 @@ export function VitalSignsGrid({
         <VitalBlock
           label="O2 Saturation"
           value={oxygenSaturation}
-          onChangeText={onOxygenSaturationChange}
+          onChangeText={(v) => onOxygenSaturationChange(sanitizeWholeNumber(v))}
           placeholder="98"
           unit="%"
           keyboardType="numeric"

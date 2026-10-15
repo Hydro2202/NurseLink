@@ -600,7 +600,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
               <RequiredLabel text="Age" />
               <Input
                 value={age}
-                onChangeText={setAge}
+                onChangeText={(v) => setAge(v.replace(/[^0-9]/g, ''))}
                 placeholder="Age"
                 keyboardType="numeric"
               />
