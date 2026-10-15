@@ -7,6 +7,7 @@ import {
   useWindowDimensions,
   ActivityIndicator,
 } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 // Wrapper that honours the Show Charts & Graphs setting; same API.
 import { BarChart, LineChart } from '../../components/Charts';
 import {
@@ -35,7 +36,7 @@ import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Progress } from '../../components/Progress';
 import { Tabs } from '../../components/Tabs';
-import { AssignPatientModal } from '../../components/AssignPatientModal';
+import { AssignPatientModal, type AssignPatientPrefill } from '../../components/AssignPatientModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { NurseAssignModal, type AssignTarget } from '../../components/NurseAssignModal';
 import type { PatientAssignment } from '../../types';
@@ -64,6 +65,15 @@ export default function WorkloadPage() {
   const { width } = useWindowDimensions();
   const chartWidth = Math.max(width - 64, 280);
   const toast = useToast();
+  const router = useRouter();
+  const params = useLocalSearchParams<{
+    respondPatientId?: string;
+    respondPatientName?: string;
+    respondRoom?: string;
+    respondWard?: string;
+    respondDiagnosis?: string;
+    respondPriority?: string;
+  }>();
   const [tab, setTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
@@ -71,6 +81,7 @@ export default function WorkloadPage() {
   const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<PatientAssignment | null>(null);
+  const [prefill, setPrefill] = useState<AssignPatientPrefill | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [toDelete, setToDelete] = useState<string | null>(null);
   const [assignOpen, setAssignOpen] = useState(false);
@@ -101,6 +112,34 @@ export default function WorkloadPage() {
       await loadData();
     })();
   }, [loadData]);
+
+  // Arrived here via "Respond Now" on a dashboard Patient Safety Alert —
+  // the patient, room, ward and urgency are already known, so the head
+  // nurse's only remaining step is picking who to assign. Opens the modal
+  // pre-filled and immediately strips the params from the URL so navigating
+  // back here later (or refreshing) doesn't silently reopen it.
+  useEffect(() => {
+    if (!params.respondPatientId) return;
+    setEditing(null);
+    setPrefill({
+      patientId: params.respondPatientId,
+      patientName: params.respondPatientName || '',
+      room: params.respondRoom || '',
+      ward: params.respondWard || '',
+      diagnosis: params.respondDiagnosis || '',
+      priority: params.respondPriority === 'urgent' ? 'urgent' : 'routine',
+    });
+    setModalOpen(true);
+    router.setParams({
+      respondPatientId: undefined,
+      respondPatientName: undefined,
+      respondRoom: undefined,
+      respondWard: undefined,
+      respondDiagnosis: undefined,
+      respondPriority: undefined,
+    } as any);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.respondPatientId]);
 
   const availableNurses = workloadData.map((nurse) => ({
     id: nurse.nurseId,
@@ -165,6 +204,7 @@ export default function WorkloadPage() {
       }
       await loadData();
       setEditing(null);
+      setPrefill(null);
       setModalOpen(false);
       toast.success(editing ? 'Assignment updated' : 'Patient assigned');
     } catch (error) {
@@ -238,6 +278,7 @@ export default function WorkloadPage() {
             size="sm"
             onPress={() => {
               setEditing(null);
+              setPrefill(null);
               setModalOpen(true);
             }}
           >
@@ -536,9 +577,11 @@ export default function WorkloadPage() {
         onClose={() => {
           setModalOpen(false);
           setEditing(null);
+          setPrefill(null);
         }}
         onSubmit={handleSubmit}
         editingAssignment={editing}
+        prefill={prefill}
         availableNurses={availableNurses}
         allTasks={allTasks}
         allAssignments={assignments}

@@ -916,7 +916,29 @@ export default function DashboardPage() {
                     <Button
                       size="sm"
                       variant={alert.variant === 'destructive' ? 'destructive' : 'default'}
-                      onPress={() => router.push('/(app)/workload' as any)}
+                      onPress={() => {
+                        if (alert.variant === 'destructive' && alert.patientId) {
+                          const patient = patients.find((p) => p.id === alert.patientId);
+                          if (patient) {
+                            router.push({
+                              pathname: '/(app)/workload',
+                              params: {
+                                respondPatientId: patient.id,
+                                respondPatientName: patient.name,
+                                respondRoom: patient.room || '',
+                                respondWard: patient.departmentName || '',
+                                respondDiagnosis: patient.diagnosis || '',
+                                respondPriority:
+                                  patient.riskLevel === 'critical' || patient.riskLevel === 'high'
+                                    ? 'urgent'
+                                    : 'routine',
+                              },
+                            } as any);
+                            return;
+                          }
+                        }
+                        router.push('/(app)/workload' as any);
+                      }}
                     >
                       {alert.variant === 'destructive' ? 'Respond Now' : 'View Task'}
                     </Button>
