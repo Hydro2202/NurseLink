@@ -730,10 +730,14 @@ class HandoverNote(models.Model):
 
 class HandoverPatient(models.Model):
     """
-    One patient within a (possibly bulk) endorsement. `HandoverNote.patient`
-    stays as the first/primary patient for backward compat with code written
-    before bulk endorsement existed (Task.source_handover display,
-    notifications) — this table is the real, authoritative patient list.
+    The one patient an endorsement is for. `HandoverNote.patient` stays as a
+    denormalized copy for backward compat with code written before this
+    table existed (Task.source_handover display, notifications) — this
+    table is the authoritative link. A table rather than a plain FK on
+    HandoverNote itself because an endorsement briefly supported several
+    patients at once; HandoverSerializer.create() now enforces exactly one
+    row per endorsement, but nothing below requires that at the schema
+    level, so this is still where a patient-to-endorsement link lives.
     """
 
     handover = models.ForeignKey(
@@ -753,6 +757,41 @@ class HandoverPatient(models.Model):
 
     def __str__(self):
         return f'{self.handover.handover_code} — {self.patient.patient_code}'
+
+
+class EndorsementTask(models.Model):
+    """
+    One unfinished-work item attached to an endorsement at creation time —
+    distinct from the real clinical `Task` model (and from the legacy
+    `HandoverNote.unfinished_tasks` free-text list the old single-patient
+    Referral flow used): this is Endorsement-specific, never becomes a
+    `Task`, and is only ever completed by the receiving nurse (see
+    HandoverViewSet.complete_task) after they've accepted the endorsement.
+    """
+
+    PRIORITY_CHOICES = [
+        ('LOW', 'Low'),
+        ('MEDIUM', 'Medium'),
+        ('HIGH', 'High'),
+    ]
+
+    endorsement = models.ForeignKey(
+        HandoverNote,
+        on_delete=models.CASCADE,
+        related_name='endorsement_tasks',
+    )
+    description = models.CharField(max_length=500)
+    due_time = models.TimeField(null=True, blank=True)
+    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='MEDIUM')
+    is_completed = models.BooleanField(default=False)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f'{self.endorsement.handover_code} — {self.description[:40]}'
 
 
 class ChartingNote(models.Model):

@@ -23,6 +23,8 @@ import {
   Image as ImageIcon,
   Eye,
   History,
+  CheckSquare,
+  Square,
 } from 'lucide-react-native';
 import {
   fetchHandovers,
@@ -30,11 +32,12 @@ import {
   acceptEndorsement,
   rejectEndorsement,
   cancelEndorsement,
+  completeEndorsementTask,
   completeHandover,
   deleteHandover,
   ApiError,
 } from '../../services/api';
-import type { HandoverNote } from '../../types/domain';
+import type { EndorsementTaskOutput, HandoverNote } from '../../types/domain';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
@@ -319,6 +322,28 @@ export default function HandoverPage() {
     }
   };
 
+  const [taskLoadingId, setTaskLoadingId] = useState<number | null>(null);
+
+  const handleToggleTask = async (handoverId: string, task: EndorsementTaskOutput) => {
+    setTaskLoadingId(task.id);
+    try {
+      const updatedTask = await completeEndorsementTask(handoverId, task.id, !task.isCompleted);
+      setHandovers((prev) =>
+        prev.map((h) =>
+          h.id === handoverId
+            ? { ...h, tasks: (h.tasks as EndorsementTaskOutput[] | undefined)?.map((t) => (t.id === task.id ? updatedTask : t)) }
+            : h
+        )
+      );
+    } catch (error) {
+      toast.error('Failed to update task', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setTaskLoadingId(null);
+    }
+  };
+
   const handleCompleteHandover = async (handoverId: string) => {
     setAcknowledgeLoading(handoverId);
     try {
@@ -521,6 +546,39 @@ export default function HandoverPage() {
                 • {task}
               </Text>
             ))}
+          </View>
+        ) : null}
+
+        {type === 'incoming' && handover.tasks && handover.tasks.length > 0 ? (
+          <View style={styles.tasksBox}>
+            <Text style={styles.tasksTitle}>Unfinished Tasks</Text>
+            {(handover.tasks as EndorsementTaskOutput[]).map((task) => {
+              const canCheck = handover.status === 'accepted';
+              return (
+                <Pressable
+                  key={task.id}
+                  style={styles.endorsementTaskRow}
+                  disabled={!canCheck || taskLoadingId === task.id}
+                  onPress={() => handleToggleTask(handover.id, task)}
+                >
+                  {task.isCompleted ? (
+                    <CheckSquare size={16} color={Colors.green600} />
+                  ) : (
+                    <Square size={16} color={canCheck ? Colors.gray400 : Colors.gray300} />
+                  )}
+                  <Text
+                    style={[
+                      styles.endorsementTaskText,
+                      task.isCompleted && styles.endorsementTaskTextDone,
+                    ]}
+                  >
+                    {task.description}
+                    {task.dueTime ? ` • ${task.dueTime.slice(0, 5)}` : ''}
+                    {task.priority === 'HIGH' ? ' • High priority' : ''}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         ) : null}
 
@@ -979,6 +1037,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: Colors.gray700,
     lineHeight: 18,
+  },
+  endorsementTaskRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 3,
+  },
+  endorsementTaskText: {
+    fontSize: 13,
+    color: Colors.gray700,
+    flex: 1,
+  },
+  endorsementTaskTextDone: {
+    textDecorationLine: 'line-through',
+    color: Colors.mutedForeground,
   },
   photosSection: {
     gap: 8,

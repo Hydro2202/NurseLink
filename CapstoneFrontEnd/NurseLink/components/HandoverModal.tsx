@@ -8,12 +8,20 @@ import {
   Pressable,
   TextInput,
 } from 'react-native';
-import { FileText, User, X, ChevronDown, CheckSquare, Square } from 'lucide-react-native';
+import { FileText, User, X, ChevronDown, Plus, Trash2 } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
+import { Select } from './Select';
+import { TimePicker } from './TimePicker';
 import { Alert, AlertDescription } from './Alert';
 import { SearchablePicker, PickerChip, PickerGroup } from './SearchablePicker';
-import type { EligibleReceiver, EligibleReceiverGroup, EndorsablePatient, HandoverNote } from '../types/domain';
+import type {
+  EligibleReceiver,
+  EligibleReceiverGroup,
+  EndorsablePatient,
+  EndorsementTaskInput,
+  HandoverNote,
+} from '../types/domain';
 import { fetchMyEndorsablePatients, fetchEligibleReceivers, ApiError } from '../services/api';
 import { bmiCategory } from '../utils/bmi';
 
@@ -21,6 +29,73 @@ interface HandoverModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: (handover: Partial<HandoverNote>) => Promise<void>;
+}
+
+const PRIORITY_OPTIONS = [
+  { label: 'Low', value: 'LOW' },
+  { label: 'Medium', value: 'MEDIUM' },
+  { label: 'High', value: 'HIGH' },
+];
+
+/** One Unfinished Tasks row in the form — a local draft id (never sent;
+ * the backend assigns the real one) plus the fields the backend accepts.
+ * A row left with a blank description is dropped on submit rather than
+ * blocking it — see handleSubmit's `tasks` filter. */
+interface TaskDraft {
+  draftId: string;
+  description: string;
+  dueTime: string;
+  priority: 'LOW' | 'MEDIUM' | 'HIGH';
+}
+
+let taskDraftSeq = 0;
+function newTaskDraft(): TaskDraft {
+  taskDraftSeq += 1;
+  return { draftId: `t${taskDraftSeq}`, description: '', dueTime: '', priority: 'MEDIUM' };
+}
+
+/**
+ * DRF field errors ({"field_name": ["msg"]} or {"field_name": "msg"}) ->
+ * {uiKey: message}, so each error lands under the input it's actually
+ * about instead of a generic banner. Unmapped field names still show
+ * somewhere (prefixed with a readable label) rather than being silently
+ * dropped; only nonFieldErrors/detail go to the plain top banner.
+ */
+const API_FIELD_TO_UI_KEY: Record<string, string> = {
+  nurseToId: 'nurse',
+  patientIds: 'patient',
+  recommendation: 'recommendation',
+};
+const API_FIELD_LABELS: Record<string, string> = {
+  nurseToId: 'Receiving nurse',
+  patientIds: 'Patient',
+  recommendation: 'Recommendation',
+};
+
+function mapApiErrors(data: Record<string, unknown>): Record<string, string> {
+  const messageFor = (value: unknown): string => {
+    if (Array.isArray(value) && value.length) return String(value[0]);
+    if (typeof value === 'string') return value;
+    return '';
+  };
+  const mapped: Record<string, string> = {};
+  const bannerParts: string[] = [];
+  for (const [field, value] of Object.entries(data)) {
+    const message = messageFor(value);
+    if (!message) continue;
+    if (field === 'nonFieldErrors' || field === 'non_field_errors' || field === 'detail') {
+      bannerParts.push(message);
+      continue;
+    }
+    const uiKey = API_FIELD_TO_UI_KEY[field];
+    if (uiKey) {
+      mapped[uiKey] = message;
+    } else {
+      bannerParts.push(`${API_FIELD_LABELS[field] || field}: ${message}`);
+    }
+  }
+  if (bannerParts.length) mapped.form = bannerParts.join(' ');
+  return mapped;
 }
 
 // A nurse with no real duty right now cannot be picked as a receiver at
@@ -38,9 +113,9 @@ const SHIFT_CHIP_ORDER = ['morning', 'afternoon', 'night'];
 export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps) {
   const [loading, setLoading] = useState(false);
   const [patients, setPatients] = useState<EndorsablePatient[]>([]);
-  const [selectedPatientIds, setSelectedPatientIds] = useState<string[]>([]);
+  const [selectedPatientId, setSelectedPatientId] = useState('');
   const [selectedNurseId, setSelectedNurseId] = useState('');
-  const [patientNotes, setPatientNotes] = useState<Record<string, string>>({});
+  const [tasks, setTasks] = useState<TaskDraft[]>([]);
   const [formData, setFormData] = useState({
     nurseTo: '',
     situation: '',
@@ -63,17 +138,16 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   const [nurseSearch, setNurseSearch] = useState('');
   const [nurseShiftChip, setNurseShiftChip] = useState('all');
 
-  // Patients picker — a draft selection so Cancel/closing without Done
-  // leaves the real selection (selectedPatientIds) unchanged.
+  // Patient picker — single-select, so (unlike the nurse picker, which also
+  // closes immediately on pick) there is no draft/Done step to worry about.
   const [patientSheetOpen, setPatientSheetOpen] = useState(false);
   const [patientSearch, setPatientSearch] = useState('');
-  const [draftPatientIds, setDraftPatientIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!open) {
-      setSelectedPatientIds([]);
+      setSelectedPatientId('');
       setSelectedNurseId('');
-      setPatientNotes({});
+      setTasks([]);
       setFormData({
         nurseTo: '', situation: '', background: '', assessment: '', recommendation: '', attendingPhysician: '',
       });
@@ -85,7 +159,6 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       setNurseShiftChip('all');
       setPatientSheetOpen(false);
       setPatientSearch('');
-      setDraftPatientIds([]);
       return;
     }
     let cancelled = false;
@@ -163,10 +236,10 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     setSelectedNurseId(nurse.id);
   };
 
-  // Patients picker
+  // Patient picker — single-select: picking one replaces the current
+  // selection and closes the sheet immediately, same as the nurse picker.
   const openPatientPicker = () => {
     setPatientSearch('');
-    setDraftPatientIds(selectedPatientIds);
     setPatientSheetOpen(true);
   };
 
@@ -180,43 +253,22 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     return [{ key: 'patients', items: patients.filter(matches) }];
   }, [patients, patientSearch]);
 
-  const toggleDraftPatient = (patient: EndorsablePatient) => {
-    setDraftPatientIds((prev) =>
-      prev.includes(patient.id) ? prev.filter((id) => id !== patient.id) : [...prev, patient.id]
-    );
+  const selectedPatient = patients.find((p) => p.id === selectedPatientId);
+
+  const handlePickPatient = (patient: EndorsablePatient) => {
+    setSelectedPatientId(patient.id);
   };
 
-  const selectAllFilteredPatients = () => {
-    const filteredIds = patientGroups[0].items
-      .filter((p) => !p.pendingEndorsement || draftPatientIds.includes(p.id))
-      .map((p) => p.id);
-    setDraftPatientIds((prev) => Array.from(new Set([...prev, ...filteredIds])));
-  };
+  const clearSelectedPatient = () => setSelectedPatientId('');
 
-  const clearDraftPatients = () => setDraftPatientIds([]);
-
-  const confirmPatientSelection = () => {
-    setSelectedPatientIds(draftPatientIds);
-    setPatientSheetOpen(false);
-  };
-
-  const removeSelectedPatient = (id: string) => {
-    setSelectedPatientIds((prev) => prev.filter((pid) => pid !== id));
-  };
-
-  // Auto-fill SBAR from the single selected patient — the same one-patient
-  // behavior the old single-patient referral form had. With zero or
-  // several patients selected there is no one chart to summarize, so these
-  // fields stay blank/manual and the nurse writes one recommendation
-  // covering the whole endorsement (per-patient specifics go in each
-  // patient's own note below instead).
+  // Auto-fill SBAR from the selected patient — blank/manual when none is
+  // selected yet.
   useEffect(() => {
-    if (selectedPatientIds.length !== 1) {
+    const patient = selectedPatient;
+    if (!patient) {
       setFormData((prev) => ({ ...prev, situation: '', background: '', assessment: '', attendingPhysician: '' }));
       return;
     }
-    const patient = patients.find((p) => p.id === selectedPatientIds[0]);
-    if (!patient) return;
     const situation = `${patient.name} is a ${patient.age}-year-old ${patient.gender.toLowerCase()} admitted on ${patient.admissionDate} with ${patient.diagnosis}. Currently in ${patient.room}. Risk level: ${patient.riskLevel}.`;
     const background = `Diagnosis: ${patient.diagnosis}\nAllergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}\nCurrent Medications: ${patient.medications.join(', ')}\nAdmission Date: ${patient.admissionDate}`;
     const heightWeightLine =
@@ -247,11 +299,20 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min${heightWeightLine}${labsAndMedsLine}\n\nAlerts: ${patient.alerts.join('; ')}`;
 
     setFormData((prev) => ({ ...prev, situation, background, assessment, attendingPhysician: patient.attendingPhysician || '' }));
-  }, [selectedPatientIds, patients]);
+  }, [selectedPatient]);
+
+  // Added/removed via the Unfinished Tasks section below; never blocks
+  // submit — a row left with a blank description is just dropped (see
+  // handleSubmit's `tasks` filter), not a validation error.
+  const addTaskRow = () => setTasks((prev) => [...prev, newTaskDraft()]);
+  const removeTaskRow = (draftId: string) =>
+    setTasks((prev) => prev.filter((t) => t.draftId !== draftId));
+  const updateTaskRow = (draftId: string, patch: Partial<TaskDraft>) =>
+    setTasks((prev) => prev.map((t) => (t.draftId === draftId ? { ...t, ...patch } : t)));
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
-    if (selectedPatientIds.length === 0) newErrors.patient = 'Select at least one patient';
+    if (!selectedPatientId) newErrors.patient = 'Select a patient';
     if (!selectedNurseId) newErrors.nurse = 'Please select a receiving nurse';
     if (!formData.recommendation.trim()) newErrors.recommendation = 'Recommendation is required';
     setErrors(newErrors);
@@ -262,11 +323,18 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     if (!validateForm()) return;
     setLoading(true);
     try {
+      const taskPayload: EndorsementTaskInput[] = tasks
+        .filter((t) => t.description.trim())
+        .map((t) => ({
+          description: t.description.trim(),
+          ...(t.dueTime ? { due_time: t.dueTime } : {}),
+          priority: t.priority,
+        }));
       await onSave({
-        patientIds: selectedPatientIds,
-        patientNotes,
+        patientIds: [selectedPatientId],
         nurseTo: formData.nurseTo,
         nurseToId: selectedNurseId,
+        tasks: taskPayload,
         sbar: {
           situation: formData.situation,
           background: formData.background,
@@ -280,29 +348,10 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       // Every create-time rule (ownership, already-pending, active receiver,
       // self-endorsement) is re-checked server-side — never trust this
       // form's own state alone, since the roster/assignments may have moved
-      // since it was fetched. Map the field the backend rejected onto the
-      // matching form field instead of a generic failure toast.
+      // since it was fetched. mapApiErrors puts each field error under its
+      // matching input; only a real non-field error reaches the banner.
       if (error instanceof ApiError && error.data && typeof error.data === 'object') {
-        const data = error.data as Record<string, unknown>;
-        const messageFor = (field: string): string => {
-          const value = data[field];
-          if (Array.isArray(value) && value.length) return String(value[0]);
-          if (typeof value === 'string') return value;
-          return '';
-        };
-        const nurseToIdMessage = messageFor('nurseToId');
-        const patientIdsMessage = messageFor('patientIds');
-        const nonFieldMessage = messageFor('nonFieldErrors');
-        setErrors((prev) => ({
-          ...prev,
-          ...(nurseToIdMessage ? { nurse: nurseToIdMessage } : {}),
-          ...(patientIdsMessage ? { patient: patientIdsMessage } : {}),
-          ...(nonFieldMessage
-            ? { form: nonFieldMessage }
-            : nurseToIdMessage || patientIdsMessage
-              ? {}
-              : { form: error.message }),
-        }));
+        setErrors((prev) => ({ ...prev, ...mapApiErrors(error.data as Record<string, unknown>) }));
       } else {
         setErrors((prev) => ({ ...prev, form: 'Failed to save the endorsement. Please try again.' }));
       }
@@ -331,41 +380,31 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 </AlertDescription>
               </Alert>
 
-              <Text style={styles.label}>Patients *</Text>
+              <Text style={styles.label}>Patient *</Text>
               <Pressable
                 onPress={openPatientPicker}
                 style={[styles.trigger, errors.patient ? styles.triggerError : null]}
               >
-                {selectedPatientIds.length === 0 ? (
-                  <Text style={[styles.triggerText, styles.placeholder]} numberOfLines={1}>
-                    Select patients...
-                  </Text>
-                ) : selectedPatientIds.length > 3 ? (
-                  <Text style={styles.triggerText} numberOfLines={1}>
-                    {selectedPatientIds.length} patients selected
-                  </Text>
-                ) : (
+                {selectedPatient ? (
                   <View style={styles.chipsWrap}>
-                    {selectedPatientIds.map((id) => {
-                      const patient = patients.find((p) => p.id === id);
-                      if (!patient) return null;
-                      return (
-                        <View key={id} style={styles.selectedChip}>
-                          <Text style={styles.selectedChipText} numberOfLines={1}>
-                            {patient.name} • {patient.room}
-                          </Text>
-                          <Pressable
-                            onPress={() => removeSelectedPatient(id)}
-                            hitSlop={8}
-                            accessibilityRole="button"
-                            accessibilityLabel={`Remove ${patient.name}`}
-                          >
-                            <X size={13} color={Colors.mutedForeground} />
-                          </Pressable>
-                        </View>
-                      );
-                    })}
+                    <View style={styles.selectedChip}>
+                      <Text style={styles.selectedChipText} numberOfLines={1}>
+                        {selectedPatient.name} • {selectedPatient.room}
+                      </Text>
+                      <Pressable
+                        onPress={clearSelectedPatient}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove ${selectedPatient.name}`}
+                      >
+                        <X size={13} color={Colors.mutedForeground} />
+                      </Pressable>
+                    </View>
                   </View>
+                ) : (
+                  <Text style={[styles.triggerText, styles.placeholder]} numberOfLines={1}>
+                    Select patient...
+                  </Text>
                 )}
                 <ChevronDown size={16} color={Colors.mutedForeground} />
               </Pressable>
@@ -374,20 +413,15 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
               <SearchablePicker<EndorsablePatient>
                 visible={patientSheetOpen}
                 onClose={() => setPatientSheetOpen(false)}
-                title="Select Patients"
+                title="Select Patient"
                 searchPlaceholder="Search by name, room, or diagnosis..."
                 searchQuery={patientSearch}
                 onSearchChange={setPatientSearch}
                 groups={patientGroups}
                 keyExtractor={(p) => p.id}
-                isSelected={(p) => draftPatientIds.includes(p.id)}
-                isDisabled={(p) => p.pendingEndorsement && !draftPatientIds.includes(p.id)}
-                onToggle={toggleDraftPatient}
-                multiSelect
-                selectedCount={draftPatientIds.length}
-                onSelectAll={selectAllFilteredPatients}
-                onClearSelection={clearDraftPatients}
-                onDone={confirmPatientSelection}
+                isSelected={(p) => p.id === selectedPatientId}
+                isDisabled={(p) => p.pendingEndorsement && p.id !== selectedPatientId}
+                onToggle={handlePickPatient}
                 emptyMessage={
                   patients.length === 0
                     ? 'You have no assigned patients to endorse.'
@@ -395,13 +429,10 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 }
                 renderContent={(patient, selected, disabled) => (
                   <>
-                    {selected ? (
-                      <CheckSquare size={18} color={Colors.primary} />
-                    ) : (
-                      <Square size={18} color={disabled ? Colors.gray300 : Colors.gray400} />
-                    )}
                     <View style={styles.patientInfo}>
-                      <Text style={styles.patientName}>{patient.name} • {patient.room}</Text>
+                      <Text style={[styles.patientName, selected && styles.optionTextSelected]}>
+                        {patient.name} • {patient.room}
+                      </Text>
                       <Text style={styles.patientMeta}>{patient.diagnosis}</Text>
                     </View>
                     {disabled ? <Text style={styles.pendingBadge}>Pending endorsement</Text> : null}
@@ -409,27 +440,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 )}
               />
 
-              {selectedPatientIds.length > 1 ? (
-                <View style={styles.patientNotesBox}>
-                  <Text style={styles.label}>Per-patient notes (optional)</Text>
-                  {selectedPatientIds.map((id) => {
-                    const patient = patients.find((p) => p.id === id);
-                    if (!patient) return null;
-                    return (
-                      <View key={id} style={styles.patientNoteRow}>
-                        <Text style={styles.patientNoteLabel}>{patient.name}</Text>
-                        <TextInput
-                          style={styles.patientNoteInput}
-                          placeholder="e.g. watch sats, NPO after midnight..."
-                          placeholderTextColor={Colors.mutedForeground}
-                          value={patientNotes[id] || ''}
-                          onChangeText={(text) => setPatientNotes((prev) => ({ ...prev, [id]: text }))}
-                        />
-                      </View>
-                    );
-                  })}
-                </View>
-              ) : selectedPatientIds.length === 1 && formData.attendingPhysician ? (
+              {selectedPatient && formData.attendingPhysician ? (
                 <View style={styles.physicianBox}>
                   <View style={styles.labelRow}>
                     <User size={16} color={Colors.blue600} />
@@ -512,28 +523,24 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
               <View style={styles.sbarSection}>
                 <Text style={styles.sbarTitle}>SBAR Report</Text>
 
-                {selectedPatientIds.length === 0 ? (
+                {!selectedPatient ? (
                   <View style={styles.emptySbar}>
                     <Text style={styles.emptySbarText}>Select at least one patient above.</Text>
                   </View>
                 ) : (
                   <View style={styles.sbarFields}>
-                    {selectedPatientIds.length === 1 ? (
-                      <>
-                        <SbarField
-                          badge="S" badgeBg={Colors.blue100} badgeColor={Colors.blue700}
-                          label="Situation" hint="(Auto-filled)" value={formData.situation} readOnly
-                        />
-                        <SbarField
-                          badge="B" badgeBg={Colors.green100} badgeColor={Colors.green700}
-                          label="Background" hint="(Auto-filled)" value={formData.background} readOnly minHeight={100}
-                        />
-                        <SbarField
-                          badge="A" badgeBg={Colors.yellow100} badgeColor={Colors.orange700}
-                          label="Assessment" hint="(Auto-filled)" value={formData.assessment} readOnly minHeight={120}
-                        />
-                      </>
-                    ) : null}
+                    <SbarField
+                      badge="S" badgeBg={Colors.blue100} badgeColor={Colors.blue700}
+                      label="Situation" hint="(Auto-filled)" value={formData.situation} readOnly
+                    />
+                    <SbarField
+                      badge="B" badgeBg={Colors.green100} badgeColor={Colors.green700}
+                      label="Background" hint="(Auto-filled)" value={formData.background} readOnly minHeight={100}
+                    />
+                    <SbarField
+                      badge="A" badgeBg={Colors.yellow100} badgeColor={Colors.orange700}
+                      label="Assessment" hint="(Auto-filled)" value={formData.assessment} readOnly minHeight={120}
+                    />
 
                     <View style={styles.recommendationBox}>
                       <View style={styles.labelRow}>
@@ -545,7 +552,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                       </View>
                       <TextInput
                         style={[styles.textarea, styles.recInput, errors.recommendation ? styles.inputError : null]}
-                        placeholder="What needs to be done for these patients? (e.g., pending tasks, follow-ups, special care)"
+                        placeholder="What needs to be done for this patient? (e.g., pending tasks, follow-ups, special care)"
                         placeholderTextColor={Colors.mutedForeground}
                         value={formData.recommendation}
                         onChangeText={(recommendation) => setFormData({ ...formData, recommendation })}
@@ -555,6 +562,64 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                       />
                       {errors.recommendation ? <Text style={styles.error}>{errors.recommendation}</Text> : null}
                     </View>
+                  </View>
+                )}
+              </View>
+
+              <View style={styles.tasksSection}>
+                <View style={styles.tasksHeaderRow}>
+                  <Text style={styles.sbarTitle}>Unfinished Tasks</Text>
+                  <Button variant="outline" size="sm" onPress={addTaskRow} style={styles.addTaskBtn}>
+                    <Plus size={14} color={Colors.blue700} />
+                    <Text style={styles.addTaskText}>Add Task</Text>
+                  </Button>
+                </View>
+
+                {tasks.length === 0 ? (
+                  <Text style={styles.emptySbarText}>No unfinished tasks. Tap + Add Task to add one.</Text>
+                ) : (
+                  <View style={styles.tasksList}>
+                    {tasks.map((task) => (
+                      <View key={task.draftId} style={styles.taskRow}>
+                        <View style={styles.taskRowTop}>
+                          <TextInput
+                            style={[styles.textarea, styles.taskDescInput]}
+                            placeholder="Task description"
+                            placeholderTextColor={Colors.mutedForeground}
+                            value={task.description}
+                            onChangeText={(description) => updateTaskRow(task.draftId, { description })}
+                          />
+                          <Pressable
+                            onPress={() => removeTaskRow(task.draftId)}
+                            hitSlop={8}
+                            accessibilityRole="button"
+                            accessibilityLabel="Remove task"
+                            style={styles.taskRemoveBtn}
+                          >
+                            <Trash2 size={16} color={Colors.red600} />
+                          </Pressable>
+                        </View>
+                        {!task.description.trim() ? (
+                          <Text style={styles.error}>Task description is required</Text>
+                        ) : null}
+                        <View style={styles.taskRowBottom}>
+                          <TimePicker
+                            value={task.dueTime}
+                            onChange={(dueTime) => updateTaskRow(task.draftId, { dueTime })}
+                            placeholder="Due time (optional)"
+                            style={styles.taskTimePicker}
+                          />
+                          <Select
+                            value={task.priority}
+                            onValueChange={(priority) =>
+                              updateTaskRow(task.draftId, { priority: priority as TaskDraft['priority'] })
+                            }
+                            options={PRIORITY_OPTIONS}
+                            style={styles.taskPrioritySelect}
+                          />
+                        </View>
+                      </View>
+                    ))}
                   </View>
                 )}
               </View>
@@ -745,26 +810,6 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: Radius.sm,
   },
-  patientNotesBox: {
-    gap: 8,
-  },
-  patientNoteRow: {
-    gap: 4,
-  },
-  patientNoteLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.foreground,
-  },
-  patientNoteInput: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: Radius.md,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 13,
-    color: Colors.foreground,
-  },
   physicianBox: {
     backgroundColor: Colors.blue100,
     borderRadius: Radius.md,
@@ -864,6 +909,59 @@ const styles = StyleSheet.create({
   error: {
     fontSize: 12,
     color: Colors.destructive,
+  },
+  tasksSection: {
+    gap: 10,
+  },
+  tasksHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  addTaskBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  addTaskText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.blue700,
+  },
+  tasksList: {
+    gap: 12,
+  },
+  taskRow: {
+    gap: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+  },
+  taskRowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  taskDescInput: {
+    flex: 1,
+    minHeight: 40,
+  },
+  taskRemoveBtn: {
+    padding: 6,
+  },
+  taskRowBottom: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  taskTimePicker: {
+    flex: 1,
+    minWidth: 140,
+  },
+  taskPrioritySelect: {
+    flex: 1,
+    minWidth: 120,
   },
   footer: {
     flexDirection: 'row',

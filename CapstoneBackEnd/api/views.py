@@ -73,6 +73,7 @@ from .models import (
     Doctor,
     DutyAssignment,
     IdScanAttempt,
+    EndorsementTask,
     FaceVerificationAttempt,
     HandoverNote,
     HandoverPatient,
@@ -3823,6 +3824,22 @@ class HandoverViewSet(viewsets.ModelViewSet):
         notify_handover_cancelled(handover, request.user)
         notify_referral_head_nurse_fyi(handover, 'cancelled')
         return Response(HandoverSerializer(handover, context={'request': request}).data)
+
+    @action(detail=True, methods=['patch'], url_path=r'tasks/(?P<task_id>\d+)')
+    def complete_task(self, request, handover_code=None, task_id=None):
+        """Check (or uncheck) one of this endorsement's Unfinished Tasks.
+        Only the receiving nurse may — see _ensure_recipient — matching the
+        business reality that these are the receiver's own follow-up list,
+        not editable by the sender after the fact."""
+        handover = self.get_object()
+        self._ensure_recipient(handover)
+        task = get_object_or_404(EndorsementTask, pk=task_id, endorsement=handover)
+
+        is_completed = request.data.get('isCompleted', request.data.get('is_completed', True))
+        task.is_completed = bool(is_completed)
+        task.completed_at = timezone.now() if task.is_completed else None
+        task.save(update_fields=['is_completed', 'completed_at'])
+        return Response(HandoverSerializer._serialize_task(task))
 
     @extend_schema(
         request=None,

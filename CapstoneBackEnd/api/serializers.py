@@ -8,6 +8,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_time
 from rest_framework import serializers
 
 from .models import (
@@ -17,6 +18,7 @@ from .models import (
     Department,
     Doctor,
     DutyAssignment,
+    EndorsementTask,
     FaceVerificationAttempt,
     HandoverNote,
     HandoverPatient,
@@ -1955,7 +1957,12 @@ class HandoverSerializer(serializers.ModelSerializer):
     id = serializers.CharField(source='handover_code', required=False)
     patientId = serializers.CharField(required=False, allow_blank=True)
     patientName = serializers.CharField(source='patient_name', required=False, allow_blank=True)
-    nurseFrom = serializers.CharField(source='nurse_from')
+    # Always server-derived from the authenticated sender in create() below
+    # (full_name(sender)) — never trusted from the client, so the frontend
+    # doesn't need to echo back the signed-in nurse's own name, and a
+    # missing/blank value here is never a validation error (it has no
+    # effect on what actually gets saved).
+    nurseFrom = serializers.CharField(source='nurse_from', required=False, allow_blank=True)
     nurseTo = serializers.CharField(source='nurse_to')
     # The account behind nurseTo. The handover form picks a nurse from a list,
     # so it already knows this; sending it means notifications reach exactly one
@@ -1987,6 +1994,21 @@ class HandoverSerializer(serializers.ModelSerializer):
     )
     patients = serializers.SerializerMethodField()
     isEndorsement = serializers.BooleanField(source='is_endorsement', read_only=True)
+    # Write-only input: [{description, due_time?, priority?}, ...] — optional,
+    # an endorsement with none is valid. Entries with a blank/missing
+    # description are silently dropped rather than erroring the whole
+    # endorsement (the frontend's own choice of which of the two allowed
+    # behaviors to use — see create()). The read-side list (same key, same
+    # "declare for write, inject the real one in to_representation" pattern
+    # already used by `sbar` above) is each EndorsementTask row, newest-last.
+    # write_only is load-bearing here, not just stylistic (unlike sbar's
+    # plain DictField, which gets away without it only because HandoverNote
+    # genuinely has no `sbar` attribute to collide with): HandoverNote.tasks
+    # already exists — it's Task.source_handover's related_name, an
+    # unrelated real clinical Task manager — so letting this field's default
+    # representation run would try to list-ify that manager instead of ever
+    # reaching to_representation's manual override below.
+    tasks = serializers.ListField(child=serializers.DictField(), required=False, write_only=True)
     # Never client-writable — a referral only ever moves through
     # accept/decline/cancel/complete (see HandoverViewSet), which authorize
     # only the two nurses involved. There is no direct-PATCH or approval
@@ -2027,6 +2049,7 @@ class HandoverSerializer(serializers.ModelSerializer):
             'patientNotes',
             'patients',
             'isEndorsement',
+            'tasks',
             'shift',
             'shiftLabel',
             'toShift',
@@ -2101,6 +2124,18 @@ class HandoverSerializer(serializers.ModelSerializer):
             return [{'patientId': obj.patient.patient_code, 'patientName': obj.patient_name, 'notes': ''}]
         return []
 
+    @staticmethod
+    def _serialize_task(task):
+        return {
+            'id': task.pk,
+            'description': task.description,
+            'dueTime': task.due_time.isoformat() if task.due_time else None,
+            'priority': task.priority,
+            'isCompleted': task.is_completed,
+            'completedAt': task.completed_at.isoformat() if task.completed_at else None,
+            'createdAt': task.created_at.isoformat(),
+        }
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data['sbar'] = {
@@ -2110,6 +2145,7 @@ class HandoverSerializer(serializers.ModelSerializer):
             'recommendation': instance.recommendation,
         }
         data['patientId'] = instance.patient.patient_code if instance.patient_id else ''
+        data['tasks'] = [self._serialize_task(t) for t in instance.endorsement_tasks.all()]
         return data
 
     def _apply_sbar(self, validated_data):
@@ -2140,10 +2176,39 @@ class HandoverSerializer(serializers.ModelSerializer):
         duty = current_duties([nurse.pk]).get(nurse.pk) if nurse else None
         return (duty.shift, duty.department) if duty else ('', None)
 
+    #: Default when an incoming task entry omits priority, or sends one
+    #: outside PRIORITY_CHOICES.
+    _DEFAULT_TASK_PRIORITY = 'MEDIUM'
+
+    def _clean_tasks(self, raw_tasks):
+        """
+        Entries with a blank/missing description are dropped rather than
+        rejecting the whole endorsement — a task row added in the UI and
+        left empty is just not a task, not a validation error (the other
+        of the two behaviors the frontend could have chosen; see
+        HandoverModal.tsx). due_time accepts "HH:MM" or "HH:MM:SS"; an
+        unparseable one is dropped along with the row rather than erroring.
+        """
+        valid_priorities = {choice[0] for choice in EndorsementTask.PRIORITY_CHOICES}
+        cleaned = []
+        for entry in raw_tasks or []:
+            if not isinstance(entry, dict):
+                continue
+            description = str(entry.get('description') or '').strip()
+            if not description:
+                continue
+            priority = str(entry.get('priority') or self._DEFAULT_TASK_PRIORITY).strip().upper()
+            if priority not in valid_priorities:
+                priority = self._DEFAULT_TASK_PRIORITY
+            due_time = parse_time(str(entry['due_time'])) if entry.get('due_time') else None
+            cleaned.append({'description': description, 'priority': priority, 'due_time': due_time})
+        return cleaned
+
     def create(self, validated_data):
         patient_ids = validated_data.pop('patientIds', None)
         patient_notes = validated_data.pop('patientNotes', {}) or {}
         patient_id = validated_data.pop('patientId', None)
+        tasks = self._clean_tasks(validated_data.pop('tasks', None))
         bulk = bool(patient_ids)
 
         if not bulk:
@@ -2162,6 +2227,9 @@ class HandoverSerializer(serializers.ModelSerializer):
 
         if sender is None:
             raise serializers.ValidationError({'nonFieldErrors': 'You must be signed in to create an endorsement.'})
+        # Always the real sender, never whatever (or nothing) the client
+        # sent — see the nurseFrom field's comment above.
+        validated_data['nurse_from'] = full_name(sender)
         if recipient is not None and recipient.pk == sender.pk:
             raise serializers.ValidationError({'nurseToId': 'You cannot refer a patient to yourself.'})
 
@@ -2181,7 +2249,9 @@ class HandoverSerializer(serializers.ModelSerializer):
 
             codes = [str(code).strip() for code in patient_ids if str(code).strip()]
             if not codes:
-                raise serializers.ValidationError({'patientIds': 'At least one patient is required.'})
+                raise serializers.ValidationError({'patientIds': 'Select a patient to endorse.'})
+            if len(codes) > 1:
+                raise serializers.ValidationError({'patientIds': 'Select exactly one patient to endorse.'})
             found = {p.patient_code: p for p in Patient.objects.filter(patient_code__in=codes)}
             missing = [code for code in codes if code not in found]
             if missing:
@@ -2261,18 +2331,24 @@ class HandoverSerializer(serializers.ModelSerializer):
             'at': timezone.now().isoformat(),
             'note': '',
         }]
-        handover = HandoverNote.objects.create(**validated_data)
+        with transaction.atomic():
+            handover = HandoverNote.objects.create(**validated_data)
 
-        if bulk:
-            HandoverPatient.objects.bulk_create([
-                HandoverPatient(
-                    handover=handover, patient=p,
-                    patient_notes=patient_notes.get(p.patient_code, ''),
-                )
-                for p in patients
-            ])
-        elif handover.patient_id:
-            HandoverPatient.objects.get_or_create(handover=handover, patient=handover.patient)
+            if bulk:
+                HandoverPatient.objects.bulk_create([
+                    HandoverPatient(
+                        handover=handover, patient=p,
+                        patient_notes=patient_notes.get(p.patient_code, ''),
+                    )
+                    for p in patients
+                ])
+            elif handover.patient_id:
+                HandoverPatient.objects.get_or_create(handover=handover, patient=handover.patient)
+
+            if tasks:
+                EndorsementTask.objects.bulk_create([
+                    EndorsementTask(endorsement=handover, **task) for task in tasks
+                ])
 
         # The work is the sender's until somebody accepts it, so it goes on
         # their task list now rather than existing only as text on a card —

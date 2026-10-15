@@ -235,24 +235,49 @@ export interface PatientVisit {
   dischargePlan: DischargePlan | null;
 }
 
+/** One Unfinished Tasks entry on an endorsement, as the backend returns it. */
+export interface EndorsementTaskOutput {
+  id: number;
+  description: string;
+  dueTime: string | null;
+  priority: 'LOW' | 'MEDIUM' | 'HIGH';
+  isCompleted: boolean;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+/** Write shape for one Unfinished Tasks entry on create — see `tasks` on
+ * HandoverNote below. A blank description is dropped server-side, not an error. */
+export interface EndorsementTaskInput {
+  description: string;
+  due_time?: string;
+  priority?: 'LOW' | 'MEDIUM' | 'HIGH';
+}
+
 export interface HandoverNote {
   id: string;
-  /** First/primary patient only — kept for backward compat. For a bulk
-   * endorsement (isEndorsement: true), read `patients` instead. */
+  /** The endorsement's one patient — kept as `patientId`/`patientName` for
+   * backward compat with the legacy single-patient Referral shape; an
+   * Endorsement (isEndorsement: true) always has exactly one entry in
+   * `patients` too. */
   patientId: string;
   patientName: string;
-  /** Write-only: send instead of patientId/patientName to create a bulk,
-   * any-shift Endorsement (several patients in one record) rather than a
-   * legacy single-patient referral. At least one required when used. */
+  /** Write-only: send exactly one patient code to create an Endorsement
+   * (any shift/department) rather than a legacy single-patient referral —
+   * zero or more than one is rejected. */
   patientIds?: string[];
-  /** Write-only: optional per-patient note, keyed by the same codes as patientIds. */
+  /** Write-only: optional note for the one patient in patientIds, keyed by its code. */
   patientNotes?: Record<string, string>;
-  /** The authoritative patient list for this record (one entry even for a
-   * legacy single-patient referral). Read-only. */
+  /** The authoritative patient (one entry) for this record. Read-only. */
   patients?: { patientId: string; patientName: string; notes: string }[];
   /** True only for a record created via patientIds (a real Endorsement) —
    * false for a legacy single-patient referral. Read-only. */
   isEndorsement?: boolean;
+  /** Write-only on create: any number of unfinished-work items, created
+   * with the endorsement in the same transaction — optional, zero is
+   * valid. Read-only elsewhere (see EndorsementTaskOutput): the real,
+   * saved list, included in detail/sent/received responses. */
+  tasks?: EndorsementTaskInput[] | EndorsementTaskOutput[];
   /**
    * Endorser's shift/department at creation time — a descriptive audit
    * snapshot only, never a gate (any shift/department is allowed). Blank

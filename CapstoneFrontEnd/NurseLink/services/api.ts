@@ -17,6 +17,7 @@ import type {
   EligibleReceiverGroup,
   EligibleReferralRecipients,
   EndorsablePatient,
+  EndorsementTaskOutput,
   HandoverNote,
   KardexHistory,
   LabEntry,
@@ -940,9 +941,11 @@ export interface CreateEndorsementPayload {
  * assigned to them, is already in a pending endorsement, or the receiver
  * isn't an active/approved account. */
 export async function createEndorsement(data: CreateEndorsementPayload): Promise<HandoverNote> {
+  // nurseFrom is not sent — the backend always derives it from the signed-in
+  // user (see HandoverSerializer.create()), never from the client.
   return apiRequest<HandoverNote>('/endorsements/', {
     method: 'POST',
-    body: { date: new Date().toISOString().slice(0, 10), nurseFrom: '', ...data },
+    body: { date: new Date().toISOString().slice(0, 10), ...data },
   });
 }
 
@@ -976,6 +979,19 @@ export async function rejectEndorsement(id: string, reason: string): Promise<Han
  * never touched (accept is the only thing that transfers them). */
 export async function cancelEndorsement(id: string): Promise<HandoverNote> {
   return apiRequest<HandoverNote>(`/endorsements/${id}/cancel/`, { method: 'PATCH' });
+}
+
+/** Checks (or unchecks) one of an endorsement's Unfinished Tasks. Only the
+ * receiving nurse may — see HandoverViewSet.complete_task. */
+export async function completeEndorsementTask(
+  endorsementId: string,
+  taskId: number,
+  isCompleted: boolean
+): Promise<EndorsementTaskOutput> {
+  return apiRequest<EndorsementTaskOutput>(`/endorsements/${endorsementId}/tasks/${taskId}/`, {
+    method: 'PATCH',
+    body: { isCompleted },
+  });
 }
 
 export async function fetchChartingNotes(options?: {
