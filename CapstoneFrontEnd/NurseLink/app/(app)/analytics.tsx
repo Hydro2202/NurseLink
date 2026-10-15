@@ -18,7 +18,6 @@ import {
   CheckCircle2,
   Users,
   PieChart as PieChartIcon,
-  Flame,
 } from 'lucide-react-native';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Tabs } from '../../components/Tabs';
@@ -102,7 +101,6 @@ export default function AnalyticsPage() {
       { value: 'completion', label: 'Completion' },
       { value: 'workload', label: 'Workload' },
       { value: 'distribution', label: 'Types' },
-      { value: 'burnout', label: 'Burnout' },
     ],
     []
   );
@@ -133,16 +131,6 @@ export default function AnalyticsPage() {
     [data]
   );
   const taskTypes = useMemo(() => data?.taskTypes || [], [data]);
-  const burnout = data?.burnout || [];
-
-  const burnoutLegend = useMemo(
-    () => [
-      { color: Colors.green600, label: 'Low risk' },
-      { color: Colors.warning, label: 'Medium risk' },
-      { color: Colors.destructive, label: 'High risk' },
-    ],
-    []
-  );
 
   const taskTypeLegend = useMemo(
     () => taskTypes.map((t) => ({ color: t.color, label: humanizeCategory(t.label), value: t.text })),
@@ -160,7 +148,6 @@ export default function AnalyticsPage() {
   const completionSizing = computeBarSizing(taskCompletion.length, chartWidth);
   const volumeSizing = computeBarSizing(taskVolume.length, chartWidth);
   const delaySizing = computeBarSizing(delayData.length, chartWidth);
-  const burnoutSizing = computeBarSizing(burnout.length, chartWidth);
 
   return (
     <ScrollView
@@ -393,53 +380,6 @@ export default function AnalyticsPage() {
               ) : (
                 <Text style={styles.empty}>No task type data yet.</Text>
               )}
-            </CardContent>
-          </Card>
-        ) : null}
-
-        {tab === 'burnout' ? (
-          <Card style={styles.chartCard}>
-            <CardHeader style={styles.chartHeader}>
-              <View style={styles.chartHeaderRow}>
-                <View style={[styles.chartIconWrap, { backgroundColor: Colors.red50 }]}>
-                  <Flame size={16} color={Colors.destructive} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <CardTitle>Burnout Risk</CardTitle>
-                  <CardDescription>Staff burnout risk distribution</CardDescription>
-                </View>
-              </View>
-            </CardHeader>
-            <CardContent>
-              {chartWidth > 0 ? (
-                <BarChart
-                  data={burnout}
-                  width={chartWidth}
-                  height={190}
-                  barWidth={burnoutSizing.barWidth}
-                  spacing={burnoutSizing.spacing}
-                  initialSpacing={burnoutSizing.spacing / 2}
-                  endSpacing={burnoutSizing.spacing / 2}
-                  roundedTop
-                  rulesColor={Colors.border}
-                  rulesThickness={1}
-                  xAxisThickness={0}
-                  yAxisThickness={0}
-                  yAxisTextStyle={yAxisTextStyle}
-                  xAxisLabelTextStyle={axisLabelStyle}
-                  noOfSections={4}
-                  showValuesAsTopLabel
-                  topLabelTextStyle={topLabelTextStyle}
-                />
-              ) : null}
-              <View style={styles.legendGrid}>
-                {burnoutLegend.map((item) => (
-                  <View key={item.label} style={styles.legendItem}>
-                    <View style={[styles.legendSwatch, { backgroundColor: item.color }]} />
-                    <Text style={styles.legendLabel}>{item.label}</Text>
-                  </View>
-                ))}
-              </View>
             </CardContent>
           </Card>
         ) : null}

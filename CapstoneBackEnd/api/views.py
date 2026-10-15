@@ -6110,18 +6110,6 @@ class AnalyticsView(APIView):
                 }
             )
 
-        burnout = (
-            NurseProfile.objects.filter(role='staff_nurse', is_active_staff=True)
-            .values('burnout_risk')
-            .annotate(count=Count('id'))
-        )
-        burnout_map = {row['burnout_risk']: row['count'] for row in burnout}
-        burnout_data = [
-            {'value': burnout_map.get('low', 0), 'label': 'Low', 'frontColor': '#16A34A'},
-            {'value': burnout_map.get('medium', 0), 'label': 'Med', 'frontColor': '#F59E0B'},
-            {'value': burnout_map.get('high', 0), 'label': 'High', 'frontColor': '#DC2626'},
-        ]
-
         total_tasks = Task.objects.count()
         completed_tasks = Task.objects.filter(status='completed').count()
         overdue_tasks = Task.objects.filter(status='overdue').count()
@@ -6167,7 +6155,6 @@ class AnalyticsView(APIView):
                 'avgTasks': avg_tasks_series,
                 'delayData': delay_data,
                 'taskTypes': task_types,
-                'burnout': burnout_data,
                 'kpis': {
                     'completionRate': completion_rate,
                     'avgResponseMinutes': max(overdue_tasks * 2, 8),

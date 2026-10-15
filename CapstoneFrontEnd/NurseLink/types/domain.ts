@@ -818,7 +818,6 @@ export interface AnalyticsData {
   avgTasks: { value: number }[];
   delayData: { value: number; label: string }[];
   taskTypes: { value: number; color: string; text: string; label?: string }[];
-  burnout: { value: number; label: string; frontColor?: string }[];
   kpis: {
     completionRate: number;
     avgResponseMinutes: number;
