@@ -3561,11 +3561,14 @@ class HandoverViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='eligible-receivers')
     def eligible_receivers(self, request):
-        """Every active, approved nurse except me, grouped by shift (Morning
-        -> Afternoon -> Night -> Unassigned), any shift/department allowed
-        — the new Endorsement rule, replacing the old shift-rotation-only
-        eligible_recipients above for new callers (which stays, unchanged,
-        for anything still using it)."""
+        """Every active, approved nurse except me who is currently on a real
+        duty, grouped by shift (Morning -> Afternoon -> Night), any
+        shift/department allowed — the new Endorsement rule, replacing the
+        old shift-rotation-only eligible_recipients above for new callers
+        (which stays, unchanged, for anything still using it). A nurse with
+        no current/upcoming duty (see api/duty_status.py::current_duties)
+        cannot be picked as a receiver at all — see the matching check in
+        HandoverSerializer.create()."""
         shift_id = (request.query_params.get('shiftId') or '').strip().lower()
         department_id = (request.query_params.get('departmentId') or '').strip()
         search = (request.query_params.get('search') or '').strip().lower()
@@ -3585,29 +3588,30 @@ class HandoverViewSet(viewsets.ModelViewSet):
             )
         duties = current_duties([n.pk for n in nurses])
 
-        buckets = {'morning': [], 'afternoon': [], 'night': [], 'unassigned': []}
+        buckets = {'morning': [], 'afternoon': [], 'night': []}
         for nurse in nurses:
             duty = duties.get(nurse.pk)
-            shift, department = duty_fields(nurse.nurse_profile, duty)
-            bucket_key = duty.shift if duty else 'unassigned'
-            if department_id and str(duty.department_id if duty else '') != department_id:
+            if duty is None:
                 continue
-            buckets[bucket_key].append({
+            _, department = duty_fields(nurse.nurse_profile, duty)
+            if department_id and str(duty.department_id) != department_id:
+                continue
+            buckets[duty.shift].append({
                 'id': str(nurse.pk),
                 'fullName': full_name(nurse),
-                'department': {'id': duty.department_id, 'name': department} if duty else {'id': None, 'name': department},
-                'shift': bucket_key,
+                'department': {'id': duty.department_id, 'name': department},
+                'shift': duty.shift,
             })
 
         groups = []
-        for key in ('morning', 'afternoon', 'night', 'unassigned'):
+        for key in ('morning', 'afternoon', 'night'):
             if shift_id and key != shift_id:
                 continue
             times = DutyAssignment.SHIFT_DEFAULT_TIMES.get(key)
             groups.append({
                 'shift': {
                     'id': key,
-                    'name': SHIFT_LABELS.get(key, 'Unassigned'),
+                    'name': SHIFT_LABELS.get(key, key),
                     'startTime': times[0].isoformat() if times else None,
                     'endTime': times[1].isoformat() if times else None,
                 },

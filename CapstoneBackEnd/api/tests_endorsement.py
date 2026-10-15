@@ -10,12 +10,25 @@ import datetime
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import HandoverPatient, NurseProfile, Patient, PatientAssignment
+from .models import Department, DutyAssignment, HandoverPatient, NurseProfile, Patient, PatientAssignment
 
 
-def make_nurse(username, *, role='staff_nurse', active=True, approved=True):
+def _shared_department():
+    # get_or_create, not module-level caching: each test runs in its own
+    # rolled-back transaction, so a PK cached across tests would dangle
+    # (FK violation) the moment an earlier test's row is rolled back.
+    return Department.objects.get_or_create(name='Endorsement Test Ward')[0]
+
+
+def make_nurse(username, *, role='staff_nurse', active=True, approved=True, shift=None):
+    """`shift` (e.g. 'morning') gives the nurse a real in-progress duty right
+    now — required for a nurse to be pickable as an endorsement receiver at
+    all (see HandoverViewSet.eligible_receivers / HandoverSerializer.create()'s
+    "Receiving nurse has no assigned shift" check). Omit it for a nurse that
+    is never used as a receiver in a given test."""
     user = User.objects.create_user(
         username=username, email=f'{username}@hospital.test', password='pw-test-1234',
         first_name=username, last_name='Nurse',
@@ -25,6 +38,12 @@ def make_nurse(username, *, role='staff_nurse', active=True, approved=True):
         is_active_staff=active,
         approval_status='approved' if approved else 'pending',
     )
+    if shift:
+        times = DutyAssignment.SHIFT_DEFAULT_TIMES[shift]
+        DutyAssignment.objects.create(
+            nurse=user, department=_shared_department(), duty_date=timezone.now().date(),
+            shift=shift, start_time=times[0], end_time=times[1], status='in_progress',
+        )
     return user
 
 
@@ -61,7 +80,7 @@ class EndorsementTestCase(APITestCase):
 class EndorsementCreationRulesTests(EndorsementTestCase):
     def test_any_shift_and_department_combination_succeeds(self):
         sender = make_nurse('end_sender1')
-        receiver = make_nurse('end_receiver1')
+        receiver = make_nurse('end_receiver1', shift='morning')
         patient = make_patient('END001', assigned_to=sender)
 
         response = self._endorse(sender, receiver, [patient])
@@ -78,7 +97,7 @@ class EndorsementCreationRulesTests(EndorsementTestCase):
 
     def test_inactive_receiver_rejected(self):
         sender = make_nurse('end_inactive_sender')
-        receiver = make_nurse('end_inactive_receiver', active=False)
+        receiver = make_nurse('end_inactive_receiver', active=False, shift='morning')
         patient = make_patient('END003', assigned_to=sender)
 
         response = self._endorse(sender, receiver, [patient])
@@ -87,17 +106,26 @@ class EndorsementCreationRulesTests(EndorsementTestCase):
 
     def test_unapproved_receiver_rejected(self):
         sender = make_nurse('end_unapproved_sender')
-        receiver = make_nurse('end_unapproved_receiver', approved=False)
+        receiver = make_nurse('end_unapproved_receiver', approved=False, shift='morning')
         patient = make_patient('END004', assigned_to=sender)
 
         response = self._endorse(sender, receiver, [patient])
         self.assertEqual(response.status_code, 400)
         self.assertIn('nurseToId', response.data)
 
+    def test_receiver_with_no_shift_rejected(self):
+        sender = make_nurse('end_noshift_sender')
+        receiver = make_nurse('end_noshift_receiver')  # no shift param -> no duty at all
+        patient = make_patient('END021', assigned_to=sender)
+
+        response = self._endorse(sender, receiver, [patient])
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('Receiving nurse has no assigned shift', str(response.data))
+
     def test_patient_not_assigned_to_endorser_rejected(self):
         sender = make_nurse('end_notmine_sender')
         other_nurse = make_nurse('end_notmine_other')
-        receiver = make_nurse('end_notmine_receiver')
+        receiver = make_nurse('end_notmine_receiver', shift='morning')
         patient = make_patient('END005', assigned_to=other_nurse)
 
         response = self._endorse(sender, receiver, [patient])
@@ -106,8 +134,8 @@ class EndorsementCreationRulesTests(EndorsementTestCase):
 
     def test_patient_already_pending_rejected(self):
         sender = make_nurse('end_pending_sender')
-        receiver1 = make_nurse('end_pending_receiver1')
-        receiver2 = make_nurse('end_pending_receiver2')
+        receiver1 = make_nurse('end_pending_receiver1', shift='morning')
+        receiver2 = make_nurse('end_pending_receiver2', shift='morning')
         patient = make_patient('END006', assigned_to=sender)
 
         first = self._endorse(sender, receiver1, [patient])
@@ -119,7 +147,7 @@ class EndorsementCreationRulesTests(EndorsementTestCase):
 
     def test_at_least_one_patient_required(self):
         sender = make_nurse('end_empty_sender')
-        receiver = make_nurse('end_empty_receiver')
+        receiver = make_nurse('end_empty_receiver', shift='morning')
 
         self.client.force_authenticate(user=sender)
         response = self.client.post('/api/endorsements/', {
@@ -131,7 +159,7 @@ class EndorsementCreationRulesTests(EndorsementTestCase):
 
     def test_bulk_endorsement_carries_every_patient_and_its_notes(self):
         sender = make_nurse('end_bulk_sender')
-        receiver = make_nurse('end_bulk_receiver')
+        receiver = make_nurse('end_bulk_receiver', shift='morning')
         p1 = make_patient('END007', assigned_to=sender)
         p2 = make_patient('END008', assigned_to=sender)
 
@@ -146,7 +174,7 @@ class EndorsementCreationRulesTests(EndorsementTestCase):
 class EndorsementAcceptTransferTests(EndorsementTestCase):
     def test_accept_transfers_every_patient_to_the_receiver(self):
         sender = make_nurse('end_accept_sender')
-        receiver = make_nurse('end_accept_receiver')
+        receiver = make_nurse('end_accept_receiver', shift='morning')
         p1 = make_patient('END010', assigned_to=sender)
         p2 = make_patient('END011', assigned_to=sender)
 
@@ -175,7 +203,7 @@ class EndorsementAcceptTransferTests(EndorsementTestCase):
 
     def test_accept_closes_old_assignment_with_ended_at_and_endorsed_reason(self):
         sender = make_nurse('end_audit_sender')
-        receiver = make_nurse('end_audit_receiver')
+        receiver = make_nurse('end_audit_receiver', shift='morning')
         patient = make_patient('END012', assigned_to=sender)
         old_assignment = PatientAssignment.objects.get(patient=patient, status='active')
 
@@ -195,7 +223,7 @@ class EndorsementAcceptTransferTests(EndorsementTestCase):
 
     def test_reject_leaves_patients_with_the_endorser(self):
         sender = make_nurse('end_reject_sender')
-        receiver = make_nurse('end_reject_receiver')
+        receiver = make_nurse('end_reject_receiver', shift='morning')
         patient = make_patient('END013', assigned_to=sender)
 
         created = self._endorse(sender, receiver, [patient])
@@ -211,7 +239,7 @@ class EndorsementAcceptTransferTests(EndorsementTestCase):
 
     def test_reject_without_a_reason_is_rejected(self):
         sender = make_nurse('end_reject_noreason_sender')
-        receiver = make_nurse('end_reject_noreason_receiver')
+        receiver = make_nurse('end_reject_noreason_receiver', shift='morning')
         patient = make_patient('END014', assigned_to=sender)
 
         created = self._endorse(sender, receiver, [patient])
@@ -221,7 +249,7 @@ class EndorsementAcceptTransferTests(EndorsementTestCase):
 
     def test_cancel_leaves_patients_with_the_endorser(self):
         sender = make_nurse('end_cancel_sender')
-        receiver = make_nurse('end_cancel_receiver')
+        receiver = make_nurse('end_cancel_receiver', shift='morning')
         patient = make_patient('END015', assigned_to=sender)
 
         created = self._endorse(sender, receiver, [patient])
@@ -235,7 +263,7 @@ class EndorsementAcceptTransferTests(EndorsementTestCase):
 
     def test_receiver_cannot_cancel_only_endorser_can(self):
         sender = make_nurse('end_cancel_perm_sender')
-        receiver = make_nurse('end_cancel_perm_receiver')
+        receiver = make_nurse('end_cancel_perm_receiver', shift='morning')
         patient = make_patient('END016', assigned_to=sender)
 
         created = self._endorse(sender, receiver, [patient])
@@ -245,7 +273,7 @@ class EndorsementAcceptTransferTests(EndorsementTestCase):
 
     def test_accept_fails_if_a_patient_was_reassigned_while_pending(self):
         sender = make_nurse('end_race_sender')
-        receiver = make_nurse('end_race_receiver')
+        receiver = make_nurse('end_race_receiver', shift='morning')
         someone_else = make_nurse('end_race_someone_else')
         patient = make_patient('END017', assigned_to=sender)
 
@@ -268,7 +296,7 @@ class EndorsementAcceptTransferTests(EndorsementTestCase):
         reassigned elsewhere while pending), neither patient's ownership
         changes — not just the one that failed the re-check."""
         sender = make_nurse('end_rollback_sender')
-        receiver = make_nurse('end_rollback_receiver')
+        receiver = make_nurse('end_rollback_receiver', shift='morning')
         someone_else = make_nurse('end_rollback_someone_else')
         p1 = make_patient('END018', assigned_to=sender)
         p2 = make_patient('END019', assigned_to=sender)
@@ -296,7 +324,7 @@ class EndorsementAcceptTransferTests(EndorsementTestCase):
 class EndorsementMyPatientsTests(EndorsementTestCase):
     def test_pending_endorsement_flag(self):
         sender = make_nurse('end_flag_sender')
-        receiver = make_nurse('end_flag_receiver')
+        receiver = make_nurse('end_flag_receiver', shift='morning')
         patient = make_patient('END020', assigned_to=sender)
 
         self.client.force_authenticate(user=sender)

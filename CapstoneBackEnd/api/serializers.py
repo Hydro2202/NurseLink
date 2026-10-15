@@ -2172,6 +2172,12 @@ class HandoverSerializer(serializers.ModelSerializer):
             profile = getattr(recipient, 'nurse_profile', None)
             if not profile or profile.approval_status != 'approved' or not profile.is_active_staff:
                 raise serializers.ValidationError({'nurseToId': 'This nurse is not an active, approved account.'})
+            # Matches eligible_receivers (views.py), which only ever offers
+            # a nurse with a real current/upcoming duty as a candidate —
+            # re-checked here since the picker's list can be stale by the
+            # time this request lands.
+            if not self._duty_snapshot(recipient)[0]:
+                raise serializers.ValidationError({'nurseToId': 'Receiving nurse has no assigned shift.'})
 
             codes = [str(code).strip() for code in patient_ids if str(code).strip()]
             if not codes:

@@ -320,20 +320,20 @@ export interface HandoverNote {
 }
 
 /** A candidate receiver for an endorsement, within one shift group — see
- * EligibleReceiverGroup. */
+ * EligibleReceiverGroup. Only a nurse with a real current/upcoming duty can
+ * be a candidate at all — there is no "unassigned" shift here. */
 export interface EligibleReceiver {
   id: string;
   fullName: string;
   department: { id: number | null; name: string };
-  shift: 'morning' | 'afternoon' | 'night' | 'unassigned';
+  shift: 'morning' | 'afternoon' | 'night';
 }
 
 /** One shift bucket from GET /endorsements/eligible-receivers/ — Morning ->
- * Afternoon -> Night -> Unassigned, always all four, even when `nurses` is
- * empty. */
+ * Afternoon -> Night, always all three, even when `nurses` is empty. */
 export interface EligibleReceiverGroup {
   shift: {
-    id: 'morning' | 'afternoon' | 'night' | 'unassigned';
+    id: 'morning' | 'afternoon' | 'night';
     name: string;
     startTime: string | null;
     endTime: string | null;

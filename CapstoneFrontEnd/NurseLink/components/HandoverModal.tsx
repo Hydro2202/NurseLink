@@ -23,14 +23,17 @@ interface HandoverModalProps {
   onSave: (handover: Partial<HandoverNote>) => Promise<void>;
 }
 
+// A nurse with no real duty right now cannot be picked as a receiver at
+// all (see api/views.py::HandoverViewSet.eligible_receivers and the
+// matching check in HandoverSerializer.create()), so there is no
+// "Unassigned" shift here — only the three real shifts.
 const SHIFT_GROUP_LABELS: Record<string, string> = {
   morning: 'Morning',
   afternoon: 'Afternoon',
   night: 'Night',
-  unassigned: 'Unassigned',
 };
 
-const SHIFT_CHIP_ORDER = ['morning', 'afternoon', 'night', 'unassigned'];
+const SHIFT_CHIP_ORDER = ['morning', 'afternoon', 'night'];
 
 export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps) {
   const [loading, setLoading] = useState(false);
@@ -137,7 +140,6 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     for (const key of SHIFT_CHIP_ORDER) {
       const group = groups.find((g) => g.shift.id === key);
       if (!group) continue;
-      if (key === 'unassigned' && group.nurses.length === 0) continue;
       chips.push({ key, label: SHIFT_GROUP_LABELS[key], count: group.nurses.length });
     }
     return chips;

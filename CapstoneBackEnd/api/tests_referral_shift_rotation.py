@@ -148,8 +148,10 @@ class ReferralShiftRotationTests(ReferralShiftTestBase):
 
 class EndorsementEligibleReceiversTests(ReferralShiftTestBase):
     """GET /endorsements/eligible-receivers/ — any active nurse except me,
-    grouped by shift (Morning -> Afternoon -> Night -> Unassigned), empty
-    groups included.
+    *with a real current/upcoming duty*, grouped by shift (Morning ->
+    Afternoon -> Night). A nurse with no duty at all is excluded entirely,
+    not shown under some "Unassigned" bucket — see HandoverViewSet.
+    eligible_receivers and the matching check in HandoverSerializer.create().
 
     Unlike ReferralShiftRotationTests above, this endpoint has no shift-
     rotation logic to mock a fixed "now" for — it calls current_duties(),
@@ -158,12 +160,12 @@ class EndorsementEligibleReceiversTests(ReferralShiftTestBase):
     only matters for the mocked api.referral_shifts.timezone.now() above).
     """
 
-    def test_groups_by_shift_and_includes_empty_groups(self):
+    def test_groups_by_shift_and_excludes_nurses_with_no_duty(self):
         today = timezone.now().date()
         me = make_nurse('elig_me')
         morning = make_nurse('elig_morning')
         afternoon = make_nurse('elig_afternoon')
-        unassigned = make_nurse('elig_unassigned')
+        no_duty = make_nurse('elig_no_duty')
         make_shift(me, self.dept, today, 'morning', status='in_progress')
         make_shift(morning, self.dept, today, 'morning', status='in_progress')
         make_shift(afternoon, self.dept, today, 'afternoon', status='in_progress')
@@ -172,14 +174,16 @@ class EndorsementEligibleReceiversTests(ReferralShiftTestBase):
         response = self.client.get('/api/endorsements/eligible-receivers/')
         self.assertEqual(response.status_code, 200, response.data)
         by_shift = {g['shift']['id']: g['nurses'] for g in response.data}
-        self.assertEqual({'morning', 'afternoon', 'night', 'unassigned'}, set(by_shift))
+        # No "unassigned" group at all — only the three real shifts.
+        self.assertEqual({'morning', 'afternoon', 'night'}, set(by_shift))
         self.assertEqual({n['id'] for n in by_shift['morning']}, {str(morning.pk)})
         self.assertEqual({n['id'] for n in by_shift['afternoon']}, {str(afternoon.pk)})
         self.assertEqual({n['id'] for n in by_shift['night']}, set())
-        self.assertIn(str(unassigned.pk), {n['id'] for n in by_shift['unassigned']})
-        # The signed-in nurse never appears as their own candidate receiver.
+        # The signed-in nurse never appears as their own candidate receiver,
+        # and a nurse with no duty at all never appears anywhere.
         all_ids = {n['id'] for nurses in by_shift.values() for n in nurses}
         self.assertNotIn(str(me.pk), all_ids)
+        self.assertNotIn(str(no_duty.pk), all_ids)
 
     def test_shift_id_filter(self):
         today = timezone.now().date()
