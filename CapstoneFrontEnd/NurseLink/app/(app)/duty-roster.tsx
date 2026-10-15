@@ -27,6 +27,7 @@ import {
   LayoutGrid,
   StopCircle,
   ShieldAlert,
+  UserCheck,
 } from 'lucide-react-native';
 import {
   fetchDutyAssignments,
@@ -50,7 +51,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 
 type DateFilter = 'today' | 'tomorrow' | 'week' | 'nextWeek' | 'custom' | 'all';
-type ViewMode = 'list' | 'weekly';
+type ViewMode = 'list' | 'weekly' | 'onduty';
 
 const SHIFT_LABELS: Record<string, string> = { morning: 'Morning', afternoon: 'Evening', night: 'Night' };
 
@@ -350,6 +351,34 @@ export default function DutyRosterPage() {
       .sort((a, b) => (a.dutyDate + a.startTime).localeCompare(b.dutyDate + b.startTime));
   }, [assignments, dateRange, shiftFilter, deptFilter, statusFilter, search]);
 
+  // Who's actually clocked in right now — the "On Duty" view's whole point
+  // is a one-glance answer to that, so it reads straight off real attendance
+  // (attendanceStatus 'live'/'overtimeLive') rather than the date filter,
+  // which only tells you who's *scheduled*. Shift/department/search still
+  // apply, since narrowing down is still useful; the date filter and status
+  // filter don't, since "on duty now" already implies today and not-finished.
+  const onDutyNow = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return assignments
+      .filter((a) => {
+        const attendance = attendanceStatus(a, now);
+        if (attendance !== 'live' && attendance !== 'overtimeLive') return false;
+        if (shiftFilter && a.shift !== shiftFilter) return false;
+        if (deptFilter && String(a.departmentId) !== deptFilter) return false;
+        if (
+          q &&
+          !(
+            a.nurseName.toLowerCase().includes(q) ||
+            a.departmentName.toLowerCase().includes(q) ||
+            SHIFT_LABELS[a.shift]?.toLowerCase().includes(q)
+          )
+        )
+          return false;
+        return true;
+      })
+      .sort((a, b) => a.departmentName.localeCompare(b.departmentName) || a.nurseName.localeCompare(b.nurseName));
+  }, [assignments, now, shiftFilter, deptFilter, search]);
+
   const todaysActive = useMemo(
     () => assignments.filter((a) => a.dutyDate === today && a.status !== 'cancelled'),
     [assignments, today]
@@ -492,7 +521,7 @@ export default function DutyRosterPage() {
   useEffect(() => {
     bodyAnim.setValue(0);
     Animated.timing(bodyAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
-  }, [view, filtered.length, bodyAnim]);
+  }, [view, filtered.length, onDutyNow.length, bodyAnim]);
 
   const renderCard = (a: DutyAssignment) => {
     const shiftColors = SHIFT_COLORS[a.shift] || SHIFT_COLORS.morning;
@@ -728,16 +757,25 @@ export default function DutyRosterPage() {
 
         <View style={styles.segmentedWrap}>
           <View style={styles.segmented}>
-            {(['list', 'weekly'] as ViewMode[]).map((mode) => (
+            {(['list', 'weekly', 'onduty'] as ViewMode[]).map((mode) => (
               <Pressable key={mode} onPress={() => setView(mode)} style={[styles.segment, view === mode && styles.segmentActive]}>
                 {mode === 'list' ? (
                   <List size={13} color={view === mode ? Colors.white : Colors.gray600} />
-                ) : (
+                ) : mode === 'weekly' ? (
                   <LayoutGrid size={13} color={view === mode ? Colors.white : Colors.gray600} />
+                ) : (
+                  <UserCheck size={13} color={view === mode ? Colors.white : Colors.gray600} />
                 )}
                 <Text style={[styles.segmentText, view === mode && styles.segmentTextActive]}>
-                  {mode === 'list' ? 'List' : 'Weekly'}
+                  {mode === 'list' ? 'List' : mode === 'weekly' ? 'Weekly' : 'On Duty'}
                 </Text>
+                {mode === 'onduty' && onDutyNow.length > 0 ? (
+                  <View style={[styles.segmentCountBadge, view === mode && styles.segmentCountBadgeActive]}>
+                    <Text style={[styles.segmentCountText, view === mode && styles.segmentCountTextActive]}>
+                      {onDutyNow.length}
+                    </Text>
+                  </View>
+                ) : null}
               </Pressable>
             ))}
           </View>
@@ -748,14 +786,18 @@ export default function DutyRosterPage() {
             <ActivityIndicator size="large" color={Colors.blue600} />
             <Text style={styles.loadingText}>Loading duty roster...</Text>
           </View>
-        ) : filtered.length === 0 ? (
+        ) : (view === 'onduty' ? onDutyNow.length === 0 : filtered.length === 0) ? (
           <View style={styles.empty}>
             <CalendarDays size={40} color={Colors.gray300} />
-            <Text style={styles.emptyTitle}>No Duty Assignments Yet</Text>
-            <Text style={styles.emptyText}>
-              There are no nurse assignments for the selected date or filters.
+            <Text style={styles.emptyTitle}>
+              {view === 'onduty' ? 'No One Is Currently On Duty' : 'No Duty Assignments Yet'}
             </Text>
-            {isSupervisor ? (
+            <Text style={styles.emptyText}>
+              {view === 'onduty'
+                ? 'No nurse is clocked in right now — check back once a shift starts, or adjust the shift/department filters above.'
+                : 'There are no nurse assignments for the selected date or filters.'}
+            </Text>
+            {isSupervisor && view !== 'onduty' ? (
               <Button onPress={openAdd} style={styles.newBtn}>
                 <Plus size={16} color={Colors.white} />
                 <Text style={styles.newBtnText}>Assign Nurse</Text>
@@ -766,6 +808,8 @@ export default function DutyRosterPage() {
           <Animated.View style={{ opacity: bodyAnim }}>
             {view === 'list' ? (
               <View style={styles.list}>{filtered.map(renderCard)}</View>
+            ) : view === 'onduty' ? (
+              <View style={styles.list}>{onDutyNow.map(renderCard)}</View>
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.weekScroll}>
                 <View style={styles.weekRow}>
@@ -927,6 +971,18 @@ const styles = StyleSheet.create({
   segmentActive: { backgroundColor: Colors.blue600, ...Shadows.sm },
   segmentText: { fontSize: 12.5, fontWeight: '700', color: Colors.gray600 },
   segmentTextActive: { color: Colors.white },
+  segmentCountBadge: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    backgroundColor: Colors.green50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentCountBadgeActive: { backgroundColor: 'rgba(255,255,255,0.25)' },
+  segmentCountText: { fontSize: 10.5, fontWeight: '800', color: Colors.green700 },
+  segmentCountTextActive: { color: Colors.white },
 
   loadingBox: { alignItems: 'center', paddingVertical: 48, gap: 12 },
   loadingText: { color: Colors.mutedForeground, fontSize: 13 },
