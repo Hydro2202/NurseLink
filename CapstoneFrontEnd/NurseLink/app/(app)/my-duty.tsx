@@ -241,7 +241,13 @@ export default function MyDutyPage() {
     );
     const active = relevant.find((a) => {
       const s = computeLiveStatus(a, now);
-      return s === 'onduty' || s === 'overtime';
+      // computeLiveStatus returns 'overtime' both for a shift still running
+      // past its scheduled end (genuinely active right now) and for one
+      // that has already been clocked out with overtime on record (purely
+      // historical). Only the former counts as "currently active" here —
+      // otherwise a finished shift with overtime permanently outranks a
+      // newly assigned later shift the same day, which is the actual bug.
+      return s === 'onduty' || (s === 'overtime' && !a.actualEndTime);
     });
     if (active) return active;
 
