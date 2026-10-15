@@ -48,3 +48,39 @@ def duty_fields(profile, duty):
     shift = duty.shift if duty else ''
     department = duty.department.name if duty else (profile.department if profile else '')
     return shift, department
+
+
+# NurseProfile.overtime_hours/burnout_risk are static fields that default to
+# 0/'low' and are never written anywhere outside the demo seed script and
+# tests — the same kind of stale-default trap `shift` used to be (see the
+# module docstring). The real number lives on today's DutyAssignment rows,
+# so the Workload Monitor and Team screens read it from there instead.
+def today_overtime_hours(nurse_ids):
+    """
+    {nurse_id: float} -- real overtime hours for today, summed across every
+    one of today's duty assignments (a nurse can have more than one — see
+    current_duties's own note about a head nurse re-assigning them later
+    the same day). An ended shift uses its frozen actual_overtime_hours; one
+    still clocked in past its scheduled end counts what's accrued so far;
+    one nobody has clocked into yet falls back to its scheduled
+    overtime_hours. Mirrors duty-roster.tsx's own effectiveOvertimeHours so
+    the head nurse sees the same figure everywhere.
+    """
+    nurse_ids = list(nurse_ids)
+    if not nurse_ids:
+        return {}
+    now = timezone.now()
+    duties = DutyAssignment.objects.filter(
+        nurse_id__in=nurse_ids, duty_date=local_today()
+    ).exclude(status='cancelled')
+    totals: dict = {}
+    for duty in duties:
+        if duty.actual_end_time is not None:
+            hours = duty.actual_overtime_hours
+        elif duty.actual_start_time is not None:
+            seconds = (now - duty.scheduled_end_datetime()).total_seconds()
+            hours = round(max(seconds, 0) / 3600, 2)
+        else:
+            hours = duty.overtime_hours
+        totals[duty.nurse_id] = round(totals.get(duty.nurse_id, 0) + hours, 2)
+    return totals

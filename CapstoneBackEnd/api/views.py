@@ -33,7 +33,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .email_validation import EmailValidationError
-from .duty_status import current_duties, duty_fields
+from .duty_status import current_duties, duty_fields, today_overtime_hours
 from .names import full_name, name_match_q, name_variants
 from .face_match import (
     FaceModelError,
@@ -5452,6 +5452,7 @@ class NurseViewSet(viewsets.ViewSet):
 
         nurses = list(nurses)
         duties = current_duties(n.pk for n in nurses)
+        overtime_by_nurse = today_overtime_hours(n.pk for n in nurses)
         results = []
         for nurse in nurses:
             profile = nurse.nurse_profile
@@ -5459,6 +5460,7 @@ class NurseViewSet(viewsets.ViewSet):
             # No duty on the roster -> no shift shown (the old profile default
             # made every unscheduled nurse look like a morning-shift nurse).
             duty_shift, department = duty_fields(profile, duty)
+            overtime_hours = overtime_by_nurse.get(nurse.pk, 0.0)
             results.append(
                 {
                     'id': str(nurse.pk),
@@ -5470,8 +5472,7 @@ class NurseViewSet(viewsets.ViewSet):
                     'specialization': profile.specialization or '',
                     'email': nurse.email,
                     'department': department,
-                    'burnoutRisk': profile.burnout_risk,
-                    'overtimeHours': profile.overtime_hours,
+                    'overtimeHours': overtime_hours,
                     'patientCount': nurse.patient_count,
                     'taskCount': nurse.task_count,
                     'completedTasks': nurse.completed_tasks,
@@ -6030,6 +6031,7 @@ class WorkloadView(APIView):
         # current/next duty on the Duty Roster first, else the department
         # last assigned to them. A shift is shown only while they have a duty.
         duty_by_nurse = current_duties(nurse_ids)
+        overtime_by_nurse = today_overtime_hours(nurse_ids)
 
         data = []
         for nurse in nurses:
@@ -6037,6 +6039,7 @@ class WorkloadView(APIView):
             name = names_by_id[nurse.pk]
             duty = duty_by_nurse.get(nurse.pk)
             duty_shift, department = duty_fields(profile, duty)
+            overtime_hours = overtime_by_nurse.get(nurse.pk, 0.0)
             data.append(
                 {
                     'nurseId': str(nurse.pk),
@@ -6052,8 +6055,7 @@ class WorkloadView(APIView):
                     'patientCount': patient_counts.get(nurse.pk, 0),
                     'taskCount': task_totals.get(nurse.pk, 0),
                     'completedTasks': task_completed.get(nurse.pk, 0),
-                    'overtimeHours': profile.overtime_hours,
-                    'burnoutRisk': profile.burnout_risk,
+                    'overtimeHours': overtime_hours,
                 }
             )
         return Response([filter_nurse_fields(row, request.user) for row in data])

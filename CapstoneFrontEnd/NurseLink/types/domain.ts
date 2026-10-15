@@ -487,7 +487,6 @@ export interface WorkloadData {
   taskCount: number;
   completedTasks: number;
   overtimeHours: number;
-  burnoutRisk: 'low' | 'medium' | 'high';
 }
 
 export interface Nurse {
@@ -501,7 +500,6 @@ export interface Nurse {
   specialization?: string;
   email?: string;
   department?: string;
-  burnoutRisk?: string;
   overtimeHours?: number;
   patientCount?: number;
   taskCount?: number;

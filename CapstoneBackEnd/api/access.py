@@ -47,7 +47,7 @@ def account_blocked_exception(code):
 # Sensitive nurse fields: HR and wellbeing data about a colleague. Head nurses
 # and admins may see them; a staff nurse may not see them about anyone. Every
 # nurse endpoint that returns these keys goes through filter_nurse_fields().
-SENSITIVE_NURSE_FIELDS = frozenset({'email', 'nurseEmail', 'overtimeHours', 'burnoutRisk'})
+SENSITIVE_NURSE_FIELDS = frozenset({'email', 'nurseEmail', 'overtimeHours'})
 
 
 def may_see_sensitive_nurse_fields(user) -> bool:

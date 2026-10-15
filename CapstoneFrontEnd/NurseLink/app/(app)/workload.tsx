@@ -10,7 +10,6 @@ import {
 // Wrapper that honours the Show Charts & Graphs setting; same API.
 import { BarChart, LineChart } from '../../components/Charts';
 import {
-  AlertTriangle,
   UserPlus,
   Users,
   Clock,
@@ -35,7 +34,6 @@ import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Progress } from '../../components/Progress';
-import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
 import { Tabs } from '../../components/Tabs';
 import { AssignPatientModal } from '../../components/AssignPatientModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
@@ -104,7 +102,6 @@ export default function WorkloadPage() {
     })();
   }, [loadData]);
 
-  const highRisk = workloadData.filter((n) => n.burnoutRisk === 'high');
   const availableNurses = workloadData.map((nurse) => ({
     id: nurse.nurseId,
     name: nurse.nurseName,
@@ -217,12 +214,6 @@ export default function WorkloadPage() {
     }
   };
 
-  const riskStyles = (risk: string) => {
-    if (risk === 'high') return styles.riskHigh;
-    if (risk === 'medium') return styles.riskMed;
-    return styles.riskLow;
-  };
-
   if (loading) {
     return (
       <View style={[styles.scroll, { alignItems: 'center', justifyContent: 'center' }]}>
@@ -241,9 +232,7 @@ export default function WorkloadPage() {
         <View style={styles.headerRow}>
           <View style={styles.flex1}>
             <Text style={styles.title}>Workload Monitor</Text>
-            <Text style={styles.subtitle}>
-              Real-time nurse workload and burnout risk assessment
-            </Text>
+            <Text style={styles.subtitle}>Real-time nurse workload</Text>
           </View>
           <Button
             size="sm"
@@ -257,29 +246,12 @@ export default function WorkloadPage() {
           </Button>
         </View>
 
-        {highRisk.length > 0 ? (
-          <Alert variant="destructive">
-            <AlertTitle>High Burnout Risk Detected</AlertTitle>
-            <AlertDescription>
-              {highRisk.length} nurse{highRisk.length > 1 ? 's' : ''} currently at high burnout
-              risk. Review assignments and redistribute patients if needed.
-            </AlertDescription>
-          </Alert>
-        ) : null}
-
         <View style={styles.statsGrid}>
           <Card style={styles.statCard}>
             <CardContent style={styles.statContent}>
               <Users size={16} color={Colors.blue600} />
               <Text style={styles.statValue}>{workloadData.length}</Text>
               <Text style={styles.statLabel}>Active Nurses</Text>
-            </CardContent>
-          </Card>
-          <Card style={styles.statCard}>
-            <CardContent style={styles.statContent}>
-              <AlertTriangle size={16} color={Colors.red600} />
-              <Text style={[styles.statValue, { color: Colors.red600 }]}>{highRisk.length}</Text>
-              <Text style={styles.statLabel}>High Risk</Text>
             </CardContent>
           </Card>
           <Card style={styles.statCard}>
@@ -344,7 +316,7 @@ export default function WorkloadPage() {
               </Card>
             ) : null}
             {filteredWorkload.map((nurse) => (
-              <Card key={nurse.nurseId} style={riskStyles(nurse.burnoutRisk)}>
+              <Card key={nurse.nurseId}>
                 <CardContent style={styles.nurseCard}>
                   <View style={styles.nurseHeader}>
                     <View style={styles.flex1}>
@@ -353,17 +325,6 @@ export default function WorkloadPage() {
                         {nurse.shift ? `${nurse.shift.charAt(0).toUpperCase() + nurse.shift.slice(1)} shift` : 'No duty assigned'}
                       </Text>
                     </View>
-                    <Badge
-                      variant={
-                        nurse.burnoutRisk === 'high'
-                          ? 'destructive'
-                          : nurse.burnoutRisk === 'medium'
-                            ? 'default'
-                            : 'outline'
-                      }
-                    >
-                      {`${nurse.burnoutRisk.toUpperCase()} RISK`}
-                    </Badge>
                   </View>
                   <View style={styles.metrics}>
                     <Metric label="Patients" value={String(nurse.patientCount)} />
@@ -638,18 +599,6 @@ const styles = StyleSheet.create({
   gap12: { gap: 12 },
   emptySearch: { alignItems: 'center', paddingVertical: 24 },
   emptySearchText: { fontSize: 13, color: Colors.mutedForeground },
-  riskHigh: {
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-    backgroundColor: 'rgba(239, 68, 68, 0.05)',
-  },
-  riskMed: {
-    borderColor: 'rgba(245, 158, 11, 0.3)',
-    backgroundColor: 'rgba(245, 158, 11, 0.05)',
-  },
-  riskLow: {
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-    backgroundColor: 'rgba(16, 185, 129, 0.05)',
-  },
   nurseCard: { padding: 14, gap: 12 },
   teamRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   nurseHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },

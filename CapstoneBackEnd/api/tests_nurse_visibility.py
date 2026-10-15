@@ -1,9 +1,9 @@
 """
 Who may see a colleague's sensitive nurse fields.
 
-email, overtime hours and burnout risk are HR/wellbeing data. Head nurses and
-admins see them; a staff nurse does not see them about anyone, peers included.
-The rule lives in api/access.py (SENSITIVE_NURSE_FIELDS, filter_nurse_fields).
+email and overtime hours are HR/wellbeing data. Head nurses and admins see
+them; a staff nurse does not see them about anyone, peers included. The rule
+lives in api/access.py (SENSITIVE_NURSE_FIELDS, filter_nurse_fields).
 """
 
 from django.contrib.auth.models import User
@@ -13,8 +13,8 @@ from rest_framework.test import APIClient
 from .models import NurseProfile
 
 # The list and workload use different keys for the same email.
-LIST_SENSITIVE = {'email', 'overtimeHours', 'burnoutRisk'}
-WORKLOAD_SENSITIVE = {'nurseEmail', 'overtimeHours', 'burnoutRisk'}
+LIST_SENSITIVE = {'email', 'overtimeHours'}
+WORKLOAD_SENSITIVE = {'nurseEmail', 'overtimeHours'}
 
 
 def make_user(email, *, role='staff_nurse', staff=False):
@@ -22,7 +22,6 @@ def make_user(email, *, role='staff_nurse', staff=False):
                                     first_name='Test', last_name=email.split('@')[0], is_staff=staff)
     NurseProfile.objects.create(
         user=user, role=role, department='ICU', approval_status='approved', is_active_staff=True,
-        overtime_hours=3.5, burnout_risk='high',
     )
     return user
 
@@ -55,8 +54,6 @@ class NurseVisibilityTests(TestCase):
         res = self.client.get('/api/nurses/')
         row = self.nurse_row(res.data, self.colleague.pk)
         self.assertTrue(LIST_SENSITIVE <= set(row.keys()), row)
-        self.assertEqual(row['overtimeHours'], 3.5)
-        self.assertEqual(row['burnoutRisk'], 'high')
         self.assertEqual(row['email'], 'colleague@hospital.com')
 
     def test_admin_list_includes_sensitive_fields(self):

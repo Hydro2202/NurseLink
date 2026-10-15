@@ -841,43 +841,16 @@ export default function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle>Nurse Workload Monitor</CardTitle>
-            <CardDescription>
-              Current shift nurse-to-patient ratios and burnout risk
-            </CardDescription>
+            <CardDescription>Current shift nurse-to-patient ratios</CardDescription>
           </CardHeader>
           <CardContent style={styles.gap12}>
             {workloadData.map((nurse) => (
-              <View
-                key={nurse.nurseId}
-                style={[
-                  styles.workloadCard,
-                  nurse.burnoutRisk === 'high'
-                    ? styles.riskHigh
-                    : nurse.burnoutRisk === 'medium'
-                      ? styles.riskMed
-                      : styles.riskLow,
-                ]}
-              >
+              <View key={nurse.nurseId} style={styles.workloadCard}>
                 <View style={styles.workloadHeader}>
                   <View>
                     <Text style={styles.patientName}>{nurse.nurseName}</Text>
                     <Text style={styles.patientMeta}>{nurse.shift ? `${nurse.shift} shift` : 'No duty assigned'}</Text>
                   </View>
-                  <Badge
-                    variant={
-                      nurse.burnoutRisk === 'high'
-                        ? 'destructive'
-                        : nurse.burnoutRisk === 'medium'
-                          ? 'default'
-                          : 'outline'
-                    }
-                  >
-                    {nurse.burnoutRisk === 'high'
-                      ? 'HIGH RISK'
-                      : nurse.burnoutRisk === 'medium'
-                        ? 'MEDIUM RISK'
-                        : 'LOW RISK'}
-                  </Badge>
                 </View>
                 <View style={styles.workloadMetrics}>
                   <View style={styles.metric}>
@@ -1376,18 +1349,7 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: Radius.md,
     borderWidth: 1,
-  },
-  riskHigh: {
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-    backgroundColor: 'rgba(239, 68, 68, 0.05)',
-  },
-  riskMed: {
-    borderColor: 'rgba(245, 158, 11, 0.3)',
-    backgroundColor: 'rgba(245, 158, 11, 0.05)',
-  },
-  riskLow: {
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-    backgroundColor: 'rgba(16, 185, 129, 0.05)',
+    borderColor: Colors.border,
   },
   workloadHeader: {
     flexDirection: 'row',
