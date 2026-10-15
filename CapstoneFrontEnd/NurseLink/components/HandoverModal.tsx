@@ -8,12 +8,12 @@ import {
   Pressable,
   TextInput,
 } from 'react-native';
-import { FileText, User, Plus, X, Clock, CheckSquare, Square } from 'lucide-react-native';
+import { FileText, User, X, ChevronDown, CheckSquare, Square } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
-import { Select } from './Select';
 import { Alert, AlertDescription } from './Alert';
-import type { EligibleReceiverGroup, EndorsablePatient, HandoverNote } from '../types/domain';
+import { SearchablePicker, PickerChip, PickerGroup } from './SearchablePicker';
+import type { EligibleReceiver, EligibleReceiverGroup, EndorsablePatient, HandoverNote } from '../types/domain';
 import { fetchMyEndorsablePatients, fetchEligibleReceivers, ApiError } from '../services/api';
 import { bmiCategory } from '../utils/bmi';
 
@@ -29,6 +29,8 @@ const SHIFT_GROUP_LABELS: Record<string, string> = {
   night: 'Night',
   unassigned: 'Unassigned',
 };
+
+const SHIFT_CHIP_ORDER = ['morning', 'afternoon', 'night', 'unassigned'];
 
 export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps) {
   const [loading, setLoading] = useState(false);
@@ -53,6 +55,17 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [groupsError, setGroupsError] = useState('');
 
+  // Receiving Nurse picker
+  const [nurseSheetOpen, setNurseSheetOpen] = useState(false);
+  const [nurseSearch, setNurseSearch] = useState('');
+  const [nurseShiftChip, setNurseShiftChip] = useState('all');
+
+  // Patients picker — a draft selection so Cancel/closing without Done
+  // leaves the real selection (selectedPatientIds) unchanged.
+  const [patientSheetOpen, setPatientSheetOpen] = useState(false);
+  const [patientSearch, setPatientSearch] = useState('');
+  const [draftPatientIds, setDraftPatientIds] = useState<string[]>([]);
+
   useEffect(() => {
     if (!open) {
       setSelectedPatientIds([]);
@@ -64,6 +77,12 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       setErrors({});
       setGroups([]);
       setGroupsError('');
+      setNurseSheetOpen(false);
+      setNurseSearch('');
+      setNurseShiftChip('all');
+      setPatientSheetOpen(false);
+      setPatientSearch('');
+      setDraftPatientIds([]);
       return;
     }
     let cancelled = false;
@@ -99,29 +118,88 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     loadReceivers();
   }, [open]);
 
-  const nurseOptions = useMemo(
-    () =>
-      groups.flatMap((g) =>
-        g.nurses.map((n) => ({
-          label: `${n.fullName} • ${SHIFT_GROUP_LABELS[g.shift.id] || g.shift.id} shift${n.department.name ? ` • ${n.department.name}` : ''}`,
-          value: n.id,
-          keywords: n.department.name,
-        }))
-      ),
-    [groups]
-  );
+  const allNurses = useMemo(() => groups.flatMap((g) => g.nurses), [groups]);
+  const selectedNurse = allNurses.find((n) => n.id === selectedNurseId);
 
   useEffect(() => {
-    if (!selectedNurseId) return;
-    const nurse = groups.flatMap((g) => g.nurses).find((n) => n.id === selectedNurseId);
-    if (nurse) setFormData((prev) => ({ ...prev, nurseTo: nurse.fullName }));
-  }, [selectedNurseId, groups]);
+    if (selectedNurse) setFormData((prev) => ({ ...prev, nurseTo: selectedNurse.fullName }));
+  }, [selectedNurse]);
 
-  const togglePatient = (patient: EndorsablePatient) => {
-    if (patient.pendingEndorsement && !selectedPatientIds.includes(patient.id)) return;
-    setSelectedPatientIds((prev) =>
+  // Reset search/chip each time the nurse picker opens, per spec.
+  const openNursePicker = () => {
+    setNurseSearch('');
+    setNurseShiftChip('all');
+    setNurseSheetOpen(true);
+  };
+
+  const nurseChips: PickerChip[] = useMemo(() => {
+    const chips: PickerChip[] = [{ key: 'all', label: 'All', count: allNurses.length }];
+    for (const key of SHIFT_CHIP_ORDER) {
+      const group = groups.find((g) => g.shift.id === key);
+      if (!group) continue;
+      if (key === 'unassigned' && group.nurses.length === 0) continue;
+      chips.push({ key, label: SHIFT_GROUP_LABELS[key], count: group.nurses.length });
+    }
+    return chips;
+  }, [groups, allNurses.length]);
+
+  const nurseGroups: PickerGroup<EligibleReceiver>[] = useMemo(() => {
+    const q = nurseSearch.trim().toLowerCase();
+    const matches = (n: EligibleReceiver) =>
+      !q || n.fullName.toLowerCase().includes(q) || n.department.name.toLowerCase().includes(q);
+    return groups
+      .filter((g) => nurseShiftChip === 'all' || g.shift.id === nurseShiftChip)
+      .map((g) => ({
+        key: g.shift.id,
+        label: `${g.shift.name.toUpperCase()} SHIFT`,
+        items: g.nurses.filter(matches),
+      }))
+      .filter((g) => g.items.length > 0);
+  }, [groups, nurseSearch, nurseShiftChip]);
+
+  const handlePickNurse = (nurse: EligibleReceiver) => {
+    setSelectedNurseId(nurse.id);
+  };
+
+  // Patients picker
+  const openPatientPicker = () => {
+    setPatientSearch('');
+    setDraftPatientIds(selectedPatientIds);
+    setPatientSheetOpen(true);
+  };
+
+  const patientGroups: PickerGroup<EndorsablePatient>[] = useMemo(() => {
+    const q = patientSearch.trim().toLowerCase();
+    const matches = (p: EndorsablePatient) =>
+      !q ||
+      p.name.toLowerCase().includes(q) ||
+      p.room.toLowerCase().includes(q) ||
+      p.diagnosis.toLowerCase().includes(q);
+    return [{ key: 'patients', items: patients.filter(matches) }];
+  }, [patients, patientSearch]);
+
+  const toggleDraftPatient = (patient: EndorsablePatient) => {
+    setDraftPatientIds((prev) =>
       prev.includes(patient.id) ? prev.filter((id) => id !== patient.id) : [...prev, patient.id]
     );
+  };
+
+  const selectAllFilteredPatients = () => {
+    const filteredIds = patientGroups[0].items
+      .filter((p) => !p.pendingEndorsement || draftPatientIds.includes(p.id))
+      .map((p) => p.id);
+    setDraftPatientIds((prev) => Array.from(new Set([...prev, ...filteredIds])));
+  };
+
+  const clearDraftPatients = () => setDraftPatientIds([]);
+
+  const confirmPatientSelection = () => {
+    setSelectedPatientIds(draftPatientIds);
+    setPatientSheetOpen(false);
+  };
+
+  const removeSelectedPatient = (id: string) => {
+    setSelectedPatientIds((prev) => prev.filter((pid) => pid !== id));
   };
 
   // Auto-fill SBAR from the single selected patient — the same one-patient
@@ -252,36 +330,82 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
               </Alert>
 
               <Text style={styles.label}>Patients *</Text>
-              {errors.patient ? <Text style={styles.error}>{errors.patient}</Text> : null}
-              <View style={styles.patientList}>
-                {patients.length === 0 ? (
-                  <Text style={styles.emptySbarText}>You have no assigned patients to endorse.</Text>
+              <Pressable
+                onPress={openPatientPicker}
+                style={[styles.trigger, errors.patient ? styles.triggerError : null]}
+              >
+                {selectedPatientIds.length === 0 ? (
+                  <Text style={[styles.triggerText, styles.placeholder]} numberOfLines={1}>
+                    Select patients...
+                  </Text>
+                ) : selectedPatientIds.length > 3 ? (
+                  <Text style={styles.triggerText} numberOfLines={1}>
+                    {selectedPatientIds.length} patients selected
+                  </Text>
                 ) : (
-                  patients.map((patient) => {
-                    const isSelected = selectedPatientIds.includes(patient.id);
-                    const isPending = patient.pendingEndorsement && !isSelected;
-                    return (
-                      <Pressable
-                        key={patient.id}
-                        onPress={() => togglePatient(patient)}
-                        disabled={isPending}
-                        style={[styles.patientRow, isSelected && styles.patientRowSelected, isPending && styles.patientRowDisabled]}
-                      >
-                        {isSelected ? (
-                          <CheckSquare size={18} color={Colors.primary} />
-                        ) : (
-                          <Square size={18} color={isPending ? Colors.gray300 : Colors.gray400} />
-                        )}
-                        <View style={styles.patientInfo}>
-                          <Text style={styles.patientName}>{patient.name} • {patient.room}</Text>
-                          <Text style={styles.patientMeta}>{patient.diagnosis}</Text>
+                  <View style={styles.chipsWrap}>
+                    {selectedPatientIds.map((id) => {
+                      const patient = patients.find((p) => p.id === id);
+                      if (!patient) return null;
+                      return (
+                        <View key={id} style={styles.selectedChip}>
+                          <Text style={styles.selectedChipText} numberOfLines={1}>
+                            {patient.name} • {patient.room}
+                          </Text>
+                          <Pressable
+                            onPress={() => removeSelectedPatient(id)}
+                            hitSlop={8}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Remove ${patient.name}`}
+                          >
+                            <X size={13} color={Colors.mutedForeground} />
+                          </Pressable>
                         </View>
-                        {isPending ? <Text style={styles.pendingBadge}>Pending</Text> : null}
-                      </Pressable>
-                    );
-                  })
+                      );
+                    })}
+                  </View>
                 )}
-              </View>
+                <ChevronDown size={16} color={Colors.mutedForeground} />
+              </Pressable>
+              {errors.patient ? <Text style={styles.error}>{errors.patient}</Text> : null}
+
+              <SearchablePicker<EndorsablePatient>
+                visible={patientSheetOpen}
+                onClose={() => setPatientSheetOpen(false)}
+                title="Select Patients"
+                searchPlaceholder="Search by name, room, or diagnosis..."
+                searchQuery={patientSearch}
+                onSearchChange={setPatientSearch}
+                groups={patientGroups}
+                keyExtractor={(p) => p.id}
+                isSelected={(p) => draftPatientIds.includes(p.id)}
+                isDisabled={(p) => p.pendingEndorsement && !draftPatientIds.includes(p.id)}
+                onToggle={toggleDraftPatient}
+                multiSelect
+                selectedCount={draftPatientIds.length}
+                onSelectAll={selectAllFilteredPatients}
+                onClearSelection={clearDraftPatients}
+                onDone={confirmPatientSelection}
+                emptyMessage={
+                  patients.length === 0
+                    ? 'You have no assigned patients to endorse.'
+                    : 'No patients match your search.'
+                }
+                renderContent={(patient, selected, disabled) => (
+                  <>
+                    {selected ? (
+                      <CheckSquare size={18} color={Colors.primary} />
+                    ) : (
+                      <Square size={18} color={disabled ? Colors.gray300 : Colors.gray400} />
+                    )}
+                    <View style={styles.patientInfo}>
+                      <Text style={styles.patientName}>{patient.name} • {patient.room}</Text>
+                      <Text style={styles.patientMeta}>{patient.diagnosis}</Text>
+                    </View>
+                    {disabled ? <Text style={styles.pendingBadge}>Pending endorsement</Text> : null}
+                  </>
+                )}
+              />
 
               {selectedPatientIds.length > 1 ? (
                 <View style={styles.patientNotesBox}>
@@ -328,16 +452,59 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 </Alert>
               ) : null}
 
-              <Select
-                label="Receiving Nurse *"
-                value={selectedNurseId}
-                onValueChange={setSelectedNurseId}
-                options={nurseOptions}
-                placeholder={groupsLoading ? 'Loading nurses...' : 'Choose a nurse — any shift, any department'}
-                searchable
+              <Text style={styles.label}>Receiving Nurse *</Text>
+              <Pressable
+                onPress={openNursePicker}
+                style={[styles.trigger, errors.nurse ? styles.triggerError : null]}
+              >
+                <Text style={[styles.triggerText, !selectedNurse && styles.placeholder]} numberOfLines={1}>
+                  {selectedNurse
+                    ? `${selectedNurse.fullName}${selectedNurse.department.name ? ` • ${selectedNurse.department.name}` : ''}`
+                    : groupsLoading
+                      ? 'Loading nurses...'
+                      : 'Choose a nurse — any shift, any department'}
+                </Text>
+                <ChevronDown size={16} color={Colors.mutedForeground} />
+              </Pressable>
+              {errors.nurse ? <Text style={styles.error}>{errors.nurse}</Text> : null}
+
+              <SearchablePicker<EligibleReceiver>
+                visible={nurseSheetOpen}
+                onClose={() => setNurseSheetOpen(false)}
+                title="Receiving Nurse"
                 searchPlaceholder="Search by name or department..."
-                emptyMessage="No active nurses found."
-                error={errors.nurse}
+                searchQuery={nurseSearch}
+                onSearchChange={setNurseSearch}
+                chips={nurseChips}
+                activeChipKey={nurseShiftChip}
+                onChipChange={setNurseShiftChip}
+                groups={nurseGroups}
+                keyExtractor={(n) => n.id}
+                isSelected={(n) => n.id === selectedNurseId}
+                isDisabled={() => false}
+                onToggle={handlePickNurse}
+                emptyMessage="No nurses found for this shift."
+                onClearFilters={() => {
+                  setNurseSearch('');
+                  setNurseShiftChip('all');
+                }}
+                renderContent={(nurse, selected) => (
+                  <View style={styles.nurseRowContent}>
+                    <View style={styles.flex1}>
+                      <Text style={[styles.patientName, selected && styles.optionTextSelected]}>
+                        {nurse.fullName}
+                      </Text>
+                      <Text style={styles.patientMeta}>{nurse.department.name || 'No department'}</Text>
+                    </View>
+                    {nurseShiftChip === 'all' ? (
+                      <View style={styles.shiftBadge}>
+                        <Text style={styles.shiftBadgeText}>
+                          {SHIFT_GROUP_LABELS[nurse.shift] || nurse.shift}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                )}
               />
 
               <View style={styles.sbarSection}>
@@ -486,26 +653,74 @@ const styles = StyleSheet.create({
   demoNotice: {
     marginBottom: 0,
   },
-  patientList: {
-    gap: 6,
-    maxHeight: 220,
+  flex1: {
+    flex: 1,
   },
-  patientRow: {
+  trigger: {
+    minHeight: 40,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    padding: 10,
-    borderRadius: Radius.md,
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderWidth: 1,
     borderColor: Colors.border,
-    backgroundColor: Colors.white,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.inputBackground,
+    gap: 8,
   },
-  patientRowSelected: {
-    borderColor: Colors.primary,
+  triggerError: {
+    borderColor: Colors.destructive,
+  },
+  triggerText: {
+    flex: 1,
+    fontSize: 14,
+    color: Colors.foreground,
+  },
+  placeholder: {
+    color: Colors.mutedForeground,
+  },
+  chipsWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  selectedChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: Colors.blue100,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    maxWidth: 200,
   },
-  patientRowDisabled: {
-    opacity: 0.5,
+  selectedChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.blue700,
+    flexShrink: 1,
+  },
+  nurseRowContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  optionTextSelected: {
+    color: Colors.primary,
+  },
+  shiftBadge: {
+    backgroundColor: Colors.gray100,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  shiftBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.mutedForeground,
   },
   patientInfo: {
     flex: 1,
@@ -566,20 +781,6 @@ const styles = StyleSheet.create({
   },
   physicianValue: {
     fontSize: 13,
-    color: Colors.foreground,
-  },
-  shiftInfoLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  shiftInfoText: {
-    fontSize: 12,
-    color: Colors.mutedForeground,
-    flex: 1,
-  },
-  shiftInfoBold: {
-    fontWeight: '700',
     color: Colors.foreground,
   },
   retryBtn: {
@@ -661,45 +862,6 @@ const styles = StyleSheet.create({
   error: {
     fontSize: 12,
     color: Colors.destructive,
-  },
-  unfinishedBox: {
-    gap: 6,
-  },
-  unfinishedHint: {
-    fontSize: 12,
-    color: Colors.mutedForeground,
-  },
-  taskInputRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  taskInput: {
-    flex: 1,
-    minHeight: 40,
-  },
-  taskAddBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  taskAddText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: Colors.blue700,
-  },
-  taskChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: Colors.gray100 || '#f5f5f5',
-    borderRadius: Radius.sm,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  taskChipText: {
-    fontSize: 12,
-    color: Colors.foreground,
-    flex: 1,
   },
   footer: {
     flexDirection: 'row',
