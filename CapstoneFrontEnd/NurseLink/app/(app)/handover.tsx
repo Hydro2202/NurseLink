@@ -26,9 +26,10 @@ import {
 } from 'lucide-react-native';
 import {
   fetchHandovers,
-  createHandover,
-  acceptHandover,
-  declineHandover,
+  createEndorsement,
+  acceptEndorsement,
+  rejectEndorsement,
+  cancelEndorsement,
   completeHandover,
   deleteHandover,
   ApiError,
@@ -64,9 +65,10 @@ const SORT_OPTIONS = [
 ];
 
 // Nurse-to-nurse only — no head-nurse approval gate. sent -> received ->
-// accepted | declined -> completed. Action buttons only ever show for the
-// receiving nurse (see renderHandoverCard); head nurses get a read-only
-// view regardless of status (see the isHeadNurse branch below).
+// accepted | declined | cancelled -> completed. Action buttons only ever
+// show for the receiving nurse (Accept/Reject) or the sending nurse
+// (Cancel, outgoing only) — see renderHandoverCard; head nurses get a
+// read-only view regardless of status (see the isHeadNurse branch below).
 function isActionable(status: string) {
   return status === 'sent' || status === 'received';
 }
@@ -75,7 +77,7 @@ function statusBadgeVariant(
   status: string
 ): 'default' | 'secondary' | 'outline' | 'success' | 'warning' {
   if (status === 'accepted' || status === 'completed') return 'success';
-  if (status === 'declined') return 'warning';
+  if (status === 'declined' || status === 'cancelled') return 'warning';
   if (status === 'sent' || status === 'received') return 'secondary';
   return 'outline';
 }
@@ -83,13 +85,15 @@ function statusBadgeVariant(
 function statusLabel(status: string): string {
   switch (status) {
     case 'sent':
-      return 'Sent';
+      return 'Pending';
     case 'received':
-      return 'Received';
+      return 'Pending';
     case 'accepted':
       return 'Accepted';
     case 'declined':
-      return 'Declined';
+      return 'Rejected';
+    case 'cancelled':
+      return 'Cancelled';
     case 'completed':
       return 'Completed';
     default:
@@ -196,14 +200,9 @@ export default function HandoverPage() {
 
   const handleSaveHandover = async (handoverData: Partial<HandoverNote>) => {
     try {
-      const newHandover = await createHandover({
-        patientId: handoverData.patientId || '',
-        patientName: handoverData.patientName || '',
-        // shift/toShift/shiftDate/department are all server-derived from
-        // the sender's own Duty Roster shift now — nothing to send here,
-        // see api/referral_shifts.py.
-        date: new Date().toISOString().slice(0, 10),
-        nurseFrom: currentUserName,
+      const newHandover = await createEndorsement({
+        patientIds: handoverData.patientIds || [],
+        patientNotes: handoverData.patientNotes || {},
         nurseTo: handoverData.nurseTo || '',
         // The account behind nurseTo. Several nurses on this ward share a
         // display name, so without this the server cannot tell which inbox to
@@ -215,18 +214,20 @@ export default function HandoverPage() {
           assessment: '',
           recommendation: '',
         },
-        unfinishedTasks: handoverData.unfinishedTasks || [],
-        photos: handoverData.photos || [],
       });
       setHandovers((prev) => [{ ...newHandover, createdAt: newHandover.date }, ...prev]);
-      // Writing a handover also puts its work on this nurse's task list and
-      // notifies the receiving nurse — let the rest of the app catch up now.
+      // Writing an endorsement notifies the receiving nurse — let the rest
+      // of the app catch up now.
       void pollLive();
-      toast.success('Referral submitted successfully!', {
-        description: `Referral note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
+      const count = newHandover.patients?.length ?? 1;
+      toast.success('Endorsement submitted!', {
+        description:
+          count > 1
+            ? `${count} patients have been endorsed to ${newHandover.nurseTo}.`
+            : `${newHandover.patientName} has been endorsed to ${newHandover.nurseTo}.`,
       });
     } catch (error) {
-      toast.error('Failed to submit referral', {
+      toast.error('Failed to submit endorsement', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
       throw error;
@@ -236,19 +237,19 @@ export default function HandoverPage() {
   const handleAcceptHandover = async (handoverId: string) => {
     setAcknowledgeLoading(handoverId);
     try {
-      const updated = await acceptHandover(handoverId);
+      const updated = await acceptEndorsement(handoverId);
       setHandovers((prev) =>
         prev.map((h) => (h.id === handoverId ? { ...updated, createdAt: updated.date } : h))
       );
-      // Say what actually happened: accepting moves the outgoing nurse's
-      // unfinished work onto this nurse's list, and they should not have to
-      // discover that by wandering over to the Tasks screen.
+      const count = updated.patients?.length ?? 1;
       const moved = updated.adoptedTasks?.length ?? 0;
-      toast.success('Referral accepted!', {
+      toast.success('Endorsement accepted!', {
         description:
-          moved > 0
-            ? `${moved} unfinished task${moved > 1 ? 's' : ''} added to your tasks for ${updated.patientName}.`
-            : `You've accepted the referral for ${updated.patientName}.`,
+          count > 1
+            ? `${count} patients are now assigned to you.`
+            : moved > 0
+              ? `${moved} unfinished task${moved > 1 ? 's' : ''} added to your tasks for ${updated.patientName}.`
+              : `${updated.patientName} is now assigned to you.`,
       });
       // We just changed state other nurses are watching. Poll immediately so
       // this device is consistent at once, rather than briefly showing a list
@@ -256,9 +257,8 @@ export default function HandoverPage() {
       void pollLive();
       void refreshNotifications();
 
-      // Take the nurse to the work they just accepted. Accepting is the
-      // point at which the patient becomes theirs, so landing on the task that
-      // came with it is more useful than staying on a handover now marked done.
+      // Only a legacy single-patient referral (never a bulk endorsement)
+      // moves tasks on accept — see HandoverViewSet.accept.
       const firstTask = updated.adoptedTasks?.[0];
       if (firstTask) {
         router.push({
@@ -267,7 +267,7 @@ export default function HandoverPage() {
         });
       }
     } catch (error) {
-      toast.error('Failed to accept referral', {
+      toast.error('Failed to accept endorsement', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
@@ -278,23 +278,44 @@ export default function HandoverPage() {
   const handleDeclineHandover = async (handoverId: string, reason: string) => {
     setAcknowledgeLoading(handoverId);
     try {
-      const updated = await declineHandover(handoverId, reason.trim() || undefined);
+      const updated = await rejectEndorsement(handoverId, reason.trim());
       setHandovers((prev) =>
         prev.map((h) => (h.id === handoverId ? { ...updated, createdAt: updated.date } : h))
       );
-      toast.success('Referral declined', {
-        description: `The referral for ${updated.patientName} has been declined and the sender notified.`,
+      toast.success('Endorsement rejected', {
+        description: `The endorsement for ${updated.patientName} has been rejected and the sender notified.`,
       });
       void pollLive();
       void refreshNotifications();
     } catch (error) {
-      toast.error('Failed to decline referral', {
+      toast.error('Failed to reject endorsement', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
       setAcknowledgeLoading(null);
       setDeclineTarget(null);
       setDeclineReason('');
+    }
+  };
+
+  const handleCancelHandover = async (handoverId: string) => {
+    setAcknowledgeLoading(handoverId);
+    try {
+      const updated = await cancelEndorsement(handoverId);
+      setHandovers((prev) =>
+        prev.map((h) => (h.id === handoverId ? { ...updated, createdAt: updated.date } : h))
+      );
+      toast.success('Endorsement cancelled', {
+        description: `The endorsement for ${updated.patientName} has been withdrawn.`,
+      });
+      void pollLive();
+      void refreshNotifications();
+    } catch (error) {
+      toast.error('Failed to cancel endorsement', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setAcknowledgeLoading(null);
     }
   };
 
@@ -334,11 +355,11 @@ export default function HandoverPage() {
       setHandovers((prev) => prev.filter((h) => h.id !== handoverToDelete));
       setDeleteDialogOpen(false);
       setHandoverToDelete(null);
-      toast.success('Referral deleted', {
-        description: `Referral for ${deletedHandover?.patientName} has been removed.`,
+      toast.success('Endorsement deleted', {
+        description: `The endorsement for ${deletedHandover?.patientName} has been removed.`,
       });
     } catch (error) {
-      toast.error('Failed to delete referral', {
+      toast.error('Failed to delete endorsement', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
@@ -432,7 +453,10 @@ export default function HandoverPage() {
           <View style={styles.flex1}>
             <View style={styles.cardTitleRow}>
               <FileText size={20} color={Colors.blue600} />
-              <CardTitle style={styles.cardTitle}>{handover.patientName}</CardTitle>
+              <CardTitle style={styles.cardTitle}>
+                {handover.patientName}
+                {(handover.patients?.length ?? 1) > 1 ? ` +${(handover.patients?.length ?? 1) - 1} more` : ''}
+              </CardTitle>
             </View>
             <CardDescription>{describeHandover(handover, type)}</CardDescription>
           </View>
@@ -554,11 +578,25 @@ export default function HandoverPage() {
               disabled={acknowledgeLoading === handover.id}
             >
               <XCircle size={16} color={Colors.red600} />
-              <Text style={{ color: Colors.red600, fontWeight: '600', fontSize: 14 }}>Decline</Text>
+              <Text style={{ color: Colors.red600, fontWeight: '600', fontSize: 14 }}>Reject</Text>
             </Button>
           </View>
         ) : null}
-        {type === 'incoming' && handover.status === 'accepted' ? (
+        {type === 'outgoing' && isActionable(handover.status) ? (
+          <View style={styles.actionButtonsRow}>
+            <Button
+              variant="outline"
+              style={{ flex: 1, borderColor: Colors.red200 }}
+              onPress={() => handleCancelHandover(handover.id)}
+              disabled={acknowledgeLoading === handover.id}
+              loading={acknowledgeLoading === handover.id}
+            >
+              <XCircle size={16} color={Colors.red600} />
+              <Text style={{ color: Colors.red600, fontWeight: '600', fontSize: 14 }}>Cancel Endorsement</Text>
+            </Button>
+          </View>
+        ) : null}
+        {type === 'incoming' && handover.status === 'accepted' && !handover.isEndorsement ? (
           <Button
             style={styles.ackBtn}
             onPress={() => handleCompleteHandover(handover.id)}
@@ -590,18 +628,18 @@ export default function HandoverPage() {
         keyboardShouldPersistTaps="handled"
       >
         <View>
-          <Text style={styles.title}>Referral</Text>
+          <Text style={styles.title}>Endorsement</Text>
           <Text style={styles.subtitle}>
             {isHeadNurse
-              ? 'Referral oversight — view only, for your information'
-              : 'SBAR-based digital endorsement'}
+              ? 'Endorsement oversight — view only, for your information'
+              : 'Hand over patients to another nurse, any shift or department'}
           </Text>
         </View>
 
         <Alert variant="info">
           <AlertDescription>
             {isHeadNurse
-              ? 'Referrals move directly between nurses with no approval step. You can see every referral and its full history here, but cannot accept, decline, or edit one.'
+              ? 'Endorsements move directly between nurses with no approval step. You can see every endorsement and its full history here, but cannot accept, reject, cancel, or edit one.'
               : "Demo system: don't enter real patient information."}
           </AlertDescription>
         </Alert>
@@ -609,7 +647,7 @@ export default function HandoverPage() {
         <View style={styles.controls}>
           <View style={styles.searchWrap}>
             <Input
-              placeholder="Search referrals..."
+              placeholder="Search endorsements..."
               value={searchQuery}
               onChangeText={setSearchQuery}
               leftIcon={<Search size={18} color={Colors.mutedForeground} />}
@@ -640,7 +678,7 @@ export default function HandoverPage() {
           {!isHeadNurse ? (
             <Button onPress={handleCreateHandover} style={styles.newBtn}>
               <Plus size={16} color={Colors.white} />
-              <Text style={styles.newBtnText}>New Referral</Text>
+              <Text style={styles.newBtnText}>New Endorsement</Text>
             </Button>
           ) : null}
         </View>
@@ -707,8 +745,8 @@ export default function HandoverPage() {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={confirmDeleteHandover}
         loading={deleteLoading}
-        title="Delete Referral"
-        description="Are you sure you want to delete this referral? This action cannot be undone."
+        title="Delete Endorsement"
+        description="Are you sure you want to delete this endorsement? This action cannot be undone."
       />
 
       <Modal
@@ -719,15 +757,15 @@ export default function HandoverPage() {
       >
         <Pressable style={styles.backdrop} onPress={() => setDeclineTarget(null)}>
           <Pressable style={[styles.declineDialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.declineTitle}>Decline Referral</Text>
+            <Text style={styles.declineTitle}>Reject Endorsement</Text>
             <Text style={styles.declineDescription}>
-              Let the sending nurse know why, so they can reassign the patient.
+              Let the sending nurse know why, so they can endorse the patient to someone else.
             </Text>
             <TextInput
               style={styles.declineInput}
               value={declineReason}
               onChangeText={setDeclineReason}
-              placeholder="Reason (optional)"
+              placeholder="Reason (required)"
               placeholderTextColor={Colors.mutedForeground}
               multiline
               textAlignVertical="top"
@@ -747,10 +785,10 @@ export default function HandoverPage() {
               <Button
                 style={{ flex: 1, backgroundColor: Colors.red600 }}
                 onPress={() => declineTarget && handleDeclineHandover(declineTarget, declineReason)}
-                disabled={Boolean(acknowledgeLoading)}
+                disabled={Boolean(acknowledgeLoading) || !declineReason.trim()}
                 loading={acknowledgeLoading === declineTarget}
               >
-                Decline Referral
+                Reject Endorsement
               </Button>
             </View>
           </Pressable>
@@ -773,7 +811,7 @@ export default function HandoverPage() {
             ) : null}
             <ScrollView style={{ maxHeight: 320 }}>
               {(historyTarget?.statusHistory ?? []).length === 0 ? (
-                <Text style={styles.emptyText}>No history recorded for this referral.</Text>
+                <Text style={styles.emptyText}>No history recorded for this endorsement.</Text>
               ) : (
                 (historyTarget?.statusHistory ?? []).map((entry, idx) => (
                   <View key={idx} style={styles.historyRow}>

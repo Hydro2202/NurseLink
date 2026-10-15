@@ -75,6 +75,7 @@ from .models import (
     IdScanAttempt,
     FaceVerificationAttempt,
     HandoverNote,
+    HandoverPatient,
     KardexLaboratory,
     KardexMedication,
     KardexRecord,
@@ -100,6 +101,7 @@ from .notifications import (
     notify,
     notify_handover_accepted,
     notify_handover_acknowledged,
+    notify_handover_cancelled,
     notify_handover_completed,
     notify_handover_created,
     notify_handover_declined,
@@ -3362,14 +3364,19 @@ class TaskViewSet(viewsets.ModelViewSet):
 )
 class HandoverViewSet(viewsets.ModelViewSet):
     """
-    Referrals — nurse-to-nurse, no head-nurse approval gate. Status moves
-    sent -> received -> accepted|declined -> completed, driven entirely by
-    the sending nurse (create) and the receiving nurse (acknowledge/accept/
-    decline/complete — see _ensure_recipient). Head nurses can list/retrieve
-    every referral (see get_queryset) but CanManageReferral blocks them from
-    write methods, and every action below additionally checks the acting
-    user is the actual recipient — so there is no path, permission or
-    otherwise, for a head nurse to act on a referral.
+    Referral / Endorsement — nurse-to-nurse, no head-nurse approval gate.
+    One model, one ViewSet, exposed at both /handovers/ (legacy, single
+    patient, next-shift-rotation gated by the client — but the gate itself
+    is gone now, see HandoverSerializer.create()) and /endorsements/ (the
+    bulk, any-shift rework — see is_endorsement on HandoverNote). Status
+    moves sent -> received -> accepted|declined|cancelled -> completed,
+    driven entirely by the sending nurse (create/cancel) and the receiving
+    nurse (acknowledge/accept/decline/reject/complete — see
+    _ensure_recipient). Head nurses can list/retrieve every row (see
+    get_queryset) but CanManageReferral blocks them from write methods, and
+    every action below additionally checks the acting user is the actual
+    recipient (or sender, for cancel) — so there is no path, permission or
+    otherwise, for a head nurse to act on one.
     """
 
     serializer_class = HandoverSerializer
@@ -3534,6 +3541,115 @@ class HandoverViewSet(viewsets.ModelViewSet):
             'emptyReason': empty_reason,
         })
 
+    @action(detail=False, methods=['get'], url_path='my-patients')
+    def my_patients(self, request):
+        """The signed-in nurse's own assigned patients, each flagged whether
+        they're already in a pending endorsement (so the compose UI can grey
+        them out / block picking them again)."""
+        patients = list(
+            Patient.objects.filter(assigned_nurse=request.user).order_by('name')
+        )
+        pending_codes = set(
+            HandoverPatient.objects.filter(
+                patient__in=patients, handover__status__in=['sent', 'received'],
+            ).values_list('patient__patient_code', flat=True)
+        )
+        data = PatientSerializer(patients, many=True, context=self.get_serializer_context()).data
+        for row in data:
+            row['pendingEndorsement'] = row.get('id') in pending_codes
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='eligible-receivers')
+    def eligible_receivers(self, request):
+        """Every active, approved nurse except me, grouped by shift (Morning
+        -> Afternoon -> Night -> Unassigned), any shift/department allowed
+        — the new Endorsement rule, replacing the old shift-rotation-only
+        eligible_recipients above for new callers (which stays, unchanged,
+        for anything still using it)."""
+        shift_id = (request.query_params.get('shiftId') or '').strip().lower()
+        department_id = (request.query_params.get('departmentId') or '').strip()
+        search = (request.query_params.get('search') or '').strip().lower()
+
+        nurses = (
+            User.objects.filter(
+                nurse_profile__approval_status='approved',
+                nurse_profile__is_active_staff=True,
+            )
+            .exclude(pk=request.user.pk)
+            .select_related('nurse_profile')
+            .order_by('first_name', 'last_name')
+        )
+        if search:
+            nurses = nurses.filter(
+                Q(first_name__icontains=search) | Q(last_name__icontains=search)
+            )
+        duties = current_duties([n.pk for n in nurses])
+
+        buckets = {'morning': [], 'afternoon': [], 'night': [], 'unassigned': []}
+        for nurse in nurses:
+            duty = duties.get(nurse.pk)
+            shift, department = duty_fields(nurse.nurse_profile, duty)
+            bucket_key = duty.shift if duty else 'unassigned'
+            if department_id and str(duty.department_id if duty else '') != department_id:
+                continue
+            buckets[bucket_key].append({
+                'id': str(nurse.pk),
+                'fullName': full_name(nurse),
+                'department': {'id': duty.department_id, 'name': department} if duty else {'id': None, 'name': department},
+                'shift': bucket_key,
+            })
+
+        groups = []
+        for key in ('morning', 'afternoon', 'night', 'unassigned'):
+            if shift_id and key != shift_id:
+                continue
+            times = DutyAssignment.SHIFT_DEFAULT_TIMES.get(key)
+            groups.append({
+                'shift': {
+                    'id': key,
+                    'name': SHIFT_LABELS.get(key, 'Unassigned'),
+                    'startTime': times[0].isoformat() if times else None,
+                    'endTime': times[1].isoformat() if times else None,
+                },
+                'nurses': buckets[key],
+            })
+        return Response(groups)
+
+    @action(detail=False, methods=['get'], url_path='sent')
+    def sent(self, request):
+        return self._boxed_list(request, created_by=request.user)
+
+    @action(detail=False, methods=['get'], url_path='received')
+    def received(self, request):
+        return self._boxed_list(request, nurse_to_user=request.user)
+
+    #: Endorsement status (caller-facing) -> the DB status value(s) it maps
+    #: to — the reverse of HandoverSerializer._ENDORSEMENT_STATUS, used only
+    #: to translate an incoming ?status= filter on the new /sent //received
+    #: actions. The shared get_queryset()/?status= above is untouched and
+    #: still expects a raw DB value, so old callers keep working.
+    _STATUS_FILTER = {
+        'PENDING': ['sent', 'received'],
+        'ACCEPTED': ['accepted'],
+        'REJECTED': ['declined'],
+        'CANCELLED': ['cancelled'],
+    }
+
+    def _boxed_list(self, request, **by):
+        # Built directly rather than via self.get_queryset() — that method's
+        # own ?status= handling expects a raw DB value (sent/accepted/...),
+        # not the translated PENDING/ACCEPTED/... these two actions take,
+        # and its staff_nurse OR-filter is redundant here: **by already
+        # scopes strictly to created_by or nurse_to_user=request.user.
+        qs = HandoverNote.objects.select_related(
+            'patient', 'created_by', 'nurse_to_user', 'nurse_to_user__nurse_profile', 'department', 'to_department',
+        ).filter(**by)
+        status_filter = (request.query_params.get('status') or '').strip().upper()
+        if status_filter:
+            qs = qs.filter(status__in=self._STATUS_FILTER.get(status_filter, [status_filter.lower()]))
+        data = HandoverSerializer(qs, many=True, context={'request': request}).data
+        return Response(data)
+
     @staticmethod
     def _append_status_history(handover, status, user, note=''):
         history = list(handover.status_history or [])
@@ -3590,7 +3706,7 @@ class HandoverViewSet(viewsets.ModelViewSet):
             'no-op; a declined or completed referral cannot be accepted.'
         ),
     )
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post', 'patch'])
     def accept(self, request, handover_code=None):
         handover = self.get_object()
         self._ensure_recipient(handover)
@@ -3601,16 +3717,54 @@ class HandoverViewSet(viewsets.ModelViewSet):
             return Response(data)
         if handover.status not in ('sent', 'received'):
             return Response(
-                {'detail': f'Cannot accept a referral that is already "{handover.status}".'},
+                {'detail': f'Cannot accept an endorsement that is already "{handover.status}".'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         with transaction.atomic():
             now = timezone.now()
-            if handover.status == 'sent':
-                handover.acknowledged_at = handover.acknowledged_at or now
-                handover.acknowledged_by = handover.acknowledged_by or request.user
-                self._append_status_history(handover, 'received', request.user)
+            adopted = []
+            if handover.is_endorsement:
+                # Real patient-ownership transfer. Re-check each patient is
+                # *still* assigned to the endorser right now — one may have
+                # been reassigned elsewhere while this endorsement sat
+                # pending — and fail clearly, naming it, rather than
+                # silently transferring a patient out from under whoever
+                # actually has them.
+                links = list(handover.handover_patients.select_related('patient').all())
+                receiver = handover.nurse_to_user
+                stale = [
+                    link.patient.patient_code for link in links
+                    if link.patient.assigned_nurse_id != handover.created_by_id
+                ]
+                if stale:
+                    return Response(
+                        {
+                            'detail': (
+                                'These patients are no longer assigned to the endorser and '
+                                f'cannot be transferred: {", ".join(stale)}.'
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                for link in links:
+                    PatientAssignment.objects.filter(patient=link.patient, status='active').update(
+                        status='reassigned', ended_at=now, end_reason='ENDORSED',
+                    )
+                    PatientAssignment.objects.create(
+                        patient=link.patient,
+                        assigned_nurse=receiver,
+                        status='active',
+                        assigned_by=receiver,
+                        source_handover=handover,
+                    )
+            else:
+                if handover.status == 'sent':
+                    handover.acknowledged_at = handover.acknowledged_at or now
+                    handover.acknowledged_by = handover.acknowledged_by or request.user
+                    self._append_status_history(handover, 'received', request.user)
+                adopted = adopt_handover_tasks(handover, request.user)
+
             handover.status = 'accepted'
             handover.accepted_at = now
             handover.accepted_by = request.user
@@ -3621,7 +3775,6 @@ class HandoverViewSet(viewsets.ModelViewSet):
                     'accepted_by', 'status_history', 'updated_at',
                 ]
             )
-            adopted = adopt_handover_tasks(handover, request.user)
 
         notify_handover_accepted(handover, request.user, adopted)
         notify_referral_head_nurse_fyi(handover, 'accepted')
@@ -3629,6 +3782,43 @@ class HandoverViewSet(viewsets.ModelViewSet):
         data = HandoverSerializer(handover, context={'request': request}).data
         data['adoptedTasks'] = [task.task_code for task in adopted]
         return Response(data)
+
+    @action(detail=True, methods=['patch'])
+    def reject(self, request, handover_code=None):
+        """PATCH alias of decline, for the /endorsements/ surface — same
+        recipient-only guard, requires a reason."""
+        reason = (request.data.get('reason') or '').strip()
+        if not reason:
+            return Response({'reason': 'A reason is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        return self._decline(request, handover_code, reason)
+
+    @action(detail=True, methods=['patch'])
+    def cancel(self, request, handover_code=None):
+        """Endorser-only: withdraw a still-pending endorsement. The patients
+        were never touched (accept is the only thing that transfers them),
+        so there is nothing to roll back here."""
+        handover = self.get_object()
+        if get_user_role(request.user) == 'head_nurse':
+            raise PermissionDenied('Head nurses have view-only access to referrals.')
+        if handover.created_by_id != request.user.id:
+            raise PermissionDenied('Only the nurse who sent this endorsement can cancel it.')
+
+        if handover.status == 'cancelled':
+            return Response(HandoverSerializer(handover, context={'request': request}).data)
+        if handover.status not in ('sent', 'received'):
+            return Response(
+                {'detail': f'Cannot cancel an endorsement that is already "{handover.status}".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            handover.status = 'cancelled'
+            self._append_status_history(handover, 'cancelled', request.user)
+            handover.save(update_fields=['status', 'status_history', 'updated_at'])
+
+        notify_handover_cancelled(handover, request.user)
+        notify_referral_head_nurse_fyi(handover, 'cancelled')
+        return Response(HandoverSerializer(handover, context={'request': request}).data)
 
     @extend_schema(
         request=None,
@@ -3641,6 +3831,10 @@ class HandoverViewSet(viewsets.ModelViewSet):
     )
     @action(detail=True, methods=['post'])
     def decline(self, request, handover_code=None):
+        reason = (request.data.get('reason') or '').strip()
+        return self._decline(request, handover_code, reason)
+
+    def _decline(self, request, handover_code, reason):
         handover = self.get_object()
         self._ensure_recipient(handover)
 
@@ -3648,11 +3842,10 @@ class HandoverViewSet(viewsets.ModelViewSet):
             return Response(HandoverSerializer(handover, context={'request': request}).data)
         if handover.status not in ('sent', 'received'):
             return Response(
-                {'detail': f'Cannot decline a referral that is already "{handover.status}".'},
+                {'detail': f'Cannot decline/reject an endorsement that is already "{handover.status}".'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        reason = (request.data.get('reason') or '').strip()
         with transaction.atomic():
             handover.status = 'declined'
             handover.declined_at = timezone.now()

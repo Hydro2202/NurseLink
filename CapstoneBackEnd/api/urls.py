@@ -7,6 +7,11 @@ router = DefaultRouter()
 router.register(r'patients', views.PatientViewSet, basename='patient')
 router.register(r'tasks', views.TaskViewSet, basename='task')
 router.register(r'handovers', views.HandoverViewSet, basename='handover')
+# Same ViewSet, same underlying model — Endorsement is the Referral/
+# HandoverNote feature reworked in place (bulk multi-patient, any shift,
+# real patient transfer on accept), exposed under its own name rather than
+# a duplicated parallel feature. See HandoverViewSet's docstring.
+router.register(r'endorsements', views.HandoverViewSet, basename='endorsement')
 router.register(r'task-handovers', views.TaskHandoverViewSet, basename='task-handover')
 router.register(r'charting', views.ChartingViewSet, basename='charting')
 router.register(r'vital-signs', views.VitalSignsViewSet, basename='vital-signs')

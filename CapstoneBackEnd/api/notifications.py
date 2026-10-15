@@ -29,6 +29,7 @@ HANDOVER_RECEIVED = 'handover_received'
 HANDOVER_ACKNOWLEDGED = 'handover_acknowledged'
 HANDOVER_ACCEPTED = 'handover_accepted'
 HANDOVER_DECLINED = 'handover_declined'
+HANDOVER_CANCELLED = 'handover_cancelled'
 HANDOVER_COMPLETED = 'handover_completed'
 # Head-nurse oversight only — never actionable, never an approval request.
 # See notify_referral_head_nurse_fyi.
@@ -243,15 +244,19 @@ def notify_handover_created(handover):
     patient_name = handover.patient_name or (
         handover.patient.name if handover.patient_id else ''
     )
+    patient_count = handover.handover_patients.count()
+    if patient_count > 1:
+        title = 'Patient Endorsement'
+        message = f'{patient_count} patients have been referred to you by {handover.nurse_from}.'
+    else:
+        title = 'Patient Endorsement' if handover.is_endorsement else 'Patient Referral'
+        message = f'Patient {patient_name or "a patient"} has been referred to you by {handover.nurse_from}.'
     return notify(
         recipient,
         notification_type='warning',
         event=HANDOVER_RECEIVED,
-        title='Patient Referral',
-        message=(
-            f'Patient {patient_name or "a patient"} has been referred to you '
-            f'by {handover.nurse_from}.'
-        ),
+        title=title,
+        message=message,
         patient_label=patient_name,
         patient=handover.patient,
         handover=handover,
@@ -367,6 +372,33 @@ def notify_handover_declined(handover, nurse, reason):
         handover=handover,
         sender=nurse,
         action_label='View referral',
+        action_path='/handover',
+        action_highlight_id=handover.handover_code,
+    )
+
+
+def notify_handover_cancelled(handover, nurse):
+    """Tell the intended receiver an endorsement sent to them was cancelled
+    by the sender before they acted on it."""
+    recipient = handover.nurse_to_user
+    if recipient is None or recipient.pk == nurse.pk:
+        return None
+
+    if not wants(recipient, 'handover_notifications'):
+        return None
+
+    nurse_name = full_name(nurse)
+    return notify(
+        recipient,
+        notification_type='warning',
+        event=HANDOVER_CANCELLED,
+        title='Endorsement cancelled',
+        message=f'{nurse_name} cancelled the endorsement they sent you for {handover.patient_name or "a patient"}.',
+        patient_label=handover.patient_name or '',
+        patient=handover.patient,
+        handover=handover,
+        sender=nurse,
+        action_label='View endorsement',
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )

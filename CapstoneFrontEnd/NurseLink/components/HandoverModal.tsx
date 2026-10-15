@@ -8,45 +8,14 @@ import {
   Pressable,
   TextInput,
 } from 'react-native';
-import { FileText, User, Plus, X, Clock } from 'lucide-react-native';
+import { FileText, User, Plus, X, Clock, CheckSquare, Square } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Select } from './Select';
 import { Alert, AlertDescription } from './Alert';
-import type {
-  EligibleReferralRecipients,
-  EmptyReferralReason,
-  HandoverNote,
-  Patient,
-} from '../types/domain';
-import { fetchPatients, fetchEligibleReferralRecipients, ApiError } from '../services/api';
+import type { EligibleReceiverGroup, EndorsablePatient, HandoverNote } from '../types/domain';
+import { fetchMyEndorsablePatients, fetchEligibleReceivers, ApiError } from '../services/api';
 import { bmiCategory } from '../utils/bmi';
-
-/**
- * Why the receiving-nurse list is empty, in plain language — keyed by the
- * backend's emptyReason code (see api/referral_shifts.py). Any reason not
- * in this list (including null while still empty, which shouldn't happen
- * once the backend always supplies one, but costs nothing to cover) falls
- * through to a generic message rather than breaking.
- */
-function emptyReferralMessage(
-  reason: EmptyReferralReason | null | undefined,
-  nextShiftLabel: string | null | undefined
-): string {
-  const shift = nextShiftLabel || 'the next';
-  switch (reason) {
-    case 'user_off_duty':
-      return "You're off duty, so you can't refer patients right now.";
-    case 'no_next_shift_staff':
-      return `Nobody is scheduled on the ${shift} shift yet. Ask your Head Nurse to update the Duty Roster.`;
-    case 'only_self_scheduled':
-      return `You're the only one scheduled for the ${shift} shift — there's no one else to refer to yet.`;
-    case 'no_eligible_nurse_on_next_shift':
-      return `Someone is scheduled for the ${shift} shift, but not as a staff nurse who can receive a referral.`;
-    default:
-      return 'No nurses are available for a referral right now.';
-  }
-}
 
 interface HandoverModalProps {
   open: boolean;
@@ -54,18 +23,20 @@ interface HandoverModalProps {
   onSave: (handover: Partial<HandoverNote>) => Promise<void>;
 }
 
+const SHIFT_GROUP_LABELS: Record<string, string> = {
+  morning: 'Morning',
+  afternoon: 'Afternoon',
+  night: 'Night',
+  unassigned: 'Unassigned',
+};
+
 export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps) {
   const [loading, setLoading] = useState(false);
-  const [patients, setPatients] = useState<Patient[]>([]);
-  const [selectedPatientId, setSelectedPatientId] = useState('');
+  const [patients, setPatients] = useState<EndorsablePatient[]>([]);
+  const [selectedPatientIds, setSelectedPatientIds] = useState<string[]>([]);
   const [selectedNurseId, setSelectedNurseId] = useState('');
-  // Work the outgoing nurse could not finish. On acknowledgement the API turns
-  // each line into a task on the receiving nurse's list, so this is the part of
-  // the handover that actually carries over rather than just being read.
-  const [unfinishedTasks, setUnfinishedTasks] = useState<string[]>([]);
-  const [taskDraft, setTaskDraft] = useState('');
+  const [patientNotes, setPatientNotes] = useState<Record<string, string>>({});
   const [formData, setFormData] = useState({
-    patientName: '',
     nurseTo: '',
     situation: '',
     background: '',
@@ -75,39 +46,31 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Shift-rotation eligibility — who the signed-in nurse may refer to right
-  // now, per the Duty Roster (see api/referral_shifts.py). There is no
-  // manual "Shift" field any more: which shift this referral is on, and
-  // who's eligible to receive it, is entirely server-derived.
-  const [eligibility, setEligibility] = useState<EligibleReferralRecipients | null>(null);
-  const [eligibilityLoading, setEligibilityLoading] = useState(false);
-  const [eligibilityError, setEligibilityError] = useState('');
+  // Any active, approved nurse, any shift/department — see
+  // api/views.py::HandoverViewSet.eligible_receivers. Grouped by shift so
+  // the picker reads like a duty roster rather than a flat alphabetical list.
+  const [groups, setGroups] = useState<EligibleReceiverGroup[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [groupsError, setGroupsError] = useState('');
 
   useEffect(() => {
     if (!open) {
-      setSelectedPatientId('');
+      setSelectedPatientIds([]);
       setSelectedNurseId('');
-      setUnfinishedTasks([]);
-      setTaskDraft('');
+      setPatientNotes({});
       setFormData({
-        patientName: '',
-        nurseTo: '',
-        situation: '',
-        background: '',
-        assessment: '',
-        recommendation: '',
-        attendingPhysician: '',
+        nurseTo: '', situation: '', background: '', assessment: '', recommendation: '', attendingPhysician: '',
       });
       setErrors({});
-      setEligibility(null);
-      setEligibilityError('');
+      setGroups([]);
+      setGroupsError('');
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const patientData = await fetchPatients({ mine: true });
-        if (!cancelled) setPatients(patientData);
+        const data = await fetchMyEndorsablePatients();
+        if (!cancelled) setPatients(data);
       } catch {
         if (!cancelled) setPatients([]);
       }
@@ -117,123 +80,102 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     };
   }, [open]);
 
-  // Shared by the auto-fetch on open and the Retry button below — a failed
-  // request is a real error state, not just an empty list.
-  const loadEligibility = async () => {
-    setEligibilityLoading(true);
-    setEligibilityError('');
+  const loadReceivers = async () => {
+    setGroupsLoading(true);
+    setGroupsError('');
     try {
-      const data = await fetchEligibleReferralRecipients();
-      setEligibility(data);
-      setSelectedNurseId((prev) =>
-        prev && !data.recipients.some((n) => n.id === prev) ? '' : prev
-      );
+      const data = await fetchEligibleReceivers();
+      setGroups(data);
     } catch (err) {
-      setEligibility(null);
-      setEligibilityError(
-        err instanceof ApiError ? err.message : 'Failed to load eligible recipients.'
-      );
+      setGroups([]);
+      setGroupsError(err instanceof ApiError ? err.message : 'Failed to load nurses.');
     } finally {
-      setEligibilityLoading(false);
+      setGroupsLoading(false);
     }
   };
 
-  // Refetched every time the form opens — eligibility depends on the Duty
-  // Roster and the current time, both of which can have changed since the
-  // last time this modal was open.
   useEffect(() => {
     if (!open) return;
-    loadEligibility();
-    // loadEligibility is intentionally not a dependency — it would redefine
-    // on every render; this effect should only re-run when the modal opens.
+    loadReceivers();
   }, [open]);
 
-  const nurses = useMemo(() => eligibility?.recipients ?? [], [eligibility]);
-  const onDuty = eligibility?.onDuty ?? false;
-  const noNursesReason =
-    !eligibilityLoading && eligibility && nurses.length === 0
-      ? emptyReferralMessage(eligibility.emptyReason, eligibility.nextShiftLabel)
-      : '';
-  useEffect(() => {
-    if (selectedNurseId) {
-      const nurse = nurses.find((n) => n.id === selectedNurseId);
-      if (nurse) {
-        setFormData((prev) => ({ ...prev, nurseTo: nurse.name }));
-      }
-    }
-  }, [selectedNurseId, nurses]);
-
-  const nurseNameCounts = nurses.reduce<Record<string, number>>((acc, n) => {
-    acc[n.name] = (acc[n.name] || 0) + 1;
-    return acc;
-  }, {});
+  const nurseOptions = useMemo(
+    () =>
+      groups.flatMap((g) =>
+        g.nurses.map((n) => ({
+          label: `${n.fullName} • ${SHIFT_GROUP_LABELS[g.shift.id] || g.shift.id} shift${n.department.name ? ` • ${n.department.name}` : ''}`,
+          value: n.id,
+          keywords: n.department.name,
+        }))
+      ),
+    [groups]
+  );
 
   useEffect(() => {
-    if (selectedPatientId) {
-      const patient = patients.find((p) => p.id === selectedPatientId);
-      if (patient) {
-        const situation = `${patient.name} is a ${patient.age}-year-old ${patient.gender.toLowerCase()} admitted on ${patient.admissionDate} with ${patient.diagnosis}. Currently in ${patient.room}. Risk level: ${patient.riskLevel}.`;
-        const background = `Diagnosis: ${patient.diagnosis}\nAllergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}\nCurrent Medications: ${patient.medications.join(', ')}\nAdmission Date: ${patient.admissionDate}`;
-        const heightWeightLine =
-          patient.heightCm != null || patient.weightKg != null
-            ? `\nHeight: ${patient.heightCm != null ? `${patient.heightCm} cm` : 'N/A'} | Weight: ${
-                patient.weightKg != null ? `${patient.weightKg} kg` : 'N/A'
-              } | BMI: ${patient.bmi != null ? `${patient.bmi} (${bmiCategory(patient.bmi)})` : 'N/A'}`
-            : '';
-        const pendingLabs = (patient.laboratories || []).filter((l) => l.status === 'pending');
-        const activeMeds = (patient.medicationOrders || []).filter((m) => m.isActive);
-        const labsAndMedsLine =
-          pendingLabs.length > 0 || activeMeds.length > 0
-            ? `\n\nPending Labs: ${
-                pendingLabs.length > 0 ? pendingLabs.map((l) => l.testName).join(', ') : 'None'
-              }\nActive Medications: ${
-                activeMeds.length > 0
-                  ? activeMeds
-                      .map(
-                        (m) =>
-                          `${m.medicationName} ${m.dose} ${m.route} ${m.frequency}${
-                            m.lastGiven ? ` (last given ${new Date(m.lastGiven).toLocaleString()})` : ' (not yet given)'
-                          }`
-                      )
-                      .join('; ')
-                  : 'None'
-              }`
-            : '';
-        const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min${heightWeightLine}${labsAndMedsLine}\n\nAlerts: ${patient.alerts.join('; ')}`;
+    if (!selectedNurseId) return;
+    const nurse = groups.flatMap((g) => g.nurses).find((n) => n.id === selectedNurseId);
+    if (nurse) setFormData((prev) => ({ ...prev, nurseTo: nurse.fullName }));
+  }, [selectedNurseId, groups]);
 
-        setFormData((prev) => ({
-          ...prev,
-          patientName: patient.name,
-          situation,
-          background,
-          assessment,
-          attendingPhysician: patient.attendingPhysician || '',
-        }));
-      }
+  const togglePatient = (patient: EndorsablePatient) => {
+    if (patient.pendingEndorsement && !selectedPatientIds.includes(patient.id)) return;
+    setSelectedPatientIds((prev) =>
+      prev.includes(patient.id) ? prev.filter((id) => id !== patient.id) : [...prev, patient.id]
+    );
+  };
+
+  // Auto-fill SBAR from the single selected patient — the same one-patient
+  // behavior the old single-patient referral form had. With zero or
+  // several patients selected there is no one chart to summarize, so these
+  // fields stay blank/manual and the nurse writes one recommendation
+  // covering the whole endorsement (per-patient specifics go in each
+  // patient's own note below instead).
+  useEffect(() => {
+    if (selectedPatientIds.length !== 1) {
+      setFormData((prev) => ({ ...prev, situation: '', background: '', assessment: '', attendingPhysician: '' }));
+      return;
     }
-  }, [selectedPatientId, patients]);
+    const patient = patients.find((p) => p.id === selectedPatientIds[0]);
+    if (!patient) return;
+    const situation = `${patient.name} is a ${patient.age}-year-old ${patient.gender.toLowerCase()} admitted on ${patient.admissionDate} with ${patient.diagnosis}. Currently in ${patient.room}. Risk level: ${patient.riskLevel}.`;
+    const background = `Diagnosis: ${patient.diagnosis}\nAllergies: ${patient.allergies.length > 0 ? patient.allergies.join(', ') : 'None known'}\nCurrent Medications: ${patient.medications.join(', ')}\nAdmission Date: ${patient.admissionDate}`;
+    const heightWeightLine =
+      patient.heightCm != null || patient.weightKg != null
+        ? `\nHeight: ${patient.heightCm != null ? `${patient.heightCm} cm` : 'N/A'} | Weight: ${
+            patient.weightKg != null ? `${patient.weightKg} kg` : 'N/A'
+          } | BMI: ${patient.bmi != null ? `${patient.bmi} (${bmiCategory(patient.bmi)})` : 'N/A'}`
+        : '';
+    const pendingLabs = (patient.laboratories || []).filter((l) => l.status === 'pending');
+    const activeMeds = (patient.medicationOrders || []).filter((m) => m.isActive);
+    const labsAndMedsLine =
+      pendingLabs.length > 0 || activeMeds.length > 0
+        ? `\n\nPending Labs: ${
+            pendingLabs.length > 0 ? pendingLabs.map((l) => l.testName).join(', ') : 'None'
+          }\nActive Medications: ${
+            activeMeds.length > 0
+              ? activeMeds
+                  .map(
+                    (m) =>
+                      `${m.medicationName} ${m.dose} ${m.route} ${m.frequency}${
+                        m.lastGiven ? ` (last given ${new Date(m.lastGiven).toLocaleString()})` : ' (not yet given)'
+                      }`
+                  )
+                  .join('; ')
+              : 'None'
+          }`
+        : '';
+    const assessment = `Vital Signs:\n- Heart Rate: ${patient.vitalSigns.heartRate} bpm\n- Blood Pressure: ${patient.vitalSigns.bloodPressure}\n- Temperature: ${patient.vitalSigns.temperature}°C\n- Oxygen Saturation: ${patient.vitalSigns.oxygenSaturation}%\n- Respiratory Rate: ${patient.vitalSigns.respiratoryRate}/min${heightWeightLine}${labsAndMedsLine}\n\nAlerts: ${patient.alerts.join('; ')}`;
+
+    setFormData((prev) => ({ ...prev, situation, background, assessment, attendingPhysician: patient.attendingPhysician || '' }));
+  }, [selectedPatientIds, patients]);
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
-    if (!onDuty) {
-      newErrors.form = "You are not on duty right now, so you can't create a referral.";
-    }
-    if (!selectedPatientId) newErrors.patient = 'Please select a patient';
+    if (selectedPatientIds.length === 0) newErrors.patient = 'Select at least one patient';
     if (!selectedNurseId) newErrors.nurse = 'Please select a receiving nurse';
     if (!formData.recommendation.trim()) newErrors.recommendation = 'Recommendation is required';
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
-  };
-
-  const addUnfinishedTask = () => {
-    const entry = taskDraft.trim();
-    if (!entry) return;
-    setUnfinishedTasks((prev) => (prev.includes(entry) ? prev : [...prev, entry]));
-    setTaskDraft('');
-  };
-
-  const removeUnfinishedTask = (index: number) => {
-    setUnfinishedTasks((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleSubmit = async () => {
@@ -241,11 +183,9 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     setLoading(true);
     try {
       await onSave({
-        patientId: selectedPatientId,
-        patientName: formData.patientName,
+        patientIds: selectedPatientIds,
+        patientNotes,
         nurseTo: formData.nurseTo,
-        // Sent alongside the name so the API can notify exactly this nurse —
-        // display names are not unique on this ward.
         nurseToId: selectedNurseId,
         sbar: {
           situation: formData.situation,
@@ -253,16 +193,15 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           assessment: formData.assessment,
           recommendation: formData.recommendation,
         },
-        unfinishedTasks,
       });
       onOpenChange(false);
     } catch (error) {
-      console.error('Error saving handover:', error);
-      // The shift-rotation rule (and the duplicate-recipient check) is
-      // enforced server-side — never trust the eligible-recipients list
-      // alone, since the roster or the clock may have moved since it was
-      // fetched. Map the field the backend rejected onto the matching
-      // form field instead of a generic failure toast.
+      console.error('Error saving endorsement:', error);
+      // Every create-time rule (ownership, already-pending, active receiver,
+      // self-endorsement) is re-checked server-side — never trust this
+      // form's own state alone, since the roster/assignments may have moved
+      // since it was fetched. Map the field the backend rejected onto the
+      // matching form field instead of a generic failure toast.
       if (error instanceof ApiError && error.data && typeof error.data === 'object') {
         const data = error.data as Record<string, unknown>;
         const messageFor = (field: string): string => {
@@ -272,18 +211,20 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           return '';
         };
         const nurseToIdMessage = messageFor('nurseToId');
+        const patientIdsMessage = messageFor('patientIds');
         const nonFieldMessage = messageFor('nonFieldErrors');
         setErrors((prev) => ({
           ...prev,
           ...(nurseToIdMessage ? { nurse: nurseToIdMessage } : {}),
+          ...(patientIdsMessage ? { patient: patientIdsMessage } : {}),
           ...(nonFieldMessage
             ? { form: nonFieldMessage }
-            : nurseToIdMessage
+            : nurseToIdMessage || patientIdsMessage
               ? {}
               : { form: error.message }),
         }));
       } else {
-        setErrors((prev) => ({ ...prev, form: 'Failed to save the referral. Please try again.' }));
+        setErrors((prev) => ({ ...prev, form: 'Failed to save the endorsement. Please try again.' }));
       }
     } finally {
       setLoading(false);
@@ -296,10 +237,10 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         <Pressable style={[styles.dialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
           <View style={styles.headerRow}>
             <FileText size={20} color={Colors.primary} />
-            <Text style={styles.title}>Create Referral Note</Text>
+            <Text style={styles.title}>New Endorsement</Text>
           </View>
           <Text style={styles.description}>
-            Complete the SBAR form to submit a referral note to the incoming nurse.
+            Hand over one or more of your patients to another nurse, on any shift or department.
           </Text>
 
           <ScrollView style={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
@@ -310,22 +251,59 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 </AlertDescription>
               </Alert>
 
-              <Select
-                label="Select Patient *"
-                value={selectedPatientId}
-                onValueChange={setSelectedPatientId}
-                options={patients.map((p) => ({
-                  label: `${p.name} • ${p.room}`,
-                  value: p.id,
-                  keywords: `${p.id} ${p.room} ${p.diagnosis}`,
-                }))}
-                placeholder="Choose a patient"
-                error={errors.patient}
-                searchable
-                searchPlaceholder="Search by name, ID, or room..."
-              />
+              <Text style={styles.label}>Patients *</Text>
+              {errors.patient ? <Text style={styles.error}>{errors.patient}</Text> : null}
+              <View style={styles.patientList}>
+                {patients.length === 0 ? (
+                  <Text style={styles.emptySbarText}>You have no assigned patients to endorse.</Text>
+                ) : (
+                  patients.map((patient) => {
+                    const isSelected = selectedPatientIds.includes(patient.id);
+                    const isPending = patient.pendingEndorsement && !isSelected;
+                    return (
+                      <Pressable
+                        key={patient.id}
+                        onPress={() => togglePatient(patient)}
+                        disabled={isPending}
+                        style={[styles.patientRow, isSelected && styles.patientRowSelected, isPending && styles.patientRowDisabled]}
+                      >
+                        {isSelected ? (
+                          <CheckSquare size={18} color={Colors.primary} />
+                        ) : (
+                          <Square size={18} color={isPending ? Colors.gray300 : Colors.gray400} />
+                        )}
+                        <View style={styles.patientInfo}>
+                          <Text style={styles.patientName}>{patient.name} • {patient.room}</Text>
+                          <Text style={styles.patientMeta}>{patient.diagnosis}</Text>
+                        </View>
+                        {isPending ? <Text style={styles.pendingBadge}>Pending</Text> : null}
+                      </Pressable>
+                    );
+                  })
+                )}
+              </View>
 
-              {selectedPatientId ? (
+              {selectedPatientIds.length > 1 ? (
+                <View style={styles.patientNotesBox}>
+                  <Text style={styles.label}>Per-patient notes (optional)</Text>
+                  {selectedPatientIds.map((id) => {
+                    const patient = patients.find((p) => p.id === id);
+                    if (!patient) return null;
+                    return (
+                      <View key={id} style={styles.patientNoteRow}>
+                        <Text style={styles.patientNoteLabel}>{patient.name}</Text>
+                        <TextInput
+                          style={styles.patientNoteInput}
+                          placeholder="e.g. watch sats, NPO after midnight..."
+                          placeholderTextColor={Colors.mutedForeground}
+                          value={patientNotes[id] || ''}
+                          onChangeText={(text) => setPatientNotes((prev) => ({ ...prev, [id]: text }))}
+                        />
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : selectedPatientIds.length === 1 && formData.attendingPhysician ? (
                 <View style={styles.physicianBox}>
                   <View style={styles.labelRow}>
                     <User size={16} color={Colors.blue600} />
@@ -341,108 +319,52 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 </Alert>
               ) : null}
 
-              {eligibilityError ? (
+              {groupsError ? (
                 <Alert variant="destructive">
-                  <AlertDescription>{eligibilityError}</AlertDescription>
-                  <Pressable
-                    onPress={loadEligibility}
-                    style={styles.retryBtn}
-                    accessibilityRole="button"
-                  >
+                  <AlertDescription>{groupsError}</AlertDescription>
+                  <Pressable onPress={loadReceivers} style={styles.retryBtn} accessibilityRole="button">
                     <Text style={styles.retryBtnText}>Retry</Text>
                   </Pressable>
                 </Alert>
-              ) : eligibilityLoading ? (
-                <View style={styles.shiftInfoLine}>
-                  <Clock size={14} color={Colors.mutedForeground} />
-                  <Text style={styles.shiftInfoText}>Checking your shift...</Text>
-                </View>
-              ) : !onDuty ? (
-                <Alert variant="warning">
-                  <AlertDescription>{noNursesReason}</AlertDescription>
-                </Alert>
-              ) : (
-                <View style={styles.shiftInfoLine}>
-                  <Clock size={14} color={Colors.blue600} />
-                  <Text style={styles.shiftInfoText}>
-                    You are on {eligibility?.currentShiftLabel} shift. Referring to:{' '}
-                    <Text style={styles.shiftInfoBold}>
-                      {eligibility?.nextShiftLabel} shift
-                      {eligibility?.nextShiftDate ? ` (${eligibility.nextShiftDate})` : ''}
-                    </Text>
-                    .
-                  </Text>
-                </View>
-              )}
+              ) : null}
 
               <Select
                 label="Receiving Nurse *"
                 value={selectedNurseId}
                 onValueChange={setSelectedNurseId}
-                options={nurses.map((n) => ({
-                  // Two nurses can share a display name — disambiguate with
-                  // email only when this list actually has a collision, so
-                  // the common case stays a clean single label. The shift
-                  // shown here is real, not a placeholder: every eligible
-                  // recipient is, by the shift-rotation rule itself, on the
-                  // exact same next shift (eligibility.nextShiftLabel).
-                  label: `${n.name}${nurseNameCounts[n.name] > 1 && n.email ? ` (${n.email})` : ''} • ${n.role}${n.specialization ? ` (${n.specialization})` : ''}${eligibility?.nextShiftLabel ? ` • ${eligibility.nextShiftLabel} shift` : ''}`,
-                  value: n.id,
-                  keywords: `${n.email || ''}`,
-                }))}
-                placeholder={eligibilityLoading ? 'Checking your shift...' : noNursesReason || 'Choose a nurse'}
+                options={nurseOptions}
+                placeholder={groupsLoading ? 'Loading nurses...' : 'Choose a nurse — any shift, any department'}
                 searchable
-                searchPlaceholder="Search by name, username, or email..."
-                emptyMessage={noNursesReason || 'No nurses found.'}
+                searchPlaceholder="Search by name or department..."
+                emptyMessage="No active nurses found."
                 error={errors.nurse}
               />
-
-              {!eligibilityLoading && onDuty && nurses.length === 0 ? (
-                <Alert variant="warning">
-                  <AlertDescription>{noNursesReason}</AlertDescription>
-                </Alert>
-              ) : null}
 
               <View style={styles.sbarSection}>
                 <Text style={styles.sbarTitle}>SBAR Report</Text>
 
-                {!selectedPatientId ? (
+                {selectedPatientIds.length === 0 ? (
                   <View style={styles.emptySbar}>
-                    <Text style={styles.emptySbarText}>
-                      Please select a patient to view SBAR information
-                    </Text>
+                    <Text style={styles.emptySbarText}>Select at least one patient above.</Text>
                   </View>
                 ) : (
                   <View style={styles.sbarFields}>
-                    <SbarField
-                      badge="S"
-                      badgeBg={Colors.blue100}
-                      badgeColor={Colors.blue700}
-                      label="Situation"
-                      hint="(Auto-filled)"
-                      value={formData.situation}
-                      readOnly
-                    />
-                    <SbarField
-                      badge="B"
-                      badgeBg={Colors.green100}
-                      badgeColor={Colors.green700}
-                      label="Background"
-                      hint="(Auto-filled)"
-                      value={formData.background}
-                      readOnly
-                      minHeight={100}
-                    />
-                    <SbarField
-                      badge="A"
-                      badgeBg={Colors.yellow100}
-                      badgeColor={Colors.orange700}
-                      label="Assessment"
-                      hint="(Auto-filled)"
-                      value={formData.assessment}
-                      readOnly
-                      minHeight={120}
-                    />
+                    {selectedPatientIds.length === 1 ? (
+                      <>
+                        <SbarField
+                          badge="S" badgeBg={Colors.blue100} badgeColor={Colors.blue700}
+                          label="Situation" hint="(Auto-filled)" value={formData.situation} readOnly
+                        />
+                        <SbarField
+                          badge="B" badgeBg={Colors.green100} badgeColor={Colors.green700}
+                          label="Background" hint="(Auto-filled)" value={formData.background} readOnly minHeight={100}
+                        />
+                        <SbarField
+                          badge="A" badgeBg={Colors.yellow100} badgeColor={Colors.orange700}
+                          label="Assessment" hint="(Auto-filled)" value={formData.assessment} readOnly minHeight={120}
+                        />
+                      </>
+                    ) : null}
 
                     <View style={styles.recommendationBox}>
                       <View style={styles.labelRow}>
@@ -453,69 +375,16 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                         <Text style={styles.recHint}>(Enter your recommendations)</Text>
                       </View>
                       <TextInput
-                        style={[
-                          styles.textarea,
-                          styles.recInput,
-                          errors.recommendation ? styles.inputError : null,
-                        ]}
-                        placeholder="What needs to be done for this patient? (e.g., pending tasks, follow-ups, special care)"
+                        style={[styles.textarea, styles.recInput, errors.recommendation ? styles.inputError : null]}
+                        placeholder="What needs to be done for these patients? (e.g., pending tasks, follow-ups, special care)"
                         placeholderTextColor={Colors.mutedForeground}
                         value={formData.recommendation}
-                        onChangeText={(recommendation) =>
-                          setFormData({ ...formData, recommendation })
-                        }
+                        onChangeText={(recommendation) => setFormData({ ...formData, recommendation })}
                         multiline
                         numberOfLines={4}
                         textAlignVertical="top"
                       />
-                      {errors.recommendation ? (
-                        <Text style={styles.error}>{errors.recommendation}</Text>
-                      ) : null}
-                    </View>
-
-                    <View style={styles.unfinishedBox}>
-                      <Text style={styles.label}>Unfinished Tasks</Text>
-                      <Text style={styles.unfinishedHint}>
-                        Anything still outstanding. When the receiving nurse acknowledges
-                        this referral, each line becomes a task on their list.
-                      </Text>
-
-                      <View style={styles.taskInputRow}>
-                        <TextInput
-                          style={[styles.textarea, styles.taskInput]}
-                          placeholder="e.g., Recheck IV site at 14:00"
-                          placeholderTextColor={Colors.mutedForeground}
-                          value={taskDraft}
-                          onChangeText={setTaskDraft}
-                          onSubmitEditing={addUnfinishedTask}
-                          returnKeyType="done"
-                          blurOnSubmit={false}
-                        />
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onPress={addUnfinishedTask}
-                          disabled={!taskDraft.trim()}
-                          style={styles.taskAddBtn}
-                        >
-                          <Plus size={16} color={Colors.blue700} />
-                          <Text style={styles.taskAddText}>Add</Text>
-                        </Button>
-                      </View>
-
-                      {unfinishedTasks.map((task, index) => (
-                        <View key={`${task}-${index}`} style={styles.taskChip}>
-                          <Text style={styles.taskChipText}>{task}</Text>
-                          <Pressable
-                            onPress={() => removeUnfinishedTask(index)}
-                            hitSlop={8}
-                            accessibilityRole="button"
-                            accessibilityLabel={`Remove ${task}`}
-                          >
-                            <X size={15} color={Colors.mutedForeground} />
-                          </Pressable>
-                        </View>
-                      ))}
+                      {errors.recommendation ? <Text style={styles.error}>{errors.recommendation}</Text> : null}
                     </View>
                   </View>
                 )}
@@ -524,21 +393,11 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           </ScrollView>
 
           <View style={styles.footer}>
-            <Button
-              variant="outline"
-              onPress={() => onOpenChange(false)}
-              disabled={loading}
-              style={{ flex: 1 }}
-            >
+            <Button variant="outline" onPress={() => onOpenChange(false)} disabled={loading} style={{ flex: 1 }}>
               Cancel
             </Button>
-            <Button
-              onPress={handleSubmit}
-              disabled={loading || !onDuty || eligibilityLoading}
-              loading={loading}
-              style={{ flex: 1 }}
-            >
-              {loading ? 'Submitting...' : 'Submit Referral'}
+            <Button onPress={handleSubmit} disabled={loading} loading={loading} style={{ flex: 1 }}>
+              {loading ? 'Submitting...' : 'Submit Endorsement'}
             </Button>
           </View>
         </Pressable>
@@ -616,148 +475,207 @@ const styles = StyleSheet.create({
   description: {
     fontSize: 13,
     color: Colors.mutedForeground,
-    marginBottom: 16,
-    lineHeight: 18,
+    marginBottom: 12,
   },
-  scroll: { flexGrow: 0 },
-  form: { gap: 14, paddingBottom: 8 },
+  scroll: {
+    maxHeight: 480,
+  },
+  form: {
+    gap: 14,
+  },
   demoNotice: {
-    backgroundColor: Colors.blue50,
-    borderLeftColor: Colors.blue200,
+    marginBottom: 0,
   },
-  shiftInfoLine: {
+  patientList: {
+    gap: 6,
+    maxHeight: 220,
+  },
+  patientRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.blue50,
+    gap: 10,
+    padding: 10,
     borderRadius: Radius.md,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.white,
   },
-  shiftInfoText: {
-    fontSize: 13,
-    color: Colors.foreground,
+  patientRowSelected: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.blue100,
+  },
+  patientRowDisabled: {
+    opacity: 0.5,
+  },
+  patientInfo: {
     flex: 1,
   },
-  shiftInfoBold: {
-    fontWeight: '700',
+  patientName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.foreground,
   },
-  retryBtn: {
-    alignSelf: 'flex-start',
-    marginTop: 4,
+  patientMeta: {
+    fontSize: 12,
+    color: Colors.mutedForeground,
   },
-  retryBtnText: {
+  pendingBadge: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.orange700,
+    backgroundColor: Colors.yellow100,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: Radius.sm,
+  },
+  patientNotesBox: {
+    gap: 8,
+  },
+  patientNoteRow: {
+    gap: 4,
+  },
+  patientNoteLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.foreground,
+  },
+  patientNoteInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     fontSize: 13,
-    fontWeight: '700',
-    color: Colors.destructive,
-    textDecorationLine: 'underline',
+    color: Colors.foreground,
   },
   physicianBox: {
-    backgroundColor: Colors.blue50,
-    borderWidth: 1,
-    borderColor: Colors.blue200,
+    backgroundColor: Colors.blue100,
     borderRadius: Radius.md,
-    padding: 14,
-    gap: 6,
-  },
-  physicianLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: Colors.blue900,
-  },
-  physicianValue: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: Colors.blue800,
-    marginLeft: 22,
-  },
-  row: { flexDirection: 'row', gap: 12 },
-  sbarSection: {
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    paddingTop: 16,
-    marginTop: 4,
-  },
-  sbarTitle: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: Colors.foreground,
-    marginBottom: 14,
-  },
-  emptySbar: {
-    backgroundColor: Colors.gray50,
-    borderWidth: 1,
-    borderColor: Colors.gray200,
-    borderRadius: Radius.md,
-    padding: 24,
-    alignItems: 'center',
-  },
-  emptySbarText: {
-    fontSize: 13,
-    color: Colors.gray500,
-    textAlign: 'center',
-  },
-  sbarFields: { gap: 14 },
-  field: { gap: 6 },
-  label: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: Colors.foreground,
+    padding: 10,
   },
   labelRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    flexWrap: 'wrap',
+    marginBottom: 4,
+  },
+  physicianLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.blue700,
+  },
+  physicianValue: {
+    fontSize: 13,
+    color: Colors.foreground,
+  },
+  shiftInfoLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  shiftInfoText: {
+    fontSize: 12,
+    color: Colors.mutedForeground,
+    flex: 1,
+  },
+  shiftInfoBold: {
+    fontWeight: '700',
+    color: Colors.foreground,
+  },
+  retryBtn: {
+    marginTop: 6,
+  },
+  retryBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.blue700,
+  },
+  sbarSection: {
+    gap: 10,
+  },
+  sbarTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.foreground,
+  },
+  emptySbar: {
+    padding: 16,
+    alignItems: 'center',
+  },
+  emptySbarText: {
+    fontSize: 13,
+    color: Colors.mutedForeground,
+  },
+  sbarFields: {
+    gap: 12,
+  },
+  field: {
+    gap: 4,
   },
   badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    width: 20,
+    height: 20,
     borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   badgeText: {
     fontSize: 11,
     fontWeight: '700',
   },
+  label: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.foreground,
+  },
   hintInline: {
     fontSize: 11,
     color: Colors.mutedForeground,
   },
+  recHint: {
+    fontSize: 11,
+    color: Colors.mutedForeground,
+  },
   textarea: {
-    minHeight: 80,
     borderWidth: 1,
     borderColor: Colors.border,
     borderRadius: Radius.md,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
     color: Colors.foreground,
-    backgroundColor: Colors.inputBackground,
+    minHeight: 80,
   },
   readOnly: {
-    backgroundColor: Colors.gray50,
-    borderColor: Colors.gray200,
+    backgroundColor: Colors.gray100 || '#f5f5f5',
+  },
+  recommendationBox: {
+    gap: 4,
+  },
+  recInput: {
+    minHeight: 90,
+  },
+  inputError: {
+    borderColor: Colors.destructive,
+  },
+  error: {
+    fontSize: 12,
+    color: Colors.destructive,
   },
   unfinishedBox: {
-    gap: 8,
-    paddingTop: 14,
-    marginTop: 4,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
+    gap: 6,
   },
   unfinishedHint: {
     fontSize: 12,
     color: Colors.mutedForeground,
-    lineHeight: 16,
   },
   taskInputRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
     gap: 8,
   },
   taskInput: {
     flex: 1,
-    minHeight: 44,
+    minHeight: 40,
   },
   taskAddBtn: {
     flexDirection: 'row',
@@ -773,50 +691,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: Colors.muted,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    backgroundColor: Colors.gray100 || '#f5f5f5',
+    borderRadius: Radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   taskChipText: {
-    flex: 1,
-    fontSize: 13,
-    color: Colors.foreground,
-  },
-  recommendationBox: {
-    backgroundColor: Colors.purple50,
-    borderWidth: 2,
-    borderColor: Colors.purple100,
-    borderRadius: Radius.md,
-    padding: 14,
-    gap: 8,
-  },
-  recHint: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: Colors.purple700,
-  },
-  recInput: {
-    backgroundColor: Colors.white,
-    borderColor: Colors.purple100,
-    minHeight: 100,
-  },
-  inputError: {
-    borderColor: Colors.destructive,
-  },
-  error: {
     fontSize: 12,
-    color: Colors.destructive,
+    color: Colors.foreground,
+    flex: 1,
   },
   footer: {
     flexDirection: 'row',
-    gap: 12,
-    marginTop: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
+    gap: 10,
+    marginTop: 14,
   },
 });

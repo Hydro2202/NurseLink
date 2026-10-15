@@ -14,7 +14,9 @@ import type {
   Department,
   Doctor,
   DutyAssignment,
+  EligibleReceiverGroup,
   EligibleReferralRecipients,
+  EndorsablePatient,
   HandoverNote,
   KardexHistory,
   LabEntry,
@@ -891,6 +893,89 @@ export async function declineHandover(id: string, reason?: string): Promise<Hand
 /** Marks an accepted referral completed. Only valid from 'accepted'. */
 export async function completeHandover(id: string): Promise<HandoverNote> {
   return apiRequest<HandoverNote>(`/handovers/${id}/complete/`, { method: 'POST' });
+}
+
+// ---- Endorsement (bulk, any-shift) -----------------------------------
+//
+// Same underlying record/endpoints as the Handover/Referral functions
+// above, exposed at /endorsements/ instead of /handovers/ — see
+// HandoverViewSet's docstring (backend). Use createEndorsement (patientIds)
+// instead of createHandover (single patientId) to get the new bulk,
+// any-shift behavior and a real patient transfer on accept.
+
+/** The signed-in nurse's own assigned patients, each flagged whether
+ * they're already in a pending endorsement. */
+export async function fetchMyEndorsablePatients(): Promise<EndorsablePatient[]> {
+  return apiRequest<EndorsablePatient[]>('/endorsements/my-patients/');
+}
+
+/** Every active, approved nurse except me, grouped by shift (Morning ->
+ * Afternoon -> Night -> Unassigned, always all four groups). Any shift,
+ * any department — no eligibility restriction, unlike
+ * fetchEligibleReferralRecipients. */
+export async function fetchEligibleReceivers(options?: {
+  shiftId?: string;
+  departmentId?: string;
+  search?: string;
+}): Promise<EligibleReceiverGroup[]> {
+  const params = new URLSearchParams();
+  if (options?.shiftId) params.set('shiftId', options.shiftId);
+  if (options?.departmentId) params.set('departmentId', options.departmentId);
+  if (options?.search) params.set('search', options.search);
+  const query = params.toString() ? `?${params}` : '';
+  return apiRequest<EligibleReceiverGroup[]>(`/endorsements/eligible-receivers/${query}`);
+}
+
+export interface CreateEndorsementPayload {
+  patientIds: string[];
+  patientNotes?: Record<string, string>;
+  nurseTo: string;
+  nurseToId: string;
+  sbar: { situation: string; background: string; assessment: string; recommendation: string };
+  date?: string;
+}
+
+/** Creates a bulk endorsement for one or more patients the signed-in nurse
+ * currently has. Fails with a field error if any patient isn't actually
+ * assigned to them, is already in a pending endorsement, or the receiver
+ * isn't an active/approved account. */
+export async function createEndorsement(data: CreateEndorsementPayload): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>('/endorsements/', {
+    method: 'POST',
+    body: { date: new Date().toISOString().slice(0, 10), nurseFrom: '', ...data },
+  });
+}
+
+export async function fetchSentEndorsements(status?: string): Promise<HandoverNote[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return apiRequest<HandoverNote[]>(`/endorsements/sent/${query}`);
+}
+
+export async function fetchReceivedEndorsements(status?: string): Promise<HandoverNote[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return apiRequest<HandoverNote[]>(`/endorsements/received/${query}`);
+}
+
+export async function fetchEndorsement(id: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/endorsements/${id}/`);
+}
+
+/** Accepts the endorsement — transfers every one of its patients to the
+ * accepting nurse in one transaction. Fails with a clear error if a patient
+ * was reassigned elsewhere while this sat pending. */
+export async function acceptEndorsement(id: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/endorsements/${id}/accept/`, { method: 'PATCH' });
+}
+
+/** Rejects the endorsement with a required reason. The patients stay with the endorser. */
+export async function rejectEndorsement(id: string, reason: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/endorsements/${id}/reject/`, { method: 'PATCH', body: { reason } });
+}
+
+/** Endorser-only: withdraws a still-pending endorsement. The patients were
+ * never touched (accept is the only thing that transfers them). */
+export async function cancelEndorsement(id: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/endorsements/${id}/cancel/`, { method: 'PATCH' });
 }
 
 export async function fetchChartingNotes(options?: {

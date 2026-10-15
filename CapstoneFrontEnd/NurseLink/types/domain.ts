@@ -237,26 +237,40 @@ export interface PatientVisit {
 
 export interface HandoverNote {
   id: string;
+  /** First/primary patient only — kept for backward compat. For a bulk
+   * endorsement (isEndorsement: true), read `patients` instead. */
   patientId: string;
   patientName: string;
+  /** Write-only: send instead of patientId/patientName to create a bulk,
+   * any-shift Endorsement (several patients in one record) rather than a
+   * legacy single-patient referral. At least one required when used. */
+  patientIds?: string[];
+  /** Write-only: optional per-patient note, keyed by the same codes as patientIds. */
+  patientNotes?: Record<string, string>;
+  /** The authoritative patient list for this record (one entry even for a
+   * legacy single-patient referral). Read-only. */
+  patients?: { patientId: string; patientName: string; notes: string }[];
+  /** True only for a record created via patientIds (a real Endorsement) —
+   * false for a legacy single-patient referral. Read-only. */
+  isEndorsement?: boolean;
   /**
-   * The shift the sender filed this referral on — server-derived from
-   * their own current Duty Roster assignment at creation time (see
-   * api/referral_shifts.py), never client-chosen. Read-only.
+   * Endorser's shift/department at creation time — a descriptive audit
+   * snapshot only, never a gate (any shift/department is allowed). Blank
+   * if the endorser was off duty. Read-only.
    */
-  shift: 'morning' | 'afternoon' | 'night';
+  shift: 'morning' | 'afternoon' | 'night' | '';
   shiftLabel?: string;
-  /** The shift-rotation target this referral was sent to (Morning ->
-   * Afternoon -> Night -> next day's Morning). Read-only. */
+  /** Receiver's shift snapshot at creation time, same mechanism as `shift`. Read-only. */
   toShift?: 'morning' | 'afternoon' | 'night' | '';
   toShiftLabel?: string;
-  /** The target shift's date — equal to `date` except for Night ->
-   * Morning, where it's the next calendar day. Read-only. */
+  /** Unused by new endorsements (always null) — legacy rotation-rule field. */
   shiftDate?: string | null;
-  /** The sender's department at creation time (from their Duty Roster
-   * assignment). Read-only. */
+  /** The endorser's department at creation time. Read-only. */
   departmentId?: number | null;
   departmentName?: string;
+  /** The receiver's department at creation time. Read-only. */
+  toDepartmentId?: number | null;
+  toDepartmentName?: string;
   date: string;
   nurseFrom: string;
   nurseTo: string;
@@ -282,18 +296,56 @@ export interface HandoverNote {
   }[];
   /**
    * Nurse-to-nurse only — there is no head-nurse approval gate.
-   * sent -> received -> accepted | declined -> completed. Only the receiving
-   * nurse can move a referral past 'sent' (see acknowledge/accept/decline/
-   * complete in services/api.ts); status itself is read-only server-side.
+   * sent -> received -> accepted | declined | cancelled -> completed. Only
+   * the receiving nurse can move a referral past 'sent' (see
+   * acknowledge/accept/decline/complete in services/api.ts); status itself
+   * is read-only server-side. Kept at its raw value for backward compat —
+   * see `endorsementStatus` for the Endorsement-facing translation.
    */
-  status: 'sent' | 'received' | 'accepted' | 'declined' | 'completed';
+  status: 'sent' | 'received' | 'accepted' | 'declined' | 'cancelled' | 'completed';
+  /** PENDING/ACCEPTED/REJECTED/CANCELLED — the caller-facing translation of
+   * `status` for the Endorsement API. Read-only. */
+  endorsementStatus?: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED';
   statusHistory?: { status: string; by: string | null; byName: string; at: string | null; note?: string }[];
   acceptedAt?: string | null;
   declinedAt?: string | null;
   declinedReason?: string;
+  /** Alias of declinedReason, under the Endorsement-facing name. Read-only. */
+  rejectionReason?: string;
   completedAt?: string | null;
-  /** Task codes moved onto the accepting nurse's list. Returned by accept only. */
+  /** Task codes moved onto the accepting nurse's list. Returned by accept
+   * only, and only for a legacy single-patient referral — a bulk
+   * Endorsement transfers patients instead; see services/api.ts. */
   adoptedTasks?: string[];
+}
+
+/** A candidate receiver for an endorsement, within one shift group — see
+ * EligibleReceiverGroup. */
+export interface EligibleReceiver {
+  id: string;
+  fullName: string;
+  department: { id: number | null; name: string };
+  shift: 'morning' | 'afternoon' | 'night' | 'unassigned';
+}
+
+/** One shift bucket from GET /endorsements/eligible-receivers/ — Morning ->
+ * Afternoon -> Night -> Unassigned, always all four, even when `nurses` is
+ * empty. */
+export interface EligibleReceiverGroup {
+  shift: {
+    id: 'morning' | 'afternoon' | 'night' | 'unassigned';
+    name: string;
+    startTime: string | null;
+    endTime: string | null;
+  };
+  nurses: EligibleReceiver[];
+}
+
+/** A patient on the signed-in nurse's own list, from GET
+ * /endorsements/my-patients/ — the same shape fetchPatients() returns, plus
+ * pendingEndorsement. */
+export interface EndorsablePatient extends Patient {
+  pendingEndorsement: boolean;
 }
 
 export interface ChartingVitalSigns {

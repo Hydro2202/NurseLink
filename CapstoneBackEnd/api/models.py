@@ -567,21 +567,39 @@ class HandoverNote(models.Model):
         ('night', 'Night'),
     ]
     # Nurse-to-nurse only — there is no head-nurse approval gate in this flow.
-    # 'sent' -> 'received' -> 'accepted' | 'declined' -> 'completed'. Head
-    # nurses are notified at every transition (see
+    # 'sent' -> 'received' -> 'accepted' | 'declined' | 'cancelled' ->
+    # 'completed'. Head nurses are notified at every transition (see
     # api/notifications.py::notify_referral_head_nurse_fyi) and can view
     # every referral, but never act on one — see HandoverViewSet.accept/
-    # decline/complete, which only ever authorize the sending/receiving
-    # nurse.
+    # decline/cancel/complete, which only ever authorize the sending/
+    # receiving nurse.
+    #
+    # Endorsement (HandoverSerializer/HandoverViewSet, exposed at both
+    # /handovers/ and the newer /endorsements/) maps these onto the
+    # caller-facing PENDING/ACCEPTED/REJECTED/CANCELLED states at the
+    # serializer layer only — these DB values are left as-is on purpose, to
+    # avoid a data migration: sent|received -> PENDING, accepted ->
+    # ACCEPTED, declined -> REJECTED, cancelled -> CANCELLED. 'completed' is
+    # legacy-only (old single-patient referrals' extra close-out step); the
+    # new Endorsement flow never reaches it since accept already performs
+    # the real patient transfer.
     STATUS_CHOICES = [
         ('sent', 'Sent'),
         ('received', 'Received'),
         ('accepted', 'Accepted'),
         ('declined', 'Declined'),
+        ('cancelled', 'Cancelled'),
         ('completed', 'Completed'),
     ]
 
     handover_code = models.CharField(max_length=30, unique=True, db_index=True)
+    # True only for a referral created through the new bulk `patientIds` path
+    # (HandoverSerializer.create()) — i.e. a genuine Endorsement. False
+    # (default) for every legacy single-`patientId` referral, old or newly
+    # created, which keeps the original accept() behavior (task adoption,
+    # no ownership re-check, no PatientAssignment transfer) for backward
+    # compatibility with data/tests written before Endorsement existed.
+    is_endorsement = models.BooleanField(default=False)
     patient = models.ForeignKey(
         Patient,
         on_delete=models.CASCADE,
@@ -590,31 +608,42 @@ class HandoverNote(models.Model):
         blank=True,
     )
     patient_name = models.CharField(max_length=200, blank=True, default='')
-    # The shift the *sender* filed this referral on — server-derived from
-    # their own current DutyAssignment as of HandoverSerializer.create()
-    # (see api/referral_shifts.py), never a client-chosen value, so it
-    # always matches a real roster entry. to_shift/shift_date/department
-    # below are the shift-rotation rule's target: a referral may only go to
-    # the next shift in rotation (Morning -> Afternoon -> Night -> next
-    # day's Morning), in the same department as `shift`/`date` below.
-    shift = models.CharField(max_length=20, choices=SHIFT_CHOICES, default='morning')
+    # Endorser's (sender's) shift/department at creation time, from their
+    # current DutyAssignment (api/duty_status.py::current_duties) if any —
+    # purely a descriptive audit snapshot, blank if off duty. Previously
+    # this doubled as a shift-rotation *gate* (a referral could only go to
+    # the next shift, same department); that restriction is gone — any
+    # shift, any department is allowed now, so this is never validated,
+    # only recorded.
+    shift = models.CharField(max_length=20, choices=SHIFT_CHOICES, blank=True, default='')
     date = models.DateField()
+    # Receiver's shift at creation time, snapshotted the same way as
+    # `shift` above (blank if the receiver is off duty). Previously named
+    # for the old rotation rule's "target shift"; repurposed as a plain
+    # receiver-side audit snapshot.
     to_shift = models.CharField(max_length=20, choices=SHIFT_CHOICES, blank=True, default='')
-    # The target shift's date — equal to `date` for Morning->Afternoon and
-    # Afternoon->Night, but the *next* calendar day for Night->Morning
-    # (see get_next_shift). Nullable only for referrals created before this
-    # field existed; every new referral has one.
+    # Unused by new endorsements (left null) — was the old rotation rule's
+    # target date. Kept, nullable, only so old rows still display correctly.
     shift_date = models.DateField(null=True, blank=True)
-    # The referring nurse's department at creation time (from their
+    # Endorser's department snapshot at creation time (from their
     # DutyAssignment, not the free-text NurseProfile.department — see
     # HandoverViewSet.get_queryset's docstring for why that field is
-    # unreliable). Nullable for the same reason shift_date is.
+    # unreliable). Descriptive only, never a gate. Nullable for referrals
+    # created before this field existed, or when the endorser was off duty.
     department = models.ForeignKey(
         Department,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='referrals',
+    )
+    # Receiver's department snapshot, same mechanism as `department` above.
+    to_department = models.ForeignKey(
+        Department,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='referrals_received',
     )
     nurse_from = models.CharField(max_length=200)
     nurse_to = models.CharField(max_length=200)
@@ -697,6 +726,33 @@ class HandoverNote(models.Model):
 
     def __str__(self):
         return f'{self.handover_code} — {self.patient_name}'
+
+
+class HandoverPatient(models.Model):
+    """
+    One patient within a (possibly bulk) endorsement. `HandoverNote.patient`
+    stays as the first/primary patient for backward compat with code written
+    before bulk endorsement existed (Task.source_handover display,
+    notifications) — this table is the real, authoritative patient list.
+    """
+
+    handover = models.ForeignKey(
+        HandoverNote,
+        on_delete=models.CASCADE,
+        related_name='handover_patients',
+    )
+    patient = models.ForeignKey(
+        Patient,
+        on_delete=models.CASCADE,
+        related_name='handover_patient_links',
+    )
+    patient_notes = models.TextField(blank=True, default='')
+
+    class Meta:
+        unique_together = ('handover', 'patient')
+
+    def __str__(self):
+        return f'{self.handover.handover_code} — {self.patient.patient_code}'
 
 
 class ChartingNote(models.Model):
@@ -966,6 +1022,26 @@ class PatientAssignment(models.Model):
     )
     assigned_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Set only when this row is closed by an endorsement transfer (see
+    # HandoverViewSet.accept) — blank/null for the ordinary reassignment
+    # path (PatientAssignmentSerializer.create(), the Kardex new-patient
+    # path), which never set these two fields before and still doesn't.
+    ended_at = models.DateTimeField(null=True, blank=True)
+    END_REASON_CHOICES = [
+        ('ENDORSED', 'Endorsed'),
+        ('REASSIGNED', 'Reassigned'),
+    ]
+    end_reason = models.CharField(max_length=20, choices=END_REASON_CHOICES, blank=True, default='')
+    # Set only on the new row an endorsement's accept creates for the
+    # receiver — mirrors Task.source_handover. Null for every other
+    # PatientAssignment creation path.
+    source_handover = models.ForeignKey(
+        HandoverNote,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assignments_created',
+    )
 
     class Meta:
         ordering = ['-assigned_at']

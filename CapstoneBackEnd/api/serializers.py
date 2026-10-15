@@ -19,6 +19,7 @@ from .models import (
     DutyAssignment,
     FaceVerificationAttempt,
     HandoverNote,
+    HandoverPatient,
     KardexLaboratory,
     KardexMedication,
     KardexRecord,
@@ -39,7 +40,7 @@ from .models import (
 from .avatar import AvatarError, normalize_avatar
 from .id_field_validation import validate_prc_id_fields
 from .handover_tasks import create_handover_tasks
-from .referral_shifts import SHIFT_LABELS, ReferralShiftError, check_referral_eligibility
+from .referral_shifts import SHIFT_LABELS
 from .notifications import (
     notify_handover_created,
     notify_referral_head_nurse_fyi,
@@ -1972,28 +1973,49 @@ class HandoverSerializer(serializers.ModelSerializer):
         child=serializers.CharField(), source='unfinished_tasks', required=False
     )
     photos = serializers.ListField(required=False)
+    # Bulk endorsement: a list of patient codes, each currently assigned to
+    # the signed-in nurse, plus optional per-patient notes keyed by that
+    # same code. Write-only — the authoritative read-side list is the
+    # `patients` field below, sourced from HandoverPatient, never this raw
+    # input. Omit entirely (use the legacy singular patientId) for a
+    # single-patient referral — both are accepted by create() below.
+    patientIds = serializers.ListField(
+        child=serializers.CharField(), required=False, write_only=True, allow_empty=False,
+    )
+    patientNotes = serializers.DictField(
+        child=serializers.CharField(allow_blank=True), required=False, write_only=True,
+    )
+    patients = serializers.SerializerMethodField()
+    isEndorsement = serializers.BooleanField(source='is_endorsement', read_only=True)
     # Never client-writable — a referral only ever moves through
-    # accept/decline/complete (see HandoverViewSet), which authorize only
-    # the two nurses involved. There is no direct-PATCH or approval path.
+    # accept/decline/cancel/complete (see HandoverViewSet), which authorize
+    # only the two nurses involved. There is no direct-PATCH or approval
+    # path.
     status = serializers.CharField(read_only=True)
+    # Caller-facing translation of `status` for the Endorsement API surface
+    # (PENDING/ACCEPTED/REJECTED/CANCELLED) — see HandoverNote.STATUS_CHOICES'
+    # comment for the exact mapping. `status` above keeps its original raw
+    # value for any existing caller that already reads it.
+    endorsementStatus = serializers.SerializerMethodField()
     statusHistory = serializers.ListField(source='status_history', read_only=True)
     acceptedAt = serializers.DateTimeField(source='accepted_at', read_only=True, allow_null=True)
     declinedAt = serializers.DateTimeField(source='declined_at', read_only=True, allow_null=True)
     declinedReason = serializers.CharField(source='declined_reason', read_only=True, allow_blank=True)
+    rejectionReason = serializers.CharField(source='declined_reason', read_only=True, allow_blank=True)
     completedAt = serializers.DateTimeField(source='completed_at', read_only=True, allow_null=True)
     date = serializers.DateField()
-    # shift/toShift/shiftDate/department* are all server-derived from the
-    # sender's own DutyAssignment at creation time (see
-    # api/referral_shifts.py and create() below) — never client-writable,
-    # so a nurse can't claim a shift or target they aren't actually
-    # scheduled for.
+    # shift/toShift/department* are endorser/receiver audit snapshots taken
+    # at creation time (see create() below) — descriptive only, never a
+    # gate, and never client-writable.
     shift = serializers.CharField(read_only=True)
-    shiftLabel = serializers.CharField(source='get_shift_display', read_only=True)
+    shiftLabel = serializers.SerializerMethodField()
     toShift = serializers.CharField(source='to_shift', read_only=True)
     toShiftLabel = serializers.SerializerMethodField()
     shiftDate = serializers.DateField(source='shift_date', read_only=True, allow_null=True)
     departmentId = serializers.IntegerField(source='department_id', read_only=True, allow_null=True)
     departmentName = serializers.CharField(source='department.name', read_only=True, default='')
+    toDepartmentId = serializers.IntegerField(source='to_department_id', read_only=True, allow_null=True)
+    toDepartmentName = serializers.CharField(source='to_department.name', read_only=True, default='')
 
     class Meta:
         model = HandoverNote
@@ -2001,6 +2023,10 @@ class HandoverSerializer(serializers.ModelSerializer):
             'id',
             'patientId',
             'patientName',
+            'patientIds',
+            'patientNotes',
+            'patients',
+            'isEndorsement',
             'shift',
             'shiftLabel',
             'toShift',
@@ -2008,6 +2034,8 @@ class HandoverSerializer(serializers.ModelSerializer):
             'shiftDate',
             'departmentId',
             'departmentName',
+            'toDepartmentId',
+            'toDepartmentName',
             'date',
             'nurseFrom',
             'nurseTo',
@@ -2017,12 +2045,32 @@ class HandoverSerializer(serializers.ModelSerializer):
             'unfinishedTasks',
             'photos',
             'status',
+            'endorsementStatus',
             'statusHistory',
             'acceptedAt',
             'declinedAt',
             'declinedReason',
+            'rejectionReason',
             'completedAt',
         ]
+
+    #: DB status -> caller-facing Endorsement status. See HandoverNote.
+    #: STATUS_CHOICES' comment for why this is a serializer-level
+    #: translation rather than a data migration of existing rows.
+    _ENDORSEMENT_STATUS = {
+        'sent': 'PENDING',
+        'received': 'PENDING',
+        'accepted': 'ACCEPTED',
+        'declined': 'REJECTED',
+        'cancelled': 'CANCELLED',
+        'completed': 'ACCEPTED',
+    }
+
+    def get_endorsementStatus(self, obj):
+        return self._ENDORSEMENT_STATUS.get(obj.status, obj.status.upper())
+
+    def get_shiftLabel(self, obj):
+        return SHIFT_LABELS.get(obj.shift, '') if obj.shift else ''
 
     def get_toShiftLabel(self, obj):
         return SHIFT_LABELS.get(obj.to_shift, '') if obj.to_shift else ''
@@ -2033,6 +2081,25 @@ class HandoverSerializer(serializers.ModelSerializer):
             return ''
         profile = getattr(nurse, 'nurse_profile', None)
         return profile.get_clinical_role_display() if profile else ''
+
+    def get_patients(self, obj):
+        links = list(obj.handover_patients.select_related('patient').all())
+        if links:
+            return [
+                {
+                    'patientId': link.patient.patient_code,
+                    'patientName': link.patient.name,
+                    'notes': link.patient_notes,
+                }
+                for link in links
+            ]
+        # Legacy rows created before HandoverPatient existed and never
+        # backfilled (should not happen after migration 0061, but a
+        # single-patient referral with no join row yet — e.g. mid-request —
+        # still has something sensible to show here).
+        if obj.patient_id:
+            return [{'patientId': obj.patient.patient_code, 'patientName': obj.patient_name, 'notes': ''}]
+        return []
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -2064,63 +2131,114 @@ class HandoverSerializer(serializers.ModelSerializer):
         validated_data['patient'] = patient
         validated_data.setdefault('patient_name', patient.name)
 
+    @staticmethod
+    def _duty_snapshot(nurse):
+        """(shift, department) for `nurse` right now — descriptive only, never a
+        gate. Blank/None when off duty; see api/duty_status.py::current_duties."""
+        from .duty_status import current_duties
+
+        duty = current_duties([nurse.pk]).get(nurse.pk) if nurse else None
+        return (duty.shift, duty.department) if duty else ('', None)
+
     def create(self, validated_data):
+        patient_ids = validated_data.pop('patientIds', None)
+        patient_notes = validated_data.pop('patientNotes', {}) or {}
         patient_id = validated_data.pop('patientId', None)
-        self._resolve_patient(validated_data, patient_id)
-        # Resolved before the duplicate check below needs to know which
-        # account is being targeted.
+        bulk = bool(patient_ids)
+
+        if not bulk:
+            # Legacy single-patient path — unchanged behavior except the
+            # shift-rotation gate (removed below, for both paths).
+            self._resolve_patient(validated_data, patient_id)
+        else:
+            validated_data['patient'] = None
+        # Resolved before the duplicate/pending checks below need to know
+        # which account is being targeted.
         self._resolve_recipient(validated_data)
 
         request = self.context.get('request')
         sender = request.user if request and request.user.is_authenticated else None
         recipient = validated_data.get('nurse_to_user')
 
-        # Shift-rotation rule: a referral may only go to the next shift in
-        # rotation (Morning -> Afternoon -> Night -> next day's Morning),
-        # same department, never the sender's own shift or the sender
-        # themselves — see api/referral_shifts.py. Never trusts whatever
-        # shift the client claims; this is derived entirely from the
-        # sender's own DutyAssignment right now.
         if sender is None:
-            raise serializers.ValidationError({'nonFieldErrors': 'You must be signed in to create a referral.'})
-        try:
-            current_shift, to_shift, shift_date = check_referral_eligibility(sender, recipient)
-        except ReferralShiftError as exc:
-            raise serializers.ValidationError({exc.field: str(exc)})
-        validated_data['shift'] = current_shift.shift
-        validated_data['to_shift'] = to_shift
-        validated_data['shift_date'] = shift_date
-        validated_data['department'] = current_shift.department
+            raise serializers.ValidationError({'nonFieldErrors': 'You must be signed in to create an endorsement.'})
+        if recipient is not None and recipient.pk == sender.pk:
+            raise serializers.ValidationError({'nurseToId': 'You cannot refer a patient to yourself.'})
 
-        # A given nurse can only receive one handover for a given patient —
-        # once Nurse X has been handed Patient Y, Nurse X is done with that
-        # patient's handover history and must not be offered (or accepted)
-        # for Patient Y again. This is scoped to the (patient, nurse) pair,
-        # not the patient alone, so a different nurse can still receive the
-        # same patient concurrently — see NurseViewSet.list's excludeForPatient
-        # for the matching frontend-facing query.
-        patient = validated_data.get('patient')
-        recipient = validated_data.get('nurse_to_user')
-        if patient is not None:
-            existing_qs = HandoverNote.objects.filter(patient=patient)
-            existing_qs = (
-                existing_qs.filter(nurse_to_user=recipient)
-                if recipient is not None
-                # No resolved account (unrecognized/ambiguous name) — fall back
-                # to matching on the typed name so this check still does something.
-                else existing_qs.filter(nurse_to=validated_data.get('nurse_to'))
-            )
-            existing = existing_qs.order_by('-created_at').first()
-            if existing is not None:
+        patients = []
+        if bulk:
+            if recipient is None:
+                raise serializers.ValidationError({'nurseToId': 'Select a nurse to receive this endorsement.'})
+            profile = getattr(recipient, 'nurse_profile', None)
+            if not profile or profile.approval_status != 'approved' or not profile.is_active_staff:
+                raise serializers.ValidationError({'nurseToId': 'This nurse is not an active, approved account.'})
+
+            codes = [str(code).strip() for code in patient_ids if str(code).strip()]
+            if not codes:
+                raise serializers.ValidationError({'patientIds': 'At least one patient is required.'})
+            found = {p.patient_code: p for p in Patient.objects.filter(patient_code__in=codes)}
+            missing = [code for code in codes if code not in found]
+            if missing:
+                raise serializers.ValidationError({'patientIds': f'Patient(s) not found: {", ".join(missing)}.'})
+            not_mine = [code for code in codes if found[code].assigned_nurse_id != sender.pk]
+            if not_mine:
                 raise serializers.ValidationError(
-                    {
-                        'nurseToId': (
-                            f'{patient.name} has already been handed over to '
-                            f'{existing.nurse_to} ({existing.handover_code}). Choose a '
-                            'different nurse for this patient.'
-                        )
-                    }
+                    {'patientIds': f'These patients are not currently assigned to you: {", ".join(not_mine)}.'}
                 )
+            already_pending = (
+                HandoverPatient.objects.filter(
+                    patient__patient_code__in=codes, handover__status__in=['sent', 'received'],
+                )
+                .select_related('patient')
+                .first()
+            )
+            if already_pending is not None:
+                raise serializers.ValidationError(
+                    {'patientIds': 'Patient already has a pending endorsement.'}
+                )
+            patients = [found[code] for code in codes]
+
+        endorser_shift, endorser_department = self._duty_snapshot(sender)
+        receiver_shift, receiver_department = self._duty_snapshot(recipient) if recipient else ('', None)
+        validated_data['shift'] = endorser_shift
+        validated_data['to_shift'] = receiver_shift
+        validated_data['shift_date'] = None
+        validated_data['department'] = endorser_department
+        validated_data['to_department'] = receiver_department
+
+        if not bulk:
+            # A given nurse can only receive one handover for a given patient —
+            # once Nurse X has been handed Patient Y, Nurse X is done with that
+            # patient's handover history and must not be offered (or accepted)
+            # for Patient Y again. This is scoped to the (patient, nurse) pair,
+            # not the patient alone, so a different nurse can still receive the
+            # same patient concurrently — see NurseViewSet.list's excludeForPatient
+            # for the matching frontend-facing query.
+            patient = validated_data.get('patient')
+            if patient is not None:
+                existing_qs = HandoverNote.objects.filter(patient=patient)
+                existing_qs = (
+                    existing_qs.filter(nurse_to_user=recipient)
+                    if recipient is not None
+                    # No resolved account (unrecognized/ambiguous name) — fall
+                    # back to matching on the typed name so this check still
+                    # does something.
+                    else existing_qs.filter(nurse_to=validated_data.get('nurse_to'))
+                )
+                existing = existing_qs.order_by('-created_at').first()
+                if existing is not None:
+                    raise serializers.ValidationError(
+                        {
+                            'nurseToId': (
+                                f'{patient.name} has already been handed over to '
+                                f'{existing.nurse_to} ({existing.handover_code}). Choose a '
+                                'different nurse for this patient.'
+                            )
+                        }
+                    )
+        else:
+            validated_data['patient'] = patients[0]
+            validated_data['patient_name'] = patients[0].name
 
         self._apply_sbar(validated_data)
         code = validated_data.pop('handover_code', None) or next_code(
@@ -2129,6 +2247,7 @@ class HandoverSerializer(serializers.ModelSerializer):
         validated_data['handover_code'] = code
         validated_data['created_by'] = sender
         validated_data['status'] = 'sent'
+        validated_data['is_endorsement'] = bulk
         validated_data['status_history'] = [{
             'status': 'sent',
             'by': sender.pk if sender else None,
@@ -2137,9 +2256,25 @@ class HandoverSerializer(serializers.ModelSerializer):
             'note': '',
         }]
         handover = HandoverNote.objects.create(**validated_data)
+
+        if bulk:
+            HandoverPatient.objects.bulk_create([
+                HandoverPatient(
+                    handover=handover, patient=p,
+                    patient_notes=patient_notes.get(p.patient_code, ''),
+                )
+                for p in patients
+            ])
+        elif handover.patient_id:
+            HandoverPatient.objects.get_or_create(handover=handover, patient=handover.patient)
+
         # The work is the sender's until somebody accepts it, so it goes on
-        # their task list now rather than existing only as text on a card.
-        create_handover_tasks(handover)
+        # their task list now rather than existing only as text on a card —
+        # only for the single-patient case; a bulk endorsement has no single
+        # patient to attach a summary task to and the new spec carries no
+        # task-list concept (see api/handover_tasks.py docstring).
+        if not bulk:
+            create_handover_tasks(handover)
         notify_handover_created(handover)
         notify_referral_head_nurse_fyi(handover, 'sent')
         return handover
@@ -2181,6 +2316,11 @@ class HandoverSerializer(serializers.ModelSerializer):
         patient_id = validated_data.pop('patientId', serializers.empty)
         if patient_id is not serializers.empty:
             self._resolve_patient(validated_data, patient_id)
+        # Editing a bulk endorsement's patient list isn't supported — use
+        # cancel + a new endorsement instead. Drop silently rather than
+        # setattr-ing a non-field name onto the instance.
+        validated_data.pop('patientIds', None)
+        validated_data.pop('patientNotes', None)
         self._apply_sbar(validated_data)
         validated_data.pop('handover_code', None)
         if 'nurseToId' in validated_data or 'nurse_to' in validated_data:
