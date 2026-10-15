@@ -641,12 +641,26 @@ export default function ChartingScreen() {
     }
   };
 
-  const filteredNotes = notes.filter(
-    (note) =>
-      note.patientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      note.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      note.nurseName.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredNotes = notes.filter((note) => {
+    const q = searchQuery.toLowerCase();
+    if (!q) return true;
+    // The placeholder promises searching "by patient, content, or date" —
+    // without this, typing a date here always returned zero results even
+    // when matching notes existed, since nothing checked note.timestamp.
+    // Both the raw ISO date and the human-formatted label are checked, same
+    // as the charting-history date browser just above this.
+    const isoDate = (note.timestamp || '').slice(0, 10).toLowerCase();
+    const formattedDate = note.timestamp
+      ? formatHistoryDateLabel(note.timestamp.slice(0, 10)).toLowerCase()
+      : '';
+    return (
+      note.patientName.toLowerCase().includes(q) ||
+      note.content.toLowerCase().includes(q) ||
+      note.nurseName.toLowerCase().includes(q) ||
+      isoDate.includes(q) ||
+      formattedDate.includes(q)
+    );
+  });
 
   const patientOptions = patients.map((patient) => ({
     label: `${patient.name} • ${patient.room}`,

@@ -298,7 +298,7 @@ export function DutyAssignmentModal({
                 options={nurseOptions}
                 placeholder="Search nurse..."
                 searchable
-                searchPlaceholder="Search by name, username, or email..."
+                searchPlaceholder="Search by name or email..."
                 emptyMessage="No approved nurses found."
               />
 
