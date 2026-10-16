@@ -4818,11 +4818,18 @@ class AssignmentViewSet(viewsets.ModelViewSet):
         ).all()
         status_filter = self.request.query_params.get('status', 'active')
         nurse_id = self.request.query_params.get('nurseId')
+        patient_id = self.request.query_params.get('patientId')
         if status_filter and status_filter != 'all':
             qs = qs.filter(status=status_filter)
         if nurse_id:
             qs = qs.filter(assigned_nurse_id=nurse_id)
-        return qs
+        if patient_id:
+            # Every nurse who has ever been assigned this patient — the
+            # "who handles this patient" history view, so status defaults
+            # to 'active' above are irrelevant here; the caller passes
+            # status=all to actually get the full history.
+            qs = qs.filter(patient__patient_code=patient_id)
+        return qs.order_by('-assigned_at')
 
     def get_permissions(self):
         if self.action in ('create', 'update', 'partial_update', 'destroy'):

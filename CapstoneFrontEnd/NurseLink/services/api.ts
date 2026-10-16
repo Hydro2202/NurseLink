@@ -1195,10 +1195,12 @@ export async function deleteNotification(id: string): Promise<void> {
 export async function fetchAssignments(options?: {
   status?: string;
   nurseId?: string;
+  patientId?: string;
 }): Promise<PatientAssignmentRecord[]> {
   const params = new URLSearchParams();
   if (options?.status) params.set('status', options.status);
   if (options?.nurseId) params.set('nurseId', options.nurseId);
+  if (options?.patientId) params.set('patientId', options.patientId);
   const query = params.toString() ? `?${params}` : '';
   return apiRequest<PatientAssignmentRecord[]>(`/assignments/${query}`);
 }

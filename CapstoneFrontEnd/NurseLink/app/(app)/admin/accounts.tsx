@@ -94,6 +94,16 @@ export default function AdminAccountsPage() {
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [editError, setEditError] = useState('');
   const [busy, setBusy] = useState(false);
+  // Shared "are you sure?" for every account change that otherwise fired on
+  // a single click/selection — Approve, Role change, Unlock, and saving
+  // Edit Details. Deactivate/Reactivate and Delete already had their own
+  // ConfirmDialog; Reject and Reset Password already require typing a
+  // reason/password first, which is its own deliberate step.
+  const [pendingAction, setPendingAction] = useState<{
+    title: string;
+    description: string;
+    run: () => void;
+  } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -410,7 +420,15 @@ export default function AdminAccountsPage() {
                   <Select
                     label="Role"
                     value={selected.role}
-                    onValueChange={handleRoleChange}
+                    onValueChange={(role) => {
+                      if (role === selected.role) return;
+                      const label = role === 'head_nurse' ? 'Head Nurse' : 'Nurse';
+                      setPendingAction({
+                        title: 'Change role?',
+                        description: `Change ${selected.name}'s role to ${label}? They sign in with this role from now on.`,
+                        run: () => handleRoleChange(role),
+                      });
+                    }}
                     options={[
                       { label: 'Nurse', value: 'staff_nurse' },
                       { label: 'Head Nurse', value: 'head_nurse' },
@@ -429,7 +447,18 @@ export default function AdminAccountsPage() {
                     </View>
                   </Button>
                   {selected.approvalStatus !== 'approved' ? (
-                    <Button onPress={handleApprove} disabled={busy} loading={busy}>
+                    <Button
+                      onPress={() => {
+                        const roleLabel = (selected.requestedRole || selected.role) === 'head_nurse' ? 'Head Nurse' : 'Nurse';
+                        setPendingAction({
+                          title: 'Approve this account?',
+                          description: `Approve ${selected.name} as ${roleLabel}? They'll be able to sign in immediately.`,
+                          run: handleApprove,
+                        });
+                      }}
+                      disabled={busy}
+                      loading={busy}
+                    >
                       <View style={styles.btnInner}>
                         <CheckCircle size={16} color={Colors.white} />
                         <Text style={styles.btnLabel}>
@@ -458,7 +487,17 @@ export default function AdminAccountsPage() {
                       </Text>
                     </View>
                   </Button>
-                  <Button variant="outline" onPress={handleClearLock} disabled={busy}>
+                  <Button
+                    variant="outline"
+                    onPress={() =>
+                      setPendingAction({
+                        title: 'Unlock sign-in?',
+                        description: `Clear ${selected.name}'s sign-in lockout? They'll be able to try signing in again immediately.`,
+                        run: handleClearLock,
+                      })
+                    }
+                    disabled={busy}
+                  >
                     <View style={styles.btnInner}>
                       <Unlock size={16} color={Colors.foreground} />
                       <Text style={[styles.btnLabel, { color: Colors.foreground }]}>Unlock Sign-in</Text>
@@ -516,9 +555,16 @@ export default function AdminAccountsPage() {
       <Modal visible={editOpen} transparent animationType="fade" onRequestClose={() => setEditOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => !busy && setEditOpen(false)}>
           <Pressable style={[styles.dialog, Shadows.xl, { maxHeight: '85%' }]} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.dialogHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.dialogTitle}>Edit {selected?.name}</Text>
+                <Text style={styles.dialogSub}>Saved to the account itself, so every screen shows the change.</Text>
+              </View>
+              <Pressable onPress={() => !busy && setEditOpen(false)} hitSlop={8} accessibilityLabel="Close">
+                <X size={20} color={Colors.gray500} />
+              </Pressable>
+            </View>
             <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              <Text style={styles.dialogTitle}>Edit {selected?.name}</Text>
-              <Text style={styles.dialogSub}>Saved to the account itself, so every screen shows the change.</Text>
               {EDIT_FIELDS.map((f) => (
                 <Input
                   key={f.key}
@@ -535,7 +581,17 @@ export default function AdminAccountsPage() {
                 <Button variant="outline" onPress={() => setEditOpen(false)} style={{ flex: 1 }} disabled={busy}>
                   Cancel
                 </Button>
-                <Button onPress={handleEditSave} style={{ flex: 1 }} loading={busy}>
+                <Button
+                  onPress={() =>
+                    setPendingAction({
+                      title: 'Save these changes?',
+                      description: `Save the edited details for ${selected?.name}? Every screen will show the change.`,
+                      run: handleEditSave,
+                    })
+                  }
+                  style={{ flex: 1 }}
+                  loading={busy}
+                >
                   Save
                 </Button>
               </View>
@@ -562,7 +618,13 @@ export default function AdminAccountsPage() {
                 Cancel
               </Button>
               <Button
-                onPress={handleSetPassword}
+                onPress={() =>
+                  setPendingAction({
+                    title: 'Reset this password?',
+                    description: `Set a new password for ${selected?.name}? They'll be signed out everywhere immediately.`,
+                    run: handleSetPassword,
+                  })
+                }
                 style={{ flex: 1 }}
                 disabled={busy || newPassword.length < 8}
                 loading={busy}
@@ -573,6 +635,22 @@ export default function AdminAccountsPage() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <ConfirmDialog
+        open={!!pendingAction}
+        onOpenChange={(next) => {
+          if (!next) setPendingAction(null);
+        }}
+        title={pendingAction?.title || ''}
+        description={pendingAction?.description || ''}
+        confirmLabel="Confirm"
+        loading={busy}
+        onConfirm={() => {
+          const action = pendingAction;
+          setPendingAction(null);
+          action?.run();
+        }}
+      />
 
       <ConfirmDialog
         open={confirmDeactivate}

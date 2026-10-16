@@ -41,6 +41,10 @@ export default function AdminDoctorsPage() {
   const [error, setError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // Only for editing an existing doctor — adding a brand-new one is
+  // additive, not a change to something that already exists, so it doesn't
+  // need the same "are you sure" step.
+  const [confirmSave, setConfirmSave] = useState(false);
 
   const handleDelete = async () => {
     if (!editing) return;
@@ -248,7 +252,12 @@ export default function AdminDoctorsPage() {
               <Button variant="outline" onPress={() => setFormOpen(false)} style={{ flex: 1 }} disabled={saving}>
                 Cancel
               </Button>
-              <Button onPress={handleSave} style={{ flex: 1 }} disabled={saving} loading={saving}>
+              <Button
+                onPress={() => (editing ? setConfirmSave(true) : handleSave())}
+                style={{ flex: 1 }}
+                disabled={saving}
+                loading={saving}
+              >
                 Save
               </Button>
             </View>
@@ -268,6 +277,19 @@ export default function AdminDoctorsPage() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <ConfirmDialog
+        open={confirmSave}
+        onOpenChange={setConfirmSave}
+        title="Save these changes?"
+        description={`Save the edited details for Dr. ${editing?.fullName ?? ''}? Every screen will show the change.`}
+        confirmLabel="Save"
+        loading={saving}
+        onConfirm={() => {
+          setConfirmSave(false);
+          void handleSave();
+        }}
+      />
 
       <ConfirmDialog
         open={confirmDelete}

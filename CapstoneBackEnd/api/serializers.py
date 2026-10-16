@@ -3106,6 +3106,13 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
     assignedAt = serializers.DateTimeField(source='assigned_at', read_only=True)
     updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
     attendingPhysician = serializers.SerializerMethodField()
+    # Read-only history detail — who handed this patient off (and why) when
+    # this row isn't the current assignment. Blank/null for an active row
+    # and for the ordinary reassignment path, which never sets these; see
+    # PatientAssignment.ended_at's own comment.
+    endedAt = serializers.DateTimeField(source='ended_at', read_only=True)
+    endReason = serializers.CharField(source='end_reason', read_only=True)
+    assignedByName = serializers.SerializerMethodField()
 
     class Meta:
         model = PatientAssignment
@@ -3125,6 +3132,9 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
             'status',
             'assignedAt',
             'updatedAt',
+            'endedAt',
+            'endReason',
+            'assignedByName',
             'attendingPhysician',
         ]
 
@@ -3142,6 +3152,9 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
 
     def get_attendingPhysician(self, obj):
         return obj.patient.attending_physician
+
+    def get_assignedByName(self, obj):
+        return full_name(obj.assigned_by) if obj.assigned_by else ''
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

@@ -26,6 +26,9 @@ import {
   Thermometer,
   Droplet,
   FlaskConical,
+  Users,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react-native';
 import {
   fetchPatients,
@@ -50,6 +53,7 @@ import { PatientVisitHistoryModal } from '../../components/PatientVisitHistoryMo
 import { ReadmitPatientModal } from '../../components/ReadmitPatientModal';
 import { EditPatientModal } from '../../components/EditPatientModal';
 import { LabsAndMedicationsModal } from '../../components/LabsAndMedicationsModal';
+import { PatientAssignmentHistoryModal } from '../../components/PatientAssignmentHistoryModal';
 import { Colors, Radius, Shadows } from '../../constants/colors';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -152,6 +156,8 @@ const VITAL_SEVERITY_STYLE: Record<
   normal: { bg: Colors.blue50, border: Colors.blue100, text: Colors.foreground },
 };
 
+const PATIENTS_PER_PAGE = 5;
+
 type SortKey = 'name' | 'room' | 'nurse' | 'status';
 // 'active' (the default) means not-discharged — a discharged patient's
 // record is kept, never deleted, but stays out of the working list unless
@@ -192,6 +198,9 @@ export default function AllPatientsPage() {
   const [editTarget, setEditTarget] = useState<Patient | null>(null);
   const [labsMedsOpen, setLabsMedsOpen] = useState(false);
   const [labsMedsPatient, setLabsMedsPatient] = useState<Patient | null>(null);
+  const [assignmentHistoryOpen, setAssignmentHistoryOpen] = useState(false);
+  const [assignmentHistoryPatient, setAssignmentHistoryPatient] = useState<Patient | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
 
   const loadPatients = useCallback(async () => {
     try {
@@ -275,6 +284,23 @@ export default function AllPatientsPage() {
     const sorted = [...filteredPatients].sort((a, b) => key(a).localeCompare(key(b)));
     return sortDesc ? sorted.reverse() : sorted;
   }, [filteredPatients, sortBy, sortDesc]);
+
+  // Back to page 1 whenever the result set itself changes — otherwise a
+  // narrower filter/search could strand the view on a now-nonexistent page.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, roomFilter, riskFilter, deptFilter, nurseFilter, statusFilter, dischargeDateFrom, dischargeDateTo, sortBy, sortDesc]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedPatients.length / PATIENTS_PER_PAGE));
+  // Clamped rather than reset to 1 — covers the result set shrinking for a
+  // reason other than the effect above (e.g. a patient discharged from
+  // under the current page after a reload).
+  const safePage = Math.min(currentPage, totalPages);
+  const pagedPatients = sortedPatients.slice(
+    (safePage - 1) * PATIENTS_PER_PAGE,
+    safePage * PATIENTS_PER_PAGE
+  );
+  const pageNumbers = Array.from({ length: totalPages }, (_, i) => i + 1);
 
   const setPatientDepartment = async (patient: Patient, departmentId: string) => {
     setSettingDeptFor(patient.id);
@@ -532,7 +558,7 @@ export default function AllPatientsPage() {
             </CardContent>
           </Card>
         ) : (
-          sortedPatients.map((patient) => {
+          pagedPatients.map((patient) => {
             const statusConfig = STATUS_CONFIG[patient.status || 'admitted'] || STATUS_CONFIG.admitted;
             const isDischarged = patient.status === 'discharged';
             return (
@@ -567,6 +593,17 @@ export default function AllPatientsPage() {
                       accessibilityLabel={`View visit history for ${patient.name}`}
                     >
                       <History size={15} color={Colors.blue700} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setAssignmentHistoryPatient(patient);
+                        setAssignmentHistoryOpen(true);
+                      }}
+                      style={styles.iconBtn}
+                      hitSlop={6}
+                      accessibilityLabel={`View nurses who have handled ${patient.name}`}
+                    >
+                      <Users size={15} color={Colors.blue700} />
                     </Pressable>
                     {isSupervisor ? (
                       <Pressable
@@ -846,6 +883,40 @@ export default function AllPatientsPage() {
             );
           })
         )}
+
+        {!loading && totalPages > 1 ? (
+          <View style={styles.pagination}>
+            <Pressable
+              onPress={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={safePage === 1}
+              style={[styles.pageNavBtn, safePage === 1 && styles.pageNavBtnDisabled]}
+              hitSlop={6}
+              accessibilityLabel="Previous page"
+            >
+              <ChevronLeft size={16} color={safePage === 1 ? Colors.gray300 : Colors.blue700} />
+            </Pressable>
+            {pageNumbers.map((page) => (
+              <Pressable
+                key={page}
+                onPress={() => setCurrentPage(page)}
+                style={[styles.pageNumBtn, page === safePage && styles.pageNumBtnActive]}
+              >
+                <Text style={[styles.pageNumText, page === safePage && styles.pageNumTextActive]}>
+                  {page}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable
+              onPress={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage === totalPages}
+              style={[styles.pageNavBtn, safePage === totalPages && styles.pageNavBtnDisabled]}
+              hitSlop={6}
+              accessibilityLabel="Next page"
+            >
+              <ChevronRight size={16} color={safePage === totalPages ? Colors.gray300 : Colors.blue700} />
+            </Pressable>
+          </View>
+        ) : null}
       </ScrollView>
 
       <TaskAssignmentModal
@@ -857,6 +928,11 @@ export default function AllPatientsPage() {
         open={historyOpen}
         onOpenChange={setHistoryOpen}
         patient={historyPatient}
+      />
+      <PatientAssignmentHistoryModal
+        open={assignmentHistoryOpen}
+        onOpenChange={setAssignmentHistoryOpen}
+        patient={assignmentHistoryPatient}
       />
       <ReadmitPatientModal
         open={readmitOpen}
@@ -992,6 +1068,36 @@ const styles = StyleSheet.create({
   statValue: { fontSize: 22, fontWeight: '700', color: Colors.foreground },
   center: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
   muted: { color: Colors.mutedForeground, fontSize: 14 },
+  pagination: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+  },
+  pageNavBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pageNavBtnDisabled: { opacity: 0.5 },
+  pageNumBtn: {
+    minWidth: 32,
+    height: 32,
+    paddingHorizontal: 8,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pageNumBtnActive: { backgroundColor: Colors.blue600, borderColor: Colors.blue600 },
+  pageNumText: { fontSize: 13, fontWeight: '600', color: Colors.gray700 },
+  pageNumTextActive: { color: Colors.white },
   patientCard: { borderWidth: 1, borderColor: Colors.border, ...Shadows.sm },
   patientCardDischarged: { backgroundColor: Colors.gray50, borderColor: Colors.gray200 },
   cardBody: { gap: 14, padding: 18 },

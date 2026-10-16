@@ -585,6 +585,13 @@ export interface PatientAssignmentRecord {
   status: 'active' | 'completed' | 'reassigned';
   assignedAt: string;
   updatedAt: string;
+  /** Set only when this row was closed out (reassigned/endorsed away) —
+   * blank for the current active assignment. */
+  endedAt?: string | null;
+  endReason?: 'ENDORSED' | 'REASSIGNED' | '';
+  /** Who made this assignment — blank for older rows that predate this
+   * field. */
+  assignedByName?: string;
   attendingPhysician?: string;
 }
 

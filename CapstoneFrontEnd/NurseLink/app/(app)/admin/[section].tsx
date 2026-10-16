@@ -642,6 +642,7 @@ export default function AdminGenericSectionPage() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [confirmSave, setConfirmSave] = useState(false);
   const [toDelete, setToDelete] = useState<Row | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [ctx, setCtx] = useState<EditContext>({ departments: [], nurseIds: [], nurseNames: [] });
@@ -932,7 +933,7 @@ export default function AdminGenericSectionPage() {
                 <Button variant="outline" onPress={() => setEditing(null)} disabled={saving} style={styles.flex1}>
                   Cancel
                 </Button>
-                <Button onPress={saveEdit} loading={saving} style={styles.flex1}>
+                <Button onPress={() => setConfirmSave(true)} loading={saving} style={styles.flex1}>
                   Save changes
                 </Button>
               </View>
@@ -940,6 +941,19 @@ export default function AdminGenericSectionPage() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <ConfirmDialog
+        open={confirmSave}
+        onOpenChange={setConfirmSave}
+        title="Save these changes?"
+        description={`Save the edited details for ${editing?.title ?? 'this record'}? Every account will see the change.`}
+        confirmLabel="Save"
+        loading={saving}
+        onConfirm={() => {
+          setConfirmSave(false);
+          void saveEdit();
+        }}
+      />
 
       <ConfirmDialog
         open={!!toDelete}
