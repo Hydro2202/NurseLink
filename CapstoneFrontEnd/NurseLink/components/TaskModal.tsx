@@ -14,6 +14,7 @@ import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
 import { TimePicker } from './TimePicker';
+import { DatePicker, todayIso } from './DatePicker';
 import {
   fetchPatients,
   fetchPatientAssignedDoctors,
@@ -61,6 +62,7 @@ export function TaskModal({
     priority: 'routine' as 'urgent' | 'routine',
     patientName: '',
     patientId: '',
+    dueDate: '',
     dueTime: '',
     patientRoom: '',
     doctorOrder: '',
@@ -94,6 +96,7 @@ export function TaskModal({
           priority: task.priority === 'urgent' ? 'urgent' : 'routine',
           patientName: task.patientName,
           patientId: task.patientId || '',
+          dueDate: task.dueDate || '',
           dueTime: task.dueTime,
           patientRoom: task.patientRoom || '',
           doctorOrder: task.doctorOrder || '',
@@ -107,6 +110,11 @@ export function TaskModal({
           priority: 'routine',
           patientName: '',
           patientId: '',
+          // Defaults to today rather than blank — matches how "Due Time"
+          // already implicitly meant "today" before this field existed, so
+          // the common case (a task for later today) still needs nothing
+          // more than picking a time.
+          dueDate: todayIso(),
           dueTime: '',
           patientRoom: '',
           doctorOrder: '',
@@ -210,6 +218,7 @@ export function TaskModal({
     if (!formData.patientId.trim() || !formData.patientName.trim()) {
       newErrors.patientName = 'Patient is required';
     }
+    if (!formData.dueDate) newErrors.dueDate = 'Due date is required';
     if (!formData.dueTime) newErrors.dueTime = 'Due time is required';
     if (!departmentId) newErrors.department = 'No department selected.';
     if (doctorIds.length === 0) {
@@ -227,6 +236,7 @@ export function TaskModal({
   const canSubmit =
     !!formData.title.trim() &&
     !!formData.patientId.trim() &&
+    !!formData.dueDate &&
     !!formData.dueTime &&
     !!formData.patientRoom.trim() &&
     !!departmentId &&
@@ -286,19 +296,27 @@ export function TaskModal({
                 />
               </View>
 
+              <Select
+                label="Priority *"
+                value={formData.priority}
+                onValueChange={(value) =>
+                  setFormData({ ...formData, priority: value as 'urgent' | 'routine' })
+                }
+                options={[
+                  { label: '🔴 Urgent', value: 'urgent' },
+                  { label: '🟡 Routine', value: 'routine' },
+                ]}
+                placeholder="Select priority"
+              />
+
               <View style={styles.row}>
-                <Select
+                <DatePicker
                   style={{ flex: 1 }}
-                  label="Priority *"
-                  value={formData.priority}
-                  onValueChange={(value) =>
-                    setFormData({ ...formData, priority: value as 'urgent' | 'routine' })
-                  }
-                  options={[
-                    { label: '🔴 Urgent', value: 'urgent' },
-                    { label: '🟡 Routine', value: 'routine' },
-                  ]}
-                  placeholder="Select priority"
+                  label="Due Date"
+                  required
+                  value={formData.dueDate}
+                  onChange={(dueDate) => setFormData({ ...formData, dueDate })}
+                  error={errors.dueDate}
                 />
                 <TimePicker
                   style={{ flex: 1 }}

@@ -1137,6 +1137,9 @@ export interface UserPreferences {
   emailNotifications: boolean;
   soundAlerts: boolean;
   vibrationAlerts: boolean;
+  /** AI-assisted charting on the Charting screen. When off, notes are written
+   * manually (FDAR fields filled in by hand, no structure-chart workflow call). */
+  autoChartingEnabled: boolean;
 }
 
 export async function fetchPreferences(): Promise<UserPreferences> {

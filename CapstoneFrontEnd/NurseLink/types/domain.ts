@@ -8,6 +8,11 @@ export interface Task {
   description: string;
   priority: 'urgent' | 'routine' | 'completed';
   dueTime: string;
+  /** "YYYY-MM-DD" — when paired with dueTime, this is also what the
+   * backend's due-task reminder (see api/notifications.py's
+   * check_due_task_reminders) fires against. Optional: null/missing for
+   * every task that predates this field. */
+  dueDate?: string | null;
   assignedTo: string;
   status: 'pending' | 'in_progress' | 'completed' | 'overdue';
   category: 'medication' | 'vital_signs' | 'care' | 'assessment' | 'documentation';

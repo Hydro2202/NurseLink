@@ -1690,6 +1690,7 @@ class TaskSerializer(serializers.ModelSerializer):
     patientId = serializers.CharField(required=False, allow_blank=True)
     patientName = serializers.CharField(source='patient_name', required=False, allow_blank=True)
     dueTime = serializers.CharField(source='due_time', required=False, allow_blank=True)
+    dueDate = serializers.DateField(source='due_date', required=False, allow_null=True)
     departmentId = serializers.PrimaryKeyRelatedField(
         source='department', queryset=Department.objects.all(), required=False, allow_null=True
     )
@@ -1724,6 +1725,7 @@ class TaskSerializer(serializers.ModelSerializer):
             'description',
             'priority',
             'dueTime',
+            'dueDate',
             'departmentId',
             'departmentName',
             'doctorIds',
@@ -1926,6 +1928,7 @@ class TaskSerializer(serializers.ModelSerializer):
         'status': 'status',
         'priority': 'priority',
         'due_time': 'due time',
+        'due_date': 'due date',
         'assigned_nurse_id': 'reassigned',
     }
 
@@ -1959,6 +1962,15 @@ class TaskSerializer(serializers.ModelSerializer):
         if instance.status == 'completed' and not instance.completed_at:
             instance.completed_at = timezone.now()
             instance.priority = 'completed'
+        # Re-arms the due-task reminder whenever the schedule itself moves —
+        # otherwise editing a task to a new due date/time after its old one
+        # already fired a reminder would stay silently reminder_sent_at-set
+        # forever, never raising the new one.
+        if (
+            ('due_date' in validated_data and instance.due_date != before.get('due_date'))
+            or ('due_time' in validated_data and instance.due_time != before.get('due_time'))
+        ):
+            instance.reminder_sent_at = None
         instance.save()
         if doctors is not None:
             request = self.context.get('request')
@@ -4433,6 +4445,7 @@ class UserPreferencesSerializer(serializers.ModelSerializer):
     autoRefresh = serializers.BooleanField(source='auto_refresh', required=False)
     showCharts = serializers.BooleanField(source='show_charts', required=False)
     backgroundSync = serializers.BooleanField(source='background_sync', required=False)
+    autoChartingEnabled = serializers.BooleanField(source='auto_charting_enabled', required=False)
 
     class Meta:
         model = UserPreferences
@@ -4448,6 +4461,7 @@ class UserPreferencesSerializer(serializers.ModelSerializer):
             'autoRefresh',
             'showCharts',
             'backgroundSync',
+            'autoChartingEnabled',
         ]
 
 

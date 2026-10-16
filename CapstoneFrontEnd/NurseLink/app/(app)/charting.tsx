@@ -58,6 +58,7 @@ import { DischargePlanModal } from '../../components/DischargePlanModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
+import { usePreferences } from '../../contexts/PreferencesContext';
 import { Colors, Radius, Shadows } from '../../constants/colors';
 import {
   contentFromFDAR,
@@ -109,6 +110,8 @@ type StructuredData = Required<
 export default function ChartingScreen() {
   const { user } = useAuth();
   const toast = useToast();
+  const { preferences } = usePreferences();
+  const autoChartingEnabled = preferences.autoChartingEnabled;
   const [patients, setPatients] = useState<Patient[]>([]);
   const [notes, setNotes] = useState<ChartingNote[]>([]);
   const [loading, setLoading] = useState(true);
@@ -144,6 +147,13 @@ export default function ChartingScreen() {
   const [historyDateSearch, setHistoryDateSearch] = useState('');
   const [dischargeConfirmOpen, setDischargeConfirmOpen] = useState(false);
   const [dischargeModalOpen, setDischargeModalOpen] = useState(false);
+  // Manual charting (Auto Charting off) — the nurse fills these in directly
+  // instead of generating them from an AI pass over free text.
+  const [manualFocus, setManualFocus] = useState('');
+  const [manualData, setManualData] = useState('');
+  const [manualAction, setManualAction] = useState('');
+  const [manualResponse, setManualResponse] = useState('');
+  const [isSavingManual, setIsSavingManual] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -328,6 +338,77 @@ export default function ChartingScreen() {
       });
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  /** Manual charting (Auto Charting off) — saves the FDAR fields straight to
+   * the record, with no structure-chart workflow call and no preview step,
+   * since there's no AI draft to review in the first place. */
+  const handleSaveManualNote = async () => {
+    const patient = patients.find((p) => p.id === selectedPatient);
+    if (!patient || !selectedPatient) {
+      toast.error('Select a patient before saving the note');
+      return;
+    }
+    const focus = manualFocus.trim();
+    const data = manualData.trim();
+    const action = manualAction.trim();
+    const response = manualResponse.trim();
+    if (!focus && !data && !action && !response) {
+      toast.error('Cannot save an empty chart', {
+        description: 'Fill in at least one of Focus, Data, Action, or Response.',
+      });
+      return;
+    }
+
+    setIsSavingManual(true);
+    try {
+      const newNote = await createChartingNote({
+        patientId: selectedPatient,
+        patientName: patient.name,
+        nurseId: user?.id || 'unknown',
+        nurseName: user?.name || 'Unknown Nurse',
+        focus,
+        data,
+        action,
+        response,
+        content: contentFromFDAR(focus, data, action, response),
+        timestamp: new Date().toISOString(),
+        type: 'progress',
+        aiGenerated: false,
+        edited: false,
+        attendingPhysician: getAttendingPhysician(patient),
+        editHistory: [],
+      });
+
+      if (!newNote?.id) {
+        toast.error('Failed to save note', {
+          description: 'The server did not return a saved chart record.',
+        });
+        return;
+      }
+
+      setNotes((prev) => [newNote, ...prev]);
+      toast.success('Note added to patient record', {
+        description: `Charting note for ${patient.name} has been saved.`,
+      });
+
+      setManualFocus('');
+      setManualData('');
+      setManualAction('');
+      setManualResponse('');
+      setSelectedPatient('');
+      if (historyOpen) {
+        fetchChartingHistoryDates()
+          .then(setHistoryDates)
+          .catch(() => undefined);
+      }
+    } catch (error) {
+      toast.error('Failed to save note', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setIsSavingManual(false);
     }
   };
 
@@ -688,15 +769,18 @@ export default function ChartingScreen() {
       {/* Header */}
       <View>
         <Text style={styles.pageTitle}>Charting</Text>
-        <Text style={styles.pageSubtitle}>AI-assisted documentation</Text>
+        <Text style={styles.pageSubtitle}>
+          {autoChartingEnabled ? 'AI-assisted documentation' : 'Manual documentation'}
+        </Text>
       </View>
 
-      {/* AI Info Alert */}
+      {/* AI / Manual Info Alert */}
       <Alert variant="default">
         <AlertDescription>
           <Text style={styles.alertBlue}>
-            Input your patient assessment data, and AI will generate a structured nursing note.
-            Review and approve before submission.
+            {autoChartingEnabled
+              ? 'Input your patient assessment data, and AI will generate a structured nursing note. Review and approve before submission.'
+              : 'Auto Charting is off. Fill in the Focus, Data, Action, and Response sections yourself, then save. Turn Auto Charting back on in Settings whenever you want AI-generated drafts again.'}
           </Text>
         </AlertDescription>
       </Alert>
@@ -708,7 +792,11 @@ export default function ChartingScreen() {
             <FileText size={20} color={Colors.blue600} />
             <CardTitle>Create New Nursing Note</CardTitle>
           </View>
-          <CardDescription>AI will help structure your documentation</CardDescription>
+          <CardDescription>
+            {autoChartingEnabled
+              ? 'AI will help structure your documentation'
+              : 'Fill in the FDAR sections yourself — Auto Charting is off'}
+          </CardDescription>
         </CardHeader>
         <CardContent style={styles.gap4}>
           <Select
@@ -755,41 +843,117 @@ export default function ChartingScreen() {
             </Button>
           ) : null}
 
-          <View style={styles.field}>
-            <Text style={styles.label}>Assessment & Observations</Text>
-            <TextInput
-              style={styles.textarea}
-              placeholder="Enter patient assessment, vital signs, observations, interventions performed, patient response, etc. The AI will structure this into a complete nursing note."
-              placeholderTextColor={Colors.mutedForeground}
-              value={inputText}
-              onChangeText={setInputText}
-              multiline
-              numberOfLines={6}
-              textAlignVertical="top"
-            />
-            <Text style={styles.hint}>
-              Example: &quot;Patient ambulated to chair, tolerated well. No complaints of pain.
-              Wound dressing changed, site clean and dry.&quot;
-            </Text>
-          </View>
+          {autoChartingEnabled ? (
+            <>
+              <View style={styles.field}>
+                <Text style={styles.label}>Assessment & Observations</Text>
+                <TextInput
+                  style={styles.textarea}
+                  placeholder="Enter patient assessment, vital signs, observations, interventions performed, patient response, etc. The AI will structure this into a complete nursing note."
+                  placeholderTextColor={Colors.mutedForeground}
+                  value={inputText}
+                  onChangeText={setInputText}
+                  multiline
+                  numberOfLines={6}
+                  textAlignVertical="top"
+                />
+                <Text style={styles.hint}>
+                  Example: &quot;Patient ambulated to chair, tolerated well. No complaints of pain.
+                  Wound dressing changed, site clean and dry.&quot;
+                </Text>
+              </View>
 
-          <Button
-            onPress={handleGenerateNote}
-            disabled={isGenerating || !inputText || !selectedPatient}
-            style={{ backgroundColor: Colors.blue600 }}
-          >
-            {isGenerating ? (
-              <View style={styles.btnInner}>
-                <ActivityIndicator size="small" color={Colors.white} />
-                <Text style={styles.btnTextWhite}>Generating AI Note...</Text>
+              <Button
+                onPress={handleGenerateNote}
+                disabled={isGenerating || !inputText || !selectedPatient}
+                style={{ backgroundColor: Colors.blue600 }}
+              >
+                {isGenerating ? (
+                  <View style={styles.btnInner}>
+                    <ActivityIndicator size="small" color={Colors.white} />
+                    <Text style={styles.btnTextWhite}>Generating AI Note...</Text>
+                  </View>
+                ) : (
+                  <View style={styles.btnInner}>
+                    <Sparkles size={16} color={Colors.white} />
+                    <Text style={styles.btnTextWhite}>Generate Structured Note</Text>
+                  </View>
+                )}
+              </Button>
+            </>
+          ) : (
+            <>
+              <View style={styles.field}>
+                <Text style={styles.label}>Focus</Text>
+                <TextInput
+                  style={[styles.textarea, { minHeight: 60 }]}
+                  value={manualFocus}
+                  onChangeText={setManualFocus}
+                  multiline
+                  textAlignVertical="top"
+                  placeholder="Primary concern, e.g. Pain management"
+                  placeholderTextColor={Colors.mutedForeground}
+                />
               </View>
-            ) : (
-              <View style={styles.btnInner}>
-                <Sparkles size={16} color={Colors.white} />
-                <Text style={styles.btnTextWhite}>Generate Structured Note</Text>
+              <View style={styles.field}>
+                <Text style={styles.label}>Data</Text>
+                <TextInput
+                  style={styles.textarea}
+                  value={manualData}
+                  onChangeText={setManualData}
+                  multiline
+                  textAlignVertical="top"
+                  placeholder="Subjective and objective findings — vitals, assessment, patient statements"
+                  placeholderTextColor={Colors.mutedForeground}
+                />
               </View>
-            )}
-          </Button>
+              <View style={styles.field}>
+                <Text style={styles.label}>Action</Text>
+                <TextInput
+                  style={styles.textarea}
+                  value={manualAction}
+                  onChangeText={setManualAction}
+                  multiline
+                  textAlignVertical="top"
+                  placeholder="Interventions performed"
+                  placeholderTextColor={Colors.mutedForeground}
+                />
+              </View>
+              <View style={styles.field}>
+                <Text style={styles.label}>Response</Text>
+                <TextInput
+                  style={styles.textarea}
+                  value={manualResponse}
+                  onChangeText={setManualResponse}
+                  multiline
+                  textAlignVertical="top"
+                  placeholder="Patient's outcome or reaction to the action taken"
+                  placeholderTextColor={Colors.mutedForeground}
+                />
+              </View>
+
+              <Button
+                onPress={handleSaveManualNote}
+                disabled={
+                  isSavingManual ||
+                  !selectedPatient ||
+                  !(manualFocus.trim() || manualData.trim() || manualAction.trim() || manualResponse.trim())
+                }
+                style={{ backgroundColor: Colors.blue600 }}
+              >
+                <View style={styles.btnInner}>
+                  {isSavingManual ? (
+                    <ActivityIndicator size="small" color={Colors.white} />
+                  ) : (
+                    <Check size={16} color={Colors.white} />
+                  )}
+                  <Text style={styles.btnTextWhite}>
+                    {isSavingManual ? 'Saving...' : 'Save Nursing Note'}
+                  </Text>
+                </View>
+              </Button>
+            </>
+          )}
         </CardContent>
       </Card>
 

@@ -115,6 +115,7 @@ from .notifications import (
     notify_task_handover_accepted,
     notify_task_handover_rejected,
     notify_task_handover_verified,
+    check_due_task_reminders,
 )
 from .otp_service import OtpCooldownError, OtpDeliveryError, OtpResendLimitError, issue_otp, verify_otp
 from .permissions import (
@@ -6256,6 +6257,12 @@ class LiveStateView(APIView):
     )
     def get(self, request):
         user = request.user
+
+        # Cheap (scoped to this nurse's own tasks, indexed on
+        # reminder_sent_at) — raises a notification the first poll after a
+        # task's scheduled due date/time has actually arrived. See its own
+        # docstring for why this lives on the poll rather than a scheduler.
+        check_due_task_reminders(user)
 
         # Notifications have no updated_at — they are created and then read —
         # so total, unread and newest together are the whole story. One

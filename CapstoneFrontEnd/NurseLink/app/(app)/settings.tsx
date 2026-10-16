@@ -19,6 +19,7 @@ import {
   Pencil,
   Info,
   PlayCircle,
+  Sparkles,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { usePreferences } from '../../contexts/PreferencesContext';
@@ -48,6 +49,7 @@ const SECTIONS = {
     'soundAlerts',
     'vibrationAlerts',
   ],
+  charting: ['autoChartingEnabled'],
 } as const satisfies Record<string, readonly (keyof UserPreferences)[]>;
 
 type SectionName = keyof typeof SECTIONS;
@@ -112,6 +114,7 @@ export default function SettingsScreen() {
     emailNotifications,
     soundAlerts,
     vibrationAlerts,
+    autoChartingEnabled,
   } = preferences;
 
   const vibrationSupported = useMemo(() => isVibrationSupported(), []);
@@ -142,6 +145,7 @@ export default function SettingsScreen() {
   const handleSaveAppearance = () => saveSection('appearance', 'Appearance settings saved!');
   const handleSaveNotifications = () =>
     saveSection('notifications', 'Notification preferences saved!');
+  const handleSaveCharting = () => saveSection('charting', 'Charting preferences saved!');
 
   const handleTestNotification = () => {
     // Exercises the exact same sound/vibration calls a real notification
@@ -439,6 +443,44 @@ export default function SettingsScreen() {
               )}
               <Text style={styles.btnTextWhite}>
                 {savingSection === 'notifications' ? 'Saving...' : 'Save Notifications'}
+              </Text>
+            </View>
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Charting Preferences */}
+      <Card>
+        <CardHeader>
+          <View style={styles.titleRow}>
+            <Sparkles size={20} color={c.blue600} />
+            <CardTitle>Charting</CardTitle>
+          </View>
+          <CardDescription>Choose how your nursing notes are documented</CardDescription>
+        </CardHeader>
+        <CardContent style={styles.gap4}>
+          <ToggleRow
+            styles={styles}
+            label="Auto Charting (AI-Assisted)"
+            description="Let AI structure your notes from what you type. Turn off to fill in Focus, Data, Action, and Response yourself."
+            value={autoChartingEnabled}
+            onValueChange={(value) => setLocal({ autoChartingEnabled: value })}
+            showSeparator={false}
+          />
+
+          <Button
+            onPress={handleSaveCharting}
+            disabled={preferencesLoading || savingSection !== null}
+            style={{ backgroundColor: c.blue600 }}
+          >
+            <View style={styles.btnInner}>
+              {savingSection === 'charting' ? (
+                <ActivityIndicator size="small" color={c.white} />
+              ) : (
+                <Save size={16} color={c.white} />
+              )}
+              <Text style={styles.btnTextWhite}>
+                {savingSection === 'charting' ? 'Saving...' : 'Save Charting'}
               </Text>
             </View>
           </Button>

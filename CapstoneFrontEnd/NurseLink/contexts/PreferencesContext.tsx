@@ -36,6 +36,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   emailNotifications: true,
   soundAlerts: true,
   vibrationAlerts: true,
+  autoChartingEnabled: true,
 };
 
 interface PreferencesContextType {

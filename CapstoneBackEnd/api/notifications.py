@@ -14,13 +14,16 @@ dev server, on a phone over the LAN, and behind any WSGI host.
 import logging
 import threading
 import time
+from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
 from django.db import transaction
+from django.utils import timezone
 
-from .models import Notification, NurseProfile
+from .models import Notification, NurseProfile, Task
 from .names import full_name, name_variants
 from .realtime import push_notification
 
@@ -39,6 +42,7 @@ HANDOVER_COMPLETED = 'handover_completed'
 REFERRAL_HEAD_NURSE_FYI = 'referral_head_nurse_fyi'
 TASK_ASSIGNED = 'task_assigned'
 TASK_UPDATED = 'task_updated'
+TASK_DUE = 'task_due'
 KARDEX_REVIEWED = 'kardex_reviewed'
 NURSE_REASSIGNED = 'nurse_reassigned'
 TASK_HANDOVER_VERIFIED = 'task_handover_verified'
@@ -623,6 +627,86 @@ def notify_task_updated(task, actor=None, *, changed_fields=()):
         action_path='/tasks',
         action_highlight_id=task.task_code,
     )
+
+
+def notify_task_due(task):
+    """
+    Tell the assigned nurse it's time to do one of their tasks.
+
+    No actor — this fires from the scheduled-time check itself (see
+    check_due_task_reminders), not from anyone's action, so there's no
+    self-skip and no "X did this" phrasing.
+    """
+    recipient = task.assigned_nurse
+    if recipient is None:
+        return None
+
+    preference = 'critical_alerts' if task.priority == 'urgent' else 'task_notifications'
+    if not wants(recipient, preference):
+        return None
+
+    patient = f' for {task.patient_name}' if task.patient_name else ''
+    return notify(
+        recipient,
+        notification_type='critical' if task.priority == 'urgent' else 'warning',
+        event=TASK_DUE,
+        title='Urgent task due now' if task.priority == 'urgent' else 'Task due now',
+        message=f'{task.title}{patient} is due now.',
+        patient_label=task.patient_name or '',
+        patient=task.patient,
+        action_label='Open tasks',
+        action_path='/tasks',
+        action_highlight_id=task.task_code,
+    )
+
+
+def _task_scheduled_at(task):
+    """
+    task.due_date + task.due_time as a real, comparable moment — or None if
+    either is missing or due_time doesn't parse.
+
+    due_time is free text (the nurse-facing TimePicker always writes
+    "HH:MM" in 24h, but the admin generic record editor's plain text field
+    does not enforce that), so a value that doesn't match is treated as "no
+    reminder for this task" rather than raised as an error — the same
+    fail-open-to-silence philosophy every other best-effort notification
+    path in this module already follows.
+    """
+    if not task.due_date or not task.due_time:
+        return None
+    try:
+        hour, minute = (int(part) for part in task.due_time.strip().split(':', 1))
+        naive = datetime.combine(task.due_date, dtime(hour, minute))
+    except (ValueError, TypeError):
+        return None
+    return timezone.make_aware(naive, timezone=ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
+
+
+def check_due_task_reminders(user):
+    """
+    Raises a "task due" notification the first time a poll notices one of
+    this nurse's own tasks has reached its scheduled due date/time.
+
+    Called from LiveStateView on every poll, scoped to the signed-in
+    nurse's own tasks — a small, cheap, indexed query — rather than a
+    separate scheduler: this app has no background job runner, and the
+    live poll already reaches the server every few seconds anyway (see
+    this module's own docstring on pull-based delivery). reminder_sent_at
+    is what stops the same reminder firing on every subsequent poll.
+    """
+    now = timezone.now()
+    due = Task.objects.filter(
+        assigned_nurse=user,
+        due_date__isnull=False,
+        reminder_sent_at__isnull=True,
+    ).exclude(status='completed')
+    for task in due:
+        scheduled = _task_scheduled_at(task)
+        if scheduled is None or scheduled > now:
+            continue
+        notify_task_due(task)
+        task.reminder_sent_at = now
+        task.save(update_fields=['reminder_sent_at'])
 
 
 def notify_kardex_reviewed(kardex, reviewer):

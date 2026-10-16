@@ -400,6 +400,19 @@ class Task(models.Model):
     description = models.TextField(blank=True, default='')
     priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='routine', db_index=True)
     due_time = models.CharField(max_length=20, blank=True, default='')
+    # Added alongside the pre-existing due_time (free-text "HH:MM" from the
+    # nurse-facing TimePicker, left untouched) rather than folding into it —
+    # due_time alone has no date, so "today" was always implied and a task
+    # due time could not be scheduled for a future day. Null for every task
+    # created before this field, and for one entered through the admin
+    # generic record editor's plain text field without a real date typed in.
+    due_date = models.DateField(null=True, blank=True)
+    # Set once a reminder notification has gone out for this due_date/
+    # due_time, so the periodic check (see notifications.py's
+    # check_due_task_reminders) never raises the same reminder twice.
+    # Cleared automatically whenever due_date or due_time changes (see
+    # TaskSerializer.update()), so editing a task's schedule re-arms it.
+    reminder_sent_at = models.DateTimeField(null=True, blank=True)
     assigned_to = models.CharField(max_length=200, db_index=True)
     assigned_nurse = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -2090,6 +2103,14 @@ class UserPreferences(models.Model):
     auto_refresh = models.BooleanField(default=True)
     show_charts = models.BooleanField(default=True)
     background_sync = models.BooleanField(default=True)
+
+    # Charting. When on (default — matches shipped behaviour), Create New
+    # Nursing Note runs the AI structure-chart workflow. When off, the
+    # charting screen skips the AI step entirely and the nurse fills in the
+    # FDAR sections (focus/data/action/response) by hand — ChartingNote
+    # already stores those fields the same way either way, so no model
+    # change was needed there, only this on/off switch.
+    auto_charting_enabled = models.BooleanField(default=True)
 
     updated_at = models.DateTimeField(auto_now=True)
 

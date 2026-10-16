@@ -14,6 +14,7 @@ import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
 import { TimePicker } from './TimePicker';
+import { DatePicker, todayIso } from './DatePicker';
 import { createTask, createAssignment, fetchNurses, ApiError } from '../services/api';
 import type { Nurse, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
@@ -36,6 +37,7 @@ export function TaskAssignmentModal({
   const [taskTitle, setTaskTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<'urgent' | 'routine'>('routine');
+  const [dueDate, setDueDate] = useState(todayIso());
   const [dueTime, setDueTime] = useState('');
   const [selectedNurse, setSelectedNurse] = useState('');
   const [attendingPhysician, setAttendingPhysician] = useState('');
@@ -83,6 +85,7 @@ export function TaskAssignmentModal({
     setTaskTitle('');
     setDescription('');
     setPriority('routine');
+    setDueDate(todayIso());
     setDueTime('');
     setSelectedNurse('');
     setAttendingPhysician(patient?.attendingPhysician || '');
@@ -93,7 +96,7 @@ export function TaskAssignmentModal({
   const selectedNurseRecord = nurses.find((n) => n.id === selectedNurse);
 
   const handleReview = () => {
-    if (!taskTitle || !selectedNurse || !dueTime || !patient) {
+    if (!taskTitle || !selectedNurse || !dueDate || !dueTime || !patient) {
       toast.error('Please fill in all required fields');
       return;
     }
@@ -109,6 +112,7 @@ export function TaskAssignmentModal({
         title: taskTitle,
         description,
         priority,
+        dueDate,
         dueTime,
         patientId: patient.id,
         patientName: patient.name,
@@ -200,6 +204,10 @@ export function TaskAssignmentModal({
                     <Text style={[styles.reviewValue, { textTransform: 'capitalize' }]}>{priority}</Text>
                   </View>
                   <View style={styles.reviewRow}>
+                    <Text style={styles.reviewLabel}>Due Date</Text>
+                    <Text style={styles.reviewValue}>{dueDate}</Text>
+                  </View>
+                  <View style={styles.reviewRow}>
                     <Text style={styles.reviewLabel}>Due Time</Text>
                     <Text style={styles.reviewValue}>{dueTime}</Text>
                   </View>
@@ -269,17 +277,24 @@ export function TaskAssignmentModal({
                 />
               </View>
 
+              <Select
+                label="Priority *"
+                value={priority}
+                onValueChange={(value) => setPriority(value as 'urgent' | 'routine')}
+                options={[
+                  { label: 'Urgent', value: 'urgent' },
+                  { label: 'Routine', value: 'routine' },
+                ]}
+                placeholder="Select priority"
+              />
+
               <View style={styles.row}>
-                <Select
+                <DatePicker
                   style={{ flex: 1 }}
-                  label="Priority *"
-                  value={priority}
-                  onValueChange={(value) => setPriority(value as 'urgent' | 'routine')}
-                  options={[
-                    { label: 'Urgent', value: 'urgent' },
-                    { label: 'Routine', value: 'routine' },
-                  ]}
-                  placeholder="Select priority"
+                  label="Due Date"
+                  required
+                  value={dueDate}
+                  onChange={setDueDate}
                 />
                 <TimePicker
                   style={{ flex: 1 }}

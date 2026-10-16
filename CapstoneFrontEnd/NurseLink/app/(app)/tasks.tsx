@@ -62,6 +62,31 @@ const SORT_OPTIONS = [
   { label: 'Status', value: 'status' },
 ];
 
+/** "Mar 15" from an ISO "YYYY-MM-DD" — '' if blank (predates dueDate).
+ * Exported for nurse-tasks/[name].tsx, which shows the same task cards in
+ * the head nurse's per-nurse view and wants the same overdue flagging. */
+export function formatDueDate(iso?: string | null): string {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return '';
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** True once a task's due date+time has passed and it's still not done —
+ * the visual half of the due-task reminder (api/notifications.py's
+ * check_due_task_reminders raises the actual notification; this is what
+ * lets the card itself keep showing it's overdue afterward too). A task
+ * with no dueDate (predates the field, or entered as free text through the
+ * admin generic editor) is never flagged — there's nothing reliable to
+ * compare against. */
+export function isTaskOverdue(task: Task): boolean {
+  if (task.status === 'completed' || !task.dueDate || !task.dueTime) return false;
+  const [y, m, d] = task.dueDate.split('-').map(Number);
+  const [h, min] = task.dueTime.split(':').map(Number);
+  if (!y || !m || !d || Number.isNaN(h) || Number.isNaN(min)) return false;
+  return new Date(y, m - 1, d, h, min).getTime() < Date.now();
+}
+
 export default function TasksPage() {
   const params = useLocalSearchParams<{
     taskId?: string;
@@ -70,7 +95,7 @@ export default function TasksPage() {
     scrollToPatient?: string;
   }>();
   const toast = useToast();
-  const { user } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
   const scrollRef = useRef<ScrollView>(null);
   const taskYOffsets = useRef<Record<string, number>>({});
 
@@ -147,8 +172,20 @@ export default function TasksPage() {
   useLiveRefresh('tasks', loadTasks);
 
   useEffect(() => {
+    // Waits for AuthContext to actually finish resolving the session before
+    // asking — without this, on a fresh login/refresh this effect could run
+    // while `user` was still momentarily null (auth not loaded yet),
+    // immediately 401 against fetchPatients, and permanently land on the
+    // catch's empty Set — not "still loading," but "confirmed no
+    // patients," so the Vitals button never got a second chance even once
+    // the real session came through moments later. That's the flicker: the
+    // button shows (stale cache/first paint), goes hidden
+    // (401 → empty set), and only sometimes comes back if something else
+    // happens to change user?.role afterward.
+    if (authLoading) return;
+    if (!user) return;
     // Head nurses may record vitals for any patient, so they need no list.
-    if (user?.role === 'head_nurse') return;
+    if (user.role === 'head_nurse') return;
     let cancelled = false;
     fetchPatients({ mine: true })
       .then((patients) => {
@@ -161,7 +198,10 @@ export default function TasksPage() {
     return () => {
       cancelled = true;
     };
-  }, [user?.role]);
+    // user?.id (not the whole user object) so an unrelated profile edit
+    // elsewhere doesn't re-trigger this fetch — only auth finishing, a real
+    // account switch, or an actual role change should.
+  }, [authLoading, user?.id, user?.role]);
 
   useEffect(() => {
     // Notifications and the handover screen both point here with highlightId;
@@ -235,6 +275,7 @@ export default function TasksPage() {
           title: taskData.title || '',
           description: taskData.description || '',
           priority: taskData.priority || 'routine',
+          dueDate: taskData.dueDate || '',
           dueTime: taskData.dueTime || '',
           status: 'pending',
           category: taskData.category || 'medication',
@@ -558,8 +599,13 @@ export default function TasksPage() {
                         <View style={styles.metaBlock}>
                           <View style={styles.metaRow}>
                             <View style={styles.metaItem}>
-                              <Clock size={14} color={Colors.gray500} />
-                              <Text style={styles.metaText}>{task.dueTime}</Text>
+                              <Clock size={14} color={isTaskOverdue(task) ? Colors.red600 : Colors.gray500} />
+                              <Text style={[styles.metaText, isTaskOverdue(task) && styles.metaTextOverdue]}>
+                                {formatDueDate(task.dueDate)}
+                                {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
+                                {task.dueTime}
+                                {isTaskOverdue(task) ? ' (overdue)' : ''}
+                              </Text>
                             </View>
                             <Text style={styles.metaText}>
                               Patient: {task.patientName} ({task.patientId})
@@ -637,11 +683,11 @@ export default function TasksPage() {
                                         onPress={() => handleToggleChecklistItem(task, index)}
                                       >
                                         {item.done ? (
-                                          <CheckSquare size={16} color={Colors.green600} />
+                                          <CheckSquare size={22} color={Colors.green600} />
                                         ) : isLocked ? (
-                                          <Lock size={14} color={Colors.gray400} />
+                                          <Lock size={19} color={Colors.gray400} />
                                         ) : (
-                                          <Square size={16} color={Colors.gray400} />
+                                          <Square size={22} color={Colors.gray400} />
                                         )}
                                         <Text
                                           style={[
@@ -955,6 +1001,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Colors.gray500,
   },
+  metaTextOverdue: {
+    color: Colors.red600,
+    fontWeight: '700',
+  },
   metaTextSm: {
     fontSize: 12,
     color: Colors.gray500,
@@ -1004,15 +1054,24 @@ const styles = StyleSheet.create({
   },
   checklistItems: {
     marginTop: 8,
-    gap: 6,
+    gap: 8,
   },
+  // Sized for a comfortable thumb tap on mobile (44px is the standard
+  // minimum touch target) — the old row had no padding or minHeight at
+  // all, just an icon and 12px text packed tight together.
   checklistItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 12,
+    minHeight: 44,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.gray50,
   },
   checklistItemText: {
-    fontSize: 12,
+    fontSize: 15,
+    lineHeight: 20,
     color: Colors.gray700,
     flex: 1,
   },

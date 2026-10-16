@@ -28,6 +28,7 @@ import {
   completeTask,
   ApiError,
 } from '../../../services/api';
+import { formatDueDate, isTaskOverdue } from '../tasks';
 import type { Task } from '../../../types/domain';
 import { Card, CardContent } from '../../../components/Card';
 import { Badge } from '../../../components/Badge';
@@ -338,8 +339,13 @@ export default function NurseTasksPage() {
 
                   <View style={styles.metaRow}>
                     <View style={styles.metaItem}>
-                      <Clock size={14} color={Colors.gray500} />
-                      <Text style={styles.metaText}>{task.dueTime}</Text>
+                      <Clock size={14} color={isTaskOverdue(task) ? Colors.red600 : Colors.gray500} />
+                      <Text style={[styles.metaText, isTaskOverdue(task) && { color: Colors.red600, fontWeight: '700' }]}>
+                        {formatDueDate(task.dueDate)}
+                        {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
+                        {task.dueTime}
+                        {isTaskOverdue(task) ? ' (overdue)' : ''}
+                      </Text>
                     </View>
                     <Text style={styles.metaText}>
                       {task.patientName} ({task.patientId})
