@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Modal,
   View,
@@ -112,6 +112,12 @@ const SHIFT_CHIP_ORDER = ['morning', 'afternoon', 'night'];
 
 export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps) {
   const [loading, setLoading] = useState(false);
+  // A fast double-click/double-tap can both fire before React re-renders
+  // with the Submit button's disabled={loading} applied — setLoading(true)
+  // is a state update, not synchronous. This ref is set/checked
+  // synchronously as the very first thing in handleSubmit, so a second call
+  // re-entering before the first has even set state is still blocked.
+  const submittingRef = useRef(false);
   const [patients, setPatients] = useState<EndorsablePatient[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState('');
   const [selectedNurseId, setSelectedNurseId] = useState('');
@@ -145,6 +151,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
 
   useEffect(() => {
     if (!open) {
+      submittingRef.current = false;
       setSelectedPatientId('');
       setSelectedNurseId('');
       setTasks([]);
@@ -342,7 +349,9 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   };
 
   const handleSubmit = async () => {
+    if (submittingRef.current) return;
     if (!validateForm()) return;
+    submittingRef.current = true;
     setLoading(true);
     try {
       const taskPayload: EndorsementTaskInput[] = tasks
@@ -378,6 +387,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         setErrors((prev) => ({ ...prev, form: 'Failed to save the endorsement. Please try again.' }));
       }
     } finally {
+      submittingRef.current = false;
       setLoading(false);
     }
   };

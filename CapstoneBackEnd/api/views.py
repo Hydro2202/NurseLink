@@ -3725,6 +3725,8 @@ class HandoverViewSet(viewsets.ModelViewSet):
         handover = self.get_object()
         self._ensure_recipient(handover)
 
+        # Fast path for the common cases — avoids opening a transaction at
+        # all for an already-settled handover.
         if handover.status == 'accepted':
             data = HandoverSerializer(handover, context={'request': request}).data
             data['adoptedTasks'] = []
@@ -3736,6 +3738,24 @@ class HandoverViewSet(viewsets.ModelViewSet):
             )
 
         with transaction.atomic():
+            # Re-fetched under lock: the status checks above ran against a
+            # snapshot read before this transaction even started, so two
+            # concurrent accept() calls for the same handover could both
+            # pass them. Locking here serializes them — the second one sees
+            # the first's committed 'accepted' status and exits as a no-op,
+            # matching "accepting twice is a no-op" below, instead of both
+            # racing through the patient transfer.
+            handover = HandoverNote.objects.select_for_update().get(pk=handover.pk)
+            if handover.status == 'accepted':
+                data = HandoverSerializer(handover, context={'request': request}).data
+                data['adoptedTasks'] = []
+                return Response(data)
+            if handover.status not in ('sent', 'received'):
+                return Response(
+                    {'detail': f'Cannot accept an endorsement that is already "{handover.status}".'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             now = timezone.now()
             adopted = []
             if handover.is_endorsement:
@@ -3744,12 +3764,21 @@ class HandoverViewSet(viewsets.ModelViewSet):
                 # been reassigned elsewhere while this endorsement sat
                 # pending — and fail clearly, naming it, rather than
                 # silently transferring a patient out from under whoever
-                # actually has them.
+                # actually has them. select_for_update locks these Patient
+                # rows until commit, so a concurrent reassignment or a second
+                # accept touching the same patient blocks here instead of
+                # racing past this check on data about to go stale.
                 links = list(handover.handover_patients.select_related('patient').all())
                 receiver = handover.nurse_to_user
+                locked_patients = {
+                    p.pk: p
+                    for p in Patient.objects.filter(
+                        pk__in=[link.patient_id for link in links]
+                    ).select_for_update()
+                }
                 stale = [
                     link.patient.patient_code for link in links
-                    if link.patient.assigned_nurse_id != handover.created_by_id
+                    if locked_patients[link.patient_id].assigned_nurse_id != handover.created_by_id
                 ]
                 if stale:
                     return Response(

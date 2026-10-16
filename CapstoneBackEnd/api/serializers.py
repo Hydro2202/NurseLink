@@ -2243,104 +2243,122 @@ class HandoverSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'nurseToId': 'You cannot refer a patient to yourself.'})
 
         patients = []
-        if bulk:
-            if recipient is None:
-                raise serializers.ValidationError({'nurseToId': 'Select a nurse to receive this endorsement.'})
-            profile = getattr(recipient, 'nurse_profile', None)
-            if not profile or profile.approval_status != 'approved' or not profile.is_active_staff:
-                raise serializers.ValidationError({'nurseToId': 'This nurse is not an active, approved account.'})
-            # Matches eligible_receivers (views.py), which only ever offers
-            # a nurse with a real current/upcoming duty as a candidate —
-            # re-checked here since the picker's list can be stale by the
-            # time this request lands.
-            if not self._duty_snapshot(recipient)[0]:
-                raise serializers.ValidationError({'nurseToId': 'Receiving nurse has no assigned shift.'})
-
-            codes = [str(code).strip() for code in patient_ids if str(code).strip()]
-            if not codes:
-                raise serializers.ValidationError({'patientIds': 'Select a patient to endorse.'})
-            if len(codes) > 1:
-                raise serializers.ValidationError({'patientIds': 'Select exactly one patient to endorse.'})
-            found = {p.patient_code: p for p in Patient.objects.filter(patient_code__in=codes)}
-            missing = [code for code in codes if code not in found]
-            if missing:
-                raise serializers.ValidationError({'patientIds': f'Patient(s) not found: {", ".join(missing)}.'})
-            not_mine = [code for code in codes if found[code].assigned_nurse_id != sender.pk]
-            if not_mine:
-                raise serializers.ValidationError(
-                    {'patientIds': f'These patients are not currently assigned to you: {", ".join(not_mine)}.'}
-                )
-            already_pending = (
-                HandoverPatient.objects.filter(
-                    patient__patient_code__in=codes, handover__status__in=['sent', 'received'],
-                )
-                .select_related('patient')
-                .first()
-            )
-            if already_pending is not None:
-                raise serializers.ValidationError(
-                    {'patientIds': 'Patient already has a pending endorsement.'}
-                )
-            patients = [found[code] for code in codes]
-
-        endorser_shift, endorser_department = self._duty_snapshot(sender)
-        receiver_shift, receiver_department = self._duty_snapshot(recipient) if recipient else ('', None)
-        validated_data['shift'] = endorser_shift
-        validated_data['to_shift'] = receiver_shift
-        validated_data['shift_date'] = None
-        validated_data['department'] = endorser_department
-        validated_data['to_department'] = receiver_department
-
-        if not bulk:
-            # A given nurse can only receive one handover for a given patient —
-            # once Nurse X has been handed Patient Y, Nurse X is done with that
-            # patient's handover history and must not be offered (or accepted)
-            # for Patient Y again. This is scoped to the (patient, nurse) pair,
-            # not the patient alone, so a different nurse can still receive the
-            # same patient concurrently — see NurseViewSet.list's excludeForPatient
-            # for the matching frontend-facing query.
-            patient = validated_data.get('patient')
-            if patient is not None:
-                existing_qs = HandoverNote.objects.filter(patient=patient)
-                existing_qs = (
-                    existing_qs.filter(nurse_to_user=recipient)
-                    if recipient is not None
-                    # No resolved account (unrecognized/ambiguous name) — fall
-                    # back to matching on the typed name so this check still
-                    # does something.
-                    else existing_qs.filter(nurse_to=validated_data.get('nurse_to'))
-                )
-                existing = existing_qs.order_by('-created_at').first()
-                if existing is not None:
-                    raise serializers.ValidationError(
-                        {
-                            'nurseToId': (
-                                f'{patient.name} has already been handed over to '
-                                f'{existing.nurse_to} ({existing.handover_code}). Choose a '
-                                'different nurse for this patient.'
-                            )
-                        }
-                    )
-        else:
-            validated_data['patient'] = patients[0]
-            validated_data['patient_name'] = patients[0].name
-
-        self._apply_sbar(validated_data)
-        code = validated_data.pop('handover_code', None) or next_code(
-            HandoverNote, 'handover_code', 'H'
-        )
-        validated_data['handover_code'] = code
-        validated_data['created_by'] = sender
-        validated_data['status'] = 'sent'
-        validated_data['is_endorsement'] = bulk
-        validated_data['status_history'] = [{
-            'status': 'sent',
-            'by': sender.pk if sender else None,
-            'byName': validated_data.get('nurse_from', ''),
-            'at': timezone.now().isoformat(),
-            'note': '',
-        }]
+        # Entered before the bulk checks below (rather than only around the
+        # final write further down) so this whole function body runs as one
+        # transaction from "read the patient's current state" through
+        # "write the new endorsement" — the select_for_update() a few lines
+        # down holds a lock on the Patient row(s) for that entire span. Two
+        # near-simultaneous submits for the same patient (a fast
+        # double-click, or a retry fired while an earlier request was still
+        # slow — see notifications.py's _dispatch_email) used to both read
+        # Patient.assigned_nurse_id and the "already pending" state before
+        # either had committed, so both could pass validation and both
+        # insert: a real duplicate endorsement, not just a cosmetic bug.
         with transaction.atomic():
+            if bulk:
+                if recipient is None:
+                    raise serializers.ValidationError({'nurseToId': 'Select a nurse to receive this endorsement.'})
+                profile = getattr(recipient, 'nurse_profile', None)
+                if not profile or profile.approval_status != 'approved' or not profile.is_active_staff:
+                    raise serializers.ValidationError({'nurseToId': 'This nurse is not an active, approved account.'})
+                # Matches eligible_receivers (views.py), which only ever offers
+                # a nurse with a real current/upcoming duty as a candidate —
+                # re-checked here since the picker's list can be stale by the
+                # time this request lands.
+                if not self._duty_snapshot(recipient)[0]:
+                    raise serializers.ValidationError({'nurseToId': 'Receiving nurse has no assigned shift.'})
+
+                codes = [str(code).strip() for code in patient_ids if str(code).strip()]
+                if not codes:
+                    raise serializers.ValidationError({'patientIds': 'Select a patient to endorse.'})
+                if len(codes) > 1:
+                    raise serializers.ValidationError({'patientIds': 'Select exactly one patient to endorse.'})
+                # select_for_update: locks these Patient row(s) until this
+                # transaction commits or rolls back, so a second concurrent
+                # request for the same patient blocks here instead of racing
+                # past this check on data that's about to go stale.
+                found = {
+                    p.patient_code: p
+                    for p in Patient.objects.filter(patient_code__in=codes).select_for_update()
+                }
+                missing = [code for code in codes if code not in found]
+                if missing:
+                    raise serializers.ValidationError({'patientIds': f'Patient(s) not found: {", ".join(missing)}.'})
+                not_mine = [code for code in codes if found[code].assigned_nurse_id != sender.pk]
+                if not_mine:
+                    raise serializers.ValidationError(
+                        {'patientIds': f'These patients are not currently assigned to you: {", ".join(not_mine)}.'}
+                    )
+                already_pending = (
+                    HandoverPatient.objects.filter(
+                        patient__patient_code__in=codes, handover__status__in=['sent', 'received'],
+                    )
+                    .select_related('patient')
+                    .first()
+                )
+                if already_pending is not None:
+                    raise serializers.ValidationError(
+                        {'patientIds': 'Patient already has a pending endorsement.'}
+                    )
+                patients = [found[code] for code in codes]
+
+            endorser_shift, endorser_department = self._duty_snapshot(sender)
+            receiver_shift, receiver_department = self._duty_snapshot(recipient) if recipient else ('', None)
+            validated_data['shift'] = endorser_shift
+            validated_data['to_shift'] = receiver_shift
+            validated_data['shift_date'] = None
+            validated_data['department'] = endorser_department
+            validated_data['to_department'] = receiver_department
+
+            if not bulk:
+                # A given nurse can only receive one handover for a given patient —
+                # once Nurse X has been handed Patient Y, Nurse X is done with that
+                # patient's handover history and must not be offered (or accepted)
+                # for Patient Y again. This is scoped to the (patient, nurse) pair,
+                # not the patient alone, so a different nurse can still receive the
+                # same patient concurrently — see NurseViewSet.list's excludeForPatient
+                # for the matching frontend-facing query.
+                patient = validated_data.get('patient')
+                if patient is not None:
+                    existing_qs = HandoverNote.objects.filter(patient=patient)
+                    existing_qs = (
+                        existing_qs.filter(nurse_to_user=recipient)
+                        if recipient is not None
+                        # No resolved account (unrecognized/ambiguous name) — fall
+                        # back to matching on the typed name so this check still
+                        # does something.
+                        else existing_qs.filter(nurse_to=validated_data.get('nurse_to'))
+                    )
+                    existing = existing_qs.order_by('-created_at').first()
+                    if existing is not None:
+                        raise serializers.ValidationError(
+                            {
+                                'nurseToId': (
+                                    f'{patient.name} has already been handed over to '
+                                    f'{existing.nurse_to} ({existing.handover_code}). Choose a '
+                                    'different nurse for this patient.'
+                                )
+                            }
+                        )
+            else:
+                validated_data['patient'] = patients[0]
+                validated_data['patient_name'] = patients[0].name
+
+            self._apply_sbar(validated_data)
+            code = validated_data.pop('handover_code', None) or next_code(
+                HandoverNote, 'handover_code', 'H'
+            )
+            validated_data['handover_code'] = code
+            validated_data['created_by'] = sender
+            validated_data['status'] = 'sent'
+            validated_data['is_endorsement'] = bulk
+            validated_data['status_history'] = [{
+                'status': 'sent',
+                'by': sender.pk if sender else None,
+                'byName': validated_data.get('nurse_from', ''),
+                'at': timezone.now().isoformat(),
+                'note': '',
+            }]
             handover = HandoverNote.objects.create(**validated_data)
 
             if bulk:

@@ -375,6 +375,14 @@ EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 EMAIL_USE_TLS = env_bool('EMAIL_USE_TLS', True)
 EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
+# Unset, Django's SMTP backend blocks on connect() with no timeout at all —
+# on a host that silently drops the connection (Render; see the comment
+# below) that's the OS-level TCP timeout, observed at ~139s. Bounded here so
+# even the local-dev SMTP fallback (no BREVO_API_KEY) fails fast instead of
+# hanging — notifications.py's background dispatch keeps this off the
+# request thread either way, but there's no reason to tie up that thread for
+# over two minutes either.
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '10'))
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'NurseLink <no-reply@nurselink.local>')
 # Locmem/console backends are allowed only for automated tests via EMAIL_BACKEND override.
 

@@ -118,17 +118,17 @@ type RequestOptions = {
 // backend is still legitimately working, so those calls get their own budget.
 const IDENTITY_VERIFICATION_TIMEOUT_MS = 65000;
 
-// A nurse submitting an Endorsement is often the first request to hit the
-// backend in a while (Render's free tier puts the dyno to sleep after idle,
-// and a cold start has been measured taking ~40s to wake). The default 15s
-// timeout fires well before that finishes, so the client shows "failed"/
-// keeps spinning past what feels reasonable even though the write actually
-// lands moments later — which is exactly why a nurse on the receiving end
-// sees it appear almost immediately while the sender's own screen looks
-// stuck or broken. A longer budget here lets the real response come back
-// instead of the client giving up on a request the server was always going
-// to finish.
-const ENDORSEMENT_SUBMIT_TIMEOUT_MS = 45000;
+// Submitting, accepting, rejecting, or cancelling an Endorsement is often
+// the first request to hit the backend in a while (Render's free tier puts
+// the dyno to sleep after idle, and a cold start has been measured taking
+// ~40s to wake). The default 15s timeout fires well before that finishes,
+// so the client shows "failed"/keeps spinning past what feels reasonable
+// even though the write actually lands moments later — which is exactly
+// why the other nurse sees the result appear almost immediately while the
+// acting nurse's own screen looks stuck or broken. A longer budget here
+// lets the real response come back instead of the client giving up on a
+// request the server was always going to finish.
+const ENDORSEMENT_ACTION_TIMEOUT_MS = 45000;
 
 function extractDetail(data: unknown, status: number): string {
   if (typeof data === 'object' && data) {
@@ -959,7 +959,7 @@ export async function createEndorsement(data: CreateEndorsementPayload): Promise
   return apiRequest<HandoverNote>('/endorsements/', {
     method: 'POST',
     body: { date: new Date().toISOString().slice(0, 10), ...data },
-    timeoutMs: ENDORSEMENT_SUBMIT_TIMEOUT_MS,
+    timeoutMs: ENDORSEMENT_ACTION_TIMEOUT_MS,
   });
 }
 
@@ -981,18 +981,28 @@ export async function fetchEndorsement(id: string): Promise<HandoverNote> {
  * accepting nurse in one transaction. Fails with a clear error if a patient
  * was reassigned elsewhere while this sat pending. */
 export async function acceptEndorsement(id: string): Promise<HandoverNote> {
-  return apiRequest<HandoverNote>(`/endorsements/${id}/accept/`, { method: 'PATCH' });
+  return apiRequest<HandoverNote>(`/endorsements/${id}/accept/`, {
+    method: 'PATCH',
+    timeoutMs: ENDORSEMENT_ACTION_TIMEOUT_MS,
+  });
 }
 
 /** Rejects the endorsement with a required reason. The patients stay with the endorser. */
 export async function rejectEndorsement(id: string, reason: string): Promise<HandoverNote> {
-  return apiRequest<HandoverNote>(`/endorsements/${id}/reject/`, { method: 'PATCH', body: { reason } });
+  return apiRequest<HandoverNote>(`/endorsements/${id}/reject/`, {
+    method: 'PATCH',
+    body: { reason },
+    timeoutMs: ENDORSEMENT_ACTION_TIMEOUT_MS,
+  });
 }
 
 /** Endorser-only: withdraws a still-pending endorsement. The patients were
  * never touched (accept is the only thing that transfers them). */
 export async function cancelEndorsement(id: string): Promise<HandoverNote> {
-  return apiRequest<HandoverNote>(`/endorsements/${id}/cancel/`, { method: 'PATCH' });
+  return apiRequest<HandoverNote>(`/endorsements/${id}/cancel/`, {
+    method: 'PATCH',
+    timeoutMs: ENDORSEMENT_ACTION_TIMEOUT_MS,
+  });
 }
 
 /** Checks (or unchecks) one of an endorsement's Unfinished Tasks. Only the

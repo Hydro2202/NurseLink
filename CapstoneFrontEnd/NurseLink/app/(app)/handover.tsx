@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -150,6 +150,12 @@ export default function HandoverPage() {
   const [activeTab, setActiveTab] = useState('incoming');
   const [handoverModalOpen, setHandoverModalOpen] = useState(false);
   const [acknowledgeLoading, setAcknowledgeLoading] = useState<string | null>(null);
+  // Mirrors acknowledgeLoading but set synchronously — setAcknowledgeLoading
+  // is a state update, so a fast double-tap on Accept/Reject/Cancel can both
+  // fire before React re-renders with the button disabled. Checked first in
+  // each handler below so a second call for the same handover can't start a
+  // second in-flight request.
+  const acknowledgeLoadingRef = useRef<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('newest');
   // Head-nurse oversight only — filters by the referral's FROM shift.
@@ -238,6 +244,8 @@ export default function HandoverPage() {
   };
 
   const handleAcceptHandover = async (handoverId: string) => {
+    if (acknowledgeLoadingRef.current) return;
+    acknowledgeLoadingRef.current = handoverId;
     setAcknowledgeLoading(handoverId);
     try {
       const updated = await acceptEndorsement(handoverId);
@@ -274,11 +282,14 @@ export default function HandoverPage() {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
+      acknowledgeLoadingRef.current = null;
       setAcknowledgeLoading(null);
     }
   };
 
   const handleDeclineHandover = async (handoverId: string, reason: string) => {
+    if (acknowledgeLoadingRef.current) return;
+    acknowledgeLoadingRef.current = handoverId;
     setAcknowledgeLoading(handoverId);
     try {
       const updated = await rejectEndorsement(handoverId, reason.trim());
@@ -295,6 +306,7 @@ export default function HandoverPage() {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
+      acknowledgeLoadingRef.current = null;
       setAcknowledgeLoading(null);
       setDeclineTarget(null);
       setDeclineReason('');
@@ -302,6 +314,8 @@ export default function HandoverPage() {
   };
 
   const handleCancelHandover = async (handoverId: string) => {
+    if (acknowledgeLoadingRef.current) return;
+    acknowledgeLoadingRef.current = handoverId;
     setAcknowledgeLoading(handoverId);
     try {
       const updated = await cancelEndorsement(handoverId);
@@ -318,6 +332,7 @@ export default function HandoverPage() {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
+      acknowledgeLoadingRef.current = null;
       setAcknowledgeLoading(null);
     }
   };

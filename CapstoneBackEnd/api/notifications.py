@@ -12,10 +12,13 @@ dev server, on a phone over the LAN, and behind any WSGI host.
 """
 
 import logging
+import threading
+import time
 
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
+from django.db import transaction
 
 from .models import Notification, NurseProfile
 from .names import full_name, name_variants
@@ -73,14 +76,19 @@ def _email_notification(notification):
     """
     Send a notification by email, when the nurse has asked for that.
 
-    Uses the project's existing Django mail configuration — the same one Email
-    OTP goes through — rather than a second mail path. Nothing new is
-    configured: if EMAIL_* is unset the console backend prints it, exactly as it
-    does for OTP.
+    Prefers Brevo over HTTPS (same as Email OTP — see
+    api/otp_service.py::_send_via_brevo) whenever BREVO_API_KEY is set, for
+    the same reason: Render blocks outbound SMTP (ports 25/465/587/2525) on
+    every plan, so the raw send_mail() path below hangs for the OS-level TCP
+    timeout (~139s, confirmed in production — see EMAIL_HOST's comment in
+    settings.py) before failing. That 139s used to run inline inside notify(),
+    which is why submitting or accepting an endorsement could take minutes —
+    see _dispatch_email for where that stopped being on the request thread.
+    SMTP stays the local-dev path when no Brevo key is configured.
 
     Best effort and last: the notification is already saved and already pushed
-    to the nurse's socket by the time this runs, so a mail server that is slow
-    or down costs an email, never the notification.
+    to the nurse's socket by the time this runs, so a mail/API failure costs
+    an email, never the notification.
 
     Note that Email OTP is transactional and deliberately ignores this
     preference — a nurse cannot opt out of the code that lets them sign in.
@@ -98,16 +106,46 @@ def _email_notification(notification):
         + 'You are receiving this because Email Notifications are on in your '
           'NurseLink settings.'
     )
+    subject = 'NurseLink: %s' % notification.title
+    brevo_key = getattr(settings, 'BREVO_API_KEY', '') or ''
     try:
-        send_mail(
-            'NurseLink: %s' % notification.title,
-            body,
-            settings.DEFAULT_FROM_EMAIL,
-            [address],
-            fail_silently=True,
-        )
+        if brevo_key:
+            from .otp_service import _send_via_brevo
+            _send_via_brevo(address, subject, body)
+        else:
+            send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, [address], fail_silently=True)
     except Exception:
         logger.exception('Could not email notification %s to %s', notification.pk, address)
+
+
+def _dispatch_email(notification):
+    """
+    Runs _email_notification() off the request thread, after commit.
+
+    notify() used to call _email_notification() inline — on Render that
+    meant every endorsement create/accept whose recipient has Email
+    Notifications on could block the whole HTTP response behind a ~139s SMTP
+    timeout (see _email_notification's docstring), once per recipient:
+    HandoverSerializer.create()/HandoverViewSet.accept() each notify the
+    other nurse AND loop over every head nurse via
+    notify_referral_head_nurse_fyi. None of that has to happen before the
+    client gets its response — the Notification row (what actually drives
+    the bell/popup) is already saved and pushed by the time this runs.
+
+    Scheduled with transaction.on_commit, same guarantee push_notification
+    already has, so a rolled-back write can never send a stray email; the
+    thread itself is a daemon so it never blocks the process from exiting.
+    """
+    def _run():
+        start = time.monotonic()
+        try:
+            _email_notification(notification)
+        finally:
+            logger.info(
+                '[Notify] Email leg for notification %s took %.2fs',
+                notification.pk, time.monotonic() - start,
+            )
+    transaction.on_commit(lambda: threading.Thread(target=_run, daemon=True).start())
 
 
 def resolve_nurse(name: str):
@@ -185,9 +223,12 @@ def notify(
     # already exists, so a failed push costs latency, never the notification.
     push_notification(notification)
 
-    # And by email, if that is how this nurse wants to be reached as well.
+    # And by email, if that is how this nurse wants to be reached as well —
+    # dispatched in the background (see _dispatch_email) so a slow or
+    # Render-blocked SMTP/API call never holds up the response this
+    # notification was raised from.
     if wants(recipient, 'email_notifications'):
-        _email_notification(notification)
+        _dispatch_email(notification)
 
     return notification
 
