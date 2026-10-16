@@ -48,6 +48,7 @@ from .notifications import (
     notify_handover_created,
     notify_referral_head_nurse_fyi,
     notify_task_assigned,
+    notify_task_updated,
     resolve_nurse,
 )
 from .names import full_name, name_variants
@@ -1918,6 +1919,16 @@ class TaskSerializer(serializers.ModelSerializer):
         notify_task_assigned(task, actor=request.user if request else None)
         return task
 
+    #: Fields worth telling the assigned nurse about when they change — not
+    #: every column (editing doctor_order or category is routine upkeep, not
+    #: news), matching what notify_task_updated's message actually names.
+    _NOTIFIABLE_FIELDS = {
+        'status': 'status',
+        'priority': 'priority',
+        'due_time': 'due time',
+        'assigned_nurse_id': 'reassigned',
+    }
+
     def update(self, instance, validated_data):
         patient_id = validated_data.pop('patientId', serializers.empty)
         if patient_id is not serializers.empty:
@@ -1932,6 +1943,13 @@ class TaskSerializer(serializers.ModelSerializer):
                 if ' '.join((assigned_to or '').lower().split()) in name_variants(user):
                     validated_data['assigned_nurse'] = user
                     break
+
+        # Snapshot before any field is touched, so the diff below reflects
+        # what actually changed rather than what the request merely sent
+        # (e.g. re-sending the same status is not an update worth a
+        # notification).
+        before = {field: getattr(instance, field) for field in self._NOTIFIABLE_FIELDS}
+
         if doctors is not None:
             validated_data['attending_physician'] = (
                 ', '.join(d.full_name for d in doctors) if doctors else ''
@@ -1946,6 +1964,15 @@ class TaskSerializer(serializers.ModelSerializer):
             request = self.context.get('request')
             actor = request.user if request and request.user.is_authenticated else None
             self._sync_doctors(instance, doctors, actor)
+
+        changed = [
+            label for field, label in self._NOTIFIABLE_FIELDS.items()
+            if getattr(instance, field) != before[field]
+        ]
+        if changed:
+            request = self.context.get('request')
+            actor = request.user if request and request.user.is_authenticated else None
+            notify_task_updated(instance, actor=actor, changed_fields=changed)
         return instance
 
     def to_representation(self, instance):
@@ -4388,6 +4415,7 @@ class UserPreferencesSerializer(serializers.ModelSerializer):
     criticalAlerts = serializers.BooleanField(source='critical_alerts', required=False)
     emailNotifications = serializers.BooleanField(source='email_notifications', required=False)
     soundAlerts = serializers.BooleanField(source='sound_alerts', required=False)
+    vibrationAlerts = serializers.BooleanField(source='vibration_alerts', required=False)
 
     autoRefresh = serializers.BooleanField(source='auto_refresh', required=False)
     showCharts = serializers.BooleanField(source='show_charts', required=False)
@@ -4403,6 +4431,7 @@ class UserPreferencesSerializer(serializers.ModelSerializer):
             'criticalAlerts',
             'emailNotifications',
             'soundAlerts',
+            'vibrationAlerts',
             'autoRefresh',
             'showCharts',
             'backgroundSync',

@@ -2071,11 +2071,20 @@ class UserPreferences(models.Model):
 
     # Notifications. Checked before a Notification row is created, so switching
     # one off stops the notification happening rather than merely hiding it.
+    # All default True — a new account starts fully notified, same as every
+    # other preference here, and turns things off deliberately rather than
+    # missing them by default.
     task_notifications = models.BooleanField(default=True)
     handover_notifications = models.BooleanField(default=True)
     critical_alerts = models.BooleanField(default=True)
-    email_notifications = models.BooleanField(default=False)
+    email_notifications = models.BooleanField(default=True)
     sound_alerts = models.BooleanField(default=True)
+    # Device vibration on a pushed notification — purely a client-side
+    # playback preference (there is nothing server-side to gate: the backend
+    # has no way to vibrate a device), kept here anyway so it round-trips
+    # with the rest of Settings and survives a refresh/relogin/new device
+    # the same way sound_alerts does.
+    vibration_alerts = models.BooleanField(default=True)
 
     # System
     auto_refresh = models.BooleanField(default=True)

@@ -13,6 +13,7 @@ import { useLive, useLiveRefresh } from './LiveContext';
 import { useRealtimeNotifications, type RealtimeNotification } from './RealtimeContext';
 import { usePreferences } from './PreferencesContext';
 import { playNotificationSound } from '../utils/notificationSound';
+import { vibrateForNotification } from '../utils/notificationVibration';
 
 /**
  * Keeps every nurse's inbox current without them having to reload anything.
@@ -43,6 +44,8 @@ interface NotificationsContextType {
 
 const NotificationsContext = createContext<NotificationsContextType | undefined>(undefined);
 
+const VALID_NOTIFICATION_TYPES = new Set(['critical', 'warning', 'info', 'success']);
+
 /**
  * Shape a pushed event like a fetched notification.
  *
@@ -52,7 +55,14 @@ const NotificationsContext = createContext<NotificationsContextType | undefined>
 function toNotification(pushed: RealtimeNotification): AppNotification {
   return {
     id: pushed.id,
-    type: 'warning',
+    // Previously hardcoded to 'warning' regardless of real severity, so a
+    // pushed critical alert (urgent task, patient safety alert) rendered
+    // and sounded like any other notification until the follow-up refetch
+    // quietly fixed it a moment later. Falls back to 'warning' only if the
+    // server ever sends something unrecognized.
+    type: VALID_NOTIFICATION_TYPES.has(pushed.notificationType)
+      ? (pushed.notificationType as AppNotification['type'])
+      : 'warning',
     event: pushed.event,
     title: pushed.title,
     message: pushed.message,
@@ -79,6 +89,7 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
   const liveUnread = revisions.unreadCount;
   const { preferences } = usePreferences();
   const soundAlerts = preferences.soundAlerts;
+  const vibrationAlerts = preferences.vibrationAlerts;
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -147,14 +158,20 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
     if (seenPushes.current.has(pushed.id)) return;
     seenPushes.current.add(pushed.id);
 
+    const notification = toNotification(pushed);
     setNotifications((prev) =>
-      prev.some((item) => item.id === pushed.id) ? prev : [toNotification(pushed), ...prev]
+      prev.some((item) => item.id === pushed.id) ? prev : [notification, ...prev]
     );
     setUnreadCount((prev) => prev + 1);
 
-    // Only on a genuinely new pushed notification, and only if the nurse asked
-    // for sound. Nothing plays on a refetch.
-    if (soundAlerts) playNotificationSound();
+    // Only on a genuinely new pushed notification, and only if the nurse
+    // asked for sound/vibration. Nothing plays or buzzes on a refetch. This
+    // is the one central place either ever fires — see notificationSound.ts
+    // and notificationVibration.ts's own docs — so a screen never needs its
+    // own check.
+    const critical = notification.type === 'critical';
+    if (soundAlerts) playNotificationSound(critical);
+    if (vibrationAlerts) vibrateForNotification(critical);
 
     // Fill in anything the push left out, without blocking the popup on it.
     void refresh();

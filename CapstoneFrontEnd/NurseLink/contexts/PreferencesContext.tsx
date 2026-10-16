@@ -33,11 +33,9 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   taskNotifications: true,
   handoverNotifications: true,
   criticalAlerts: true,
-  emailNotifications: false,
+  emailNotifications: true,
   soundAlerts: true,
-  autoRefresh: true,
-  showCharts: true,
-  backgroundSync: true,
+  vibrationAlerts: true,
 };
 
 interface PreferencesContextType {

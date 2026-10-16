@@ -150,7 +150,14 @@ ASGI_APPLICATION = 'CapstoneBackEnd.asgi.application'
 # test` needs no Redis. CHANNEL_LAYER_MEMORY=True does the same outside
 # tests, for a dev machine with no Redis running.
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/0')
-_FORCE_MEMORY_CHANNEL_LAYER = 'test' in sys.argv or env_bool('CHANNEL_LAYER_MEMORY', False)
+# Named so other modules can reuse the same "are we under manage.py test"
+# check without each re-deriving it from sys.argv — see
+# api/notifications.py's _dispatch_email, which skips its own background
+# thread during tests: transaction.on_commit callbacks never fire inside a
+# TestCase's wrapping (always-rolled-back) transaction, so the backgrounded
+# path would otherwise make every notify()-into-email test non-deterministic.
+TESTING = 'test' in sys.argv
+_FORCE_MEMORY_CHANNEL_LAYER = TESTING or env_bool('CHANNEL_LAYER_MEMORY', False)
 if _FORCE_MEMORY_CHANNEL_LAYER:
     CHANNEL_LAYERS = {
         'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'},

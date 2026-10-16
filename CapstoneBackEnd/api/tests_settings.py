@@ -56,8 +56,9 @@ class PreferencesApiTests(APITestCase):
                 'taskNotifications': True,
                 'handoverNotifications': True,
                 'criticalAlerts': True,
-                'emailNotifications': False,
+                'emailNotifications': True,
                 'soundAlerts': True,
+                'vibrationAlerts': True,
                 'autoRefresh': True,
                 'showCharts': True,
                 'backgroundSync': True,
@@ -324,7 +325,12 @@ class EmailNotificationPreferenceTests(APITestCase):
             setattr(preferences, key, value)
         preferences.save()
 
-    def test_off_by_default_sends_no_email(self):
+    def test_on_by_default_sends_an_email(self):
+        notify(self.nurse, title='New task assigned', message='Something to do.')
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_explicitly_off_sends_no_email(self):
+        self.prefs(email_notifications=False)
         notify(self.nurse, title='New task assigned', message='Something to do.')
         self.assertEqual(len(mail.outbox), 0)
 

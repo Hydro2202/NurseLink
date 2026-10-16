@@ -10,7 +10,6 @@ import { AppState, AppStateStatus } from 'react-native';
 import { fetchLiveState, ApiError, type LiveState } from '../services/api';
 import { useAuth } from './AuthContext';
 import { useRealtime } from './RealtimeContext';
-import { usePreferences } from './PreferencesContext';
 
 /**
  * The app's single source of "something changed".
@@ -87,8 +86,6 @@ const LiveContext = createContext<LiveContextType | undefined>(undefined);
 export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
   const { connected } = useRealtime();
-  const { preferences } = usePreferences();
-  const { autoRefresh, backgroundSync } = preferences;
   const [revisions, setRevisions] = useState<LiveState>(EMPTY);
   const [connectionStatus, setConnectionStatus] = useState<LiveConnectionStatus>('connected');
   const connectionStatusRef = useRef(connectionStatus);
@@ -145,39 +142,31 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // One poll on mount regardless: opening the app should show current data
-    // even for a nurse who has turned automatic refreshing off.
+    // One poll on mount regardless, so opening the app always shows current
+    // data straight away.
     void poll();
 
-    // Auto-Refresh Data off means exactly that — no repeating timer at all.
-    // The socket still delivers, and returning to the app still reconciles, so
-    // turning this off reduces background work rather than freezing the app.
-    // While offline, back off to the slower cadence too — no point hammering
-    // a backend that just told us it's unreachable.
-    const timer = autoRefresh
-      ? setInterval(
-          () => {
-            void poll();
-          },
-          connected || connectionStatus === 'offline' ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS
-        )
-      : null;
+    // While offline, back off to the slower cadence — no point hammering a
+    // backend that just told us it's unreachable.
+    const timer = setInterval(
+      () => {
+        void poll();
+      },
+      connected || connectionStatus === 'offline' ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS
+    );
 
     // Coming back to the app is when a nurse is most likely to have missed
     // something, so check straight away rather than waiting for the next tick.
-    // Background Data Sync off skips this: the nurse has asked the app not to
-    // work while they are elsewhere, and this is the one thing it does on the
-    // way back in.
     const onAppStateChange = (state: AppStateStatus) => {
-      if (state === 'active' && backgroundSync) void poll();
+      if (state === 'active') void poll();
     };
     const subscription = AppState.addEventListener('change', onAppStateChange);
 
     return () => {
-      if (timer) clearInterval(timer);
+      clearInterval(timer);
       subscription.remove();
     };
-  }, [user, poll, connected, connectionStatus, autoRefresh, backgroundSync]);
+  }, [user, poll, connected, connectionStatus]);
 
   // A socket that just came back may have missed events while it was down, so
   // reconcile against the server rather than trusting the gap was empty.

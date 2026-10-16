@@ -38,6 +38,7 @@ HANDOVER_COMPLETED = 'handover_completed'
 # See notify_referral_head_nurse_fyi.
 REFERRAL_HEAD_NURSE_FYI = 'referral_head_nurse_fyi'
 TASK_ASSIGNED = 'task_assigned'
+TASK_UPDATED = 'task_updated'
 KARDEX_REVIEWED = 'kardex_reviewed'
 NURSE_REASSIGNED = 'nurse_reassigned'
 TASK_HANDOVER_VERIFIED = 'task_handover_verified'
@@ -135,7 +136,17 @@ def _dispatch_email(notification):
     Scheduled with transaction.on_commit, same guarantee push_notification
     already has, so a rolled-back write can never send a stray email; the
     thread itself is a daemon so it never blocks the process from exiting.
+
+    Under `manage.py test`, runs inline instead: transaction.on_commit
+    callbacks never fire inside a TestCase's wrapping (always-rolled-back)
+    transaction, and even where they do, a bare background thread leaves no
+    way for a test to know the email has actually gone out before it checks
+    mail.outbox — see settings.TESTING.
     """
+    if settings.TESTING:
+        _email_notification(notification)
+        return
+
     def _run():
         start = time.monotonic()
         try:
@@ -560,6 +571,51 @@ def notify_task_assigned(task, actor=None):
         event=TASK_ASSIGNED,
         title='Urgent task assigned' if task.priority == 'urgent' else 'New task assigned',
         message=f'{who or "New task: "}{task.title}{patient}.',
+        patient_label=task.patient_name or '',
+        patient=task.patient,
+        sender=actor,
+        action_label='Open tasks',
+        action_path='/tasks',
+        action_highlight_id=task.task_code,
+    )
+
+
+def notify_task_updated(task, actor=None, *, changed_fields=()):
+    """
+    Tell the assigned nurse one of their tasks changed — status, priority,
+    due date, or who it is reassigned to. TaskSerializer.update() is the
+    only caller, which already diffs old vs. new before calling this, so
+    `changed_fields` only ever names things that genuinely changed (never
+    fired on a no-op save).
+
+    Same self-skip and critical/task_notifications split as
+    notify_task_assigned, since this is the same "something on my task
+    list" family of event — just the update instead of the create.
+    """
+    recipient = task.assigned_nurse
+    if recipient is None or not changed_fields:
+        return None
+    if actor is not None and actor.pk == recipient.pk:
+        return None
+
+    preference = 'critical_alerts' if task.priority == 'urgent' else 'task_notifications'
+    if not wants(recipient, preference):
+        logger.info(
+            '[Settings] %s has %s off; task update for %s not notified.',
+            recipient.username, preference, task.task_code,
+        )
+        return None
+
+    who = f'{full_name(actor)} updated ' if actor is not None else 'Updated: '
+    patient = f' for {task.patient_name}' if task.patient_name else ''
+    what = ', '.join(changed_fields)
+
+    return notify(
+        recipient,
+        notification_type='critical' if task.priority == 'urgent' else 'info',
+        event=TASK_UPDATED,
+        title='Urgent task updated' if task.priority == 'urgent' else 'Task updated',
+        message=f'{who}{task.title}{patient} ({what}).',
         patient_label=task.patient_name or '',
         patient=task.patient,
         sender=actor,

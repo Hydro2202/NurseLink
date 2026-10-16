@@ -14,11 +14,11 @@ import {
   Shield,
   LogOut,
   Palette,
-  Settings as SettingsIcon,
   Save,
   KeyRound,
   Pencil,
   Info,
+  PlayCircle,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { usePreferences } from '../../contexts/PreferencesContext';
@@ -34,6 +34,8 @@ import { PasswordChangeModal } from '../../components/PasswordChangeModal';
 import { Colors, Radius } from '../../constants/colors';
 import type { User as ProfileUser } from '../../types';
 import { changePasswordRequest, ApiError, type UserPreferences } from '../../services/api';
+import { playNotificationSound } from '../../utils/notificationSound';
+import { vibrateForNotification, isVibrationSupported } from '../../utils/notificationVibration';
 
 /** Which controls each Save button is responsible for. */
 const SECTIONS = {
@@ -44,8 +46,8 @@ const SECTIONS = {
     'criticalAlerts',
     'emailNotifications',
     'soundAlerts',
+    'vibrationAlerts',
   ],
-  system: ['autoRefresh', 'showCharts', 'backgroundSync'],
 } as const satisfies Record<string, readonly (keyof UserPreferences)[]>;
 
 type SectionName = keyof typeof SECTIONS;
@@ -109,10 +111,10 @@ export default function SettingsScreen() {
     criticalAlerts,
     emailNotifications,
     soundAlerts,
-    autoRefresh,
-    showCharts,
-    backgroundSync,
+    vibrationAlerts,
   } = preferences;
+
+  const vibrationSupported = useMemo(() => isVibrationSupported(), []);
 
   const saveSection = async (section: SectionName, successMessage: string) => {
     setSavingSection(section);
@@ -140,7 +142,20 @@ export default function SettingsScreen() {
   const handleSaveAppearance = () => saveSection('appearance', 'Appearance settings saved!');
   const handleSaveNotifications = () =>
     saveSection('notifications', 'Notification preferences saved!');
-  const handleSavePreferences = () => saveSection('system', 'System preferences saved!');
+
+  const handleTestNotification = () => {
+    // Exercises the exact same sound/vibration calls a real notification
+    // would, through the normal (non-critical) pattern — a quick way to
+    // confirm both actually work without waiting for a real event.
+    if (soundAlerts) playNotificationSound(false);
+    if (vibrationAlerts) vibrateForNotification(false);
+    toast.info('Test notification', {
+      description:
+        soundAlerts || vibrationAlerts
+          ? 'Played the sound and/or vibration your preferences have on.'
+          : 'Sound and Vibration are both off, so nothing played — turn one on to test it.',
+    });
+  };
 
   const handleProfileSave = async (data: {
     name: string;
@@ -377,8 +392,37 @@ export default function SettingsScreen() {
             description="Play sound for notifications"
             value={soundAlerts}
             onValueChange={(value) => setLocal({ soundAlerts: value })}
-            showSeparator={false}
           />
+          {vibrationSupported ? (
+            <ToggleRow
+              styles={styles}
+              label="Vibration"
+              description="Vibrate device for notifications"
+              value={vibrationAlerts}
+              onValueChange={(value) => setLocal({ vibrationAlerts: value })}
+              showSeparator={false}
+            />
+          ) : (
+            <View>
+              <View style={styles.toggleRow}>
+                <View style={styles.toggleText}>
+                  <Text style={styles.toggleLabelDisabled}>Vibration</Text>
+                  <Text style={styles.toggleDesc}>Not supported on this device</Text>
+                </View>
+              </View>
+            </View>
+          )}
+
+          <Button
+            variant="outline"
+            onPress={handleTestNotification}
+            style={styles.testBtn}
+          >
+            <View style={styles.btnInner}>
+              <PlayCircle size={16} color={c.orange700} />
+              <Text style={styles.btnTextOrange}>Test Notification</Text>
+            </View>
+          </Button>
 
           <Button
             onPress={handleSaveNotifications}
@@ -395,60 +439,6 @@ export default function SettingsScreen() {
               )}
               <Text style={styles.btnTextWhite}>
                 {savingSection === 'notifications' ? 'Saving...' : 'Save Notifications'}
-              </Text>
-            </View>
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* System Preferences */}
-      <Card>
-        <CardHeader>
-          <View style={styles.titleRow}>
-            <SettingsIcon size={20} color={c.green600} />
-            <CardTitle>System Preferences</CardTitle>
-          </View>
-          <CardDescription>Configure system behavior</CardDescription>
-        </CardHeader>
-        <CardContent style={styles.gap4}>
-          <ToggleRow
-            styles={styles}
-            label="Auto-Refresh Data"
-            description="Automatically update data every 30 seconds"
-            value={autoRefresh}
-            onValueChange={(value) => setLocal({ autoRefresh: value })}
-          />
-          <ToggleRow
-            styles={styles}
-            label="Show Charts & Graphs"
-            description="Display visual data analytics"
-            value={showCharts}
-            onValueChange={(value) => setLocal({ showCharts: value })}
-          />
-          <ToggleRow
-            styles={styles}
-            label="Background Data Sync"
-            description="Sync data in the background"
-            value={backgroundSync}
-            onValueChange={(value) => setLocal({ backgroundSync: value })}
-            showSeparator={false}
-          />
-
-          <Button
-            onPress={handleSavePreferences}
-            // Disabled until the account's real settings have arrived, so a
-            // nurse cannot save defaults over what they already had.
-            disabled={preferencesLoading || savingSection !== null}
-            style={{ backgroundColor: c.green600 }}
-          >
-            <View style={styles.btnInner}>
-              {savingSection === 'system' ? (
-                <ActivityIndicator size="small" color={c.white} />
-              ) : (
-                <Save size={16} color={c.white} />
-              )}
-              <Text style={styles.btnTextWhite}>
-                {savingSection === 'system' ? 'Saving...' : 'Save Preferences'}
               </Text>
             </View>
           </Button>
@@ -475,20 +465,6 @@ export default function SettingsScreen() {
               <Text style={styles.btnTextDark}>Change Password</Text>
             </View>
           </Button>
-
-          <View style={styles.logoutCard}>
-            <Text style={styles.logoutTitle}>Account Actions</Text>
-            <Button
-              onPress={() => setShowLogoutDialog(true)}
-              variant="destructive"
-              style={{ backgroundColor: c.red600 }}
-            >
-              <View style={styles.btnInner}>
-                <LogOut size={16} color={c.white} />
-                <Text style={styles.btnTextWhite}>Logout</Text>
-              </View>
-            </Button>
-          </View>
         </CardContent>
       </Card>
 
@@ -512,6 +488,18 @@ export default function SettingsScreen() {
           © {new Date().getFullYear()} NurseLink. Clinical documentation system.
         </Text>
       </View>
+
+      {/* Logout — standalone, below every card, not boxed inside Security & Privacy */}
+      <Button
+        onPress={() => setShowLogoutDialog(true)}
+        variant="destructive"
+        style={{ backgroundColor: c.red600, width: '100%' }}
+      >
+        <View style={styles.btnInner}>
+          <LogOut size={16} color={c.white} />
+          <Text style={styles.btnTextWhite}>Logout</Text>
+        </View>
+      </Button>
 
       {/* Logout Confirmation */}
       <ConfirmDialog
@@ -656,6 +644,11 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     fontWeight: '500',
     color: c.foreground,
   },
+  toggleLabelDisabled: {
+    fontSize: scale(15),
+    fontWeight: '500',
+    color: c.gray400,
+  },
   toggleDesc: {
     fontSize: scale(13),
     color: c.gray600,
@@ -680,21 +673,18 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     fontSize: scale(14),
     flexShrink: 1,
   },
+  btnTextOrange: {
+    color: c.orange700,
+    fontWeight: '600',
+    fontSize: scale(14),
+    flexShrink: 1,
+  },
   passwordBtn: {
     borderWidth: 1,
   },
-  logoutCard: {
-    padding: space(16),
-    backgroundColor: c.red50,
+  testBtn: {
     borderWidth: 1,
-    borderColor: c.red200,
-    borderRadius: Radius.lg,
-    gap: space(12),
-  },
-  logoutTitle: {
-    fontSize: scale(14),
-    fontWeight: '600',
-    color: c.red700,
+    borderColor: c.orange300,
   },
   systemInfo: {
     alignItems: 'center',

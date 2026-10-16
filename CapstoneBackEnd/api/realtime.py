@@ -48,6 +48,11 @@ def _payload(notification):
         'type': 'notification',
         'event': notification.event or '',
         'id': str(notification.pk),
+        # The severity the bell/toast style off (critical/warning/success/
+        # info) — missing before, so a pushed notification always rendered
+        # as a plain 'warning' until the follow-up refetch replaced it with
+        # the real value from the database a moment later.
+        'notificationType': notification.notification_type,
         'title': notification.title,
         'message': notification.message,
         'patientId': patient.patient_code if patient else None,

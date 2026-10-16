@@ -1,71 +1,119 @@
 import { Platform } from 'react-native';
+import { Asset } from 'expo-asset';
 
 /**
- * The chime that plays when a patient is handed over to you.
+ * The sound that plays for an incoming notification — a quiet chime for a
+ * normal one, a sharper three-beep alert for a critical one, so a critical
+ * alert is audibly distinct, not just visually (see NotificationPanel's
+ * red styling for the visual half of that).
  *
- * Synthesised with the Web Audio API rather than shipped as an audio file: it
- * needs no asset, no new dependency, and no bundler configuration, and a short
- * two-note tone is all a notification needs. On native this is a no-op — React
- * Native has no built-in audio, and adding an audio library for one chime is
- * not worth the dependency until someone asks for it on the phone.
+ * Web only, same as before: React Native has no built-in audio, and these
+ * are real `<audio>` elements rather than the Web Audio oscillator this
+ * module used to synthesize — real files are what let a browser's "has the
+ * page been interacted with yet" autoplay gate be unlocked once up front
+ * (see unlockNotificationAudio) instead of fighting an AudioContext's
+ * suspended state on every single play.
  *
- * Callers must check the nurse's Sound Alerts preference first; this function
- * plays whenever it is called.
+ * Callers must check the nurse's Sound Alerts preference first (and pick
+ * `critical: true` for a critical-severity notification); this module
+ * plays whenever it is asked to.
  */
 
-/** A rising two-note chime. Frequencies in Hz, offsets and lengths in seconds. */
-const NOTES = [
-  { frequency: 880, at: 0, length: 0.12 },
-  { frequency: 1320, at: 0.12, length: 0.18 },
-];
+const SOURCES = {
+  normal: require('../assets/sounds/notification.wav'),
+  critical: require('../assets/sounds/critical.wav'),
+} as const;
 
-const PEAK_GAIN = 0.08; // Quiet by design: a ward is not the place to startle anyone.
+type SoundKey = keyof typeof SOURCES;
 
-export function playNotificationSound(): void {
+// One real <audio> element per sound, created lazily and reused — reusing
+// the same element (reset to the start each play) is what lets the browser
+// treat it as already-unlocked after the first user gesture, rather than
+// creating a brand-new, still-locked element on every notification.
+const elements: Partial<Record<SoundKey, HTMLAudioElement>> = {};
+let unlocked = false;
+// Sounds are short and a ward can get several notifications in a burst —
+// this is the guard against two chimes overlapping into noise. Only one
+// plays at a time; a second arrival while one is still going is simply
+// skipped, not queued, since the point is "something happened," not a count.
+let playing = false;
+
+function getElement(key: SoundKey): HTMLAudioElement | null {
+  if (Platform.OS !== 'web' || typeof Audio === 'undefined') return null;
+  let el = elements[key];
+  if (!el) {
+    const asset = Asset.fromModule(SOURCES[key]);
+    el = new Audio(asset.uri || asset.localUri || undefined);
+    el.preload = 'auto';
+    el.volume = key === 'critical' ? 0.55 : 0.35;
+    el.addEventListener('ended', () => {
+      playing = false;
+    });
+    elements[key] = el;
+  }
+  return el;
+}
+
+/**
+ * Primes both sounds against the browser's autoplay gate.
+ *
+ * Call once, on the very first click/tap anywhere in the app (see
+ * AuthContext's activity listeners, which already fire on exactly that).
+ * Playing-then-immediately-pausing inside a real user-gesture handler is
+ * what the browser actually checks for; every `play()` after this happens
+ * on a background timer with no gesture of its own, so without this step
+ * the very first real notification would always fail silently.
+ */
+export function unlockNotificationAudio(): void {
+  if (unlocked || Platform.OS !== 'web') return;
+  // Only latched on confirmed success — not every caller of this is
+  // necessarily inside a real user gesture (see AuthContext, which calls
+  // it from every tracked activity event, not just discrete clicks/taps),
+  // and a play() outside one is exactly what the browser refuses. Staying
+  // unlatched on failure lets the next genuine gesture try again instead of
+  // wrongly giving up after the first, non-gesture attempt.
+  (Object.keys(SOURCES) as SoundKey[]).forEach((key) => {
+    const el = getElement(key);
+    if (!el) return;
+    el.muted = true;
+    const result = el.play();
+    if (result && typeof result.then === 'function') {
+      result
+        .then(() => {
+          el.pause();
+          el.currentTime = 0;
+          el.muted = false;
+          unlocked = true;
+        })
+        .catch(() => {
+          el.muted = false;
+        });
+    } else {
+      el.muted = false;
+      unlocked = true;
+    }
+  });
+}
+
+export function playNotificationSound(critical = false): void {
   if (Platform.OS !== 'web') return;
-  if (typeof window === 'undefined') return;
+  if (playing) return;
+
+  const el = getElement(critical ? 'critical' : 'normal');
+  if (!el) return;
 
   try {
-    const AudioContextClass =
-      (window as any).AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContextClass) return;
-
-    const context: AudioContext = new AudioContextClass();
-
-    // Browsers refuse to start audio until the page has been interacted with.
-    // A nurse who has clicked anything is fine; on a fresh tab this simply
-    // stays silent rather than throwing.
-    if (context.state === 'suspended') {
-      void context.resume().catch(() => {});
+    el.currentTime = 0;
+    const result = el.play();
+    if (result && typeof result.then === 'function') {
+      playing = true;
+      result.catch(() => {
+        // Autoplay refused (no interaction yet this session) or the file
+        // failed to decode — sound is a courtesy, never worth surfacing.
+        playing = false;
+      });
     }
-
-    const start = context.currentTime;
-    NOTES.forEach(({ frequency, at, length }) => {
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-
-      oscillator.type = 'sine';
-      oscillator.frequency.value = frequency;
-
-      // Ramped rather than switched on and off: an abrupt start and stop on a
-      // sine wave produces an audible click.
-      gain.gain.setValueAtTime(0, start + at);
-      gain.gain.linearRampToValueAtTime(PEAK_GAIN, start + at + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + at + length);
-
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-      oscillator.start(start + at);
-      oscillator.stop(start + at + length);
-    });
-
-    // Release the hardware once the chime has finished. Without this, every
-    // notification leaks an AudioContext and browsers cap how many may exist.
-    const total = NOTES.reduce((end, note) => Math.max(end, note.at + note.length), 0);
-    setTimeout(() => {
-      void context.close().catch(() => {});
-    }, (total + 0.2) * 1000);
   } catch {
-    // Sound is a courtesy. Never let it interrupt a notification.
+    playing = false;
   }
 }

@@ -36,6 +36,9 @@ export interface RealtimeNotification {
   type: 'notification';
   event: string;
   id: string;
+  /** critical/warning/success/info — what the bell/toast style and the
+   * sound/vibration pattern key off. */
+  notificationType: string;
   title: string;
   message: string;
   patientId: string | null;

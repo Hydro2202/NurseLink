@@ -14,6 +14,7 @@ import {
 import * as authStorage from '../services/authStorage';
 import { migrateLegacyAsyncStorageToken } from '../services/secureToken';
 import { USER_KEY } from '../services/config';
+import { unlockNotificationAudio } from '../utils/notificationSound';
 import { useToast } from './ToastContext';
 import type { User, UserRole } from '../types/user';
 
@@ -198,12 +199,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // for every button and input is completely unaffected.
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    // Also unlocks notification sound playback (see notificationSound.ts) —
+    // browsers refuse audio.play() until the page has had a real user
+    // gesture, and this is the same "the nurse has started using the app"
+    // signal either way. unlockNotificationAudio() only ever latches on a
+    // confirmed successful play, so calling it from every one of these
+    // (not just a discrete click/tap) is safe: it's a cheap no-op on
+    // mousemove/scroll until a real gesture actually unlocks it.
+    const handleActivity = () => {
+      updateActivity();
+      unlockNotificationAudio();
+    };
     const events: (keyof WindowEventMap)[] = [
       'mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click', 'wheel',
     ];
-    events.forEach((event) => window.addEventListener(event, updateActivity, { passive: true }));
+    events.forEach((event) => window.addEventListener(event, handleActivity, { passive: true }));
     return () => {
-      events.forEach((event) => window.removeEventListener(event, updateActivity));
+      events.forEach((event) => window.removeEventListener(event, handleActivity));
     };
   }, [updateActivity]);
 

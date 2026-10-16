@@ -1136,9 +1136,7 @@ export interface UserPreferences {
   criticalAlerts: boolean;
   emailNotifications: boolean;
   soundAlerts: boolean;
-  autoRefresh: boolean;
-  showCharts: boolean;
-  backgroundSync: boolean;
+  vibrationAlerts: boolean;
 }
 
 export async function fetchPreferences(): Promise<UserPreferences> {
