@@ -12,6 +12,14 @@ import type { Department, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
 
+/** "120/80" -> ['120', '80'] (missing half is '') — same split-and-combine
+ * convention VitalSignsGrid's BloodPressureBlock uses, so the stored
+ * "120/80" string (Patient.vitalSigns.bloodPressure) never changes shape. */
+function splitBloodPressure(value: string): [string, string] {
+  const [systolic = '', diastolic = ''] = (value || '').split('/');
+  return [systolic.replace(/[^0-9]/g, ''), diastolic.replace(/[^0-9]/g, '')];
+}
+
 interface EditPatientModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -291,13 +299,36 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
                     keyboardType="numeric"
                     containerStyle={styles.field}
                   />
-                  <Input
-                    label="Blood Pressure"
-                    value={form.bloodPressure}
-                    onChangeText={(v) => setField('bloodPressure', v)}
-                    placeholder="e.g. 120/80"
-                    containerStyle={styles.field}
-                  />
+                  <View style={styles.field}>
+                    <Text style={styles.bpLabel}>Blood Pressure</Text>
+                    <View style={styles.bpRow}>
+                      <Input
+                        value={splitBloodPressure(form.bloodPressure)[0]}
+                        onChangeText={(v) =>
+                          setField(
+                            'bloodPressure',
+                            `${v.replace(/[^0-9]/g, '')}/${splitBloodPressure(form.bloodPressure)[1]}`
+                          )
+                        }
+                        keyboardType="numeric"
+                        placeholder="120"
+                        containerStyle={styles.bpInput}
+                      />
+                      <Text style={styles.bpSlash}>/</Text>
+                      <Input
+                        value={splitBloodPressure(form.bloodPressure)[1]}
+                        onChangeText={(v) =>
+                          setField(
+                            'bloodPressure',
+                            `${splitBloodPressure(form.bloodPressure)[0]}/${v.replace(/[^0-9]/g, '')}`
+                          )
+                        }
+                        keyboardType="numeric"
+                        placeholder="80"
+                        containerStyle={styles.bpInput}
+                      />
+                    </View>
+                  </View>
                 </View>
                 <View style={styles.row}>
                   <Input
@@ -356,6 +387,10 @@ const styles = StyleSheet.create({
   form: { gap: 12, paddingBottom: 4 },
   row: { flexDirection: 'row', gap: 12 },
   field: { flex: 1 },
+  bpLabel: { fontSize: 13, fontWeight: '600', color: Colors.foreground, marginBottom: 6 },
+  bpRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  bpInput: { flex: 1, minWidth: 0, marginBottom: 0 },
+  bpSlash: { fontSize: 18, fontWeight: '700', color: Colors.gray400 },
   fieldWide: { flex: 1 },
   sectionLabel: {
     fontSize: 11,

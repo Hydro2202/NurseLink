@@ -26,7 +26,6 @@ import {
   CheckCircle2,
   ClipboardList,
   ChevronLeft,
-  LogOut,
 } from 'lucide-react-native';
 import {
   fetchPatients,
@@ -37,7 +36,6 @@ import {
   confirmChartingNote,
   deleteChartingNote,
   structureChartRequest,
-  dischargePatient,
   ApiError,
 } from '../../services/api';
 import type {
@@ -55,8 +53,6 @@ import { Switch } from '../../components/Switch';
 import { Alert, AlertDescription } from '../../components/Alert';
 import { StructuredNursingNote } from '../../components/StructuredNursingNote';
 import { FDARNursingNote } from '../../components/FDARNursingNote';
-import { DischargePlanModal } from '../../components/DischargePlanModal';
-import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { usePreferences } from '../../contexts/PreferencesContext';
@@ -147,8 +143,6 @@ export default function ChartingScreen() {
   const [historyNotes, setHistoryNotes] = useState<ChartingNote[]>([]);
   const [historyNotesLoading, setHistoryNotesLoading] = useState(false);
   const [historyDateSearch, setHistoryDateSearch] = useState('');
-  const [dischargeConfirmOpen, setDischargeConfirmOpen] = useState(false);
-  const [dischargeModalOpen, setDischargeModalOpen] = useState(false);
   // Manual charting (Auto Charting off) — the nurse fills these in directly
   // instead of generating them from an AI pass over free text.
   const [manualFocus, setManualFocus] = useState('');
@@ -874,19 +868,6 @@ export default function ChartingScreen() {
                 {getAttendingPhysician(selectedPatientRecord)}
               </Text>
             </View>
-          ) : null}
-
-          {selectedPatientRecord && selectedPatientRecord.status !== 'discharged' ? (
-            <Button
-              variant="outline"
-              onPress={() => setDischargeConfirmOpen(true)}
-              style={styles.dischargeBtn}
-            >
-              <View style={styles.btnInner}>
-                <LogOut size={16} color={Colors.red600} />
-                <Text style={styles.dischargeBtnText}>Discharge Patient</Text>
-              </View>
-            </Button>
           ) : null}
 
           {autoChartingEnabled ? (
@@ -1740,43 +1721,6 @@ export default function ChartingScreen() {
         </View>
       </Modal>
 
-      <ConfirmDialog
-        open={dischargeConfirmOpen}
-        onOpenChange={setDischargeConfirmOpen}
-        title="Discharge Patient"
-        description={
-          selectedPatientRecord
-            ? `Discharge ${selectedPatientRecord.name}? You'll complete a Discharge Plan next — the patient isn't marked as discharged until that's submitted.`
-            : 'Discharge this patient?'
-        }
-        confirmLabel="Discharge"
-        destructive
-        onConfirm={() => {
-          setDischargeConfirmOpen(false);
-          setDischargeModalOpen(true);
-        }}
-      />
-      <DischargePlanModal
-        open={dischargeModalOpen}
-        onOpenChange={setDischargeModalOpen}
-        patient={selectedPatientRecord ?? null}
-        onConfirm={async (plan) => {
-          if (!selectedPatientRecord) return;
-          try {
-            const updated = await dischargePatient(selectedPatientRecord.id, plan);
-            setPatients((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-            toast.success('Patient discharged', {
-              description: `${updated.name} has been marked as discharged.`,
-            });
-            setDischargeModalOpen(false);
-            setSelectedPatient('');
-          } catch (error) {
-            toast.error('Failed to discharge patient', {
-              description: error instanceof ApiError ? error.message : 'Please try again.',
-            });
-          }
-        }}
-      />
     </ScrollView>
   );
 }
@@ -1924,15 +1868,6 @@ const styles = StyleSheet.create({
     // flex-constrained edge instead of letting the text wrap/shrink.
     minWidth: 0,
     flexShrink: 1,
-  },
-  dischargeBtn: {
-    borderColor: Colors.red200,
-    backgroundColor: Colors.red50,
-  },
-  dischargeBtnText: {
-    color: Colors.red600,
-    fontWeight: '600',
-    fontSize: 14,
   },
   btnTextWhite: {
     color: Colors.white,

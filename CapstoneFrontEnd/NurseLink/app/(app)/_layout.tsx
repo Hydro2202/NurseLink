@@ -43,6 +43,8 @@ import { Colors, Shadows, Radius } from '../../constants/colors';
 import { useNotifications } from '../../contexts/NotificationsContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { HandoverAlertModal } from '../../components/HandoverAlertModal';
+import { TaskDueAlertModal } from '../../components/TaskDueAlertModal';
+import { ReferralDueAlertModal } from '../../components/ReferralDueAlertModal';
 import { ProfileSyncListener } from '../../components/ProfileSyncListener';
 
 interface NavItem {
@@ -451,6 +453,8 @@ export default function AppLayout() {
   // Rendered in all three layouts (mobile staff, mobile head nurse, desktop):
   // a patient being handed to you must interrupt wherever you are.
   const handoverAlert = <HandoverAlertModal />;
+  const taskDueAlert = <TaskDueAlertModal />;
+  const referralDueAlert = <ReferralDueAlertModal />;
   // Same three-layout placement — invisible, just keeps this nurse's own
   // department/shift in sync after a head nurse reassigns them.
   const profileSync = <ProfileSyncListener />;
@@ -514,6 +518,8 @@ export default function AppLayout() {
         <BottomNavigation role="staff_nurse" activePath={pathname} />
         {logoutDialog}
         {handoverAlert}
+        {taskDueAlert}
+        {referralDueAlert}
         {profileSync}
         {notificationPanel}
         {profileMenu}
@@ -580,6 +586,8 @@ export default function AppLayout() {
         />
         {logoutDialog}
         {handoverAlert}
+        {taskDueAlert}
+        {referralDueAlert}
         {profileSync}
         {notificationPanel}
         {profileMenu}
@@ -620,6 +628,8 @@ export default function AppLayout() {
         <BottomNavigation role="admin" activePath={pathname} />
         {logoutDialog}
         {handoverAlert}
+        {taskDueAlert}
+        {referralDueAlert}
         {profileSync}
         {notificationPanel}
         {profileMenu}
@@ -753,6 +763,8 @@ export default function AppLayout() {
 
       {logoutDialog}
       {handoverAlert}
+      {taskDueAlert}
+      {referralDueAlert}
       {profileSync}
       {notificationPanel}
       {profileMenu}

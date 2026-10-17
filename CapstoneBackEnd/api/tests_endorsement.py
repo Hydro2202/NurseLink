@@ -76,6 +76,7 @@ class EndorsementTestCase(APITestCase):
             'patientIds': patient_ids,
             'patientNotes': patient_notes or {},
             'date': '2026-09-02',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseTo': receiver.get_full_name() if receiver else '',
             'nurseToId': str(receiver.pk) if receiver else '',
             'sbar': {

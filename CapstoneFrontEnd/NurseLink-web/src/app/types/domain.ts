@@ -1,7 +1,7 @@
 /** Domain types shared by API services and screens (replaces mockData types). */
 
-/** How urgent a task is — separate from Task.status, which tracks whether it's done. */
-export type TaskPriority = 'urgent' | 'routine';
+/** Risk level — separate from Task.status, which tracks whether it's done. */
+export type TaskPriority = 'high' | 'medium' | 'low';
 
 export interface Task {
   id: string;
@@ -11,6 +11,10 @@ export interface Task {
   description: string;
   priority: TaskPriority;
   dueTime: string;
+  /** "YYYY-MM-DD" — paired with dueTime, required on create (the backend
+   * rejects a task without both). Optional only for a task predating this
+   * field. */
+  dueDate?: string | null;
   assignedTo: string;
   status: 'pending' | 'in_progress' | 'completed' | 'overdue';
   category: 'medication' | 'vital_signs' | 'care' | 'assessment' | 'documentation';
@@ -192,8 +196,16 @@ export interface MedicationOrder {
   dose: string;
   route: 'Oral' | 'IV' | 'IM' | 'SubQ' | 'Topical' | 'Inhalation' | 'Other';
   frequency: string;
+  /** Comma-separated 24h "HH:MM" list, e.g. "08:00, 16:00, 00:00" — built
+   * by a time-picker-plus-chips UI, not free text. Blank is fine (e.g. PRN). */
+  scheduledTimes?: string;
   startDate: string;
   endDate?: string | null;
+  /** The prescribing doctor's display name — chosen from a dropdown (the
+   * patient's attending physician and Kardex care team first), but still
+   * just a name string; no doctor FK. Blank on create defaults server-side
+   * to the patient's attending physician. */
+  prescribedBy?: string;
   isActive: boolean;
   remarks: string;
   createdByName?: string | null;
@@ -232,6 +244,10 @@ export interface HandoverNote {
   departmentId?: number | null;
   departmentName?: string;
   date: string;
+  /** ISO datetime this referral needs to be acted on by. Required on
+   * create (the backend rejects a missing or past value); optional/null
+   * only for referrals created before this field existed. */
+  dueAt?: string | null;
   nurseFrom: string;
   nurseTo: string;
   /** Account id of the receiving nurse. Write-only: sent on create, never returned. */

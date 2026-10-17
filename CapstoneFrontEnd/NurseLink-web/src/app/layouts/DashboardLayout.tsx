@@ -41,6 +41,8 @@ import { NotificationPanel } from '../components/NotificationPanel';
 import { fetchNotifications } from '../api/nurselink';
 import { useLiveRefresh } from '../contexts/LiveContext';
 import { HandoverAlertModal } from '../components/HandoverAlertModal';
+import { TaskDueAlertModal } from '../components/TaskDueAlertModal';
+import { ReferralDueAlertModal } from '../components/ReferralDueAlertModal';
 // Tightly cropped to just the circular emblem mark (no "NURSELINK" wordmark,
 // no surrounding empty canvas) — the original figma:asset export is a full
 // lockup on a wide mostly-transparent canvas, which made the mark itself
@@ -282,6 +284,8 @@ export default function DashboardLayout() {
 
         {/* Referrals are nurse-to-nurse only — this branch only renders for staff nurses. */}
         <HandoverAlertModal />
+        <TaskDueAlertModal />
+        <ReferralDueAlertModal />
       </div>
     );
   }
@@ -411,6 +415,8 @@ export default function DashboardLayout() {
           onClose={() => setNotificationPanelOpen(false)}
           onUnreadChange={setUnreadCount}
         />
+        {/* Head nurses can have tasks assigned to them too, but never send/receive referrals. */}
+        <TaskDueAlertModal />
       </div>
     );
   }
@@ -596,6 +602,8 @@ export default function DashboardLayout() {
 
       {/* Desktop is shared between roles — referrals are nurse-to-nurse only. */}
       {isStaffNurse ? <HandoverAlertModal /> : null}
+      {isStaffNurse ? <ReferralDueAlertModal /> : null}
+      <TaskDueAlertModal />
     </div>
   );
 }

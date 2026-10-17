@@ -199,6 +199,20 @@ class VitalSignsCreateTests(VitalsAutoChartingTestCase):
         self.assertEqual(response.status_code, 201, response.content)
         self.assertEqual(response.data['painScale'], 7)
 
+    def test_blood_pressure_systolic_must_be_higher_than_diastolic(self):
+        response = self.client.post(
+            '/api/vital-signs/', {'patientId': self.patient.patient_code, 'bloodPressure': '80/120'}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('bloodPressure', response.data)
+
+    def test_blood_pressure_out_of_range_is_rejected(self):
+        response = self.client.post(
+            '/api/vital-signs/', {'patientId': self.patient.patient_code, 'bloodPressure': '400/80'}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('bloodPressure', response.data)
+
     def test_can_correct_but_not_delete_a_charted_reading(self):
         create = self.client.post(
             '/api/vital-signs/', {'patientId': self.patient.patient_code, 'heartRate': 70}, format='json',

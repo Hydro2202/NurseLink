@@ -181,7 +181,7 @@ export default function DashboardPage() {
     void loadDashboard();
   });
 
-  const urgentTasks = tasks.filter((t) => t.priority === 'urgent' && t.status !== 'completed').length;
+  const urgentTasks = tasks.filter((t) => t.priority === 'high' && t.status !== 'completed').length;
   const overdueTasks = tasks.filter((t) => t.status === 'overdue').length;
   const completedTasks = tasks.filter((t) => t.status === 'completed').length;
   const totalTasks = tasks.length || 1;
@@ -647,19 +647,21 @@ export default function DashboardPage() {
                   key={task.id}
                   style={[
                     styles.upcomingCard,
-                    task.priority === 'urgent'
+                    task.priority === 'high'
                       ? styles.upcomingUrgent
-                      : styles.upcomingRoutine,
+                      : task.priority === 'low'
+                        ? styles.upcomingLow
+                        : styles.upcomingRoutine,
                   ]}
                 >
                   <View style={styles.upcomingRow}>
                     <View style={styles.flex1}>
                       <View style={styles.upcomingBadges}>
                         <Badge
-                          variant={task.priority === 'urgent' ? 'destructive' : 'default'}
+                          variant={task.priority === 'high' ? 'destructive' : 'default'}
                           textStyle={styles.badgeXs}
                         >
-                          {task.priority === 'urgent' ? 'URGENT' : 'ROUTINE'}
+                          {task.priority.toUpperCase()}
                         </Badge>
                         <View style={styles.dueRow}>
                           <Clock size={12} color={Colors.mutedForeground} />
@@ -1308,6 +1310,10 @@ const styles = StyleSheet.create({
   upcomingRoutine: {
     borderColor: 'rgba(245, 158, 11, 0.3)',
     backgroundColor: 'rgba(245, 158, 11, 0.05)',
+  },
+  upcomingLow: {
+    borderColor: 'rgba(22, 163, 74, 0.3)',
+    backgroundColor: 'rgba(22, 163, 74, 0.05)',
   },
   upcomingRow: {
     flexDirection: 'row',

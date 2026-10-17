@@ -184,7 +184,8 @@ TASK_CREATE_EXAMPLES = [
             'patientId': 'P-1042',
             'title': 'Administer Ceftriaxone 1g IV',
             'description': 'Second dose. Flush line before and after.',
-            'priority': 'urgent',
+            'priority': 'high',
+            'dueDate': '2026-10-20',
             'dueTime': '14:00',
             'assignedTo': 'Sarah Johnson',
             'status': 'pending',
@@ -193,14 +194,15 @@ TASK_CREATE_EXAMPLES = [
             'patientRoom': 'ICU-04',
             'doctorOrder': 'Ceftriaxone 1g IV q12h x 7 days',
         },
-        'priority: urgent | routine | completed. category: medication | vital_signs | care | assessment | documentation.',
+        'priority (risk level): high | medium | low. category: medication | vital_signs | care | assessment | documentation. dueDate and dueTime are both required.',
     ),
     _example(
         'Routine vitals check',
         {
             'patientId': 'P-1042',
             'title': 'Record vital signs',
-            'priority': 'routine',
+            'priority': 'medium',
+            'dueDate': '2026-10-20',
             'dueTime': '16:00',
             'assignedTo': 'Sarah Johnson',
             'category': 'vital_signs',
@@ -211,7 +213,7 @@ TASK_CREATE_EXAMPLES = [
 TASK_UPDATE_EXAMPLES = [
     _example(
         'Reassign and re-prioritise',
-        {'assignedTo': 'Maria Santos', 'priority': 'urgent', 'status': 'in_progress'},
+        {'assignedTo': 'Maria Santos', 'priority': 'high', 'status': 'in_progress'},
         'status: pending | in_progress | completed | overdue.',
     ),
     _example('Mark overdue', {'status': 'overdue'}),

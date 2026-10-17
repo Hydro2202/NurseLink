@@ -13,6 +13,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Select } from './Select';
 import { TimePicker } from './TimePicker';
+import { DatePicker, todayIso } from './DatePicker';
 import { Alert, AlertDescription } from './Alert';
 import { SearchablePicker, PickerChip, PickerGroup } from './SearchablePicker';
 import type {
@@ -121,6 +122,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   const [patients, setPatients] = useState<EndorsablePatient[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState('');
   const [selectedNurseId, setSelectedNurseId] = useState('');
+  const [dueDate, setDueDate] = useState(todayIso());
+  const [dueTime, setDueTime] = useState('');
   const [tasks, setTasks] = useState<TaskDraft[]>([]);
   const [formData, setFormData] = useState({
     nurseTo: '',
@@ -154,6 +157,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
       submittingRef.current = false;
       setSelectedPatientId('');
       setSelectedNurseId('');
+      setDueDate(todayIso());
+      setDueTime('');
       setTasks([]);
       setFormData({
         nurseTo: '', situation: '', background: '', assessment: '', recommendation: '', attendingPhysician: '',
@@ -339,10 +344,27 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   const updateTaskRow = (draftId: string, patch: Partial<TaskDraft>) =>
     setTasks((prev) => prev.map((t) => (t.draftId === draftId ? { ...t, ...patch } : t)));
 
+  /** "YYYY-MM-DD" + "HH:MM" (local, 24h) -> a real Date, or null if either
+   * piece is missing/unparseable — same combine-and-validate convention
+   * tasks.tsx's isTaskOverdue already uses for Task.dueDate/dueTime. */
+  const dueAtDate = (): Date | null => {
+    if (!dueDate || !dueTime) return null;
+    const [y, m, d] = dueDate.split('-').map(Number);
+    const [h, min] = dueTime.split(':').map(Number);
+    if (!y || !m || !d || Number.isNaN(h) || Number.isNaN(min)) return null;
+    return new Date(y, m - 1, d, h, min);
+  };
+
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
     if (!selectedPatientId) newErrors.patient = 'Select a patient';
     if (!selectedNurseId) newErrors.nurse = 'Please select a receiving nurse';
+    if (!dueDate) newErrors.dueDate = 'Due date is required';
+    if (!dueTime) newErrors.dueTime = 'Due time is required';
+    const due = dueAtDate();
+    if (dueDate && dueTime && due && due.getTime() <= Date.now()) {
+      newErrors.dueTime = 'Due date and time must be in the future';
+    }
     if (!formData.recommendation.trim()) newErrors.recommendation = 'Recommendation is required';
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -361,10 +383,12 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           ...(t.dueTime ? { due_time: t.dueTime } : {}),
           priority: t.priority,
         }));
+      const due = dueAtDate();
       await onSave({
         patientIds: [selectedPatientId],
         nurseTo: formData.nurseTo,
         nurseToId: selectedNurseId,
+        dueAt: due ? due.toISOString() : undefined,
         tasks: taskPayload,
         sbar: {
           situation: formData.situation,
@@ -512,6 +536,23 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                 <ChevronDown size={16} color={Colors.mutedForeground} />
               </Pressable>
               {errors.nurse ? <Text style={styles.error}>{errors.nurse}</Text> : null}
+
+              <View style={styles.row}>
+                <DatePicker
+                  style={{ flex: 1 }}
+                  label="Due Date *"
+                  value={dueDate}
+                  onChange={setDueDate}
+                  error={errors.dueDate}
+                />
+                <TimePicker
+                  style={{ flex: 1 }}
+                  label="Due Time *"
+                  value={dueTime}
+                  onChange={setDueTime}
+                  error={errors.dueTime}
+                />
+              </View>
 
               <SearchablePicker<EligibleReceiver>
                 visible={nurseSheetOpen}
@@ -712,6 +753,10 @@ function SbarField({
 }
 
 const styles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    gap: 12,
+  },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',

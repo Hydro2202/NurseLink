@@ -228,5 +228,9 @@ class LiveStateTests(APITestCase):
             self.state()
 
         self.assertLessEqual(
-            len(queries), 6, 'live poll should be a handful of aggregates, not list queries'
+            # 7, not 6: check_due_referral_reminders (called alongside
+            # check_due_task_reminders — see LiveStateView.get) adds exactly
+            # one more cheap, indexed filter() for this nurse's own pending
+            # referrals. Still a handful of small queries, not a table walk.
+            len(queries), 7, 'live poll should be a handful of aggregates, not list queries'
         )

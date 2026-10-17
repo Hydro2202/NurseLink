@@ -29,12 +29,12 @@ function sanitizeDecimal(v: string): string {
   if (firstDot === -1) return cleaned;
   return cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, '');
 }
-// "120/80" — digits either side of a single slash.
-function sanitizeBloodPressure(v: string): string {
-  const cleaned = v.replace(/[^0-9/]/g, '');
-  const firstSlash = cleaned.indexOf('/');
-  if (firstSlash === -1) return cleaned;
-  return cleaned.slice(0, firstSlash + 1) + cleaned.slice(firstSlash + 1).replace(/\//g, '');
+/** "120/80" -> ['120', '80'] (missing half is ''); never more than two
+ * numbers even if the stored value is malformed free text from before
+ * this split existed. */
+function splitBloodPressure(v: string): [string, string] {
+  const [systolic = '', diastolic = ''] = (v || '').split('/');
+  return [systolic.replace(/[^0-9]/g, ''), diastolic.replace(/[^0-9]/g, '')];
 }
 
 // Conservative adult reference ranges — flags a value as worth a second look
@@ -57,6 +57,20 @@ const isBloodPressureAbnormal = (v: string) => {
   const systolic = Number(match[1]);
   const diastolic = Number(match[2]);
   return systolic < 90 || systolic > 140 || diastolic < 60 || diastolic > 90;
+};
+/** A hard problem with the two numbers themselves — out of plausible range,
+ * one filled without the other, or systolic not actually higher than
+ * diastolic — distinct from isBloodPressureAbnormal's "valid but clinically
+ * notable" flag. Mirrors the backend's validate_blood_pressure_format. */
+const bloodPressureError = (systolic: string, diastolic: string): string => {
+  if (!systolic && !diastolic) return '';
+  if (!systolic || !diastolic) return 'Enter both systolic and diastolic.';
+  const sys = Number(systolic);
+  const dia = Number(diastolic);
+  if (sys < 50 || sys > 300) return 'Systolic must be 50-300.';
+  if (dia < 30 || dia > 200) return 'Diastolic must be 30-200.';
+  if (sys <= dia) return 'Systolic must be higher than diastolic.';
+  return '';
 };
 const isOxygenAbnormal = (v: string) => {
   const n = parseFloat(v);
@@ -97,6 +111,62 @@ function VitalBlock({
         <Text style={styles.vitalUnit}>{unit}</Text>
       </View>
       {abnormal ? <Text style={styles.vitalFlag}>Outside typical range</Text> : null}
+    </View>
+  );
+}
+
+/** Systolic/Diastolic as two numeric inputs side by side — combined into
+ * the single "120/80" string the caller's onBloodPressureChange (and the
+ * stored KardexRecord.blood_pressure / VitalSigns.blood_pressure field)
+ * still expects, so nothing downstream needs to change. Split back out of
+ * that same string on load/edit, so this works the same whether the value
+ * came from this component or an older plain-text entry. */
+function BloodPressureBlock({
+  value,
+  onChangeText,
+  abnormal,
+  style,
+}: {
+  value: string;
+  onChangeText: (v: string) => void;
+  abnormal: boolean;
+  style?: object;
+}) {
+  const [systolic, diastolic] = splitBloodPressure(value);
+  const error = bloodPressureError(systolic, diastolic);
+  const flagged = abnormal || Boolean(error);
+
+  const setSystolic = (v: string) => onChangeText(`${sanitizeWholeNumber(v)}/${diastolic}`);
+  const setDiastolic = (v: string) => onChangeText(`${systolic}/${sanitizeWholeNumber(v)}`);
+
+  return (
+    <View style={[styles.vitalBlock, flagged && styles.vitalBlockAbnormal, style]}>
+      <Text style={styles.vitalLabel}>Blood Pressure</Text>
+      <View style={styles.bpRow}>
+        <TextInput
+          style={[styles.vitalInput, styles.bpInput, flagged && styles.vitalInputAbnormal]}
+          value={systolic}
+          onChangeText={setSystolic}
+          placeholder="120"
+          placeholderTextColor={Colors.gray400}
+          keyboardType="numeric"
+        />
+        <Text style={styles.bpSlash}>/</Text>
+        <TextInput
+          style={[styles.vitalInput, styles.bpInput, flagged && styles.vitalInputAbnormal]}
+          value={diastolic}
+          onChangeText={setDiastolic}
+          placeholder="80"
+          placeholderTextColor={Colors.gray400}
+          keyboardType="numeric"
+        />
+        <Text style={styles.vitalUnit}>mmHg</Text>
+      </View>
+      {error ? (
+        <Text style={styles.vitalFlag}>{error}</Text>
+      ) : abnormal ? (
+        <Text style={styles.vitalFlag}>Outside typical range</Text>
+      ) : null}
     </View>
   );
 }
@@ -148,12 +218,9 @@ export function VitalSignsGrid({
         />
       </View>
       <View style={styles.vitalRow}>
-        <VitalBlock
-          label="Blood Pressure"
+        <BloodPressureBlock
           value={bloodPressure}
-          onChangeText={(v) => onBloodPressureChange(sanitizeBloodPressure(v))}
-          placeholder="120/80"
-          unit="mmHg"
+          onChangeText={onBloodPressureChange}
           abnormal={isBloodPressureAbnormal(bloodPressure)}
           style={styles.vitalHalf}
         />
@@ -213,6 +280,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'baseline',
     gap: 4,
+  },
+  bpRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+  },
+  bpInput: {
+    flex: 1,
+    minWidth: 0,
+  },
+  bpSlash: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Colors.gray400,
   },
   vitalInput: {
     fontSize: 20,

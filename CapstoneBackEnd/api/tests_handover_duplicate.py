@@ -63,6 +63,7 @@ class HandoverDuplicateTests(APITestCase):
     def create_handover(self, nurse_to='Ben Diaz', nurse_to_id=None):
         body = {
             'patientId': 'P970', 'shift': 'morning', 'date': '2026-09-04',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': 'Ana Cruz', 'nurseTo': nurse_to,
             'sbar': {'situation': 'Stable', 'background': '', 'assessment': '', 'recommendation': ''},
         }
@@ -96,6 +97,7 @@ class HandoverDuplicateTests(APITestCase):
         self.create_handover('Ben Diaz', self.receiver.pk)
         response = self.client.post('/api/handovers/', {
             'patientId': 'P971', 'shift': 'morning', 'date': '2026-09-04',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': 'Ana Cruz', 'nurseTo': 'Ben Diaz', 'nurseToId': str(self.receiver.pk),
             'sbar': {'situation': 'Stable', 'background': '', 'assessment': '', 'recommendation': ''},
         }, format='json')
@@ -119,6 +121,7 @@ class HandoverDuplicateTests(APITestCase):
         # collide on — never blocked by this check.
         first = self.client.post('/api/handovers/', {
             'shift': 'morning', 'date': '2026-09-04',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': 'Ana Cruz', 'nurseTo': 'Ben Diaz',
             'patientName': 'Walk-in, not yet in the system',
             'sbar': {'situation': 'Stable', 'background': '', 'assessment': '', 'recommendation': ''},
@@ -126,6 +129,7 @@ class HandoverDuplicateTests(APITestCase):
         self.assertEqual(first.status_code, 201)
         second = self.client.post('/api/handovers/', {
             'shift': 'morning', 'date': '2026-09-04',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': 'Ana Cruz', 'nurseTo': 'Ben Diaz',
             'patientName': 'Walk-in, not yet in the system',
             'sbar': {'situation': 'Stable', 'background': '', 'assessment': '', 'recommendation': ''},
@@ -158,11 +162,13 @@ class NurseListExcludeForPatientTests(APITestCase):
         self.client.force_authenticate(user=self.sender)
 
     def test_a_nurse_who_received_the_patient_is_excluded(self):
-        self.client.post('/api/handovers/', {
+        create = self.client.post('/api/handovers/', {
             'patientId': 'P980', 'shift': 'morning', 'date': '2026-09-04',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': 'Ana Cruz', 'nurseTo': 'Ben Diaz', 'nurseToId': str(self.receiver.pk),
             'sbar': {'situation': '', 'background': '', 'assessment': '', 'recommendation': ''},
         }, format='json')
+        self.assertEqual(create.status_code, 201, create.content)
 
         resp = self.client.get('/api/nurses/?excludeForPatient=P980')
         self.assertEqual(resp.status_code, 200)
@@ -171,11 +177,13 @@ class NurseListExcludeForPatientTests(APITestCase):
         self.assertIn(str(self.third.pk), ids)
 
     def test_the_same_nurse_is_not_excluded_for_a_different_patient(self):
-        self.client.post('/api/handovers/', {
+        create = self.client.post('/api/handovers/', {
             'patientId': 'P980', 'shift': 'morning', 'date': '2026-09-04',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': 'Ana Cruz', 'nurseTo': 'Ben Diaz', 'nurseToId': str(self.receiver.pk),
             'sbar': {'situation': '', 'background': '', 'assessment': '', 'recommendation': ''},
         }, format='json')
+        self.assertEqual(create.status_code, 201, create.content)
 
         resp = self.client.get('/api/nurses/?excludeForPatient=P981')
         self.assertEqual(resp.status_code, 200)

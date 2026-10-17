@@ -138,7 +138,7 @@ class NotificationPreferenceEffectTests(APITestCase):
             nurse_to_user=self.receiver, created_by=self.sender, status='pending',
         )
 
-    def make_task(self, priority='routine'):
+    def make_task(self, priority='medium'):
         return Task.objects.create(
             task_code='T600', title='Wound dressing', patient=self.patient,
             patient_name=self.patient.name, assigned_to='Ben Diaz',
@@ -182,14 +182,14 @@ class NotificationPreferenceEffectTests(APITestCase):
         # Routine tasks silenced, urgent ones still allowed through.
         self.prefs(self.receiver, task_notifications=False, critical_alerts=True)
 
-        notify_task_assigned(self.make_task(priority='urgent'), actor=self.sender)
+        notify_task_assigned(self.make_task(priority='high'), actor=self.sender)
 
         self.assertEqual(Notification.objects.filter(recipient=self.receiver).count(), 1)
 
     def test_critical_alerts_off_silences_urgent_work(self):
         self.prefs(self.receiver, task_notifications=True, critical_alerts=False)
 
-        notify_task_assigned(self.make_task(priority='urgent'), actor=self.sender)
+        notify_task_assigned(self.make_task(priority='high'), actor=self.sender)
 
         self.assertEqual(Notification.objects.count(), 0)
 

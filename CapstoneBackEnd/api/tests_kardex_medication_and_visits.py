@@ -105,6 +105,20 @@ class KardexMedicationStatusTests(APITestCase):
         self.assertEqual(response.data['dose'], '80 mg')
         self.assertEqual(response.data['scheduledTimes'], '08:00, 16:00, 00:00')
 
+    def test_scheduled_times_rejects_a_bad_entry_in_the_list(self):
+        response = self._create(scheduledTimes='08:00, 25:99')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('scheduledTimes', response.data)
+
+    def test_scheduled_times_rejects_free_text(self):
+        response = self._create(scheduledTimes='after breakfast and dinner')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('scheduledTimes', response.data)
+
+    def test_scheduled_times_blank_is_fine(self):
+        response = self._create(scheduledTimes='')
+        self.assertEqual(response.status_code, 201, response.data)
+
 
 class KardexDepartmentVisitTests(APITestCase):
     def setUp(self):

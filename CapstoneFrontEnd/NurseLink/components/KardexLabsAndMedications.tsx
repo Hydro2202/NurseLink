@@ -36,9 +36,12 @@ import {
   updateDepartmentVisit,
   deleteDepartmentVisit,
   fetchDepartments,
+  fetchPatient,
+  fetchDoctors,
+  fetchPatientAssignedDoctors,
   ApiError,
 } from '../services/api';
-import type { LabEntry, MedicationOrder, MedicationIntakeEntry, DepartmentVisit, Department } from '../types/domain';
+import type { LabEntry, MedicationOrder, MedicationIntakeEntry, DepartmentVisit, Department, Doctor } from '../types/domain';
 
 interface Props {
   /** The Patient's patient_code — labs/medications are linked to the
@@ -884,6 +887,10 @@ const MED_STATUS_OPTIONS = [
   { label: 'Discontinued', value: 'DISCONTINUED' },
 ];
 
+// "08:00" / "16:00" / "00:00" — 24h HH:MM, same convention TimePicker's
+// default format already writes everywhere else in this app.
+const SCHEDULED_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 function MedicationFormModal({ open, onOpenChange, patientId, medication, onSaved }: MedicationFormModalProps) {
   const toast = useToast();
   const [medicationName, setMedicationName] = useState('');
@@ -891,6 +898,8 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
   const [route, setRoute] = useState('Oral');
   const [frequency, setFrequency] = useState('');
   const [scheduledTimes, setScheduledTimes] = useState('');
+  // A fresh pick from the TimePicker — not yet added to scheduledTimes as a chip.
+  const [timeDraft, setTimeDraft] = useState('');
   const [startDate, setStartDate] = useState(todayIso());
   const [endDate, setEndDate] = useState('');
   const [prescribedBy, setPrescribedBy] = useState('');
@@ -899,6 +908,93 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [touched, setTouched] = useState<Record<string, boolean>>({});
+
+  // Doctors to prescribe from — the patient's attending physician and
+  // Kardex care team first, then every other active doctor. Prescribed By
+  // still just stores the chosen name (no schema change), so this is a
+  // richer picker over the same free-text field, not a new relationship.
+  const [doctorOptions, setDoctorOptions] = useState<{ label: string; value: string }[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [patient, allDoctors, careTeam] = await Promise.all([
+          fetchPatient(patientId).catch(() => null),
+          fetchDoctors().catch(() => []),
+          fetchPatientAssignedDoctors(patientId).catch(() => []),
+        ]);
+        if (cancelled) return;
+        const attending = (patient?.attendingPhysician || '').trim();
+        const attendingDoctor = attending ? allDoctors.find((d) => d.fullName === attending) : undefined;
+        const careTeamIds = new Set(careTeam.map((d) => d.id));
+        const ordered: Doctor[] = [];
+        if (attendingDoctor) ordered.push(attendingDoctor);
+        careTeam.forEach((d) => {
+          if (d.id !== attendingDoctor?.id) ordered.push(d);
+        });
+        allDoctors.forEach((d) => {
+          if (d.id === attendingDoctor?.id || careTeamIds.has(d.id)) return;
+          ordered.push(d);
+        });
+        setDoctorOptions(
+          ordered.map((d) => ({
+            label: d.specialization ? `${d.fullName} • ${d.specialization}` : d.fullName,
+            value: d.fullName,
+          }))
+        );
+        // Add mode only, and only if the nurse hasn't already picked
+        // something while this was loading — same "fill, don't clobber"
+        // rule the Add New Task doctor picker uses.
+        if (!medication && attending) {
+          setPrescribedBy((prev) => prev || attending);
+        }
+      } catch {
+        if (!cancelled) setDoctorOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, patientId]);
+
+  // The current value might be a legacy free-text name that predates this
+  // picker, or simply not in doctorOptions yet — shown as its own option
+  // rather than leaving the trigger blank (Select falls back to the
+  // placeholder for an unmatched value) and silently losing what was saved.
+  const prescribedByOptions =
+    prescribedBy && !doctorOptions.some((o) => o.value === prescribedBy)
+      ? [{ label: prescribedBy, value: prescribedBy }, ...doctorOptions]
+      : doctorOptions;
+
+  const scheduledTimesList = scheduledTimes
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const scheduledTimesValid =
+    scheduledTimesList.length > 0 && scheduledTimesList.every((t) => SCHEDULED_TIME_PATTERN.test(t));
+  // Old free-text that doesn't parse as picked times — shown so the nurse
+  // can see what's there, but not rendered as chips (it isn't one).
+  const legacyScheduledText = scheduledTimesList.length > 0 && !scheduledTimesValid ? scheduledTimes : '';
+
+  const addScheduledTime = () => {
+    if (!timeDraft) return;
+    // Replaces unparseable legacy text the first time a real time is
+    // picked, rather than appending a chip onto garbage.
+    const base = scheduledTimesValid ? scheduledTimesList : [];
+    if (base.includes(timeDraft)) {
+      setTimeDraft('');
+      return;
+    }
+    setScheduledTimes([...base, timeDraft].sort().join(', '));
+    setTimeDraft('');
+  };
+
+  const removeScheduledTime = (time: string) => {
+    setScheduledTimes(scheduledTimesList.filter((t) => t !== time).join(', '));
+  };
 
   useEffect(() => {
     (() => {
@@ -1022,12 +1118,41 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
                 error={frequencyError || undefined}
                 placeholder="e.g. q8h, BID, Once daily, PRN"
               />
-              <Input
-                label="Scheduled Times"
-                value={scheduledTimes}
-                onChangeText={setScheduledTimes}
-                placeholder="e.g. 08:00, 16:00, 00:00"
-              />
+              <View style={{ gap: 8 }}>
+                <Text style={styles.fieldLabel}>Scheduled Times</Text>
+                {legacyScheduledText ? (
+                  <Text style={styles.legacyTimesNote}>
+                    Existing value: &quot;{legacyScheduledText}&quot; — pick a time below to replace it.
+                  </Text>
+                ) : scheduledTimesList.length > 0 ? (
+                  <View style={styles.timeChipsRow}>
+                    {scheduledTimesList.map((time) => (
+                      <View key={time} style={styles.timeChip}>
+                        <Text style={styles.timeChipText}>{time}</Text>
+                        <Pressable onPress={() => removeScheduledTime(time)} hitSlop={6}>
+                          <X size={12} color={Colors.blue700} />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+                <View style={styles.rowWrap}>
+                  <TimePicker
+                    value={timeDraft}
+                    onChange={setTimeDraft}
+                    style={styles.colHalf}
+                    placeholder="Pick a time"
+                  />
+                  <Button
+                    variant="outline"
+                    onPress={addScheduledTime}
+                    disabled={!timeDraft}
+                    style={styles.colHalf}
+                  >
+                    <Text>Add Time</Text>
+                  </Button>
+                </View>
+              </View>
               <View style={styles.rowWrap}>
                 <DatePicker label="Start Date *" value={startDate} onChange={setStartDate} style={styles.colHalf} />
                 <DatePicker
@@ -1038,10 +1163,13 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
                   style={styles.colHalf}
                 />
               </View>
-              <Input
+              <Select
                 label="Prescribed By"
                 value={prescribedBy}
-                onChangeText={setPrescribedBy}
+                onValueChange={setPrescribedBy}
+                options={prescribedByOptions}
+                searchable
+                searchPlaceholder="Search doctors..."
                 placeholder="Defaults to the attending physician"
               />
               {medication ? (
@@ -1465,6 +1593,24 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   fieldValue: { fontSize: 13, color: Colors.foreground, marginTop: 2 },
+  legacyTimesNote: {
+    fontSize: 12,
+    fontStyle: 'italic',
+    color: Colors.mutedForeground,
+  },
+  timeChipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  timeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.blue200,
+    backgroundColor: Colors.blue50,
+  },
+  timeChipText: { fontSize: 13, fontWeight: '600', color: Colors.blue700 },
   rowCardActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 4 },
   // Content-sized Pressables (no explicit width) wrapping onto a second
   // line inside a flexWrap row is where this went wrong — fieldGrid above

@@ -13,7 +13,7 @@ from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from django.db import IntegrityError, transaction
 from django.core.cache import cache
-from django.db.models import Count, Max, Prefetch, Q
+from django.db.models import Case, Count, IntegerField, Max, Prefetch, Q, Value, When
 from django.utils import timezone
 from zoneinfo import ZoneInfo
 from django.utils.dateparse import parse_date
@@ -116,6 +116,7 @@ from .notifications import (
     notify_task_handover_rejected,
     notify_task_handover_verified,
     check_due_task_reminders,
+    check_due_referral_reminders,
 )
 from .otp_service import OtpCooldownError, OtpDeliveryError, OtpResendLimitError, issue_otp, verify_otp
 from .permissions import (
@@ -3291,7 +3292,32 @@ class TaskViewSet(viewsets.ModelViewSet):
                 | Q(description__icontains=search)
                 | Q(patient_name__icontains=search)
             )
-        return qs
+        # Default order: completed tasks last regardless of risk; within
+        # the rest, High -> Medium -> Low; within the same risk level,
+        # overdue first; then soonest due date/time. due_date/due_time
+        # being NULL (predates the field, or a free-text admin entry that
+        # didn't parse) sorts after every dated task in Postgres's default
+        # ASC-is-NULLS-LAST — undated tasks fall to the bottom of their
+        # group rather than jumping to the front. This mirrors the same
+        # default sort tasks.tsx uses client-side, so the API and the app
+        # agree instead of one silently overriding the other.
+        return qs.annotate(
+            _completed_rank=Case(
+                When(status='completed', then=Value(1)), default=Value(0), output_field=IntegerField(),
+            ),
+            _priority_rank=Case(
+                When(priority='high', then=Value(0)),
+                When(priority='medium', then=Value(1)),
+                When(priority='low', then=Value(2)),
+                default=Value(1),
+                output_field=IntegerField(),
+            ),
+            _overdue_rank=Case(
+                When(status='overdue', then=Value(0)), default=Value(1), output_field=IntegerField(),
+            ),
+        ).order_by(
+            '_completed_rank', '_priority_rank', '_overdue_rank', 'due_date', 'due_time', '-created_at',
+        )
 
     @extend_schema(
         request=None,
@@ -3331,9 +3357,8 @@ class TaskViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         task.status = 'completed'
-        task.priority = 'completed'
         task.completed_at = timezone.now()
-        task.save(update_fields=['status', 'priority', 'completed_at', 'updated_at'])
+        task.save(update_fields=['status', 'completed_at', 'updated_at'])
         return Response(TaskSerializer(task, context={'request': request}).data)
 
     @extend_schema(
@@ -6269,6 +6294,7 @@ class LiveStateView(APIView):
         # task's scheduled due date/time has actually arrived. See its own
         # docstring for why this lives on the poll rather than a scheduler.
         check_due_task_reminders(user)
+        check_due_referral_reminders(user)
 
         # Notifications have no updated_at — they are created and then read —
         # so total, unread and newest together are the whole story. One

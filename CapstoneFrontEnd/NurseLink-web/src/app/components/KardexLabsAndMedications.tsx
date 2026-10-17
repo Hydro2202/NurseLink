@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FlaskConical, Pill, Plus, History as HistoryIcon, ChevronDown, ChevronUp } from 'lucide-react';
+import { FlaskConical, Pill, Plus, History as HistoryIcon, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -26,11 +26,14 @@ import {
   updateMedication,
   deleteMedication,
   recordMedicationIntake,
+  fetchPatient,
+  fetchDoctors,
+  fetchPatientAssignedDoctors,
   ApiError,
 } from '../api/nurselink';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
-import type { LabEntry, MedicationOrder, MedicationIntakeEntry } from '../types/domain';
+import type { LabEntry, MedicationOrder, MedicationIntakeEntry, Doctor } from '../types/domain';
 
 interface Props {
   /** The Patient's patient_code — labs/medications are linked to the
@@ -575,16 +578,30 @@ interface MedicationFormModalProps {
   onSaved: () => void;
 }
 
+// "08:00" / "16:00" / "00:00" — 24h HH:MM, the same comma-separated list
+// the backend's KardexMedicationSerializer.validate_scheduledTimes expects.
+const SCHEDULED_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 function MedicationFormModal({ open, onOpenChange, patientId, medication, onSaved }: MedicationFormModalProps) {
   const [medicationName, setMedicationName] = useState('');
   const [dose, setDose] = useState('');
   const [route, setRoute] = useState('Oral');
   const [frequency, setFrequency] = useState('');
+  const [scheduledTimes, setScheduledTimes] = useState('');
+  // A fresh pick from the time input — not yet added to scheduledTimes as a chip.
+  const [timeDraft, setTimeDraft] = useState('');
   const [startDate, setStartDate] = useState(todayIso());
   const [endDate, setEndDate] = useState('');
+  const [prescribedBy, setPrescribedBy] = useState('');
   const [remarks, setRemarks] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+
+  // Doctors to prescribe from — the patient's attending physician and
+  // Kardex care team first, then every other active doctor. Prescribed By
+  // still just stores the chosen name (no schema change), so this is a
+  // richer picker over the same free-text field, not a new relationship.
+  const [doctorOptions, setDoctorOptions] = useState<{ label: string; value: string }[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -593,20 +610,101 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
       setDose(medication.dose);
       setRoute(medication.route);
       setFrequency(medication.frequency);
+      setScheduledTimes(medication.scheduledTimes || '');
       setStartDate(medication.startDate);
       setEndDate(medication.endDate || '');
+      setPrescribedBy(medication.prescribedBy || '');
       setRemarks(medication.remarks);
     } else {
       setMedicationName('');
       setDose('');
       setRoute('Oral');
       setFrequency('');
+      setScheduledTimes('');
       setStartDate(todayIso());
       setEndDate('');
+      setPrescribedBy('');
       setRemarks('');
     }
+    setTimeDraft('');
     setError('');
   }, [open, medication]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [patient, allDoctors, careTeam] = await Promise.all([
+          fetchPatient(patientId).catch(() => null),
+          fetchDoctors().catch(() => []),
+          fetchPatientAssignedDoctors(patientId).catch(() => []),
+        ]);
+        if (cancelled) return;
+        const attending = (patient?.attendingPhysician || '').trim();
+        const attendingDoctor = attending ? allDoctors.find((d) => d.fullName === attending) : undefined;
+        const careTeamIds = new Set(careTeam.map((d) => d.id));
+        const ordered: Doctor[] = [];
+        if (attendingDoctor) ordered.push(attendingDoctor);
+        careTeam.forEach((d) => {
+          if (d.id !== attendingDoctor?.id) ordered.push(d);
+        });
+        allDoctors.forEach((d) => {
+          if (d.id === attendingDoctor?.id || careTeamIds.has(d.id)) return;
+          ordered.push(d);
+        });
+        setDoctorOptions(
+          ordered.map((d) => ({
+            label: d.specialization ? `${d.fullName} • ${d.specialization}` : d.fullName,
+            value: d.fullName,
+          }))
+        );
+        // Add mode only, and only if the nurse hasn't already picked
+        // something while this was loading.
+        if (!medication && attending) {
+          setPrescribedBy((prev) => prev || attending);
+        }
+      } catch {
+        if (!cancelled) setDoctorOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, patientId]);
+
+  // The current value might be a legacy/unmatched name — shown as its own
+  // option rather than leaving the trigger blank and silently losing it.
+  const prescribedByOptions =
+    prescribedBy && !doctorOptions.some((o) => o.value === prescribedBy)
+      ? [{ label: prescribedBy, value: prescribedBy }, ...doctorOptions]
+      : doctorOptions;
+
+  const scheduledTimesList = scheduledTimes
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const scheduledTimesValid =
+    scheduledTimesList.length > 0 && scheduledTimesList.every((t) => SCHEDULED_TIME_PATTERN.test(t));
+  // Old free-text that doesn't parse as picked times — shown so the nurse
+  // can see what's there, but not rendered as chips (it isn't one).
+  const legacyScheduledText = scheduledTimesList.length > 0 && !scheduledTimesValid ? scheduledTimes : '';
+
+  const addScheduledTime = () => {
+    if (!timeDraft) return;
+    const base = scheduledTimesValid ? scheduledTimesList : [];
+    if (base.includes(timeDraft)) {
+      setTimeDraft('');
+      return;
+    }
+    setScheduledTimes([...base, timeDraft].sort().join(', '));
+    setTimeDraft('');
+  };
+
+  const removeScheduledTime = (time: string) => {
+    setScheduledTimes(scheduledTimesList.filter((t) => t !== time).join(', '));
+  };
 
   const dateError = endDate && startDate && endDate < startDate ? 'End date cannot be before start date.' : '';
 
@@ -627,8 +725,10 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
         dose,
         route: route as MedicationOrder['route'],
         frequency,
+        scheduledTimes,
         startDate,
         endDate: endDate || null,
+        prescribedBy,
         remarks,
       };
       if (medication) {
@@ -683,6 +783,34 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
             <Label htmlFor="medFrequency">Frequency</Label>
             <Input id="medFrequency" value={frequency} onChange={(e) => setFrequency(e.target.value)} placeholder="e.g. q8h, BID, OD, PRN" />
           </div>
+          <div className="space-y-2">
+            <Label>Scheduled Times</Label>
+            {legacyScheduledText ? (
+              <p className="text-xs italic text-muted-foreground">
+                Existing value: &quot;{legacyScheduledText}&quot; — pick a time below to replace it.
+              </p>
+            ) : scheduledTimesList.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {scheduledTimesList.map((time) => (
+                  <span
+                    key={time}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-blue-200 bg-blue-50 text-blue-700 text-sm font-medium"
+                  >
+                    {time}
+                    <button type="button" onClick={() => removeScheduledTime(time)} className="hover:text-blue-900">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <div className="flex gap-2">
+              <Input type="time" value={timeDraft} onChange={(e) => setTimeDraft(e.target.value)} className="flex-1" />
+              <Button type="button" variant="outline" onClick={addScheduledTime} disabled={!timeDraft}>
+                Add Time
+              </Button>
+            </div>
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="medStart">Start Date *</Label>
@@ -693,6 +821,21 @@ function MedicationFormModal({ open, onOpenChange, patientId, medication, onSave
               <Input id="medEnd" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} aria-invalid={!!dateError} />
               {dateError && <p className="text-sm text-red-600">{dateError}</p>}
             </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Prescribed By</Label>
+            <Select value={prescribedBy} onValueChange={setPrescribedBy}>
+              <SelectTrigger>
+                <SelectValue placeholder="Defaults to the attending physician" />
+              </SelectTrigger>
+              <SelectContent>
+                {prescribedByOptions.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-2">
             <Label htmlFor="medRemarks">Remarks</Label>

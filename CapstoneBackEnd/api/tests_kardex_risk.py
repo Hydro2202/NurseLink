@@ -144,3 +144,49 @@ class KardexRiskAndAllergiesIntegrationTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         patient.refresh_from_db()
         self.assertEqual(patient.risk_level, 'high')
+
+
+class KardexBloodPressureValidationTests(APITestCase):
+    """See api/serializers.py's validate_blood_pressure_format, shared by
+    KardexRecordSerializer, VitalSignsSerializer and PatientSerializer —
+    the two-input Systolic/Diastolic UI on every frontend always combines
+    into exactly this "120/80" shape before sending."""
+
+    def setUp(self):
+        cache.clear()
+        self.nurse = make_nurse('bp@hospital.com', 'Ben', 'Diaz')
+        self.client.force_authenticate(user=self.nurse)
+
+    def _create(self, blood_pressure):
+        return self.client.post('/api/kardex/', {
+            'lastName': 'Cruz', 'firstName': 'Ana', 'age': '40', 'gender': 'Female',
+            'room': '301-A', 'bloodPressure': blood_pressure,
+        })
+
+    def test_valid_blood_pressure_is_accepted(self):
+        response = self._create('120/80')
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_blank_blood_pressure_is_fine(self):
+        response = self._create('')
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_systolic_not_higher_than_diastolic_is_rejected(self):
+        response = self._create('80/120')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('bloodPressure', response.data)
+
+    def test_systolic_out_of_range_is_rejected(self):
+        response = self._create('400/80')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('bloodPressure', response.data)
+
+    def test_diastolic_out_of_range_is_rejected(self):
+        response = self._create('120/250')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('bloodPressure', response.data)
+
+    def test_unparseable_text_is_rejected(self):
+        response = self._create('normal')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('bloodPressure', response.data)

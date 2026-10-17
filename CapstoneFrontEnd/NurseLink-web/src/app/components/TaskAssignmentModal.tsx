@@ -5,10 +5,17 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import type { Nurse, Patient } from '../types/domain';
+import type { Nurse, Patient, TaskPriority } from '../types/domain';
 import { fetchNurses, createTask, ApiError } from '../api/nurselink';
 import { Loader2, UserPlus, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
+
+function toIsoLocal(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function todayIso(): string {
+  return toIsoLocal(new Date());
+}
 
 interface TaskAssignmentModalProps {
   open: boolean;
@@ -26,7 +33,8 @@ export function TaskAssignmentModal({
   const [nurses, setNurses] = useState<Nurse[]>([]);
   const [taskTitle, setTaskTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState<'urgent' | 'routine'>('routine');
+  const [priority, setPriority] = useState<TaskPriority>('medium');
+  const [dueDate, setDueDate] = useState(todayIso());
   const [dueTime, setDueTime] = useState('');
   const [selectedNurse, setSelectedNurse] = useState('');
   const [attendingPhysician, setAttendingPhysician] = useState('');
@@ -56,7 +64,8 @@ export function TaskAssignmentModal({
   const resetForm = () => {
     setTaskTitle('');
     setDescription('');
-    setPriority('routine');
+    setPriority('medium');
+    setDueDate(todayIso());
     setDueTime('');
     setSelectedNurse('');
     setAttendingPhysician(patient?.attendingPhysician || '');
@@ -68,7 +77,7 @@ export function TaskAssignmentModal({
 
   const handleReview = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!taskTitle || !selectedNurse || !dueTime || !patient) {
+    if (!taskTitle || !selectedNurse || !dueDate || !dueTime || !patient) {
       toast.error('Please fill in all required fields');
       return;
     }
@@ -84,6 +93,7 @@ export function TaskAssignmentModal({
         title: taskTitle,
         description,
         priority,
+        dueDate,
         dueTime,
         patientId: patient.id,
         patientName: patient.name,
@@ -145,8 +155,12 @@ export function TaskAssignmentModal({
                 <span className="font-semibold">{taskTitle}</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-gray-500">Priority</span>
+                <span className="text-gray-500">Risk Level</span>
                 <span className="font-semibold capitalize">{priority}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">Due Date</span>
+                <span className="font-semibold">{dueDate}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-500">Due Time</span>
@@ -207,18 +221,30 @@ export function TaskAssignmentModal({
             />
           </div>
 
+          <div className="space-y-2">
+            <Label>Risk Level *</Label>
+            <Select value={priority} onValueChange={(v: TaskPriority) => setPriority(v)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="high">🔴 High</SelectItem>
+                <SelectItem value="medium">🟠 Medium</SelectItem>
+                <SelectItem value="low">🟢 Low</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>Priority *</Label>
-              <Select value={priority} onValueChange={(v: 'urgent' | 'routine') => setPriority(v)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="urgent">Urgent</SelectItem>
-                  <SelectItem value="routine">Routine</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label htmlFor="dueDate">Due Date *</Label>
+              <Input
+                id="dueDate"
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                required
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="dueTime">Due Time *</Label>

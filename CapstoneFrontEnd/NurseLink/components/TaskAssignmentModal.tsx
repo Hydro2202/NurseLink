@@ -36,7 +36,7 @@ export function TaskAssignmentModal({
   const [nurses, setNurses] = useState<Nurse[]>([]);
   const [taskTitle, setTaskTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState<'urgent' | 'routine'>('routine');
+  const [priority, setPriority] = useState<'high' | 'medium' | 'low'>('medium');
   const [dueDate, setDueDate] = useState(todayIso());
   const [dueTime, setDueTime] = useState('');
   const [selectedNurse, setSelectedNurse] = useState('');
@@ -84,7 +84,7 @@ export function TaskAssignmentModal({
   const resetForm = () => {
     setTaskTitle('');
     setDescription('');
-    setPriority('routine');
+    setPriority('medium');
     setDueDate(todayIso());
     setDueTime('');
     setSelectedNurse('');
@@ -200,7 +200,7 @@ export function TaskAssignmentModal({
                     <Text style={styles.reviewValue}>{taskTitle}</Text>
                   </View>
                   <View style={styles.reviewRow}>
-                    <Text style={styles.reviewLabel}>Priority</Text>
+                    <Text style={styles.reviewLabel}>Risk Level</Text>
                     <Text style={[styles.reviewValue, { textTransform: 'capitalize' }]}>{priority}</Text>
                   </View>
                   <View style={styles.reviewRow}>
@@ -278,14 +278,15 @@ export function TaskAssignmentModal({
               </View>
 
               <Select
-                label="Priority *"
+                label="Risk Level *"
                 value={priority}
-                onValueChange={(value) => setPriority(value as 'urgent' | 'routine')}
+                onValueChange={(value) => setPriority(value as 'high' | 'medium' | 'low')}
                 options={[
-                  { label: 'Urgent', value: 'urgent' },
-                  { label: 'Routine', value: 'routine' },
+                  { label: '🔴 High', value: 'high' },
+                  { label: '🟠 Medium', value: 'medium' },
+                  { label: '🟢 Low', value: 'low' },
                 ]}
-                placeholder="Select priority"
+                placeholder="Select risk level"
               />
 
               <View style={styles.row}>

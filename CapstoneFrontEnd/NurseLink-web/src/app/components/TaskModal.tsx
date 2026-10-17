@@ -32,6 +32,13 @@ import {
 import type { Doctor, Patient, Task, TaskPriority } from '../types/domain';
 import { fetchPatients, fetchPatientAssignedDoctors, ApiError } from '../api/nurselink';
 
+function toIsoLocal(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function todayIso(): string {
+  return toIsoLocal(new Date());
+}
+
 interface TaskModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -59,9 +66,10 @@ export function TaskModal({
   const [formData, setFormData] = useState({
     title: '',
     description: '',
-    priority: 'routine' as TaskPriority,
+    priority: 'medium' as TaskPriority,
     patientName: '',
     patientId: '',
+    dueDate: '',
     dueTime: '',
     attendingPhysician: '',
     patientRoom: '',
@@ -102,6 +110,7 @@ export function TaskModal({
         priority: task.priority,
         patientName: task.patientName,
         patientId: task.patientId || '',
+        dueDate: task.dueDate || '',
         dueTime: task.dueTime,
         attendingPhysician: task.attendingPhysician || '',
         patientRoom: task.patientRoom || '',
@@ -114,9 +123,12 @@ export function TaskModal({
       setFormData({
         title: '',
         description: '',
-        priority: 'routine',
+        priority: 'medium',
         patientName: '',
         patientId: '',
+        // Defaults to today rather than blank, matching how Due Time
+        // already implicitly meant "today" before this field existed.
+        dueDate: todayIso(),
         dueTime: '',
         attendingPhysician: '',
         patientRoom: '',
@@ -202,6 +214,10 @@ export function TaskModal({
     }
 
     // Patient ID is auto-generated, no validation needed
+
+    if (!formData.dueDate) {
+      newErrors.dueDate = 'Due date is required';
+    }
 
     if (!formData.dueTime) {
       newErrors.dueTime = 'Due time is required';
@@ -293,23 +309,38 @@ export function TaskModal({
             />
           </div>
 
+          <div className="space-y-2">
+            <Label htmlFor="priority">Risk Level *</Label>
+            <Select
+              value={formData.priority}
+              onValueChange={(value: TaskPriority) =>
+                setFormData({ ...formData, priority: value })
+              }
+            >
+              <SelectTrigger id="priority">
+                <SelectValue placeholder="Select risk level" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="high">🔴 High</SelectItem>
+                <SelectItem value="medium">🟠 Medium</SelectItem>
+                <SelectItem value="low">🟢 Low</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="priority">Priority *</Label>
-              <Select
-                value={formData.priority}
-                onValueChange={(value: TaskPriority) =>
-                  setFormData({ ...formData, priority: value })
-                }
-              >
-                <SelectTrigger id="priority">
-                  <SelectValue placeholder="Select priority" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="urgent">🔴 Urgent</SelectItem>
-                  <SelectItem value="routine">🟡 Routine</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label htmlFor="dueDate">Due Date *</Label>
+              <Input
+                id="dueDate"
+                type="date"
+                value={formData.dueDate}
+                onChange={(e) => setFormData({ ...formData, dueDate: e.target.value })}
+                className={errors.dueDate ? 'border-red-500' : ''}
+              />
+              {errors.dueDate && (
+                <p className="text-sm text-red-500">{errors.dueDate}</p>
+              )}
             </div>
 
             <div className="space-y-2">

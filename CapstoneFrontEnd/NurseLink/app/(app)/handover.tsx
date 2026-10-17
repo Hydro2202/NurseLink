@@ -136,6 +136,21 @@ function describeHandover(handover: HandoverNote, type: 'incoming' | 'outgoing' 
   return `From: ${handover.nurseFrom} • ${handover.shiftLabel || handover.shift} shift • ${handover.date}`;
 }
 
+/** "Due in 12 min" / "Due now" / "Overdue by 25 min" — same chip vocabulary
+ * as a task's due-date chip (see tasks.tsx), applied to a referral's single
+ * combined dueAt. null once it's no longer pending (accepted/declined/
+ * cancelled/completed) or for a referral predating this field. */
+function referralDueChip(handover: HandoverNote): { label: string; color: string } | null {
+  if (!handover.dueAt || !['sent', 'received'].includes(handover.status)) return null;
+  const due = new Date(handover.dueAt).getTime();
+  if (Number.isNaN(due)) return null;
+  const diffMin = Math.round((due - Date.now()) / 60000);
+  if (diffMin > 30) return { label: `Due ${new Date(due).toLocaleString()}`, color: Colors.gray600 };
+  if (diffMin > 0) return { label: `Due in ${diffMin} min`, color: Colors.orange600 };
+  if (diffMin === 0) return { label: 'Due now', color: Colors.red600 };
+  return { label: `Overdue by ${Math.abs(diffMin)} min`, color: Colors.red600 };
+}
+
 export default function HandoverPage() {
   const { user } = useAuth();
   const router = useRouter();
@@ -217,6 +232,7 @@ export default function HandoverPage() {
         // display name, so without this the server cannot tell which inbox to
         // notify and deliberately notifies nobody.
         nurseToId: handoverData.nurseToId || '',
+        dueAt: handoverData.dueAt || '',
         sbar: handoverData.sbar || {
           situation: '',
           background: '',
@@ -499,6 +515,15 @@ export default function HandoverPage() {
               </CardTitle>
             </View>
             <CardDescription>{describeHandover(handover, type)}</CardDescription>
+            {(() => {
+              const chip = referralDueChip(handover);
+              return chip ? (
+                <View style={styles.dueChipRow}>
+                  <Clock size={12} color={chip.color} />
+                  <Text style={[styles.dueChipText, { color: chip.color }]}>{chip.label}</Text>
+                </View>
+              ) : null;
+            })()}
           </View>
           <View style={styles.headerActions}>
             <Badge variant={statusBadgeVariant(handover.status)}>{statusLabel(handover.status)}</Badge>
@@ -998,6 +1023,16 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontSize: 17,
+    fontWeight: '700',
+  },
+  dueChipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  dueChipText: {
+    fontSize: 12,
     fontWeight: '700',
   },
   headerActions: {

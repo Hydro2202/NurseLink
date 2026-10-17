@@ -6,7 +6,8 @@ export interface Task {
   patientName: string;
   title: string;
   description: string;
-  priority: 'urgent' | 'routine' | 'completed';
+  /** Risk level, not a workflow state — see `status` for completion. */
+  priority: 'high' | 'medium' | 'low';
   dueTime: string;
   /** "YYYY-MM-DD" — when paired with dueTime, this is also what the
    * backend's due-task reminder (see api/notifications.py's
@@ -335,6 +336,10 @@ export interface HandoverNote {
   toDepartmentId?: number | null;
   toDepartmentName?: string;
   date: string;
+  /** ISO datetime this referral needs to be acted on by. Required on
+   * create (the backend rejects a missing or past value); optional/null
+   * only for referrals created before this field existed. */
+  dueAt?: string | null;
   nurseFrom: string;
   nurseTo: string;
   /** Account id of the receiving nurse. Write-only: sent on create, never returned. */

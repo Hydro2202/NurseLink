@@ -368,10 +368,16 @@ def default_task_checklist():
 
 
 class Task(models.Model):
+    # Risk level, not a workflow state — status (below) already covers
+    # completion, which is why the old 'completed' priority choice (a
+    # leftover that TaskSerializer.update()/TaskViewSet.complete used to
+    # stamp over whatever risk level a task actually had) is gone. See the
+    # 0070 migration for the one-time data conversion of existing rows
+    # (urgent->high, routine->medium, completed->low).
     PRIORITY_CHOICES = [
-        ('urgent', 'Urgent'),
-        ('routine', 'Routine'),
-        ('completed', 'Completed'),
+        ('high', 'High'),
+        ('medium', 'Medium'),
+        ('low', 'Low'),
     ]
     STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -398,7 +404,7 @@ class Task(models.Model):
     patient_name = models.CharField(max_length=200, blank=True, default='')
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, default='')
-    priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='routine', db_index=True)
+    priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='medium', db_index=True)
     due_time = models.CharField(max_length=20, blank=True, default='')
     # Added alongside the pre-existing due_time (free-text "HH:MM" from the
     # nurse-facing TimePicker, left untouched) rather than folding into it —
@@ -407,12 +413,16 @@ class Task(models.Model):
     # created before this field, and for one entered through the admin
     # generic record editor's plain text field without a real date typed in.
     due_date = models.DateField(null=True, blank=True)
-    # Set once a reminder notification has gone out for this due_date/
-    # due_time, so the periodic check (see notifications.py's
+    # Set once the "due now" reminder notification has gone out for this
+    # due_date/due_time, so the periodic check (see notifications.py's
     # check_due_task_reminders) never raises the same reminder twice.
     # Cleared automatically whenever due_date or due_time changes (see
     # TaskSerializer.update()), so editing a task's schedule re-arms it.
     reminder_sent_at = models.DateTimeField(null=True, blank=True)
+    # Same idea, for the earlier "due soon" reminder (see
+    # notifications.TASK_REMINDER_LEAD_MINUTES) — tracked separately from
+    # reminder_sent_at so one firing never blocks or duplicates the other.
+    reminder_soon_sent_at = models.DateTimeField(null=True, blank=True)
     assigned_to = models.CharField(max_length=200, db_index=True)
     assigned_nurse = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -606,6 +616,15 @@ class HandoverNote(models.Model):
     ]
 
     handover_code = models.CharField(max_length=30, unique=True, db_index=True)
+    # When this referral needs to be acted on by. Nullable so every referral
+    # created before this field existed keeps working unchanged — only new
+    # referrals are required (at the serializer level) to set it. See
+    # notifications.check_due_referral_reminders for the almost-due/overdue
+    # alerts this drives, and the two *_sent_at fields below for why each
+    # only ever fires once.
+    due_at = models.DateTimeField(null=True, blank=True)
+    reminder_almost_due_sent_at = models.DateTimeField(null=True, blank=True)
+    reminder_overdue_sent_at = models.DateTimeField(null=True, blank=True)
     # True only for a referral created through the new bulk `patientIds` path
     # (HandoverSerializer.create()) — i.e. a genuine Endorsement. False
     # (default) for every legacy single-`patientId` referral, old or newly

@@ -59,7 +59,7 @@ export function TaskModal({
   const [formData, setFormData] = useState({
     title: '',
     description: '',
-    priority: 'routine' as 'urgent' | 'routine',
+    priority: 'medium' as 'high' | 'medium' | 'low',
     patientName: '',
     patientId: '',
     dueDate: '',
@@ -93,7 +93,7 @@ export function TaskModal({
         setFormData({
           title: task.title,
           description: task.description || '',
-          priority: task.priority === 'urgent' ? 'urgent' : 'routine',
+          priority: task.priority === 'high' || task.priority === 'low' ? task.priority : 'medium',
           patientName: task.patientName,
           patientId: task.patientId || '',
           dueDate: task.dueDate || '',
@@ -107,7 +107,7 @@ export function TaskModal({
         setFormData({
           title: '',
           description: '',
-          priority: 'routine',
+          priority: 'medium',
           patientName: '',
           patientId: '',
           // Defaults to today rather than blank — matches how "Due Time"
@@ -297,16 +297,17 @@ export function TaskModal({
               </View>
 
               <Select
-                label="Priority *"
+                label="Risk Level *"
                 value={formData.priority}
                 onValueChange={(value) =>
-                  setFormData({ ...formData, priority: value as 'urgent' | 'routine' })
+                  setFormData({ ...formData, priority: value as 'high' | 'medium' | 'low' })
                 }
                 options={[
-                  { label: '🔴 Urgent', value: 'urgent' },
-                  { label: '🟡 Routine', value: 'routine' },
+                  { label: '🔴 High', value: 'high' },
+                  { label: '🟠 Medium', value: 'medium' },
+                  { label: '🟢 Low', value: 'low' },
                 ]}
-                placeholder="Select priority"
+                placeholder="Select risk level"
               />
 
               <View style={styles.row}>

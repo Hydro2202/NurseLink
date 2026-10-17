@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
 import { Input } from '../components/ui/input';
+import { BloodPressureInput } from '../components/BloodPressureInput';
 import { Textarea } from '../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Separator } from '../components/ui/separator';
@@ -895,15 +896,11 @@ export default function KardexPage() {
                 placeholder="18"
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="bloodPressure">Blood Pressure</Label>
-              <Input
-                id="bloodPressure"
-                value={bloodPressure}
-                onChange={(e) => setBloodPressure(e.target.value)}
-                placeholder="120/80"
-              />
-            </div>
+            <BloodPressureInput
+              id="bloodPressure"
+              value={bloodPressure}
+              onChange={setBloodPressure}
+            />
             <div className="space-y-2">
               <Label htmlFor="oxygenSaturation">O2 Saturation (%)</Label>
               <Input

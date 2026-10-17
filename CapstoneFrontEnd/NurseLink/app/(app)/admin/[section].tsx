@@ -269,7 +269,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Patient room', value: t.patientRoom || '—' },
       { label: 'Department', value: t.departmentName || '—' },
       { label: 'Assigned to', value: t.assignedTo || 'Unassigned' },
-      { label: 'Priority', value: t.priority },
+      { label: 'Risk level', value: t.priority },
       { label: 'Status', value: t.status.replace('_', ' ') },
       { label: 'Category', value: t.category },
       { label: 'Due date', value: t.dueDate || '—' },
@@ -293,8 +293,8 @@ const SECTIONS: Record<string, SectionConfig> = {
       { key: 'description', label: 'Description', type: 'multiline', get: (t) => t.description },
       { key: 'assignedTo', label: 'Assigned to', type: 'select', options: (c) => c.nurseNames, get: (t) => t.assignedTo },
       {
-        key: 'priority', label: 'Priority', type: 'select',
-        options: opts(['urgent', 'Urgent'], ['routine', 'Routine'], ['completed', 'Completed']),
+        key: 'priority', label: 'Risk level', type: 'select',
+        options: opts(['high', 'High'], ['medium', 'Medium'], ['low', 'Low']),
         get: (t) => t.priority,
       },
       {
@@ -337,6 +337,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Sender shift', value: `${h.shiftLabel || h.shift} shift` },
       { label: 'Shift', value: h.shift },
       { label: 'Date', value: h.date },
+      { label: 'Due at', value: h.dueAt ? fmtDate(h.dueAt) : '—' },
       { label: 'Status', value: h.status },
       { label: 'Situation', value: h.sbar?.situation || '—', multiline: true },
       { label: 'Background', value: h.sbar?.background || '—', multiline: true },

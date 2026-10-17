@@ -9,7 +9,6 @@ import {
   confirmChartingNote,
   deleteChartingNote,
   structureChartRequest,
-  dischargePatient,
   ApiError,
 } from '../api/nurselink';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -35,7 +34,6 @@ import {
   CheckCircle2,
   ClipboardList,
   ChevronLeft,
-  LogOut,
   Loader2,
 } from 'lucide-react';
 import {
@@ -60,7 +58,6 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { toast } from 'sonner';
 import { StructuredNursingNote } from '../components/StructuredNursingNote';
 import { FDARNursingNote } from '../components/FDARNursingNote';
-import { DischargePlanModal } from '../components/DischargePlanModal';
 import { useAuth } from '../contexts/AuthContext';
 import {
   contentFromFDAR,
@@ -141,8 +138,6 @@ export default function ChartingPage() {
   const [historyNotes, setHistoryNotes] = useState<ChartingNote[]>([]);
   const [historyNotesLoading, setHistoryNotesLoading] = useState(false);
   const [historyDateSearch, setHistoryDateSearch] = useState('');
-  const [dischargeConfirmOpen, setDischargeConfirmOpen] = useState(false);
-  const [dischargeModalOpen, setDischargeModalOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -645,18 +640,6 @@ export default function ChartingPage() {
               <p className="text-sm text-blue-800 font-medium ml-6">{getAttendingPhysician(selectedPatientRecord)}</p>
             </div>
           )}
-
-          {selectedPatientRecord && selectedPatientRecord.status !== 'discharged' ? (
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
-              onClick={() => setDischargeConfirmOpen(true)}
-            >
-              <LogOut className="w-4 h-4 mr-2" />
-              Discharge Patient
-            </Button>
-          ) : null}
 
           {/* Input Field */}
           <div className="space-y-2">
@@ -1234,49 +1217,6 @@ export default function ChartingPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Step 1 of discharge: confirm which patient. */}
-      <AlertDialog open={dischargeConfirmOpen} onOpenChange={setDischargeConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Discharge Patient</AlertDialogTitle>
-            <AlertDialogDescription>
-              {selectedPatientRecord
-                ? `Discharge ${selectedPatientRecord.name}? You'll complete a Discharge Plan next — the patient isn't marked as discharged until that's submitted.`
-                : 'Discharge this patient?'}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                setDischargeConfirmOpen(false);
-                setTimeout(() => setDischargeModalOpen(true), 0);
-              }}
-            >
-              Continue
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <DischargePlanModal
-        open={dischargeModalOpen}
-        onOpenChange={setDischargeModalOpen}
-        patient={selectedPatientRecord ?? null}
-        onConfirm={async (plan) => {
-          if (!selectedPatientRecord) return;
-          try {
-            const updated = await dischargePatient(selectedPatientRecord.id, plan);
-            setPatients((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-            toast.success('Patient discharged', { description: `${updated.name} has been marked as discharged.` });
-            setDischargeModalOpen(false);
-            setSelectedPatient('');
-          } catch (error) {
-            toast.error('Failed to discharge patient', { description: error instanceof ApiError ? error.message : 'Please try again.' });
-          }
-        }}
-      />
     </div>
   );
 }

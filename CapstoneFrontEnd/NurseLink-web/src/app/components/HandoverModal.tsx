@@ -29,6 +29,13 @@ import type {
 import { fetchPatients, fetchEligibleReferralRecipients, ApiError } from '../api/nurselink';
 import { bmiCategory } from '../utils/bmi';
 
+function toIsoLocal(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function todayIso(): string {
+  return toIsoLocal(new Date());
+}
+
 /**
  * Why the receiving-nurse list is empty, in plain language — keyed by the
  * backend's emptyReason code (see api/referral_shifts.py). Any reason not
@@ -66,6 +73,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
   const [loading, setLoading] = useState(false);
   const [selectedPatientId, setSelectedPatientId] = useState<string>('');
   const [selectedNurseId, setSelectedNurseId] = useState<string>('');
+  const [dueDate, setDueDate] = useState(todayIso());
+  const [dueTime, setDueTime] = useState('');
   const [formData, setFormData] = useState({
     patientName: '',
     nurseTo: '',
@@ -90,6 +99,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     if (!open) {
       setSelectedPatientId('');
       setSelectedNurseId('');
+      setDueDate(todayIso());
+      setDueTime('');
       setFormData({
         patientName: '',
         nurseTo: '',
@@ -204,6 +215,16 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     }
   }, [selectedPatientId, patients]);
 
+  /** "YYYY-MM-DD" + "HH:MM" (local) -> a real Date, or null if either
+   * piece is missing/unparseable. */
+  const dueAtDate = (): Date | null => {
+    if (!dueDate || !dueTime) return null;
+    const [y, m, d] = dueDate.split('-').map(Number);
+    const [h, min] = dueTime.split(':').map(Number);
+    if (!y || !m || !d || Number.isNaN(h) || Number.isNaN(min)) return null;
+    return new Date(y, m - 1, d, h, min);
+  };
+
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
 
@@ -217,6 +238,17 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
 
     if (!selectedNurseId) {
       newErrors.nurse = 'Please select a receiving nurse';
+    }
+
+    if (!dueDate) {
+      newErrors.dueDate = 'Due date is required';
+    }
+    if (!dueTime) {
+      newErrors.dueTime = 'Due time is required';
+    }
+    const due = dueAtDate();
+    if (dueDate && dueTime && due && due.getTime() <= Date.now()) {
+      newErrors.dueTime = 'Due date and time must be in the future';
     }
 
     if (!formData.recommendation.trim()) {
@@ -237,6 +269,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     setLoading(true);
     
     try {
+      const due = dueAtDate();
       await onSave({
         patientId: selectedPatientId,
         patientName: formData.patientName,
@@ -244,6 +277,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         // Sent alongside the name so the API can notify exactly this nurse —
         // display names are not unique on this ward.
         nurseToId: selectedNurseId,
+        dueAt: due ? due.toISOString() : undefined,
         sbar: {
           situation: formData.situation,
           background: formData.background,
@@ -269,11 +303,17 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
           return '';
         };
         const nurseToIdMessage = messageFor('nurseToId');
+        const dueAtMessage = messageFor('dueAt');
         const nonFieldMessage = messageFor('nonFieldErrors');
         setErrors((prev) => ({
           ...prev,
           ...(nurseToIdMessage ? { nurse: nurseToIdMessage } : {}),
-          ...(nonFieldMessage ? { form: nonFieldMessage } : nurseToIdMessage ? {} : { form: error.message }),
+          ...(dueAtMessage ? { dueTime: dueAtMessage } : {}),
+          ...(nonFieldMessage
+            ? { form: nonFieldMessage }
+            : nurseToIdMessage || dueAtMessage
+              ? {}
+              : { form: error.message }),
         }));
       } else {
         setErrors((prev) => ({ ...prev, form: 'Failed to save the referral. Please try again.' }));
@@ -422,6 +462,31 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
               {!eligibilityLoading && onDuty && nurses.length === 0 && (
                 <p className="text-sm text-amber-600">{noNursesReason}</p>
               )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="dueDate">Due Date *</Label>
+              <Input
+                id="dueDate"
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                className={errors.dueDate ? 'border-red-500' : ''}
+              />
+              {errors.dueDate && <p className="text-sm text-red-500">{errors.dueDate}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dueTime">Due Time *</Label>
+              <Input
+                id="dueTime"
+                type="time"
+                value={dueTime}
+                onChange={(e) => setDueTime(e.target.value)}
+                className={errors.dueTime ? 'border-red-500' : ''}
+              />
+              {errors.dueTime && <p className="text-sm text-red-500">{errors.dueTime}</p>}
             </div>
           </div>
 

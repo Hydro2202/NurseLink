@@ -67,6 +67,7 @@ class ReferralShiftRotationTests(ReferralShiftTestBase):
             'patientId': (patient or self.patient).patient_code,
             'patientName': (patient or self.patient).name,
             'date': str(self.day),
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': sender.get_full_name(),
             'nurseTo': recipient.get_full_name() if recipient else '',
             'nurseToId': str(recipient.pk) if recipient else '',

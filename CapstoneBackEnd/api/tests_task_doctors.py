@@ -60,7 +60,8 @@ class TaskDoctorTests(APITestCase):
         body = {
             'title': 'Cardiac review',
             'patientId': 'PT01',
-            'priority': 'routine',
+            'priority': 'medium',
+            'dueDate': '2026-10-20',
             'dueTime': '14:30',
             'patientRoom': '101',
         }

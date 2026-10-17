@@ -305,6 +305,13 @@ export async function fetchPatients(options?: {
   return apiRequest<Patient[]>(`/patients/${query}`);
 }
 
+/** One patient by code — used by the medication form's doctor dropdown,
+ * which only has patientId and needs the attending physician's name to
+ * preselect/prioritize it. */
+export async function fetchPatient(patientCode: string): Promise<Patient> {
+  return apiRequest<Patient>(`/patients/${patientCode}/`);
+}
+
 export async function fetchDepartments(): Promise<Department[]> {
   return apiRequest<Department[]>('/departments/');
 }
@@ -349,6 +356,13 @@ export async function createTask(data: Partial<Task>): Promise<Task> {
   return apiRequest<Task>('/tasks/', { method: 'POST', body: data });
 }
 
+/** One task by its code — used by TaskDueAlertModal, which only has the
+ * task_code off a notification's action.highlightId and needs the full
+ * record (room, risk level, due date/time) to render. */
+export async function fetchTask(taskId: string): Promise<Task> {
+  return apiRequest<Task>(`/tasks/${taskId}/`);
+}
+
 export async function updateTask(taskId: string, data: Partial<Task>): Promise<Task> {
   return apiRequest<Task>(`/tasks/${taskId}/`, { method: 'PATCH', body: data });
 }
@@ -368,6 +382,13 @@ export async function fetchHandovers(options?: { status?: string }): Promise<Han
 
 export async function createHandover(data: Partial<HandoverNote>): Promise<HandoverNote> {
   return apiRequest<HandoverNote>('/handovers/', { method: 'POST', body: data });
+}
+
+/** One referral by its code — used by ReferralDueAlertModal, which only
+ * has the handover_code off a notification's action.highlightId and needs
+ * the full record (patients, dueAt) to render. */
+export async function fetchHandover(id: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/handovers/${id}/`);
 }
 
 export async function updateHandover(

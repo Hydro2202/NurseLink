@@ -19,6 +19,7 @@ import {
 } from './ui/select';
 import { Loader2, Save } from 'lucide-react';
 import { toast } from 'sonner';
+import { BloodPressureInput } from './BloodPressureInput';
 import {
   createKardexRecord,
   updatePatient,
@@ -305,13 +306,10 @@ export function PatientKardexModal({
                 onChange={(e) => setField('respiratoryRate', e.target.value)}
               />
             </div>
-            <div className="space-y-1">
-              <Label>Blood Pressure</Label>
-              <Input
-                value={form.bloodPressure}
-                onChange={(e) => setField('bloodPressure', e.target.value)}
-              />
-            </div>
+            <BloodPressureInput
+              value={form.bloodPressure}
+              onChange={(v) => setField('bloodPressure', v)}
+            />
             <div className="space-y-1">
               <Label>Oxygen Saturation</Label>
               <Input

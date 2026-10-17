@@ -101,6 +101,20 @@ function describeHandover(handover: HandoverNote, type: 'incoming' | 'outgoing' 
   return `From: ${handover.nurseFrom} • ${handover.shiftLabel || handover.shift} shift • ${handover.date}`;
 }
 
+/** "Due in 12 min" / "Due now" / "Overdue by 25 min" — null once it's no
+ * longer pending (accepted/declined/cancelled/completed) or for a
+ * referral predating dueAt. */
+function referralDueChip(handover: HandoverNote): { label: string; color: string } | null {
+  if (!handover.dueAt || !['sent', 'received'].includes(handover.status)) return null;
+  const due = new Date(handover.dueAt).getTime();
+  if (Number.isNaN(due)) return null;
+  const diffMin = Math.round((due - Date.now()) / 60000);
+  if (diffMin > 30) return { label: `Due ${new Date(due).toLocaleString()}`, color: '#4B5563' };
+  if (diffMin > 0) return { label: `Due in ${diffMin} min`, color: '#EA580C' };
+  if (diffMin === 0) return { label: 'Due now', color: '#DC2626' };
+  return { label: `Overdue by ${Math.abs(diffMin)} min`, color: '#DC2626' };
+}
+
 export default function HandoverPage() {
   const { user } = useAuth();
   const location = useLocation();
@@ -157,6 +171,7 @@ export default function HandoverPage() {
         // the sender's own Duty Roster shift now — nothing to send here,
         // see api/referral_shifts.py.
         date: new Date().toISOString().slice(0, 10),
+        dueAt: handoverData.dueAt || undefined,
         nurseFrom: currentUserName,
         nurseTo: handoverData.nurseTo || '',
         nurseToId: handoverData.nurseToId || '',
@@ -299,6 +314,15 @@ export default function HandoverPage() {
             <CardDescription className="mt-1">
               {describeHandover(handover, type)}
             </CardDescription>
+            {(() => {
+              const chip = referralDueChip(handover);
+              return chip ? (
+                <p className="text-xs font-bold mt-1 flex items-center gap-1" style={{ color: chip.color }}>
+                  <Clock className="w-3 h-3" />
+                  {chip.label}
+                </p>
+              ) : null;
+            })()}
           </div>
           <div className="flex items-center gap-2">
             <Badge variant={STATUS_BADGE[handover.status].variant}>{STATUS_BADGE[handover.status].label}</Badge>

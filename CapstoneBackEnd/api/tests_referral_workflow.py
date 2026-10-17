@@ -77,6 +77,7 @@ class ReferralWorkflowTests(APITestCase):
         # they do for a referral created through the app.
         body = {
             'patientId': self.patient.patient_code, 'shift': 'morning', 'date': '2026-03-03',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': 'Ana Cruz', 'nurseTo': 'Ben Diaz', 'nurseToId': str(self.recipient.pk),
             'sbar': {'situation': 's', 'background': 'b', 'assessment': 'a', 'recommendation': 'r'},
         }

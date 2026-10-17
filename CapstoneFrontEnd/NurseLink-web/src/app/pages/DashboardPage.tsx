@@ -113,7 +113,7 @@ export default function DashboardPage() {
   useLiveRefresh('duty', () => void loadDashboard());
 
   // Calculate stats
-  const urgentTasks = tasks.filter(t => t.priority === 'urgent' && t.status !== 'completed').length;
+  const urgentTasks = tasks.filter(t => t.priority === 'high' && t.status !== 'completed').length;
   const overdueTasks = tasks.filter(t => t.status === 'overdue').length;
   const completedTasks = tasks.filter(t => t.status === 'completed').length;
   const totalTasks = tasks.length || 1;
@@ -575,16 +575,18 @@ export default function DashboardPage() {
                 <div
                   key={task.id}
                   className={`p-4 border rounded-lg ${
-                    task.priority === 'urgent' 
-                      ? 'border-destructive/30 bg-destructive/5' 
-                      : 'border-warning/30 bg-warning/5'
+                    task.priority === 'high'
+                      ? 'border-destructive/30 bg-destructive/5'
+                      : task.priority === 'low'
+                        ? 'border-green-500/30 bg-green-500/5'
+                        : 'border-warning/30 bg-warning/5'
                   }`}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-2">
-                        <Badge variant={task.priority === 'urgent' ? 'destructive' : 'default'} className="font-medium text-xs">
-                          {task.priority === 'urgent' ? 'URGENT' : 'ROUTINE'}
+                        <Badge variant={task.priority === 'high' ? 'destructive' : 'default'} className="font-medium text-xs uppercase">
+                          {task.priority}
                         </Badge>
                         <span className="text-sm font-medium text-muted-foreground flex items-center gap-1">
                           <Clock className="w-3 h-3" />

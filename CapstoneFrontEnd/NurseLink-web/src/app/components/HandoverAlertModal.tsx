@@ -5,6 +5,7 @@ import { fetchNotifications, markNotificationRead, ApiError } from '../api/nurse
 import type { AppNotification } from '../types/domain';
 import { Dialog, DialogContent } from './ui/dialog';
 import { Button } from './ui/button';
+import { useLiveRefresh } from '../contexts/LiveContext';
 
 /**
  * The popup a nurse sees when a patient is handed over to them — ported
@@ -12,11 +13,11 @@ import { Button } from './ui/button';
  * have not seen is the one event in this app that should not wait until
  * somebody happens to open the bell menu, so it interrupts.
  *
- * Web has no live/WebSocket refresh layer yet (unlike mobile's LiveContext),
- * so this checks once per page load rather than polling — still strictly
- * better than the current state (no popup at all), and consistent with how
- * the rest of web's notification system already behaves (NotificationPanel
- * also only fetches once on mount).
+ * Refetches on every 'notifications' live tick (see LiveContext), same as
+ * DashboardLayout's own unread badge — not just once on mount. The one-shot
+ * version of this left a referral that arrived mid-session with no popup
+ * until the next full page load; polling is what mobile's equivalent gets
+ * essentially for free from its own LiveContext.
  */
 const HANDOVER_RECEIVED = 'handover_received';
 
@@ -33,20 +34,18 @@ export function HandoverAlertModal() {
   const [current, setCurrent] = useState<AppNotification | null>(null);
   const [handled, setHandled] = useState<Set<string>>(() => new Set());
 
-  useEffect(() => {
-    let cancelled = false;
+  const refresh = () => {
     fetchNotifications()
       .then(({ results }) => {
-        if (cancelled) return;
         setPending(results.filter((n) => n.event === HANDOVER_RECEIVED && !n.isRead));
       })
       .catch(() => {
         // Non-critical — the notification bell is still the fallback path.
       });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  };
+
+  useEffect(refresh, []);
+  useLiveRefresh('notifications', refresh);
 
   const queue = pending.filter((n) => !handled.has(n.id));
 

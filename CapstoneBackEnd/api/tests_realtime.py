@@ -97,6 +97,7 @@ def post_handover(sender_token, patient, receiver, nurse_to_id=None):
             'patientName': patient.name,
             'shift': 'morning',
             'date': '2026-03-03',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': 'Maria Santos',
             'nurseTo': receiver.get_full_name(),
             'nurseToId': nurse_to_id or str(receiver.pk),

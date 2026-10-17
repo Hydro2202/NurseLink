@@ -14,16 +14,17 @@ dev server, on a phone over the LAN, and behind any WSGI host.
 import logging
 import threading
 import time
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
-from .models import Notification, NurseProfile, Task
+from .models import HandoverNote, Notification, NurseProfile, Task
 from .names import full_name, name_variants
 from .realtime import push_notification
 
@@ -40,8 +41,13 @@ HANDOVER_COMPLETED = 'handover_completed'
 # Head-nurse oversight only — never actionable, never an approval request.
 # See notify_referral_head_nurse_fyi.
 REFERRAL_HEAD_NURSE_FYI = 'referral_head_nurse_fyi'
+# Raised to the receiving nurse while a referral is still pending, plus the
+# sender for the overdue case — see check_due_referral_reminders.
+REFERRAL_ALMOST_DUE = 'referral_almost_due'
+REFERRAL_OVERDUE = 'referral_overdue'
 TASK_ASSIGNED = 'task_assigned'
 TASK_UPDATED = 'task_updated'
+TASK_DUE_SOON = 'task_due_soon'
 TASK_DUE = 'task_due'
 KARDEX_REVIEWED = 'kardex_reviewed'
 NURSE_REASSIGNED = 'nurse_reassigned'
@@ -50,6 +56,12 @@ TASK_HANDOVER_ACCEPTED = 'task_handover_accepted'
 TASK_HANDOVER_REJECTED = 'task_handover_rejected'
 NEW_REGISTRATION_PENDING = 'new_registration_pending'
 SAFETY_ALERT = 'safety_alert'
+
+# How far ahead of a task's/referral's due moment its "almost due" popup
+# fires. Single constants so the lead time is defined once and the check
+# functions, tests, and any documentation all agree on the same number.
+TASK_REMINDER_LEAD_MINUTES = 15
+REFERRAL_REMINDER_LEAD_MINUTES = 30
 
 
 
@@ -556,7 +568,7 @@ def notify_task_assigned(task, actor=None):
 
     # Urgent work is a critical alert; everything else is a task notification.
     # They are separate switches on the Settings page, so honour them separately.
-    preference = 'critical_alerts' if task.priority == 'urgent' else 'task_notifications'
+    preference = 'critical_alerts' if task.priority == 'high' else 'task_notifications'
     if not wants(recipient, preference):
         logger.info(
             '[Settings] %s has %s off; task %s not notified.',
@@ -571,9 +583,9 @@ def notify_task_assigned(task, actor=None):
 
     return notify(
         recipient,
-        notification_type='critical' if task.priority == 'urgent' else 'info',
+        notification_type='critical' if task.priority == 'high' else 'info',
         event=TASK_ASSIGNED,
-        title='Urgent task assigned' if task.priority == 'urgent' else 'New task assigned',
+        title='High-risk task assigned' if task.priority == 'high' else 'New task assigned',
         message=f'{who or "New task: "}{task.title}{patient}.',
         patient_label=task.patient_name or '',
         patient=task.patient,
@@ -602,7 +614,7 @@ def notify_task_updated(task, actor=None, *, changed_fields=()):
     if actor is not None and actor.pk == recipient.pk:
         return None
 
-    preference = 'critical_alerts' if task.priority == 'urgent' else 'task_notifications'
+    preference = 'critical_alerts' if task.priority == 'high' else 'task_notifications'
     if not wants(recipient, preference):
         logger.info(
             '[Settings] %s has %s off; task update for %s not notified.',
@@ -616,13 +628,46 @@ def notify_task_updated(task, actor=None, *, changed_fields=()):
 
     return notify(
         recipient,
-        notification_type='critical' if task.priority == 'urgent' else 'info',
+        notification_type='critical' if task.priority == 'high' else 'info',
         event=TASK_UPDATED,
-        title='Urgent task updated' if task.priority == 'urgent' else 'Task updated',
+        title='High-risk task updated' if task.priority == 'high' else 'Task updated',
         message=f'{who}{task.title}{patient} ({what}).',
         patient_label=task.patient_name or '',
         patient=task.patient,
         sender=actor,
+        action_label='Open tasks',
+        action_path='/tasks',
+        action_highlight_id=task.task_code,
+    )
+
+
+def notify_task_due_soon(task):
+    """
+    Tell the assigned nurse one of their tasks is due in
+    TASK_REMINDER_LEAD_MINUTES.
+
+    No actor — this fires from the scheduled-time check itself (see
+    check_due_task_reminders), not from anyone's action, so there's no
+    self-skip and no "X did this" phrasing. Same shape as notify_task_due,
+    just earlier and worded as a warning rather than "due now".
+    """
+    recipient = task.assigned_nurse
+    if recipient is None:
+        return None
+
+    preference = 'critical_alerts' if task.priority == 'high' else 'task_notifications'
+    if not wants(recipient, preference):
+        return None
+
+    patient = f' for {task.patient_name}' if task.patient_name else ''
+    return notify(
+        recipient,
+        notification_type='critical' if task.priority == 'high' else 'warning',
+        event=TASK_DUE_SOON,
+        title='High-risk task due soon' if task.priority == 'high' else 'Task due soon',
+        message=f'{task.title}{patient} is due in {TASK_REMINDER_LEAD_MINUTES} minutes.',
+        patient_label=task.patient_name or '',
+        patient=task.patient,
         action_label='Open tasks',
         action_path='/tasks',
         action_highlight_id=task.task_code,
@@ -641,16 +686,16 @@ def notify_task_due(task):
     if recipient is None:
         return None
 
-    preference = 'critical_alerts' if task.priority == 'urgent' else 'task_notifications'
+    preference = 'critical_alerts' if task.priority == 'high' else 'task_notifications'
     if not wants(recipient, preference):
         return None
 
     patient = f' for {task.patient_name}' if task.patient_name else ''
     return notify(
         recipient,
-        notification_type='critical' if task.priority == 'urgent' else 'warning',
+        notification_type='critical' if task.priority == 'high' else 'warning',
         event=TASK_DUE,
-        title='Urgent task due now' if task.priority == 'urgent' else 'Task due now',
+        title='High-risk task due now' if task.priority == 'high' else 'Task due now',
         message=f'{task.title}{patient} is due now.',
         patient_label=task.patient_name or '',
         patient=task.patient,
@@ -684,29 +729,176 @@ def _task_scheduled_at(task):
 
 def check_due_task_reminders(user):
     """
-    Raises a "task due" notification the first time a poll notices one of
-    this nurse's own tasks has reached its scheduled due date/time.
+    Raises "due soon" (TASK_REMINDER_LEAD_MINUTES ahead) and "due now"
+    notifications the first time a poll notices one of this nurse's own
+    tasks has reached either moment, and flips status to 'overdue' once
+    the due moment has passed without completion.
 
     Called from LiveStateView on every poll, scoped to the signed-in
     nurse's own tasks — a small, cheap, indexed query — rather than a
     separate scheduler: this app has no background job runner, and the
     live poll already reaches the server every few seconds anyway (see
-    this module's own docstring on pull-based delivery). reminder_sent_at
-    is what stops the same reminder firing on every subsequent poll.
+    this module's own docstring on pull-based delivery).
+    reminder_soon_sent_at/reminder_sent_at are what stop each reminder
+    firing more than once; both are cleared by TaskSerializer.update()
+    whenever the schedule itself changes, which re-arms them.
     """
     now = timezone.now()
-    due = Task.objects.filter(
-        assigned_nurse=user,
-        due_date__isnull=False,
-        reminder_sent_at__isnull=True,
+    lead = timedelta(minutes=TASK_REMINDER_LEAD_MINUTES)
+    candidates = Task.objects.filter(
+        assigned_nurse=user, due_date__isnull=False,
     ).exclude(status='completed')
-    for task in due:
+    for task in candidates:
         scheduled = _task_scheduled_at(task)
-        if scheduled is None or scheduled > now:
+        if scheduled is None:
             continue
-        notify_task_due(task)
-        task.reminder_sent_at = now
-        task.save(update_fields=['reminder_sent_at'])
+        update_fields = []
+        if (
+            task.reminder_soon_sent_at is None
+            and scheduled - lead <= now < scheduled
+        ):
+            notify_task_due_soon(task)
+            task.reminder_soon_sent_at = now
+            update_fields.append('reminder_soon_sent_at')
+        if task.reminder_sent_at is None and scheduled <= now:
+            notify_task_due(task)
+            task.reminder_sent_at = now
+            update_fields.append('reminder_sent_at')
+        if task.status != 'overdue' and scheduled < now:
+            task.status = 'overdue'
+            update_fields.append('status')
+        if update_fields:
+            task.save(update_fields=update_fields)
+
+
+def notify_referral_almost_due(handover):
+    """
+    Tell the receiving nurse a pending referral is due in
+    REFERRAL_REMINDER_LEAD_MINUTES. Receiver only — they're the one who
+    still has to act on it; see notify_referral_overdue for why the
+    overdue case also tells the sender.
+    """
+    recipient = handover.nurse_to_user
+    if recipient is None:
+        return None
+    if not wants(recipient, 'handover_notifications'):
+        return None
+
+    patient_count = handover.handover_patients.count()
+    patient_label = (
+        f'{patient_count} patients' if patient_count > 1
+        else (handover.patient_name or 'a patient')
+    )
+    return notify(
+        recipient,
+        notification_type='warning',
+        event=REFERRAL_ALMOST_DUE,
+        title='Referral almost due',
+        message=(
+            f'The referral for {patient_label} from {handover.nurse_from} is due in '
+            f'{REFERRAL_REMINDER_LEAD_MINUTES} minutes.'
+        ),
+        patient_label=handover.patient_name or '',
+        patient=handover.patient,
+        handover=handover,
+        action_label='Review referral',
+        action_path='/handover',
+        action_highlight_id=handover.handover_code,
+    )
+
+
+def notify_referral_overdue(handover):
+    """
+    Tell both nurses once a pending referral's due time has passed: the
+    receiver, who still hasn't acted, and the sender, whose patient is
+    still waiting on someone. Each is gated by their own notification
+    preference independently, so one having referral alerts off never
+    silences the other's.
+    """
+    patient_count = handover.handover_patients.count()
+    patient_label = (
+        f'{patient_count} patients' if patient_count > 1
+        else (handover.patient_name or 'a patient')
+    )
+    results = []
+    receiver = handover.nurse_to_user
+    if receiver is not None and wants(receiver, 'handover_notifications'):
+        results.append(notify(
+            receiver,
+            notification_type='critical',
+            event=REFERRAL_OVERDUE,
+            title='Referral overdue',
+            message=f'The referral for {patient_label} from {handover.nurse_from} is now overdue.',
+            patient_label=handover.patient_name or '',
+            patient=handover.patient,
+            handover=handover,
+            action_label='Review referral',
+            action_path='/handover',
+            action_highlight_id=handover.handover_code,
+        ))
+    sender = handover.created_by
+    if (
+        sender is not None
+        and (receiver is None or sender.pk != receiver.pk)
+        and wants(sender, 'handover_notifications')
+    ):
+        results.append(notify(
+            sender,
+            notification_type='warning',
+            event=REFERRAL_OVERDUE,
+            title='Referral overdue',
+            message=(
+                f'Your referral for {patient_label} to {handover.nurse_to} is now overdue '
+                'and still pending.'
+            ),
+            patient_label=handover.patient_name or '',
+            patient=handover.patient,
+            handover=handover,
+            action_label='View referral',
+            action_path='/handover',
+            action_highlight_id=handover.handover_code,
+        ))
+    return results
+
+
+def check_due_referral_reminders(user):
+    """
+    Raises "almost due" (receiver only) and "overdue" (receiver + sender)
+    referral alerts the first time a poll notices a pending referral
+    (sent/received — not yet accepted/declined/cancelled) involving this
+    user has reached, or is about to reach, its due_at.
+
+    Scoped to referrals where this user is the receiver or the sender,
+    same reasoning and mechanism as check_due_task_reminders — piggybacks
+    on the existing live poll. Each alert has its own *_sent_at field on
+    HandoverNote (not per-recipient), so whichever of the two nurses' polls
+    gets there first raises it for both and the other's poll then sees it
+    already set.
+    """
+    now = timezone.now()
+    lead = timedelta(minutes=REFERRAL_REMINDER_LEAD_MINUTES)
+    pending = HandoverNote.objects.filter(
+        Q(nurse_to_user=user) | Q(created_by=user),
+        due_at__isnull=False,
+        status__in=['sent', 'received'],
+    )
+    for handover in pending:
+        due_at = handover.due_at
+        update_fields = []
+        if (
+            handover.nurse_to_user_id == user.pk
+            and handover.reminder_almost_due_sent_at is None
+            and due_at - lead <= now < due_at
+        ):
+            notify_referral_almost_due(handover)
+            handover.reminder_almost_due_sent_at = now
+            update_fields.append('reminder_almost_due_sent_at')
+        if handover.reminder_overdue_sent_at is None and due_at <= now:
+            notify_referral_overdue(handover)
+            handover.reminder_overdue_sent_at = now
+            update_fields.append('reminder_overdue_sent_at')
+        if update_fields:
+            handover.save(update_fields=update_fields)
 
 
 def notify_kardex_reviewed(kardex, reviewer):

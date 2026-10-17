@@ -58,6 +58,44 @@ import { toast } from 'sonner';
 
 const VITALS_READINGS_REQUIRED = 2;
 
+/** "Mar 15" from an ISO "YYYY-MM-DD" — '' if blank (predates dueDate).
+ * Exported for NurseTasksPage.tsx, which shows the same task cards in the
+ * head nurse's per-nurse view and wants the same overdue flagging. */
+export function formatDueDate(iso?: string | null): string {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return '';
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** True once a task's due date+time has passed and it's still not done. */
+export function isTaskOverdue(task: Task): boolean {
+  if (task.status === 'completed' || !task.dueDate || !task.dueTime) return false;
+  const [y, m, d] = task.dueDate.split('-').map(Number);
+  const [h, min] = task.dueTime.split(':').map(Number);
+  if (!y || !m || !d || Number.isNaN(h) || Number.isNaN(min)) return false;
+  return new Date(y, m - 1, d, h, min).getTime() < Date.now();
+}
+
+/** "Due in 12 min" (amber) / "Due now" (red) / "Overdue by 25 min" (red) /
+ * "Completed" (green) — null once it's more than half an hour out, where
+ * the plain due date/time next to it already says enough. */
+export function taskDueChip(task: Task): { label: string; color: string } | null {
+  if (task.status === 'completed') return { label: 'Completed', color: '#16A34A' };
+  if (!task.dueDate || !task.dueTime) return null;
+  const [y, m, d] = task.dueDate.split('-').map(Number);
+  const [h, min] = task.dueTime.split(':').map(Number);
+  if (!y || !m || !d || Number.isNaN(h) || Number.isNaN(min)) return null;
+  const due = new Date(y, m - 1, d, h, min).getTime();
+  const diffMin = Math.round((due - Date.now()) / 60000);
+  if (task.status === 'overdue' || diffMin < 0) {
+    return { label: diffMin < 0 ? `Overdue by ${Math.abs(diffMin)} min` : 'Overdue', color: '#DC2626' };
+  }
+  if (diffMin === 0) return { label: 'Due now', color: '#DC2626' };
+  if (diffMin <= 30) return { label: `Due in ${diffMin} min`, color: '#EA580C' };
+  return null;
+}
+
 export default function TasksPage() {
   const location = useLocation();
   const { user } = useAuth();
@@ -83,7 +121,9 @@ export default function TasksPage() {
   // _check_patient_care_scope); null until loaded.
   const [myPatientCodes, setMyPatientCodes] = useState<Set<string> | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'priority' | 'status'>('newest');
+  // Default view order: High -> Medium -> Low risk, overdue first within
+  // each, then soonest due date/time, completed last.
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'priority' | 'status'>('priority');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
 
   const loadTasks = React.useCallback(async (options?: { quiet?: boolean }) => {
@@ -219,7 +259,8 @@ export default function TasksPage() {
           patientName: taskData.patientName || '',
           title: taskData.title || '',
           description: taskData.description || '',
-          priority: taskData.priority || 'routine',
+          priority: taskData.priority || 'medium',
+          dueDate: taskData.dueDate || '',
           dueTime: taskData.dueTime || '',
           status: 'pending',
           category: taskData.category || 'medication',
@@ -332,8 +373,9 @@ export default function TasksPage() {
 
       // Tab filter
       if (selectedTab === 'all') return matchesSearch;
-      if (selectedTab === 'urgent') return matchesSearch && task.priority === 'urgent';
-      if (selectedTab === 'routine') return matchesSearch && task.priority === 'routine';
+      if (selectedTab === 'high') return matchesSearch && task.priority === 'high';
+      if (selectedTab === 'medium') return matchesSearch && task.priority === 'medium';
+      if (selectedTab === 'low') return matchesSearch && task.priority === 'low';
       if (selectedTab === 'completed') return matchesSearch && task.status === 'completed';
       if (selectedTab === 'overdue') return matchesSearch && task.status === 'overdue';
       return matchesSearch;
@@ -346,8 +388,26 @@ export default function TasksPage() {
         return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       }
       if (sortBy === 'priority') {
-        const priorityOrder = { urgent: 0, routine: 1, completed: 2 };
-        return priorityOrder[a.priority] - priorityOrder[b.priority];
+        // Default view order: completed last regardless of risk; within the
+        // rest, High -> Medium -> Low; within the same risk, overdue first;
+        // then soonest due date/time. Mirrors the backend's default
+        // TaskViewSet.get_queryset ordering.
+        const aCompleted = a.status === 'completed' ? 1 : 0;
+        const bCompleted = b.status === 'completed' ? 1 : 0;
+        if (aCompleted !== bCompleted) return aCompleted - bCompleted;
+        const priorityOrder = { high: 0, medium: 1, low: 2 };
+        if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
+          return priorityOrder[a.priority] - priorityOrder[b.priority];
+        }
+        const aOverdue = a.status === 'overdue' ? 0 : 1;
+        const bOverdue = b.status === 'overdue' ? 0 : 1;
+        if (aOverdue !== bOverdue) return aOverdue - bOverdue;
+        const aDue = a.dueDate ? `${a.dueDate} ${a.dueTime || ''}` : null;
+        const bDue = b.dueDate ? `${b.dueDate} ${b.dueTime || ''}` : null;
+        if (aDue && bDue) return aDue < bDue ? -1 : aDue > bDue ? 1 : 0;
+        if (aDue) return -1;
+        if (bDue) return 1;
+        return 0;
       }
       if (sortBy === 'status') {
         const statusOrder = { overdue: 0, pending: 1, in_progress: 2, completed: 3 };
@@ -356,11 +416,14 @@ export default function TasksPage() {
       return 0;
     });
 
+  const RISK_LABELS: Record<string, string> = { high: 'High risk', medium: 'Medium risk', low: 'Low risk' };
+  const RISK_TEXT_COLORS: Record<string, string> = { high: '#DC2626', medium: '#EA580C', low: '#16A34A' };
+
   const getPriorityColor = (priority: string) => {
     switch (priority) {
-      case 'urgent': return 'bg-red-50 border-red-200';
-      case 'routine': return 'bg-yellow-50 border-yellow-200';
-      case 'completed': return 'bg-green-50 border-green-200';
+      case 'high': return 'bg-red-50 border-red-200';
+      case 'medium': return 'bg-orange-50 border-orange-100';
+      case 'low': return 'bg-green-50 border-green-200';
       default: return 'bg-gray-50 border-gray-200';
     }
   };
@@ -378,8 +441,9 @@ export default function TasksPage() {
 
   const getTaskCounts = () => ({
     all: tasks.length,
-    urgent: tasks.filter(t => t.priority === 'urgent').length,
-    routine: tasks.filter(t => t.priority === 'routine').length,
+    high: tasks.filter(t => t.priority === 'high').length,
+    medium: tasks.filter(t => t.priority === 'medium').length,
+    low: tasks.filter(t => t.priority === 'low').length,
     overdue: tasks.filter(t => t.status === 'overdue').length,
     completed: tasks.filter(t => t.status === 'completed').length,
   });
@@ -388,10 +452,11 @@ export default function TasksPage() {
 
   const filterTabs = [
     { id: 'all', label: 'All', count: counts.all, color: 'bg-blue-600' },
-    { id: 'urgent', label: 'Urgent', count: counts.urgent, color: 'bg-red-600' },
-    { id: 'routine', label: 'Routine', count: counts.routine, color: 'bg-yellow-600' },
-    { id: 'overdue', label: 'Overdue', count: counts.overdue, color: 'bg-orange-600' },
-    { id: 'completed', label: 'Done', count: counts.completed, color: 'bg-green-600' },
+    { id: 'high', label: 'High', count: counts.high, color: 'bg-red-600' },
+    { id: 'medium', label: 'Medium', count: counts.medium, color: 'bg-orange-600' },
+    { id: 'low', label: 'Low', count: counts.low, color: 'bg-green-600' },
+    { id: 'overdue', label: 'Overdue', count: counts.overdue, color: 'bg-orange-700' },
+    { id: 'completed', label: 'Done', count: counts.completed, color: 'bg-green-700' },
   ];
 
   return (
@@ -477,12 +542,13 @@ export default function TasksPage() {
           </Card>
         ) : (
           filteredTasks.map(task => (
-            <Card 
-              key={task.id} 
+            <Card
+              key={task.id}
               id={`task-${task.id}`}
-              className={`border-2 ${getPriorityColor(task.priority)} hover:shadow-md transition-all ${
+              className={`border-2 border-l-4 ${getPriorityColor(task.priority)} hover:shadow-md transition-all ${
                 highlightedTaskId === task.id ? 'ring-4 ring-blue-500 ring-opacity-50 shadow-lg scale-105' : ''
               }`}
+              style={{ borderLeftColor: RISK_TEXT_COLORS[task.priority] || '#9CA3AF' }}
             >
               <CardContent className="p-4">
                 <div className="flex items-start justify-between gap-4">
@@ -490,19 +556,36 @@ export default function TasksPage() {
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-xl">{getCategoryIcon(task.category)}</span>
                       <h3 className="font-bold text-gray-900">{task.title}</h3>
-                      <Badge variant={task.priority === 'urgent' ? 'destructive' : 'secondary'} className="text-xs">
-                        {task.priority}
+                      <Badge
+                        variant="outline"
+                        className="text-xs capitalize"
+                        style={{ color: RISK_TEXT_COLORS[task.priority] || '#6B7280' }}
+                      >
+                        {RISK_LABELS[task.priority] || task.priority}
                       </Badge>
                     </div>
                     <p className="text-sm text-gray-600 mb-2">{task.description}</p>
                     <div className="space-y-1">
-                      {/* Primary Info: Time and Patient */}
-                      <div className="flex flex-wrap items-center gap-4 text-sm text-gray-500">
-                        <span className="flex items-center gap-1">
+                      {/* Primary Info: Date/Time, due-status chip, and Patient */}
+                      <div className="flex flex-wrap items-center gap-4 text-sm">
+                        <span className={`flex items-center gap-1 font-semibold ${isTaskOverdue(task) ? 'text-red-600' : 'text-gray-700'}`}>
                           <Clock className="w-4 h-4" />
+                          {formatDueDate(task.dueDate)}
+                          {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
                           {task.dueTime}
                         </span>
-                        <span>Patient: {task.patientName} ({task.patientId})</span>
+                        {(() => {
+                          const chip = taskDueChip(task);
+                          return chip ? (
+                            <span
+                              className="text-xs font-bold px-2 py-0.5 rounded-full border"
+                              style={{ color: chip.color, borderColor: chip.color }}
+                            >
+                              {chip.label}
+                            </span>
+                          ) : null;
+                        })()}
+                        <span className="text-gray-500">Patient: {task.patientName} ({task.patientId})</span>
                       </div>
 
                       {/* Secondary Info: Doctor and Room */}

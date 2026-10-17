@@ -9,6 +9,7 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
+import { BloodPressureInput } from './BloodPressureInput';
 import { Label } from './ui/label';
 import { Alert, AlertDescription } from './ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -340,15 +341,11 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
                   onChange={(e) => setField('heartRate', e.target.value)}
                 />
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="edit-bp">Blood Pressure</Label>
-                <Input
-                  id="edit-bp"
-                  value={form.bloodPressure}
-                  onChange={(e) => setField('bloodPressure', e.target.value)}
-                  placeholder="e.g. 120/80"
-                />
-              </div>
+              <BloodPressureInput
+                id="edit-bp"
+                value={form.bloodPressure}
+                onChange={(v) => setField('bloodPressure', v)}
+              />
               <div className="space-y-1">
                 <Label htmlFor="edit-temp">Temperature (°C)</Label>
                 <Input

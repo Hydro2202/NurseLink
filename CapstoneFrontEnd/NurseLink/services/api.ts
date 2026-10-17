@@ -804,6 +804,13 @@ export async function createTask(data: Partial<Task>): Promise<Task> {
   return apiRequest<Task>('/tasks/', { method: 'POST', body: data });
 }
 
+/** One task by its code — used by TaskDueAlertModal, which only has the
+ * task_code off a notification's action.highlightId and needs the full
+ * record (room, risk level, due date/time) to render. */
+export async function fetchTask(taskId: string): Promise<Task> {
+  return apiRequest<Task>(`/tasks/${taskId}/`);
+}
+
 export async function updateTask(taskId: string, data: Partial<Task>): Promise<Task> {
   return apiRequest<Task>(`/tasks/${taskId}/`, { method: 'PATCH', body: data });
 }
@@ -865,6 +872,13 @@ export async function fetchHandovers(options?: { status?: string }): Promise<Han
 
 export async function createHandover(data: Partial<HandoverNote>): Promise<HandoverNote> {
   return apiRequest<HandoverNote>('/handovers/', { method: 'POST', body: data });
+}
+
+/** One referral by its code — used by ReferralDueAlertModal, which only
+ * has the handover_code off a notification's action.highlightId and needs
+ * the full record (patients, dueAt) to render. */
+export async function fetchHandover(id: string): Promise<HandoverNote> {
+  return apiRequest<HandoverNote>(`/handovers/${id}/`);
 }
 
 /** Who the signed-in nurse may refer to right now — shift-rotation eligible
@@ -947,6 +961,8 @@ export interface CreateEndorsementPayload {
   nurseToId: string;
   sbar: { situation: string; background: string; assessment: string; recommendation: string };
   date?: string;
+  /** Required — the backend rejects a missing or past value. */
+  dueAt: string;
 }
 
 /** Creates a bulk endorsement for one or more patients the signed-in nurse

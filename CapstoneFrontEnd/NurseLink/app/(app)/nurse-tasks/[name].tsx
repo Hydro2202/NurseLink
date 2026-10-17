@@ -28,7 +28,7 @@ import {
   completeTask,
   ApiError,
 } from '../../../services/api';
-import { formatDueDate, isTaskOverdue } from '../tasks';
+import { formatDueDate, isTaskOverdue, taskDueChip } from '../tasks';
 import type { Task } from '../../../types/domain';
 import { Card, CardContent } from '../../../components/Card';
 import { Badge } from '../../../components/Badge';
@@ -68,7 +68,7 @@ export default function NurseTasksPage() {
   const [unassignLoading, setUnassignLoading] = useState(false);
   const [completeLoading, setCompleteLoading] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState<SortBy>('newest');
+  const [sortBy, setSortBy] = useState<SortBy>('priority');
 
   useEffect(() => {
     let cancelled = false;
@@ -167,8 +167,9 @@ export default function NurseTasksPage() {
         task.patientName.toLowerCase().includes(q);
 
       if (selectedTab === 'all') return matchesSearch;
-      if (selectedTab === 'urgent') return matchesSearch && task.priority === 'urgent';
-      if (selectedTab === 'routine') return matchesSearch && task.priority === 'routine';
+      if (selectedTab === 'high') return matchesSearch && task.priority === 'high';
+      if (selectedTab === 'medium') return matchesSearch && task.priority === 'medium';
+      if (selectedTab === 'low') return matchesSearch && task.priority === 'low';
       if (selectedTab === 'completed') return matchesSearch && task.status === 'completed';
       if (selectedTab === 'overdue') return matchesSearch && task.status === 'overdue';
       return matchesSearch;
@@ -181,8 +182,23 @@ export default function NurseTasksPage() {
         return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       }
       if (sortBy === 'priority') {
-        const order = { urgent: 0, routine: 1, completed: 2 };
-        return order[a.priority] - order[b.priority];
+        // Same default-view ordering as tasks.tsx: completed last, then
+        // High -> Medium -> Low, overdue first within a risk level, then
+        // soonest due date/time.
+        const aCompleted = a.status === 'completed' ? 1 : 0;
+        const bCompleted = b.status === 'completed' ? 1 : 0;
+        if (aCompleted !== bCompleted) return aCompleted - bCompleted;
+        const order = { high: 0, medium: 1, low: 2 };
+        if (order[a.priority] !== order[b.priority]) return order[a.priority] - order[b.priority];
+        const aOverdue = a.status === 'overdue' ? 0 : 1;
+        const bOverdue = b.status === 'overdue' ? 0 : 1;
+        if (aOverdue !== bOverdue) return aOverdue - bOverdue;
+        const aDue = a.dueDate ? `${a.dueDate} ${a.dueTime || ''}` : null;
+        const bDue = b.dueDate ? `${b.dueDate} ${b.dueTime || ''}` : null;
+        if (aDue && bDue) return aDue < bDue ? -1 : aDue > bDue ? 1 : 0;
+        if (aDue) return -1;
+        if (bDue) return 1;
+        return 0;
       }
       const statusOrder = { overdue: 0, pending: 1, in_progress: 2, completed: 3 };
       return statusOrder[a.status] - statusOrder[b.status];
@@ -190,31 +206,36 @@ export default function NurseTasksPage() {
 
   const getPriorityStyle = (priority: string) => {
     switch (priority) {
-      case 'urgent':
+      case 'high':
         return { backgroundColor: Colors.red50, borderColor: Colors.red200 };
-      case 'routine':
-        return { backgroundColor: Colors.yellow50, borderColor: Colors.yellow200 };
-      case 'completed':
+      case 'medium':
+        return { backgroundColor: Colors.orange50, borderColor: Colors.orange100 };
+      case 'low':
         return { backgroundColor: Colors.green50, borderColor: Colors.green200 };
       default:
         return { backgroundColor: Colors.gray50, borderColor: Colors.gray200 };
     }
   };
 
+  const RISK_LABELS: Record<string, string> = { high: 'High risk', medium: 'Medium risk', low: 'Low risk' };
+  const RISK_COLORS: Record<string, string> = { high: Colors.red600, medium: Colors.orange600, low: Colors.green600 };
+
   const counts = {
     all: nurseTasks.length,
-    urgent: nurseTasks.filter((t) => t.priority === 'urgent').length,
-    routine: nurseTasks.filter((t) => t.priority === 'routine').length,
+    high: nurseTasks.filter((t) => t.priority === 'high').length,
+    medium: nurseTasks.filter((t) => t.priority === 'medium').length,
+    low: nurseTasks.filter((t) => t.priority === 'low').length,
     overdue: nurseTasks.filter((t) => t.status === 'overdue').length,
     completed: nurseTasks.filter((t) => t.status === 'completed').length,
   };
 
   const filterTabs = [
     { id: 'all', label: 'All', count: counts.all, color: Colors.blue600 },
-    { id: 'urgent', label: 'Urgent', count: counts.urgent, color: Colors.red600 },
-    { id: 'routine', label: 'Routine', count: counts.routine, color: Colors.yellow700 },
-    { id: 'overdue', label: 'Overdue', count: counts.overdue, color: Colors.orange600 },
-    { id: 'completed', label: 'Done', count: counts.completed, color: Colors.green600 },
+    { id: 'high', label: 'High', count: counts.high, color: Colors.red600 },
+    { id: 'medium', label: 'Medium', count: counts.medium, color: Colors.orange600 },
+    { id: 'low', label: 'Low', count: counts.low, color: Colors.green600 },
+    { id: 'overdue', label: 'Overdue', count: counts.overdue, color: Colors.orange700 },
+    { id: 'completed', label: 'Done', count: counts.completed, color: Colors.green700 },
   ];
 
   if (loading) {
@@ -325,14 +346,26 @@ export default function NurseTasksPage() {
             </Card>
           ) : (
             filteredTasks.map((task) => (
-              <Card key={task.id} style={{ ...styles.taskCard, ...getPriorityStyle(task.priority) }}>
+              <Card
+                key={task.id}
+                style={{
+                  ...styles.taskCard,
+                  ...getPriorityStyle(task.priority),
+                  borderLeftWidth: 4,
+                  borderLeftColor: RISK_COLORS[task.priority] || Colors.gray400,
+                }}
+              >
                 <CardContent style={styles.taskContent}>
                   <View style={styles.taskTitleRow}>
                     <Text style={styles.taskTitle} numberOfLines={2}>
                       {task.title}
                     </Text>
-                    <Badge variant={task.priority === 'urgent' ? 'destructive' : 'secondary'}>
-                      {task.priority}
+                    <Badge
+                      variant="outline"
+                      style={getPriorityStyle(task.priority)}
+                      textStyle={{ color: RISK_COLORS[task.priority] || Colors.gray600 }}
+                    >
+                      {RISK_LABELS[task.priority] || task.priority}
                     </Badge>
                   </View>
                   <Text style={styles.taskDescription}>{task.description}</Text>
@@ -344,9 +377,16 @@ export default function NurseTasksPage() {
                         {formatDueDate(task.dueDate)}
                         {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
                         {task.dueTime}
-                        {isTaskOverdue(task) ? ' (overdue)' : ''}
                       </Text>
                     </View>
+                    {(() => {
+                      const chip = taskDueChip(task);
+                      return chip ? (
+                        <View style={[styles.dueChip, { borderColor: chip.color }]}>
+                          <Text style={[styles.dueChipText, { color: chip.color }]}>{chip.label}</Text>
+                        </View>
+                      ) : null;
+                    })()}
                     <Text style={styles.metaText}>
                       {task.patientName} ({task.patientId})
                     </Text>
@@ -496,6 +536,8 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaText: { fontSize: 12, color: Colors.mutedForeground },
+  dueChip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, borderWidth: 1 },
+  dueChipText: { fontSize: 11, fontWeight: '700' },
   orderBox: {
     flexDirection: 'row',
     gap: 8,

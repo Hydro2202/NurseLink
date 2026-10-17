@@ -1418,6 +1418,11 @@ class PatientSerializer(serializers.ModelSerializer):
         }
         return data
 
+    def validate_vitalSigns(self, value):
+        if isinstance(value, dict) and 'bloodPressure' in value:
+            validate_blood_pressure_format(value['bloodPressure'])
+        return value
+
     def _apply_vitals(self, validated_data):
         vitals = validated_data.pop('vitalSigns', None)
         if not vitals:
@@ -1813,6 +1818,20 @@ class TaskSerializer(serializers.ModelSerializer):
             ]
         )
 
+    def validate(self, attrs):
+        # Both required on create only — an existing task (instance is not
+        # None) can still be PATCHed for fields that have nothing to do
+        # with its schedule without being forced to resend it.
+        if self.instance is None:
+            errors = {}
+            if not attrs.get('due_date'):
+                errors['dueDate'] = 'Due date is required.'
+            if not (attrs.get('due_time') or '').strip():
+                errors['dueTime'] = 'Due time is required.'
+            if errors:
+                raise serializers.ValidationError(errors)
+        return attrs
+
     def validate_checklist(self, value):
         for item in value:
             if 'text' not in item or 'done' not in item:
@@ -1961,16 +1980,21 @@ class TaskSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         if instance.status == 'completed' and not instance.completed_at:
             instance.completed_at = timezone.now()
-            instance.priority = 'completed'
-        # Re-arms the due-task reminder whenever the schedule itself moves —
-        # otherwise editing a task to a new due date/time after its old one
-        # already fired a reminder would stay silently reminder_sent_at-set
-        # forever, never raising the new one.
+        # Re-arms both due-task reminders whenever the schedule itself moves
+        # — otherwise editing a task to a new due date/time after its old
+        # one already fired a reminder would stay silently *_sent_at-set
+        # forever, never raising the new one. Also un-marks 'overdue' (the
+        # one status check_due_task_reminders itself sets, never a nurse
+        # directly) so rescheduling a task that slipped past its old due
+        # time doesn't leave it stuck looking overdue against a new one.
         if (
             ('due_date' in validated_data and instance.due_date != before.get('due_date'))
             or ('due_time' in validated_data and instance.due_time != before.get('due_time'))
         ):
             instance.reminder_sent_at = None
+            instance.reminder_soon_sent_at = None
+            if instance.status == 'overdue':
+                instance.status = 'pending'
         instance.save()
         if doctors is not None:
             request = self.context.get('request')
@@ -2074,6 +2098,10 @@ class HandoverSerializer(serializers.ModelSerializer):
     rejectionReason = serializers.CharField(source='declined_reason', read_only=True, allow_blank=True)
     completedAt = serializers.DateTimeField(source='completed_at', read_only=True, allow_null=True)
     date = serializers.DateField()
+    # When this referral needs to be acted on by. Required (see validate()
+    # below) on create only, so every referral predating this field keeps
+    # reading/working unchanged — those just have dueAt: null.
+    dueAt = serializers.DateTimeField(source='due_at', required=False, allow_null=True)
     # shift/toShift/department* are endorser/receiver audit snapshots taken
     # at creation time (see create() below) — descriptive only, never a
     # gate, and never client-writable.
@@ -2108,6 +2136,7 @@ class HandoverSerializer(serializers.ModelSerializer):
             'toDepartmentId',
             'toDepartmentName',
             'date',
+            'dueAt',
             'nurseFrom',
             'nurseTo',
             'nurseToId',
@@ -2251,6 +2280,19 @@ class HandoverSerializer(serializers.ModelSerializer):
             due_time = parse_time(str(entry['due_time'])) if entry.get('due_time') else None
             cleaned.append({'description': description, 'priority': priority, 'due_time': due_time})
         return cleaned
+
+    def validate(self, attrs):
+        # Required, and must be in the future, on create only — an
+        # existing referral (accept/decline/cancel all go through actions,
+        # never this serializer's update path, so self.instance is in
+        # practice always None here, but the guard is kept for safety).
+        if self.instance is None:
+            due_at = attrs.get('due_at')
+            if not due_at:
+                raise serializers.ValidationError({'dueAt': 'Due date and time are required.'})
+            if due_at <= timezone.now():
+                raise serializers.ValidationError({'dueAt': 'Due date and time must be in the future.'})
+        return attrs
 
     def create(self, validated_data):
         patient_ids = validated_data.pop('patientIds', None)
@@ -2998,6 +3040,9 @@ class VitalSignsSerializer(serializers.ModelSerializer):
             return None
         return full_name(obj.recorded_by)
 
+    def validate_bloodPressure(self, value):
+        return validate_blood_pressure_format(value)
+
     def create(self, validated_data):
         request = self.context.get('request')
         validated_data['recorded_by'] = request.user if request else None
@@ -3562,6 +3607,41 @@ def _parse_blood_pressure(value):
     return _parse_float(systolic_raw), _parse_float(diastolic_raw)
 
 
+_BLOOD_PRESSURE_PATTERN = re.compile(r'^(\d{2,3})/(\d{2,3})$')
+
+
+def validate_blood_pressure_format(value):
+    """
+    Shared by every serializer that accepts a combined "120/80" blood
+    pressure string — the two-input Systolic/Diastolic UI on the frontend
+    (Kardex, the Vital Signs task flow) always combines into exactly this
+    shape before sending, so anything else reaching here is either a stale
+    client or a direct API call, not a real reading. Blank is always fine
+    (blood pressure is optional) — this only validates a non-blank value.
+
+    Ranges (systolic 50-300, diastolic 30-200) are wide enough to admit any
+    plausible real reading, including the clinically-abnormal ones
+    assess_risk_level() flags — this is a sanity check on the two numbers
+    actually being blood pressure, not a second clinical judgment.
+    """
+    text = (value or '').strip()
+    if not text:
+        return value
+    match = _BLOOD_PRESSURE_PATTERN.match(text)
+    if not match:
+        raise serializers.ValidationError(
+            'Enter blood pressure as two numbers, e.g. 120/80.'
+        )
+    systolic, diastolic = int(match.group(1)), int(match.group(2))
+    if not (50 <= systolic <= 300):
+        raise serializers.ValidationError('Systolic must be between 50 and 300 mmHg.')
+    if not (30 <= diastolic <= 200):
+        raise serializers.ValidationError('Diastolic must be between 30 and 200 mmHg.')
+    if systolic <= diastolic:
+        raise serializers.ValidationError('Systolic must be higher than diastolic.')
+    return value
+
+
 def assess_risk_level(*, temperature=None, pulse_rate=None, respiratory_rate=None,
                        blood_pressure=None, oxygen_saturation=None):
     """
@@ -3871,6 +3951,27 @@ class KardexMedicationSerializer(serializers.ModelSerializer):
             baseline = datetime.combine(obj.start_date, datetime.min.time(), tzinfo=timezone.get_current_timezone())
         return timezone.now() > baseline + timedelta(hours=interval_hours)
 
+    #: "08:00", "16:00, 00:00" — the comma-separated 24h "HH:MM" list the
+    #: frontend's time-picker-plus-chips UI builds. Blank is always fine
+    #: (a medication with no fixed schedule, e.g. PRN); this only rejects a
+    #: non-blank value that isn't actually in this shape — including
+    #: whatever free text an older medication record might still have from
+    #: before this picker existed, forcing a replace rather than silently
+    #: accepting unparseable text going forward.
+    _SCHEDULED_TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
+
+    def validate_scheduledTimes(self, value):
+        text = (value or '').strip()
+        if not text:
+            return value
+        for entry in text.split(','):
+            entry = entry.strip()
+            if not entry or not self._SCHEDULED_TIME_PATTERN.match(entry):
+                raise serializers.ValidationError(
+                    f'"{entry}" is not a valid time — use 24-hour HH:MM, e.g. 08:00.'
+                )
+        return value
+
     def validate(self, attrs):
         start = attrs.get('start_date', getattr(self.instance, 'start_date', None))
         end = attrs.get('end_date', getattr(self.instance, 'end_date', None))
@@ -4119,6 +4220,9 @@ class KardexRecordSerializer(serializers.ModelSerializer):
         if value is not None and not (0.5 <= value <= 350):
             raise serializers.ValidationError('Weight must be between 0.5 and 350 kg.')
         return value
+
+    def validate_bloodPressure(self, value):
+        return validate_blood_pressure_format(value)
 
     def create(self, validated_data):
         """

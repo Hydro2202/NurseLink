@@ -63,6 +63,7 @@ class HandoverNotificationTests(APITestCase):
             'patientName': 'Lawrence Cruz',
             'shift': 'morning',
             'date': '2026-03-03',
+            'dueAt': (timezone.now() + datetime.timedelta(hours=2)).isoformat(),
             'nurseFrom': 'Maria Santos',
             'nurseTo': 'Ben Diaz',
             'nurseToId': str(self.receiver.pk),
