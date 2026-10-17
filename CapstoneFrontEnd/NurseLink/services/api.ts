@@ -1135,12 +1135,36 @@ export async function assignNurse(
   return apiRequest(`/nurses/${nurseId}/assign/`, { method: 'PATCH', body: data });
 }
 
-export async function fetchWorkload(): Promise<WorkloadData[]> {
-  return apiRequest<WorkloadData[]>('/workload/');
+/** Dashboard filter bar params, shared by fetchWorkload/fetchAnalytics —
+ * see utils/dashboardFilters.ts's toApiParams(). All optional; omitted
+ * fields keep each endpoint's own unfiltered default. */
+export interface AnalyticsFilterParams {
+  start_date?: string;
+  end_date?: string;
+  department?: string;
+  shift?: string;
+  nurse?: string;
+  risk?: string;
 }
 
-export async function fetchAnalytics(): Promise<AnalyticsData> {
-  return apiRequest<AnalyticsData>('/analytics/');
+function filterQueryString(options?: AnalyticsFilterParams): string {
+  const params = new URLSearchParams();
+  if (options?.start_date) params.set('start_date', options.start_date);
+  if (options?.end_date) params.set('end_date', options.end_date);
+  if (options?.department) params.set('department', options.department);
+  if (options?.shift) params.set('shift', options.shift);
+  if (options?.nurse) params.set('nurse', options.nurse);
+  if (options?.risk) params.set('risk', options.risk);
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+export async function fetchWorkload(options?: AnalyticsFilterParams): Promise<WorkloadData[]> {
+  return apiRequest<WorkloadData[]>(`/workload/${filterQueryString(options)}`);
+}
+
+export async function fetchAnalytics(options?: AnalyticsFilterParams): Promise<AnalyticsData> {
+  return apiRequest<AnalyticsData>(`/analytics/${filterQueryString(options)}`);
 }
 
 /** The Settings page, as stored on the account. */

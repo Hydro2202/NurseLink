@@ -15,8 +15,6 @@ const NurseTasksPage = lazy(() => import('./pages/NurseTasksPage'));
 const HandoverPage = lazy(() => import('./pages/HandoverPage'));
 const ChartingPage = lazy(() => import('./pages/ChartingPage'));
 const KardexPage = lazy(() => import('./pages/KardexPage'));
-const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
-const WorkloadPage = lazy(() => import('./pages/WorkloadPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const MyPatientsPage = lazy(() => import('./pages/MyPatientsPage'));
 const AllPatientsPage = lazy(() => import('./pages/AllPatientsPage'));
@@ -76,12 +74,19 @@ export const router = createBrowserRouter([
         element: lazyRoute(<KardexPage />),
       },
       {
+        // Analytics was folded into the head nurse dashboard's own
+        // Analytics section (see pages/DashboardPage.tsx +
+        // components/dashboard/AnalyticsSection.tsx) — this route stays so
+        // old bookmarks/links keep working, redirecting straight to that
+        // section instead of 404ing.
         path: 'analytics',
-        element: lazyRoute(<AnalyticsPage />),
+        element: <Navigate to="/dashboard?section=analytics" replace />,
       },
       {
+        // Same story for Workload Monitor — including notify_safety_alert's
+        // action_path on notifications saved before that change.
         path: 'workload',
-        element: lazyRoute(<WorkloadPage />),
+        element: <Navigate to="/dashboard?section=workload" replace />,
       },
       {
         path: 'settings',

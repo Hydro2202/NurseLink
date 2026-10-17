@@ -36,6 +36,10 @@ export interface RealtimeNotification {
   type: 'notification';
   event: string;
   id: string;
+  /** critical/warning/success/info — what the toast popup's colour and
+   * sound key off. Always sent by the server (see api/realtime.py's
+   * _payload); unused on web until the toast popup needed it. */
+  notificationType: string;
   title: string;
   message: string;
   patientId: string | null;
@@ -43,6 +47,11 @@ export interface RealtimeNotification {
   handoverId: string | null;
   senderName: string | null;
   createdAt: string;
+  /** Lets a toast popup render its action button immediately, without
+   * waiting for the follow-up refetch to fill it in. */
+  actionLabel: string | null;
+  actionPath: string | null;
+  actionHighlightId: string | null;
 }
 
 type Listener = (event: RealtimeNotification) => void;

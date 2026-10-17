@@ -40,7 +40,25 @@ interface NotificationsContextType {
   refresh: () => Promise<void>;
   markRead: (id: string) => Promise<void>;
   markAllRead: () => Promise<void>;
+  /** Notifications new since this session started, for NotificationToastHost
+   * — newest first, capped at TOAST_STACK_LIMIT. Never the unread backlog a
+   * nurse already had waiting at login; only ones that arrived just now. */
+  toasts: AppNotification[];
+  dismissToast: (id: string) => void;
 }
+
+/** "Stack at most 3 cards; newer cards push older ones down" — a 4th pushes
+ * the oldest off the stack entirely, not just lower in the pile. */
+const TOAST_STACK_LIMIT = 3;
+/** Critical toasts stay until dismissed; everything else clears itself. */
+const TOAST_AUTO_HIDE_MS = 6000;
+/** These events already interrupt with their own dedicated, richer popup
+ * (HandoverAlertModal, TaskDueAlertModal, ReferralDueAlertModal, all
+ * mounted alongside NotificationToastHost in every (app) layout) — the
+ * generic toast skips them so a nurse never sees two popups for one event. */
+const EVENTS_WITH_OWN_POPUP = new Set([
+  'handover_received', 'task_due_soon', 'task_due', 'referral_almost_due', 'referral_overdue',
+]);
 
 const NotificationsContext = createContext<NotificationsContextType | undefined>(undefined);
 
@@ -52,7 +70,7 @@ const VALID_NOTIFICATION_TYPES = new Set(['critical', 'warning', 'info', 'succes
  * The socket sends what a popup needs immediately; the refetch that follows
  * replaces this with the server's own version. Both are the same row.
  */
-function toNotification(pushed: RealtimeNotification): AppNotification {
+export function toNotification(pushed: RealtimeNotification): AppNotification {
   return {
     id: pushed.id,
     // Previously hardcoded to 'warning' regardless of real severity, so a
@@ -73,7 +91,17 @@ function toNotification(pushed: RealtimeNotification): AppNotification {
     handoverId: pushed.handoverId,
     senderName: pushed.senderName,
     isRead: false,
-    action: pushed.handoverId
+    // The notification's own action, when it has one — falls back to the
+    // handover-review shortcut only for the one event type that has
+    // historically always opened straight to Handover without the server
+    // needing to say so explicitly.
+    action: pushed.actionLabel && pushed.actionPath
+      ? {
+          label: pushed.actionLabel,
+          path: pushed.actionPath,
+          highlightId: pushed.actionHighlightId ?? undefined,
+        }
+      : pushed.handoverId
       ? {
           label: 'Review handover',
           path: '/handover',
@@ -93,14 +121,25 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [toasts, setToasts] = useState<AppNotification[]>([]);
 
   // Guards against overlapping polls on a slow connection, where a request can
   // still be in flight when the next tick fires.
   const inFlight = useRef(false);
   const mounted = useRef(true);
   // Ids already delivered by push on this connection, so a replay after a
-  // reconnect cannot double-count the badge or chime twice.
+  // reconnect cannot double-count the badge, chime, or popup twice.
   const seenPushes = useRef<Set<string>>(new Set());
+  const toastTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  const dismissToast = useCallback((id: string) => {
+    const timer = toastTimers.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      toastTimers.current.delete(id);
+    }
+    setToasts((prev) => prev.filter((item) => item.id !== id));
+  }, []);
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return;
@@ -131,8 +170,11 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => {
     if (!user) {
       seenPushes.current.clear();
+      toastTimers.current.forEach((timer) => clearTimeout(timer));
+      toastTimers.current.clear();
       setNotifications([]);
       setUnreadCount(0);
+      setToasts([]);
       setLoading(false);
       return;
     }
@@ -173,6 +215,19 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
     if (soundAlerts) playNotificationSound(critical);
     if (vibrationAlerts) vibrateForNotification(critical);
 
+    // The popup card (NotificationToastHost, mounted in every (app) layout)
+    // — same genuinely-new-only guard as the sound above, so the backlog a
+    // nurse already had at login never pops up, only what arrives live.
+    // Skipped for events with their own dedicated popup (see
+    // EVENTS_WITH_OWN_POPUP) so a nurse never sees two popups for one event.
+    if (!EVENTS_WITH_OWN_POPUP.has(notification.event ?? '')) {
+      setToasts((prev) => [notification, ...prev].slice(0, TOAST_STACK_LIMIT));
+      if (!critical) {
+        const timer = setTimeout(() => dismissToast(notification.id), TOAST_AUTO_HIDE_MS);
+        toastTimers.current.set(notification.id, timer);
+      }
+    }
+
     // Fill in anything the push left out, without blocking the popup on it.
     void refresh();
   });
@@ -190,16 +245,20 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
       prev.map((item) => (item.id === id ? { ...item, isRead: true } : item))
     );
     setUnreadCount((prev) => Math.max(0, prev - 1));
+    dismissToast(id);
     try {
       await markNotificationRead(id);
     } catch {
       void refresh();
     }
-  }, [refresh]);
+  }, [refresh, dismissToast]);
 
   const markAllRead = useCallback(async () => {
     setNotifications((prev) => prev.map((item) => ({ ...item, isRead: true })));
     setUnreadCount(0);
+    toastTimers.current.forEach((timer) => clearTimeout(timer));
+    toastTimers.current.clear();
+    setToasts([]);
     try {
       await markAllNotificationsRead();
     } catch {
@@ -209,7 +268,9 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
 
   return (
     <NotificationsContext.Provider
-      value={{ notifications, unreadCount, loading, refresh, markRead, markAllRead }}
+      value={{
+        notifications, unreadCount, loading, refresh, markRead, markAllRead, toasts, dismissToast,
+      }}
     >
       {children}
     </NotificationsContext.Provider>

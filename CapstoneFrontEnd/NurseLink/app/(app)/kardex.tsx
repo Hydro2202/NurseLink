@@ -1567,8 +1567,12 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
               )}
             </ScrollView>
 
-            <View style={styles.historyFooter}>
-              {selectedHistoryEntry ? (
+            {/* List view (no selectedHistoryEntry) has nothing left to put
+                here now that Close is gone — the header X, backdrop tap,
+                Esc/back button all still close the dialog — so the footer
+                itself is skipped rather than rendering empty. */}
+            {selectedHistoryEntry ? (
+              <View style={styles.historyFooter}>
                 <Button
                   variant="outline"
                   onPress={() => setSelectedHistoryEntry(null)}
@@ -1576,22 +1580,14 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
                 >
                   ← Back to List
                 </Button>
-              ) : null}
-              {selectedHistoryEntry ? (
                 <Button variant="outline" onPress={() => handlePrintHistoryEntry(selectedHistoryEntry)}>
                   <View style={styles.btnInner}>
                     <Printer size={16} color={Colors.foreground} />
                     <Text style={styles.btnTextDark}>Print</Text>
                   </View>
                 </Button>
-              ) : null}
-              <Button variant="outline" onPress={() => setShowHistoryDialog(false)}>
-                <View style={styles.btnInner}>
-                  <X size={16} color={Colors.foreground} />
-                  <Text style={styles.btnTextDark}>Close</Text>
-                </View>
-              </Button>
-            </View>
+              </View>
+            ) : null}
           </View>
         </View>
       </Modal>
@@ -2020,10 +2016,11 @@ const styles = StyleSheet.create({
   historyFooter: {
     flexDirection: 'row',
     alignItems: 'center',
-    // Up to 3 auto-width buttons ("Back to List", "Print", "Close") — on a
-    // narrow phone they don't all fit on one line. Without wrap, Yoga
-    // doesn't shrink auto-width siblings, so the row overflows past the
-    // screen edge and the last button(s) get clipped instead of wrapping.
+    // Only rendered with a selected entry, and only ever "← Back to List"
+    // (pushed left via marginRight: 'auto') and "Print" — still wrapped as
+    // a safety net on a narrow phone, since Yoga doesn't shrink auto-width
+    // siblings on its own and an overflowing row would otherwise clip
+    // rather than wrap.
     flexWrap: 'wrap',
     rowGap: 8,
     gap: 8,

@@ -25,6 +25,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from api.models import Patient, PatientAssignment
+from api.notifications import notify_patient_assigned
 from api.serializers import nurse_display_name
 
 
@@ -85,15 +86,17 @@ class Command(BaseCommand):
                     patient = next(pool_iter, None)
                     if patient is None:
                         break
+                    previous_nurse = patient.assigned_nurse
                     PatientAssignment.objects.filter(patient=patient, status='active').update(
                         status='reassigned'
                     )
-                    PatientAssignment.objects.create(
+                    assignment = PatientAssignment.objects.create(
                         patient=patient,
                         assigned_nurse=nurse,
                         assigned_nurse_name=nurse_display_name(nurse),
                         status='active',
                     )
+                    notify_patient_assigned(assignment, actor=None, previous_nurse=previous_nurse)
                     reassigned += 1
 
             self.stdout.write(

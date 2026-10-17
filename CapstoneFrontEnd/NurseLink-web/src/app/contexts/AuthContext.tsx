@@ -7,6 +7,7 @@ import {
   updateMe,
 } from '../api/nurselink';
 import { getToken, setToken } from '../api/client';
+import { unlockNotificationAudio } from '../utils/notificationSound';
 
 export type UserRole = 'staff_nurse' | 'head_nurse';
 // The account's actual role, as returned by the server — 'admin' is never a
@@ -108,7 +109,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     const interval = setInterval(checkTimeout, 60000);
-    const updateActivity = () => setLastActivity(Date.now());
+    // Also unlocks notification sound playback (see notificationSound.ts) —
+    // browsers refuse audio.play() until the page has had a real user
+    // gesture, and this is the same "the nurse has started using the app"
+    // signal either way. unlockNotificationAudio() only ever latches on a
+    // confirmed successful play, so calling it from every one of these is
+    // safe: a cheap no-op until a real gesture actually unlocks it.
+    const updateActivity = () => {
+      setLastActivity(Date.now());
+      unlockNotificationAudio();
+    };
     window.addEventListener('mousedown', updateActivity);
     window.addEventListener('keydown', updateActivity);
     window.addEventListener('scroll', updateActivity);

@@ -497,7 +497,13 @@ export interface WorkloadData {
   taskCount: number;
   completedTasks: number;
   overtimeHours: number;
+  presence?: NursePresence;
+  lastSeenAt?: string | null;
 }
+
+/** Logged-in-and-using-the-app right now — distinct from `shift`/`hasDuty`,
+ * which are about the Duty Roster, not whether the app is open. */
+export type NursePresence = 'online' | 'away' | 'offline';
 
 export interface Nurse {
   id: string;
@@ -514,6 +520,8 @@ export interface Nurse {
   patientCount?: number;
   taskCount?: number;
   completedTasks?: number;
+  presence?: NursePresence;
+  lastSeenAt?: string | null;
 }
 
 /** A candidate recipient for a referral — see EligibleReferralRecipients.
@@ -612,6 +620,10 @@ export interface DutyAssignment {
   id: number;
   nurseId: string;
   nurseName: string;
+  /** Logged-in-and-using-the-app right now — distinct from this row's own
+   * shift/status, which are about the roster, not whether the app is open. */
+  nursePresence?: NursePresence;
+  nurseLastSeenAt?: string | null;
   departmentId: number;
   departmentName: string;
   dutyDate: string;

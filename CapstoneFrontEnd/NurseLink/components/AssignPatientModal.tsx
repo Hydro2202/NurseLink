@@ -13,9 +13,10 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
-import type { Patient, Task } from '../types/domain';
+import type { NursePresence, Patient, Task } from '../types/domain';
 import { PatientAssignment } from '../types';
 import { fetchPatients } from '../services/api';
+import { PRESENCE_DOT_EMOJI, sortByPresence } from '../utils/presence';
 
 export type { PatientAssignment };
 
@@ -39,7 +40,13 @@ interface AssignPatientModalProps {
   ) => void | Promise<void>;
   editingAssignment?: PatientAssignment | null;
   prefill?: AssignPatientPrefill | null;
-  availableNurses: { id: string; name: string; patientCount: number }[];
+  availableNurses: {
+    id: string;
+    name: string;
+    patientCount: number;
+    presence?: NursePresence;
+    lastSeenAt?: string | null;
+  }[];
   allTasks?: Task[];
   allAssignments?: PatientAssignment[];
 }
@@ -203,8 +210,8 @@ export function AssignPatientModal({
                 label="Assign to Nurse *"
                 value={formData.assignedNurseId}
                 onValueChange={handleNurseSelect}
-                options={availableNurses.map((nurse) => ({
-                  label: `${nurse.name} (${nurse.patientCount} patients)`,
+                options={sortByPresence(availableNurses).map((nurse) => ({
+                  label: `${PRESENCE_DOT_EMOJI[nurse.presence ?? 'offline']} ${nurse.name} (${nurse.patientCount} patients)`,
                   value: nurse.id,
                 }))}
                 placeholder="Select a nurse"

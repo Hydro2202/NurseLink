@@ -8,7 +8,6 @@ import {
   FileText,
   BookOpen,
   Users,
-  BarChart3,
   Settings,
   Stethoscope,
   Calendar,
@@ -50,8 +49,8 @@ const SUPERVISOR_NAV: NavItem[] = [
   { name: 'Patients', href: '/(app)/all-patients', icon: Users, color: Colors.purple600 },
   // Read-only oversight of every referral — see handover.tsx's isHeadNurse branch.
   { name: 'Referral', href: '/(app)/handover', icon: FileText, color: Colors.orange600 },
-  { name: 'Analytics', href: '/(app)/analytics', icon: BarChart3, color: Colors.green600 },
-  { name: 'Workload', href: '/(app)/workload', icon: BarChart3, color: Colors.orange600 },
+  // Analytics and Workload Monitor were folded into the dashboard itself
+  // (see dashboard.tsx) — no longer their own nav destinations.
   { name: 'Settings', href: '/(app)/settings', icon: Settings, color: Colors.gray600 },
 ];
 

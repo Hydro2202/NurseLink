@@ -27,6 +27,8 @@ import {
 } from '../api/nurselink';
 import type { Department, DutyAssignment, Nurse } from '../types/domain';
 import { toast } from 'sonner';
+import { PresenceDot } from './PresenceDot';
+import { sortByPresence } from '../utils/presence';
 
 interface DutyAssignmentModalProps {
   open: boolean;
@@ -216,10 +218,12 @@ export function DutyAssignmentModal({
 
   // Several real accounts in this hospital's roster share the same display
   // name — the email is what actually tells them apart, so it's shown in
-  // the option label itself.
-  const nurseOptions = nurses.map((n) => ({
+  // the option label itself. Active nurses are listed first.
+  const nurseOptions = sortByPresence(nurses).map((n) => ({
     label: n.email ? `${n.name} — ${n.email}` : n.name,
     value: n.id,
+    presence: n.presence,
+    lastSeenAt: n.lastSeenAt,
   }));
   const departmentOptions = departments.map((d) => ({ label: d.name, value: String(d.id) }));
 
@@ -307,7 +311,10 @@ export function DutyAssignmentModal({
                 ) : (
                   nurseOptions.map((o) => (
                     <SelectItem key={o.value} value={o.value}>
-                      {o.label}
+                      <span className="inline-flex items-center gap-1.5">
+                        <PresenceDot presence={o.presence} lastSeenAt={o.lastSeenAt} />
+                        {o.label}
+                      </span>
                     </SelectItem>
                   ))
                 )}

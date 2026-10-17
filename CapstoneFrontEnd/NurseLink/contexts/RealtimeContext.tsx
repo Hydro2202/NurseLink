@@ -46,6 +46,11 @@ export interface RealtimeNotification {
   handoverId: string | null;
   senderName: string | null;
   createdAt: string;
+  /** Lets a toast popup render its action button immediately, without
+   * waiting for the follow-up refetch to fill it in. */
+  actionLabel: string | null;
+  actionPath: string | null;
+  actionHighlightId: string | null;
 }
 
 type Listener = (event: RealtimeNotification) => void;

@@ -103,6 +103,10 @@ class NurseProfile(models.Model):
         related_name='roles_granted',
     )
     role_granted_at = models.DateTimeField(null=True, blank=True)
+    # Updated (throttled to once per minute) from every LiveStateView poll
+    # while the app is open, and cleared on logout — see api.presence. Not a
+    # duty/shift signal; a nurse can be "active" with no shift scheduled.
+    last_seen_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [

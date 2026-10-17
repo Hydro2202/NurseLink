@@ -64,6 +64,12 @@ def _payload(notification):
             full_name(sender) if sender else None
         ),
         'createdAt': notification.created_at.isoformat(),
+        # Lets the toast popup (see NotificationToastCard on both frontends)
+        # render its action button immediately, without waiting for the
+        # follow-up refetch to fill it in.
+        'actionLabel': notification.action_label or None,
+        'actionPath': notification.action_path or None,
+        'actionHighlightId': notification.action_highlight_id or None,
     }
 
 

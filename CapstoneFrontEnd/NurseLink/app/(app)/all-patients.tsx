@@ -288,7 +288,9 @@ export default function AllPatientsPage() {
   // Back to page 1 whenever the result set itself changes — otherwise a
   // narrower filter/search could strand the view on a now-nonexistent page.
   useEffect(() => {
-    setCurrentPage(1);
+    (() => {
+      setCurrentPage(1);
+    })();
   }, [searchQuery, roomFilter, riskFilter, deptFilter, nurseFilter, statusFilter, dischargeDateFrom, dischargeDateTo, sortBy, sortDesc]);
 
   const totalPages = Math.max(1, Math.ceil(sortedPatients.length / PATIENTS_PER_PAGE));

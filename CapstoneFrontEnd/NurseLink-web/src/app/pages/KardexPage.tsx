@@ -1548,8 +1548,12 @@ export default function KardexPage() {
             </div>
           )}
 
-          <DialogFooter className="sticky bottom-0 bg-white pt-4 border-t">
-            {selectedHistoryEntry && (
+          {/* List view (no selectedHistoryEntry) has nothing left to put
+              here now that Close is gone — the Dialog's own built-in X,
+              backdrop click, and Esc all still close it — so the footer
+              itself is skipped rather than rendering empty. */}
+          {selectedHistoryEntry && (
+            <DialogFooter className="sticky bottom-0 bg-white pt-4 border-t">
               <Button
                 variant="outline"
                 onClick={() => setSelectedHistoryEntry(null)}
@@ -1557,18 +1561,12 @@ export default function KardexPage() {
               >
                 ← Back to List
               </Button>
-            )}
-            {selectedHistoryEntry && (
               <Button variant="outline" onClick={() => handlePrintHistoryEntry(selectedHistoryEntry)}>
                 <Printer className="w-4 h-4 mr-2" />
                 Print
               </Button>
-            )}
-            <Button variant="outline" onClick={() => setShowHistoryDialog(false)}>
-              <X className="w-4 h-4 mr-2" />
-              Close
-            </Button>
-          </DialogFooter>
+            </DialogFooter>
+          )}
         </DialogContent>
       </Dialog>
     </div>

@@ -224,6 +224,12 @@ class LiveStateTests(APITestCase):
         for index in range(25):
             self.make_task(task_code='T9%02d' % index)
 
+        # One call to warm up presence tracking: touch_last_seen (see
+        # api.presence) writes once to stamp last_seen_at, then throttles
+        # itself for a minute, so only that very first poll in a session
+        # carries the extra write — the steady state captured below must not.
+        self.state()
+
         with CaptureQueriesContext(connection) as queries:
             self.state()
 

@@ -33,6 +33,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { DutyAssignmentModal } from '../components/DutyAssignmentModal';
+import { PresenceDot } from '../components/PresenceDot';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -437,6 +438,7 @@ export default function DutyRosterPage() {
                 {initials(a.nurseName)}
               </div>
               <p className="text-sm font-bold truncate">{a.nurseName}</p>
+              <PresenceDot presence={a.nursePresence} lastSeenAt={a.nurseLastSeenAt} />
             </div>
             <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold ${badge.bg} ${badge.color}`}>
               {'live' in badge && badge.live ? <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" /> : null}

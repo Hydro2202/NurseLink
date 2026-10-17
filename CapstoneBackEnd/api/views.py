@@ -34,6 +34,7 @@ from rest_framework.views import APIView
 
 from .email_validation import EmailValidationError
 from .duty_status import current_duties, duty_fields, today_overtime_hours
+from .presence import clear_last_seen, presence_fields, touch_last_seen
 from .names import full_name, name_match_q, name_variants
 from .face_match import (
     FaceModelError,
@@ -109,6 +110,7 @@ from .notifications import (
     notify_handover_declined,
     notify_kardex_reviewed,
     notify_admin_new_registration,
+    notify_duty_assigned,
     notify_nurse_reassigned,
     notify_referral_head_nurse_fyi,
     notify_safety_alert,
@@ -2655,6 +2657,10 @@ class LogoutView(APIView):
         # Revokes only the session this request authenticated with — other
         # devices' sessions for the same account stay signed in.
         revoke_session(request.auth)
+        # Only mark offline if that was this nurse's last open session —
+        # another device still signed in means they're still "active".
+        if not AuthSession.objects.filter(user=request.user).exists():
+            clear_last_seen(request.user)
         return Response({'detail': 'Logged out.'})
 
 
@@ -2674,6 +2680,7 @@ class LogoutAllView(APIView):
     )
     def post(self, request):
         revoke_all_sessions(request.user)
+        clear_last_seen(request.user)
         return Response({'detail': 'Logged out of all devices.'})
 
 
@@ -4963,11 +4970,29 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         assignment = serializer.save()
         self._sync_nurse_profile(assignment)
+        # Only while the shift is still a live, upcoming one to act on — a
+        # head nurse backfilling a past/completed duty (seeding history,
+        # correcting a record) must not page the nurse about something
+        # already over.
+        if assignment.status not in ('completed', 'cancelled'):
+            notify_duty_assigned(assignment, self.request.user)
 
     def perform_update(self, serializer):
         previous_status = serializer.instance.status
+        previous_schedule = (
+            serializer.instance.department_id, serializer.instance.shift, serializer.instance.duty_date,
+        )
         assignment = serializer.save()
         self._sync_nurse_profile(assignment)
+
+        schedule_changed = previous_schedule != (
+            assignment.department_id, assignment.shift, assignment.duty_date,
+        )
+        if (
+            schedule_changed
+            and assignment.status not in ('completed', 'cancelled')
+        ):
+            notify_duty_assigned(assignment, self.request.user)
 
         # A head nurse can also mark a shift Completed from the roster's
         # plain edit form (Status dropdown), not just via /close/. Without
@@ -5529,6 +5554,7 @@ class NurseViewSet(viewsets.ViewSet):
             # made every unscheduled nurse look like a morning-shift nurse).
             duty_shift, department = duty_fields(profile, duty)
             overtime_hours = overtime_by_nurse.get(nurse.pk, 0.0)
+            presence, last_seen_at = presence_fields(profile)
             results.append(
                 {
                     'id': str(nurse.pk),
@@ -5544,6 +5570,8 @@ class NurseViewSet(viewsets.ViewSet):
                     'patientCount': nurse.patient_count,
                     'taskCount': nurse.task_count,
                     'completedTasks': nurse.completed_tasks,
+                    'presence': presence,
+                    'lastSeenAt': last_seen_at,
                 }
             )
         return Response([filter_nurse_fields(row, request.user) for row in results])
@@ -5556,6 +5584,7 @@ class NurseViewSet(viewsets.ViewSet):
         profile = getattr(nurse, 'nurse_profile', None)
         duty = current_duties([nurse.pk]).get(nurse.pk)
         duty_shift, department = duty_fields(profile, duty)
+        presence, last_seen_at = presence_fields(profile)
         return Response(
             filter_nurse_fields(
                 {
@@ -5567,6 +5596,8 @@ class NurseViewSet(viewsets.ViewSet):
                     'specialization': profile.specialization if profile else '',
                     'email': nurse.email,
                     'department': department,
+                    'presence': presence,
+                    'lastSeenAt': last_seen_at,
                 },
                 request.user,
             )
@@ -6031,22 +6062,95 @@ class FaceVerificationAttemptViewSet(viewsets.ReadOnlyModelViewSet):
         return qs
 
 
+def _resolve_optional_date_range(params):
+    """
+    (start_date, end_date) as date objects from the start_date/end_date query
+    params shared by WorkloadView and AnalyticsView — or (None, None) when
+    neither was given, so callers can tell "no filter" apart from "filtered
+    to a range that happens to match the default" and skip scoping entirely
+    (keeping the unfiltered response byte-for-byte what it always was).
+
+    Giving only one end derives the other as a 7-day window around it, same
+    shape as the default. A 400 (via parse_user_date) on an unparseable
+    date, or if start_date ends up after end_date.
+    """
+    start_str = params.get('start_date')
+    end_str = params.get('end_date')
+    if not start_str and not end_str:
+        return None, None
+    end_date = parse_user_date(end_str, 'end_date') if end_str else timezone.now().date()
+    start_date = parse_user_date(start_str, 'start_date') if start_str else end_date - timedelta(days=6)
+    if start_date > end_date:
+        raise serializers.ValidationError({'start_date': 'start_date must not be after end_date.'})
+    return start_date, end_date
+
+
+def _resolve_numeric_id(raw_value):
+    """
+    (id, invalid) for a numeric-id query param (department/nurse) — id is
+    the raw value (still a string) when it parses as a plain integer, else
+    None; invalid is True only when a value was actually given and did not
+    parse, so the caller can filter to nothing instead of silently ignoring
+    a malformed id and matching everyone.
+    """
+    if not raw_value:
+        return None, False
+    if str(raw_value).isdigit():
+        return raw_value, False
+    return None, True
+
+
+def _resolve_department_name(department_param):
+    """A Department id (query param) -> (its name, invalid) — invalid is
+    True when a value was given but doesn't parse as an id or doesn't name
+    a real Department, so the caller can match nothing rather than silently
+    ignoring it and matching everyone. (None, False) means no filter at all."""
+    department_id, invalid = _resolve_numeric_id(department_param)
+    if department_id is None:
+        return None, invalid
+    department = Department.objects.filter(pk=department_id).first()
+    if department is None:
+        return None, True
+    return department.name, False
+
+
 class WorkloadView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
 
-    @extend_schema(tags=['Analytics'], summary='Workload summary')
+    @extend_schema(
+        tags=['Analytics'],
+        summary='Workload summary',
+        description=(
+            'Optional filters — all default to the unfiltered view when left out: '
+            'start_date/end_date (YYYY-MM-DD, scope task counts to tasks created in '
+            'that window; bad dates are a 400), department (a Department id, matched '
+            'against each nurse\'s current duty/profile department), shift (morning/'
+            'afternoon/night, matched against each nurse\'s current duty), nurse (a '
+            'user id, restricts to that one nurse).'
+        ),
+    )
     def get(self, request):
+        params = request.query_params
+        start_date, end_date = _resolve_optional_date_range(params)
+        shift_param = params.get('shift')
+        # A given-but-malformed/unknown id (bad client, stale link) matches
+        # nothing rather than silently being ignored and matching everyone.
+        nurse_param, nurse_invalid = _resolve_numeric_id(params.get('nurse'))
+        department_name, department_invalid = _resolve_department_name(params.get('department'))
+        if nurse_invalid or department_invalid:
+            return Response([])
+
         # Only real, current staff: pending/rejected sign-ups and deactivated
         # accounts don't belong in Overview, Team or Trends.
-        nurses = list(
-            User.objects.filter(
-                is_active=True,
-                nurse_profile__role='staff_nurse',
-                nurse_profile__is_active_staff=True,
-                nurse_profile__approval_status='approved',
-            )
-            .select_related('nurse_profile')
+        nurses_qs = User.objects.filter(
+            is_active=True,
+            nurse_profile__role='staff_nurse',
+            nurse_profile__is_active_staff=True,
+            nurse_profile__approval_status='approved',
         )
+        if nurse_param:
+            nurses_qs = nurses_qs.filter(pk=nurse_param)
+        nurses = list(nurses_qs.select_related('nurse_profile'))
         nurse_ids = [n.pk for n in nurses]
         names_by_id = {n.pk: full_name(n) for n in nurses}
 
@@ -6082,6 +6186,10 @@ class WorkloadView(APIView):
         relevant_tasks = Task.objects.filter(
             Q(assigned_nurse_id__in=nurse_ids) | name_match
         ).only('id', 'assigned_nurse_id', 'assigned_to', 'status')
+        # Only scoped when a date filter was actually given — the unfiltered
+        # view keeps counting every task ever assigned, exactly as before.
+        if start_date is not None:
+            relevant_tasks = relevant_tasks.filter(created_at__date__range=(start_date, end_date))
 
         task_totals = {}
         task_completed = {}
@@ -6107,7 +6215,12 @@ class WorkloadView(APIView):
             name = names_by_id[nurse.pk]
             duty = duty_by_nurse.get(nurse.pk)
             duty_shift, department = duty_fields(profile, duty)
+            if department_name and department != department_name:
+                continue
+            if shift_param and duty_shift != shift_param:
+                continue
             overtime_hours = overtime_by_nurse.get(nurse.pk, 0.0)
+            presence, last_seen_at = presence_fields(profile)
             data.append(
                 {
                     'nurseId': str(nurse.pk),
@@ -6124,6 +6237,8 @@ class WorkloadView(APIView):
                     'taskCount': task_totals.get(nurse.pk, 0),
                     'completedTasks': task_completed.get(nurse.pk, 0),
                     'overtimeHours': overtime_hours,
+                    'presence': presence,
+                    'lastSeenAt': last_seen_at,
                 }
             )
         return Response([filter_nurse_fields(row, request.user) for row in data])
@@ -6132,18 +6247,71 @@ class WorkloadView(APIView):
 class AnalyticsView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
 
-    @extend_schema(tags=['Analytics'], summary='Analytics dashboard data')
+    @extend_schema(
+        tags=['Analytics'],
+        summary='Analytics dashboard data',
+        description=(
+            'Optional filters — all default to the unfiltered last-7-days view when '
+            'left out: start_date/end_date (YYYY-MM-DD; bad dates are a 400, and a '
+            'custom range wider than 30 days is clamped to its last 30), department '
+            '(a Department id), shift (morning/afternoon/night — resolved against '
+            'real DutyAssignment rows, not the stale NurseProfile default), nurse '
+            '(a user id), risk (the patient\'s risk level: low/medium/high/critical).'
+        ),
+    )
     def get(self, request):
-        now = timezone.now()
-        week_ago = now - timedelta(days=7)
+        params = request.query_params
+        start_date, end_date = _resolve_optional_date_range(params)
+        filtered = start_date is not None
+        if not filtered:
+            # Unfiltered default: exactly today and the 6 days before it,
+            # same window the old hardcoded version always used.
+            end_date = timezone.now().date()
+            start_date = end_date - timedelta(days=6)
+        elif (end_date - start_date).days > 30:
+            # A custom range stays inside a sane window — unbounded would
+            # turn the one-query-per-day loop below into one unbounded.
+            start_date = end_date - timedelta(days=30)
 
-        # Daily completion for last 7 days
+        # A given-but-malformed id (bad client, stale link) matches nothing
+        # rather than silently being ignored and matching everyone.
+        department_id, department_invalid = _resolve_numeric_id(params.get('department'))
+        nurse_param, nurse_invalid = _resolve_numeric_id(params.get('nurse'))
+        impossible = department_invalid or nurse_invalid
+        shift_param = params.get('shift')
+        risk_param = params.get('risk')
+
+        # "Shift" has no meaning on a task/patient directly — only a nurse's
+        # real duty does — so it narrows to nurses actually on that shift
+        # (DutyAssignment, not the stale NurseProfile.shift default; see
+        # duty_status.py's own docs) and then to tasks/patients assigned to
+        # one of them. "Department" is simpler: a task/patient already has
+        # one directly (via the patient), so that's what it filters by —
+        # independent of whether anyone happens to be rostered there today.
+        shift_nurse_ids = None
+        if shift_param:
+            shift_nurse_ids = set(
+                DutyAssignment.objects.filter(shift=shift_param)
+                .exclude(status='cancelled')
+                .values_list('nurse_id', flat=True)
+            )
+
+        tasks = Task.objects.none() if impossible else Task.objects.all()
+        if department_id:
+            tasks = tasks.filter(patient__department_id=department_id)
+        if nurse_param:
+            tasks = tasks.filter(assigned_nurse_id=nurse_param)
+        if shift_nurse_ids is not None:
+            tasks = tasks.filter(assigned_nurse_id__in=shift_nurse_ids)
+        if risk_param:
+            tasks = tasks.filter(patient__risk_level=risk_param)
+
+        # Daily completion for the resolved range.
         task_completion = []
-        for i in range(6, -1, -1):
-            day = (now - timedelta(days=i)).date()
-            count = Task.objects.filter(
-                status='completed', completed_at__date=day
-            ).count()
+        num_days = (end_date - start_date).days + 1
+        for i in range(num_days):
+            day = start_date + timedelta(days=i)
+            count = tasks.filter(status='completed', completed_at__date=day).count()
             task_completion.append(
                 {
                     'value': count,
@@ -6152,9 +6320,18 @@ class AnalyticsView(APIView):
                 }
             )
 
+        # Everything below only narrows to the date range when one was
+        # actually given — the unfiltered response stays exactly what it
+        # always was (all-time totals), not a surprise narrowing to "last 7
+        # days" nobody asked for. Any other filter (department/shift/nurse/
+        # risk) always applies, with or without a date range.
+        scoped_tasks = tasks
+        if filtered:
+            scoped_tasks = scoped_tasks.filter(created_at__date__range=(start_date, end_date))
+
         # Task type distribution
         type_counts = (
-            Task.objects.values('category')
+            scoped_tasks.values('category')
             .annotate(count=Count('id'))
             .order_by('-count')
         )
@@ -6178,15 +6355,44 @@ class AnalyticsView(APIView):
                 }
             )
 
-        total_tasks = Task.objects.count()
-        completed_tasks = Task.objects.filter(status='completed').count()
-        overdue_tasks = Task.objects.filter(status='overdue').count()
+        total_tasks = scoped_tasks.count()
+        completed_tasks = scoped_tasks.filter(status='completed').count()
+        overdue_tasks = scoped_tasks.filter(status='overdue').count()
         completion_rate = round((completed_tasks / total_tasks) * 100, 1) if total_tasks else 0
 
-        nurses = NurseProfile.objects.filter(role='staff_nurse', is_active_staff=True)
-        avg_patients = 0
-        nurse_count = nurses.count() or 1
-        patient_total = Patient.objects.filter(assigned_nurse__isnull=False).count()
+        # "Active nurses" has no department of its own either — a nurse's
+        # profile.department is the same stale default called out above —
+        # so this one also goes through who is actually rostered there.
+        department_duty_nurse_ids = None
+        if department_id:
+            department_duty_nurse_ids = set(
+                DutyAssignment.objects.filter(department_id=department_id)
+                .exclude(status='cancelled')
+                .values_list('nurse_id', flat=True)
+            )
+
+        nurses_qs = NurseProfile.objects.none() if impossible else NurseProfile.objects.filter(
+            role='staff_nurse', is_active_staff=True
+        )
+        if nurse_param:
+            nurses_qs = nurses_qs.filter(user_id=nurse_param)
+        if shift_nurse_ids is not None:
+            nurses_qs = nurses_qs.filter(user_id__in=shift_nurse_ids)
+        if department_duty_nurse_ids is not None:
+            nurses_qs = nurses_qs.filter(user_id__in=department_duty_nurse_ids)
+        active_nurses = nurses_qs.count()
+        nurse_count = active_nurses or 1
+
+        patient_qs = Patient.objects.none() if impossible else Patient.objects.filter(assigned_nurse__isnull=False)
+        if department_id:
+            patient_qs = patient_qs.filter(department_id=department_id)
+        if nurse_param:
+            patient_qs = patient_qs.filter(assigned_nurse_id=nurse_param)
+        if shift_nurse_ids is not None:
+            patient_qs = patient_qs.filter(assigned_nurse_id__in=shift_nurse_ids)
+        if risk_param:
+            patient_qs = patient_qs.filter(risk_level=risk_param)
+        patient_total = patient_qs.count()
         avg_patients = round(patient_total / nurse_count, 1)
 
         # Workload trend — average patients per nurse by week bucket (simple)
@@ -6199,21 +6405,32 @@ class AnalyticsView(APIView):
                 }
             )
 
+        # Same 2-day-bucket shape as before; week_start only moves off "7
+        # days before now" when a date filter was actually given.
+        week_start = start_date if filtered else (timezone.now() - timedelta(days=7)).date()
         avg_tasks_series = []
         for i in range(4):
-            start = week_ago + timedelta(days=i * 2)
-            end = start + timedelta(days=2)
-            cnt = Task.objects.filter(created_at__gte=start, created_at__lt=end).count()
+            bucket_start = week_start + timedelta(days=i * 2)
+            bucket_end = bucket_start + timedelta(days=2)
+            cnt = tasks.filter(created_at__date__gte=bucket_start, created_at__date__lt=bucket_end).count()
             avg_tasks_series.append({'value': cnt or completed_tasks // 4 or 0})
 
+        # Delay by Shift — real DutyAssignment shifts, not the stale
+        # NurseProfile.shift default this used to read.
         delay_data = []
         for shift, label in [('morning', 'Morning'), ('afternoon', 'Afternoon'), ('night', 'Night')]:
-            # Approximate delay proxy: overdue tasks for nurses on that shift
-            nurse_names = list(
-                User.objects.filter(nurse_profile__shift=shift).values_list('first_name', 'last_name')
-            )
-            names = [f'{f} {l}'.strip() for f, l in nurse_names]
-            overdue = Task.objects.filter(status='overdue', assigned_to__in=names).count()
+            if shift_param and shift != shift_param:
+                delay_data.append({'value': 0, 'label': label})
+                continue
+            bar_duty_qs = DutyAssignment.objects.filter(shift=shift).exclude(status='cancelled')
+            if department_id:
+                bar_duty_qs = bar_duty_qs.filter(department_id=department_id)
+            if filtered:
+                bar_duty_qs = bar_duty_qs.filter(duty_date__range=(start_date, end_date))
+            bar_nurse_ids = set(bar_duty_qs.values_list('nurse_id', flat=True))
+            if nurse_param:
+                bar_nurse_ids &= {int(nurse_param)}
+            overdue = tasks.filter(status='overdue', assigned_nurse_id__in=bar_nurse_ids).count()
             delay_data.append({'value': overdue, 'label': label})
 
         return Response(
@@ -6227,9 +6444,7 @@ class AnalyticsView(APIView):
                     'completionRate': completion_rate,
                     'avgResponseMinutes': max(overdue_tasks * 2, 8),
                     'overdueTasks': overdue_tasks,
-                    'activeNurses': NurseProfile.objects.filter(
-                        role='staff_nurse', is_active_staff=True
-                    ).count(),
+                    'activeNurses': active_nurses,
                     'avgPatientsPerNurse': avg_patients,
                     'totalTasks': total_tasks,
                     'completedTasks': completed_tasks,
@@ -6295,6 +6510,14 @@ class LiveStateView(APIView):
         # docstring for why this lives on the poll rather than a scheduler.
         check_due_task_reminders(user)
         check_due_referral_reminders(user)
+
+        # "Active now" presence (api.presence) piggybacks on this same poll
+        # rather than a scheduler, same reasoning as the two calls above.
+        # touch_last_seen throttles its own write to once a minute, so this
+        # is a no-op query on most ticks, not a write on every one.
+        own_profile_for_presence = getattr(user, 'nurse_profile', None)
+        if own_profile_for_presence is not None:
+            touch_last_seen(own_profile_for_presence)
 
         # Notifications have no updated_at — they are created and then read —
         # so total, unread and newest together are the whole story. One

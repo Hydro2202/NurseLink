@@ -53,8 +53,10 @@ export function PatientAssignmentHistoryModal({
   useEffect(() => {
     if (!open || !patient) return;
     let cancelled = false;
-    setLoading(true);
-    setError('');
+    (() => {
+      setLoading(true);
+      setError('');
+    })();
     fetchAssignments({ patientId: patient.id, status: 'all' })
       .then((data) => {
         if (!cancelled) setRecords(data);

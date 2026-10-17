@@ -36,10 +36,30 @@ const PANEL_WIDTH = Math.min(Dimensions.get('window').width, 384);
  * arrives as "/(app)/tasks" would otherwise become "/(app)/(app)/tasks" and
  * land the nurse on Unmatched Route.
  */
-function mapAppPath(path: string): string {
+export function mapAppPath(path: string): string {
   let clean = path.startsWith('/') ? path.slice(1) : path;
   if (clean.startsWith('(app)/')) clean = clean.slice('(app)/'.length);
   return `/(app)/${clean}`;
+}
+
+/**
+ * Splits a stored action path's own query string (e.g.
+ * "/dashboard?section=alerts", used by the Safety Alerts redirect — see
+ * notify_safety_alert) from its route, merging it with an optional
+ * highlightId into one params object. Without this, a path carrying a
+ * query string would get passed whole to mapAppPath and end up baked
+ * unparsed into `pathname` instead of becoming real router params.
+ */
+export function resolveNotificationAction(path: string, highlightId?: string | null) {
+  const [routePath, query] = path.split('?');
+  const params: Record<string, string> = {};
+  if (query) {
+    new URLSearchParams(query).forEach((value, key) => {
+      params[key] = value;
+    });
+  }
+  if (highlightId) params.highlightId = highlightId;
+  return { href: mapAppPath(routePath), params };
 }
 
 export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
@@ -82,9 +102,9 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
     // stuck until the nurse remembers to clear the whole inbox.
     if (!notification.isRead) void markRead(notification.id);
     onClose();
-    const href = mapAppPath(action.path);
-    if (action.highlightId) {
-      router.push({ pathname: href as any, params: { highlightId: action.highlightId } });
+    const { href, params } = resolveNotificationAction(action.path, action.highlightId);
+    if (Object.keys(params).length) {
+      router.push({ pathname: href as any, params });
     } else {
       router.push(href as any);
     }

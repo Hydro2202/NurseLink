@@ -7,7 +7,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Textarea } from './ui/textarea';
 import { User, FileText } from 'lucide-react';
 import { fetchPatients } from '../api/nurselink';
-import type { Patient } from '../types/domain';
+import type { NursePresence, Patient } from '../types/domain';
+import { PresenceDot } from './PresenceDot';
+import { sortByPresence } from '../utils/presence';
 
 export interface PatientAssignment {
   id: string;
@@ -25,12 +27,31 @@ export interface PatientAssignment {
   updatedAt: Date;
 }
 
+/** Everything but the nurse — e.g. from the dashboard's Patient Safety
+ * Alerts "Respond Now", which already knows which patient and how urgent;
+ * the head nurse's only remaining decision is who to assign. */
+export interface AssignPatientPrefill {
+  patientId: string;
+  patientName: string;
+  room: string;
+  ward: string;
+  diagnosis: string;
+  priority: 'urgent' | 'routine';
+}
+
 interface AssignPatientModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (assignment: Omit<PatientAssignment, 'id' | 'assignedAt' | 'updatedAt' | 'status'>) => void;
   editingAssignment?: PatientAssignment | null;
-  availableNurses: Array<{ id: string; name: string; patientCount: number }>;
+  prefill?: AssignPatientPrefill | null;
+  availableNurses: Array<{
+    id: string;
+    name: string;
+    patientCount: number;
+    presence?: NursePresence;
+    lastSeenAt?: string | null;
+  }>;
   allTasks?: unknown[];
   allAssignments?: PatientAssignment[];
 }
@@ -40,6 +61,7 @@ export function AssignPatientModal({
   onClose,
   onSubmit,
   editingAssignment,
+  prefill,
   availableNurses,
 }: AssignPatientModalProps) {
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -76,6 +98,20 @@ export function AssignPatientModal({
         priority: editingAssignment.priority,
         notes: editingAssignment.notes,
       });
+    } else if (prefill) {
+      // Everything but the nurse is already known — the head nurse's only
+      // remaining step is picking who to assign.
+      setFormData({
+        patientName: prefill.patientName,
+        patientId: prefill.patientId,
+        room: prefill.room,
+        ward: prefill.ward,
+        diagnosis: prefill.diagnosis,
+        assignedNurse: '',
+        assignedNurseId: '',
+        priority: prefill.priority,
+        notes: '',
+      });
     } else {
       setFormData({
         patientName: '',
@@ -89,7 +125,7 @@ export function AssignPatientModal({
         notes: '',
       });
     }
-  }, [editingAssignment, isOpen]);
+  }, [editingAssignment, prefill, isOpen]);
 
   const handlePatientSelect = (patientId: string) => {
     const patient = patients.find((p) => p.id === patientId);
@@ -213,9 +249,12 @@ export function AssignPatientModal({
                     <SelectValue placeholder="Select nurse" />
                   </SelectTrigger>
                   <SelectContent>
-                    {availableNurses.map((n) => (
+                    {sortByPresence(availableNurses).map((n) => (
                       <SelectItem key={n.id} value={n.id}>
-                        {n.name} ({n.patientCount} patients)
+                        <span className="inline-flex items-center gap-1.5">
+                          <PresenceDot presence={n.presence} lastSeenAt={n.lastSeenAt} />
+                          {n.name} ({n.patientCount} patients)
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>

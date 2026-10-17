@@ -18,7 +18,6 @@ import {
   LayoutDashboard,
   ClipboardList,
   FileText,
-  BarChart3,
   Settings,
   LogOut,
   Bell,
@@ -46,6 +45,7 @@ import { HandoverAlertModal } from '../../components/HandoverAlertModal';
 import { TaskDueAlertModal } from '../../components/TaskDueAlertModal';
 import { ReferralDueAlertModal } from '../../components/ReferralDueAlertModal';
 import { ProfileSyncListener } from '../../components/ProfileSyncListener';
+import { NotificationToastHost } from '../../components/NotificationToastHost';
 
 interface NavItem {
   name: string;
@@ -403,8 +403,10 @@ export default function AppLayout() {
     { name: 'Charting', href: '/(app)/charting', icon: FileText, show: isStaffNurse },
     { name: 'Kardex', href: '/(app)/kardex', icon: BookOpen, show: isStaffNurse },
     { name: 'All Patients', href: '/(app)/all-patients', icon: Users, show: isSupervisor },
-    { name: 'Analytics', href: '/(app)/analytics', icon: BarChart3, show: isSupervisor },
-    { name: 'Workload Monitor', href: '/(app)/workload', icon: BarChart3, show: isSupervisor },
+    // Analytics and Workload Monitor were folded into the dashboard itself
+    // (see dashboard.tsx's Workload/Analytics sections) — /analytics and
+    // /workload still exist as redirects for old links, just no longer as
+    // their own nav destinations.
     { name: 'Settings', href: '/(app)/settings', icon: Settings, show: true },
   ].filter((item) => item.show);
 
@@ -455,6 +457,7 @@ export default function AppLayout() {
   const handoverAlert = <HandoverAlertModal />;
   const taskDueAlert = <TaskDueAlertModal />;
   const referralDueAlert = <ReferralDueAlertModal />;
+  const notificationToastHost = <NotificationToastHost />;
   // Same three-layout placement — invisible, just keeps this nurse's own
   // department/shift in sync after a head nurse reassigns them.
   const profileSync = <ProfileSyncListener />;
@@ -520,6 +523,7 @@ export default function AppLayout() {
         {handoverAlert}
         {taskDueAlert}
         {referralDueAlert}
+        {notificationToastHost}
         {profileSync}
         {notificationPanel}
         {profileMenu}
@@ -588,6 +592,7 @@ export default function AppLayout() {
         {handoverAlert}
         {taskDueAlert}
         {referralDueAlert}
+        {notificationToastHost}
         {profileSync}
         {notificationPanel}
         {profileMenu}
@@ -630,6 +635,7 @@ export default function AppLayout() {
         {handoverAlert}
         {taskDueAlert}
         {referralDueAlert}
+        {notificationToastHost}
         {profileSync}
         {notificationPanel}
         {profileMenu}
@@ -765,6 +771,7 @@ export default function AppLayout() {
       {handoverAlert}
       {taskDueAlert}
       {referralDueAlert}
+      {notificationToastHost}
       {profileSync}
       {notificationPanel}
       {profileMenu}

@@ -4,6 +4,8 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Select } from './Select';
+import { PresenceDot } from './PresenceDot';
+import type { NursePresence } from '../types/domain';
 
 export interface AssignTarget {
   id: string;
@@ -13,6 +15,8 @@ export interface AssignTarget {
   email: string;
   department: string;
   shift: string;
+  presence?: NursePresence;
+  lastSeenAt?: string | null;
 }
 
 interface NurseAssignModalProps {
@@ -60,7 +64,10 @@ export function NurseAssignModal({ open, onOpenChange, nurse, onSave }: NurseAss
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => onOpenChange(false)}>
       <Pressable style={styles.backdrop} onPress={() => !loading && onOpenChange(false)}>
         <Pressable style={[styles.dialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
-          <Text style={styles.title}>Assign {nurse.name}</Text>
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>Assign {nurse.name}</Text>
+            <PresenceDot presence={nurse.presence} lastSeenAt={nurse.lastSeenAt} showLabel />
+          </View>
           {nurse.email ? <Text style={styles.emailConfirm}>{nurse.email}</Text> : null}
           <Text style={styles.description}>
             Change this nurse&apos;s department or shift. They will be notified.
@@ -115,7 +122,8 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 420,
   },
-  title: { fontSize: 18, fontWeight: '700', color: Colors.foreground, marginBottom: 4 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  title: { fontSize: 18, fontWeight: '700', color: Colors.foreground },
   emailConfirm: { fontSize: 12.5, color: Colors.blue700, fontWeight: '600', marginBottom: 8 },
   description: { fontSize: 13, color: Colors.mutedForeground, marginBottom: 16, lineHeight: 18 },
   form: { gap: 14 },

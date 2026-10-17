@@ -23,6 +23,7 @@ import {
 } from '../services/api';
 import type { Department, DutyAssignment, Nurse } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
+import { PRESENCE_DOT_EMOJI, sortByPresence } from '../utils/presence';
 
 interface DutyAssignmentModalProps {
   open: boolean;
@@ -216,9 +217,10 @@ export function DutyAssignmentModal({
   // Several real accounts in this hospital's roster share the same display
   // name (duplicate/near-duplicate signups) — the email is what actually
   // tells them apart, so it has to be visible in the option itself, not just
-  // searchable via keywords.
-  const nurseOptions = nurses.map((n) => ({
-    label: n.email ? `${n.name} — ${n.email}` : n.name,
+  // searchable via keywords. Active nurses are listed first, and marked
+  // with the same dot colour as everywhere else presence is shown.
+  const nurseOptions = sortByPresence(nurses).map((n) => ({
+    label: `${PRESENCE_DOT_EMOJI[n.presence ?? 'offline']} ${n.email ? `${n.name} — ${n.email}` : n.name}`,
     value: n.id,
     keywords: `${n.email || ''} ${n.department || ''}`,
   }));

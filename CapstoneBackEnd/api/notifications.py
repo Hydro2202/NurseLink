@@ -56,6 +56,9 @@ TASK_HANDOVER_ACCEPTED = 'task_handover_accepted'
 TASK_HANDOVER_REJECTED = 'task_handover_rejected'
 NEW_REGISTRATION_PENDING = 'new_registration_pending'
 SAFETY_ALERT = 'safety_alert'
+PATIENT_ASSIGNED = 'patient_assigned'
+PATIENT_UNASSIGNED = 'patient_unassigned'
+DUTY_ASSIGNED = 'duty_assigned'
 
 # How far ahead of a task's/referral's due moment its "almost due" popup
 # fires. Single constants so the lead time is defined once and the check
@@ -596,6 +599,69 @@ def notify_task_assigned(task, actor=None):
     )
 
 
+def notify_patient_assigned(assignment, actor=None, *, previous_nurse=None):
+    """
+    Tell a nurse a patient has been put in their care.
+
+    `assignment` is the just-created/updated PatientAssignment (or anything
+    with .patient/.assigned_nurse) for the new owner. `previous_nurse`, when
+    given and different from the new owner, also gets told the patient moved
+    away from them — every call site that changes Patient.assigned_nurse
+    (PatientAssignmentSerializer.create()/update(), the bulk-assign path, the
+    rebalance command) knows who held it before, so there is never a second
+    query here to find out.
+
+    Same self-skip as notify_task_assigned: a nurse assigning a patient to
+    themselves, or a previous owner who is also the actor, needs no telling.
+    """
+    patient = assignment.patient
+    new_nurse = assignment.assigned_nurse
+    actor_name = full_name(actor) if actor else 'A head nurse'
+    room = f' (Room {patient.room})' if patient.room else ''
+
+    primary = None
+    if new_nurse is not None and (actor is None or actor.pk != new_nurse.pk):
+        if wants(new_nurse, 'task_notifications'):
+            primary = notify(
+                new_nurse,
+                notification_type='info',
+                event=PATIENT_ASSIGNED,
+                title='New patient assigned',
+                message=f'You have been assigned to {patient.name}{room} by {actor_name}.',
+                patient_label=patient.name,
+                patient=patient,
+                sender=actor,
+                action_label='Open My Patients',
+                action_path='/my-patients',
+            )
+        else:
+            logger.info(
+                '[Settings] %s has task_notifications off; patient assignment for %s not notified.',
+                new_nurse.username, patient.patient_code,
+            )
+
+    if (
+        previous_nurse is not None
+        and (new_nurse is None or previous_nurse.pk != new_nurse.pk)
+        and (actor is None or actor.pk != previous_nurse.pk)
+        and wants(previous_nurse, 'task_notifications')
+    ):
+        notify(
+            previous_nurse,
+            notification_type='info',
+            event=PATIENT_UNASSIGNED,
+            title='Patient reassigned',
+            message=f'{patient.name}{room} was reassigned to someone else by {actor_name}.',
+            patient_label=patient.name,
+            patient=patient,
+            sender=actor,
+            action_label='Open My Patients',
+            action_path='/my-patients',
+        )
+
+    return primary
+
+
 def notify_task_updated(task, actor=None, *, changed_fields=()):
     """
     Tell the assigned nurse one of their tasks changed — status, priority,
@@ -1032,6 +1098,39 @@ def notify_task_handover_rejected(handover):
     )
 
 
+def notify_duty_assigned(duty, actor=None):
+    """
+    Tell a nurse they have been put on a shift — DutyAssignmentViewSet's
+    create/update, whenever the duty is still a live, upcoming shift (not a
+    past or cancelled one; see the call site). Same self-skip and
+    task_notifications gate as notify_nurse_reassigned, the closest existing
+    "something about my work assignment changed" notification.
+    """
+    recipient = duty.nurse
+    if recipient is None or (actor is not None and actor.pk == recipient.pk):
+        return None
+
+    if not wants(recipient, 'task_notifications'):
+        return None
+
+    actor_name = full_name(actor) if actor else 'A head nurse'
+    department = duty.department.name if duty.department_id else ''
+    where = f', {department}' if department else ''
+    # %-d (no leading zero) is a glibc/macOS strftime extension that raises
+    # on Windows, so the day number is appended separately instead.
+    when = f'{duty.duty_date.strftime("%b")} {duty.duty_date.day}'
+    return notify(
+        recipient,
+        notification_type='info',
+        event=DUTY_ASSIGNED,
+        title='Duty assigned',
+        message=f'{actor_name} put you on {duty.get_shift_display()} shift, {when}{where}.',
+        sender=actor,
+        action_label='Open Duty Roster',
+        action_path='/duty-roster',
+    )
+
+
 def notify_nurse_reassigned(profile, actor, *, changed_department, changed_shift):
     """
     Tell a nurse their department or shift was changed by a head nurse.
@@ -1106,7 +1205,12 @@ def notify_safety_alert(patient, actor, *, message):
         patient=patient,
         sender=actor,
         action_label='View Patient',
-        action_path='/workload',
+        # The Workload Monitor page was folded into the dashboard's own
+        # Safety Alerts section — old notifications already saved with the
+        # '/workload' path still work via that route's redirect (see
+        # app/(app)/workload.tsx and web's routes.tsx), so only new
+        # notifications need the new path.
+        action_path='/dashboard?section=alerts',
         action_highlight_id=patient.patient_code,
     )
 

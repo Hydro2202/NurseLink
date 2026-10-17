@@ -1239,26 +1239,28 @@ function DepartmentVisitFormModal({
 
   useEffect(() => {
     if (!open) return;
-    if (visit) {
-      setDepartmentId(String(visit.departmentId));
-      setPurpose(visit.purpose);
-      const split = splitIsoDateTime(visit.scheduledDatetime);
-      setScheduledDate(split.date);
-      setScheduledTime(split.time);
-      setPriority(visit.priority);
-      setPreparationNotes(visit.preparationNotes);
-      setOrderedBy(visit.orderedBy || '');
-    } else {
-      setDepartmentId('');
-      setPurpose('');
-      setScheduledDate('');
-      setScheduledTime('');
-      setPriority('ROUTINE');
-      setPreparationNotes('');
-      setOrderedBy('');
-    }
-    setError('');
-    setTouched({});
+    (() => {
+      if (visit) {
+        setDepartmentId(String(visit.departmentId));
+        setPurpose(visit.purpose);
+        const split = splitIsoDateTime(visit.scheduledDatetime);
+        setScheduledDate(split.date);
+        setScheduledTime(split.time);
+        setPriority(visit.priority);
+        setPreparationNotes(visit.preparationNotes);
+        setOrderedBy(visit.orderedBy || '');
+      } else {
+        setDepartmentId('');
+        setPurpose('');
+        setScheduledDate('');
+        setScheduledTime('');
+        setPriority('ROUTINE');
+        setPreparationNotes('');
+        setOrderedBy('');
+      }
+      setError('');
+      setTouched({});
+    })();
   }, [open, visit]);
 
   const departmentError = touched.departmentId && !departmentId ? 'Department is required.' : '';

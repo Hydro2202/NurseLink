@@ -18,6 +18,7 @@ import { DatePicker, todayIso } from './DatePicker';
 import { createTask, createAssignment, fetchNurses, ApiError } from '../services/api';
 import type { Nurse, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
+import { PRESENCE_DOT_EMOJI, sortByPresence } from '../utils/presence';
 
 interface TaskAssignmentModalProps {
   open: boolean;
@@ -310,9 +311,9 @@ export function TaskAssignmentModal({
                 label="Assign to Nurse *"
                 value={selectedNurse}
                 onValueChange={setSelectedNurse}
-                options={nurses.map((nurse) => ({
+                options={sortByPresence(nurses).map((nurse) => ({
                   // Shift only when the nurse actually has a duty on the roster.
-                  label: `${nurse.name} — ${nurse.role}${nurse.shift ? ` • ${nurse.shift} shift` : ''}${nurse.specialization ? ` • ${nurse.specialization}` : ''}`,
+                  label: `${PRESENCE_DOT_EMOJI[nurse.presence ?? 'offline']} ${nurse.name} — ${nurse.role}${nurse.shift ? ` • ${nurse.shift} shift` : ''}${nurse.specialization ? ` • ${nurse.specialization}` : ''}`,
                   value: nurse.id,
                   keywords: nurse.department || '',
                 }))}

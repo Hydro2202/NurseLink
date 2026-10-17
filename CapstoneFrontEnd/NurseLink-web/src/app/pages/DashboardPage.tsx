@@ -1,8 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { useNavigate } from 'react-router';
-import type { Patient, Task, WorkloadData, DutyAssignment } from '../types/domain';
-import { fetchPatients, fetchTasks, fetchWorkload, fetchDutyAssignments, notifyPatientNurse } from '../api/nurselink';
+import { useNavigate, useSearchParams } from 'react-router';
+import type {
+  Patient, Task, WorkloadData, DutyAssignment, Department, AnalyticsData, PatientAssignmentRecord,
+} from '../types/domain';
+import {
+  fetchPatients,
+  fetchTasks,
+  fetchWorkload,
+  fetchAnalytics,
+  fetchDutyAssignments,
+  fetchAssignments,
+  fetchDepartments,
+  createAssignment,
+  updateAssignment,
+  notifyPatientNurse,
+} from '../api/nurselink';
 import { ApiError } from '../api/client';
 import { useLiveRefresh } from '../contexts/LiveContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -27,6 +40,64 @@ import {
   TrendingUp,
   ArrowRight,
 } from 'lucide-react';
+import { AssignPatientModal, type AssignPatientPrefill, type PatientAssignment } from '../components/AssignPatientModal';
+import { SafetyAlertsSection, type SafetyAlert } from '../components/dashboard/SafetyAlertsSection';
+import { WorkloadSection } from '../components/dashboard/WorkloadSection';
+import { AnalyticsSection } from '../components/dashboard/AnalyticsSection';
+import { FilterBar } from '../components/dashboard/FilterBar';
+import { SectionNav, type DashboardSection } from '../components/dashboard/SectionNav';
+import {
+  DEFAULT_FILTERS,
+  filterPatients,
+  filterTasks,
+  loadSavedFilters,
+  saveFilters,
+  toApiParams,
+  resolveDateRange,
+  type DashboardFilters,
+} from '../utils/dashboardFilters';
+
+function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
+  return {
+    id: record.id,
+    patientName: record.patientName,
+    patientId: record.patientId,
+    room: record.room,
+    ward: record.ward,
+    diagnosis: record.diagnosis,
+    assignedNurse: record.assignedNurse,
+    assignedNurseId: record.assignedNurseId,
+    priority: record.priority,
+    notes: record.notes,
+    status: record.status,
+    assignedAt: new Date(record.assignedAt),
+    updatedAt: new Date(record.updatedAt),
+  };
+}
+
+const DASHBOARD_SECTIONS: DashboardSection[] = [
+  { key: 'alerts', label: 'Alerts' },
+  { key: 'overview', label: 'Overview' },
+  { key: 'workload', label: 'Workload' },
+  { key: 'analytics', label: 'Analytics' },
+];
+
+function filterSummaryLabel(filters: DashboardFilters, departments: Department[]): string {
+  const range = resolveDateRange(filters);
+  const today = new Date().toISOString().slice(0, 10);
+  const parts: string[] = [];
+  if (!range) parts.push('Last 7 days');
+  else if (range.startDate === range.endDate) parts.push(range.startDate === today ? 'Today' : range.startDate);
+  else parts.push(`${range.startDate} – ${range.endDate}`);
+  if (filters.departmentId) {
+    const dept = departments.find((d) => String(d.id) === filters.departmentId);
+    if (dept) parts.push(dept.name);
+  }
+  if (filters.shift) parts.push(`${filters.shift.charAt(0).toUpperCase()}${filters.shift.slice(1)} shift`);
+  if (filters.nurseId) parts.push('1 nurse');
+  if (filters.risk) parts.push(`${filters.risk} risk`);
+  return parts.join(' · ');
+}
 
 // Same local-calendar-day helpers as MyDutyPage.tsx — never toISOString(),
 // which converts to UTC and can shift the day.
@@ -67,12 +138,28 @@ function scheduledRange(a: DutyAssignment): { start: Date; end: Date } {
 export default function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const isStaffNurse = user?.role === 'staff_nurse';
   const [currentTime, setCurrentTime] = useState(new Date());
   const [patients, setPatients] = useState<Patient[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
   const [dutyAssignments, setDutyAssignments] = useState<DutyAssignment[]>([]);
+
+  // Head-nurse-only: the filter bar, the Analytics/Workload data it drives,
+  // and the Assign Patient modal shared between "Respond Now" on a Safety
+  // Alert and the Workload section's own "Assign Patient" button.
+  const [filters, setFilters] = useState<DashboardFilters>(DEFAULT_FILTERS);
+  const [filtersLoaded, setFiltersLoaded] = useState(false);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
+  const [assignModalOpen, setAssignModalOpen] = useState(false);
+  const [editingAssignment, setEditingAssignment] = useState<PatientAssignment | null>(null);
+  const [assignPrefill, setAssignPrefill] = useState<AssignPatientPrefill | null>(null);
+  const [activeSection, setActiveSection] = useState('alerts');
+  const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -81,10 +168,9 @@ export default function DashboardPage() {
 
   const loadDashboard = React.useCallback(async () => {
     try {
-      const [patientData, taskData, workload, duty] = await Promise.all([
+      const [patientData, taskData, duty] = await Promise.all([
         fetchPatients(isStaffNurse ? { mine: true } : undefined),
         fetchTasks(isStaffNurse ? { mine: true } : undefined),
-        isStaffNurse ? Promise.resolve([]) : fetchWorkload(),
         // Yesterday too: a night shift that started before midnight is
         // still "today's duty" until it ends.
         isStaffNurse
@@ -93,7 +179,6 @@ export default function DashboardPage() {
       ]);
       setPatients(patientData);
       setTasks(taskData);
-      setWorkloadData(workload);
       setDutyAssignments(duty);
     } catch (error) {
       console.error('Failed to load dashboard:', error);
@@ -112,16 +197,109 @@ export default function DashboardPage() {
   useLiveRefresh('patients', () => void loadDashboard());
   useLiveRefresh('duty', () => void loadDashboard());
 
+  // Load the head nurse's last filter choice once, then persist every
+  // change after that — see utils/dashboardFilters.ts.
+  useEffect(() => {
+    if (isStaffNurse) return;
+    setFilters(loadSavedFilters());
+    setFiltersLoaded(true);
+  }, [isStaffNurse]);
+
+  useEffect(() => {
+    if (isStaffNurse || !filtersLoaded) return;
+    saveFilters(filters);
+  }, [filters, isStaffNurse, filtersLoaded]);
+
+  useEffect(() => {
+    if (isStaffNurse) return;
+    fetchDepartments().then(setDepartments).catch(() => {
+      // Non-critical — the Department filter just shows no options.
+    });
+  }, [isStaffNurse]);
+
+  const loadWorkloadAndAnalytics = React.useCallback(async () => {
+    if (isStaffNurse || !filtersLoaded) return;
+    const apiParams = toApiParams(filters);
+    setAnalyticsLoading(true);
+    try {
+      const [workload, assignmentData, analytics] = await Promise.all([
+        fetchWorkload(apiParams),
+        fetchAssignments({ status: 'active' }),
+        fetchAnalytics(apiParams),
+      ]);
+      setWorkloadData(workload);
+      setAssignments(assignmentData.map(toLocalAssignment));
+      setAnalyticsData(analytics);
+    } catch (error) {
+      console.error('Failed to load workload/analytics:', error);
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  }, [isStaffNurse, filtersLoaded, filters]);
+
+  useEffect(() => {
+    void loadWorkloadAndAnalytics();
+  }, [loadWorkloadAndAnalytics]);
+
+  // Presence (online/away/offline) moves on its own, with nothing else on
+  // this screen changing to trigger a refetch.
+  useEffect(() => {
+    if (isStaffNurse) return;
+    const timer = setInterval(() => {
+      fetchWorkload(toApiParams(filters)).then(setWorkloadData).catch(() => {
+        // Silent: this is a background refresh, not a user action.
+      });
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [isStaffNurse, filters]);
+
+  const scrollToSection = React.useCallback((key: string) => {
+    setActiveSection(key);
+    sectionRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
+  // An old safety-alert notification, or a link typed by hand, lands on
+  // /dashboard?section=alerts — jump straight to that section once it has
+  // actually rendered rather than at the top.
+  useEffect(() => {
+    const section = searchParams.get('section');
+    if (!section) return;
+    const id = setTimeout(() => scrollToSection(section), 50);
+    return () => clearTimeout(id);
+    // Only the very first render with a ?section= param should auto-scroll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Head-nurse-only: the filter bar applies client-side, over whatever the
+  // dashboard already fetched — see utils/dashboardFilters.ts's own note on
+  // why patients/tasks don't get backend filters (only Analytics/Workload
+  // do). A no-op for staff nurses (filteredX === x), so every stat/chart
+  // below that switched from patients/tasks to filteredPatients/filteredTasks
+  // is unaffected for them.
+  const patientById = useMemo(() => new Map(patients.map((p) => [p.id, p])), [patients]);
+  const selectedNurseName = useMemo(
+    () => workloadData.find((n) => n.nurseId === filters.nurseId)?.nurseName,
+    [workloadData, filters.nurseId]
+  );
+  const filteredPatients = useMemo(
+    () => (isStaffNurse ? patients : filterPatients(patients, filters)),
+    [isStaffNurse, patients, filters]
+  );
+  const filteredTasks = useMemo(
+    () => (isStaffNurse ? tasks : filterTasks(tasks, filters, { patientById, nurseName: selectedNurseName })),
+    [isStaffNurse, tasks, filters, patientById, selectedNurseName]
+  );
+
   // Calculate stats
-  const urgentTasks = tasks.filter(t => t.priority === 'high' && t.status !== 'completed').length;
-  const overdueTasks = tasks.filter(t => t.status === 'overdue').length;
-  const completedTasks = tasks.filter(t => t.status === 'completed').length;
-  const totalTasks = tasks.length || 1;
-  const highRiskPatients = patients.filter(p => p.riskLevel === 'high' || p.riskLevel === 'critical').length;
+  const urgentTasks = filteredTasks.filter(t => t.priority === 'high' && t.status !== 'completed').length;
+  const overdueTasks = filteredTasks.filter(t => t.status === 'overdue').length;
+  const completedTasks = filteredTasks.filter(t => t.status === 'completed').length;
+  const totalTasks = filteredTasks.length || 1;
+  const highRiskPatients = filteredPatients.filter(p => p.riskLevel === 'high' || p.riskLevel === 'critical').length;
   const completionRate = Math.round((completedTasks / totalTasks) * 100);
 
-  const pendingCount = tasks.filter(t => t.status === 'pending').length;
-  const inProgressCount = tasks.filter(t => t.status === 'in_progress').length;
+  const pendingCount = filteredTasks.filter(t => t.status === 'pending').length;
+  const inProgressCount = filteredTasks.filter(t => t.status === 'in_progress').length;
 
   // Chart data from live task/patient records
   const staffTaskTrendData = React.useMemo(() => [
@@ -135,14 +313,14 @@ export default function DashboardPage() {
   const adminTaskTrendData = staffTaskTrendData;
 
   const vitalTrendsData = React.useMemo(() => {
-    if (!patients.length) return [];
-    return patients.slice(0, 5).map((p, i) => ({
+    if (!filteredPatients.length) return [];
+    return filteredPatients.slice(0, 5).map((p, i) => ({
       time: p.id || `P${i + 1}`,
       hr: p.vitalSigns?.heartRate || 0,
       spo2: p.vitalSigns?.oxygenSaturation || 0,
       id: `v-${p.id || i}`,
     }));
-  }, [patients]);
+  }, [filteredPatients]);
 
   // The nurse's actual scheduled shift, per the Duty Roster — the ground
   // truth for what they're working right now, as opposed to the stale
@@ -171,58 +349,35 @@ export default function DashboardPage() {
     return `${todayDuty.shiftLabel} Shift (${start}-${end})`;
   }, [todayDuty]);
 
-  const safetyAlerts = React.useMemo(() => {
-    const alerts: {
-      key: string;
-      variant: 'destructive' | 'default';
-      title: string;
-      description: string;
-      nurseName?: string;
-      patientId?: string;
-      path?: string;
-    }[] = [];
-    patients
-      .filter(p => p.riskLevel === 'high' || p.riskLevel === 'critical')
-      // Critical patients surface before merely high-risk ones.
-      .sort((a, b) => (a.riskLevel === b.riskLevel ? 0 : a.riskLevel === 'critical' ? -1 : 1))
-      .slice(0, 5)
-      .forEach(p => {
-        const vs = p.vitalSigns;
-        const label = p.riskLevel === 'critical' ? 'Critical' : 'High Risk';
-        alerts.push({
-          key: `patient-${p.id}`,
-          variant: 'destructive',
-          title: `${label} - ${p.name} (${p.room})`,
-          description: vs
-            ? `Vital signs require attention. BP ${vs.bloodPressure}, HR ${vs.heartRate}, Temp ${vs.temperature}°C.`
-            : `${p.diagnosis || 'High-risk patient'} — immediate assessment required.`,
-          nurseName: p.assignedNurseName || undefined,
-          patientId: p.id,
-          path: '/workload',
-        });
+  const handleRespondToAlert = (alert: SafetyAlert) => {
+    if (alert.variant === 'destructive' && alert.patient) {
+      const p = alert.patient;
+      setEditingAssignment(null);
+      setAssignPrefill({
+        patientId: p.id,
+        patientName: p.name,
+        room: p.room || '',
+        ward: p.departmentName || '',
+        diagnosis: p.diagnosis || '',
+        priority: p.riskLevel === 'critical' || p.riskLevel === 'high' ? 'urgent' : 'routine',
       });
-    tasks.filter(t => t.status === 'overdue').slice(0, 5).forEach(t => {
-      alerts.push({
-        key: `task-${t.id}`,
-        variant: 'default',
-        title: `Delayed Task - ${t.patientName || 'Patient'}`,
-        description: `${t.title}${t.assignedTo ? `. Assigned nurse: ${t.assignedTo}` : ''}`,
-        nurseName: t.assignedTo,
-        path: t.assignedTo ? `/nurse-tasks/${encodeURIComponent(t.assignedTo)}` : '/tasks',
-      });
-    });
-    return alerts;
-  }, [patients, tasks]);
+      setAssignModalOpen(true);
+      return;
+    }
+    // A delayed-task alert — Workload Monitor no longer exists as a
+    // separate page to send this to, and the task itself lives on Tasks.
+    navigate('/tasks');
+  };
 
-  const handleNotifyNurse = async (alert: (typeof safetyAlerts)[number]) => {
+  const handleNotifyNurseFromAlert = async (alert: SafetyAlert) => {
     // Patient (critical vitals) alerts have a real assigned nurse resolved
     // server-side from the patient record, so these actually reach the
     // nurse's notification inbox. Task alerts' "nurse" is free-text
     // (assignedTo) with no patient to anchor a lookup to, so those stay a
     // local confirmation only, same as before.
-    if (alert.variant === 'destructive' && alert.patientId) {
+    if (alert.variant === 'destructive' && alert.patient) {
       try {
-        const result = await notifyPatientNurse(alert.patientId, alert.description);
+        const result = await notifyPatientNurse(alert.patient.id, alert.description);
         toast.success(result.detail);
       } catch (err) {
         toast.error(err instanceof ApiError ? err.message : 'Could not notify the nurse.');
@@ -234,13 +389,61 @@ export default function DashboardPage() {
     });
   };
 
+  const handleAssignPatientClick = () => {
+    setEditingAssignment(null);
+    setAssignPrefill(null);
+    setAssignModalOpen(true);
+  };
+
+  const handleEditAssignment = (assignment: PatientAssignment) => {
+    setEditingAssignment(assignment);
+    setAssignPrefill(null);
+    setAssignModalOpen(true);
+  };
+
+  const handleAssignSubmit = async (
+    data: Omit<PatientAssignment, 'id' | 'assignedAt' | 'updatedAt' | 'status'>
+  ) => {
+    try {
+      const payload = {
+        patientId: data.patientId,
+        nurseId: data.assignedNurseId,
+        nurseName: data.assignedNurse,
+        priority: data.priority,
+        notes: data.notes,
+        ward: data.ward,
+      };
+      const saved = editingAssignment
+        ? await updateAssignment(editingAssignment.id, payload)
+        : await createAssignment(payload);
+      const local = toLocalAssignment(saved);
+      setAssignments((prev) =>
+        editingAssignment
+          ? prev.map((a) => (a.id === editingAssignment.id ? local : a))
+          : [local, ...prev.filter((a) => a.patientId !== local.patientId)]
+      );
+      await Promise.all([loadDashboard(), loadWorkloadAndAnalytics()]);
+      setEditingAssignment(null);
+      setAssignPrefill(null);
+      setAssignModalOpen(false);
+      toast.success(editingAssignment ? 'Assignment updated' : 'Patient assigned');
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Failed to save assignment');
+    }
+  };
+
+  const availableNurses = useMemo(
+    () => workloadData.map((n) => ({ id: n.nurseId, name: n.nurseName, patientCount: n.patientCount })),
+    [workloadData]
+  );
+
   const departmentStats = React.useMemo(() => {
     const buckets: Record<string, { label: string; total: number; critical: number; stable: number }> = {
       ICU: { label: 'ICU Department', total: 0, critical: 0, stable: 0 },
       Ward: { label: 'General Ward', total: 0, critical: 0, stable: 0 },
       ER: { label: 'Emergency', total: 0, critical: 0, stable: 0 },
     };
-    patients.forEach(p => {
+    filteredPatients.forEach(p => {
       const room = (p.room || '').toUpperCase();
       const key = room.includes('ICU') ? 'ICU' : room.includes('ER') || room.includes('EMERGENCY') ? 'ER' : 'Ward';
       buckets[key].total += 1;
@@ -248,7 +451,7 @@ export default function DashboardPage() {
       else buckets[key].stable += 1;
     });
     return Object.values(buckets);
-  }, [patients]);
+  }, [filteredPatients]);
 
   const StatCard = ({ title, value, subtitle, icon: Icon, trend, trendLabel, bgColor, iconBg, iconColor, borderColor }: any) => (
     <Card className="overflow-hidden">
@@ -615,8 +818,12 @@ export default function DashboardPage() {
   }
 
   // Head Nurse Dashboard
+  const filterSummary = filterSummaryLabel(filters, departments);
+
   return (
-    <div className="space-y-6 pb-8">
+    <div className="pb-8">
+      <SectionNav sections={DASHBOARD_SECTIONS} activeKey={activeSection} onSelect={scrollToSection} />
+
       {/* Header */}
       <div className="bg-card border-b border-border py-6">
         <div className="max-w-7xl mx-auto px-4">
@@ -640,41 +847,76 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 space-y-6">
-        {/* Key Metrics */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard
-            title="Active Nurses"
-            value={String(workloadData.length)}
-            subtitle="Staff nurses in database"
-            icon={Users}
-            iconBg="bg-blue-100"
-            iconColor="text-blue-600"
+      <FilterBar
+        filters={filters}
+        onChange={setFilters}
+        onReset={() => setFilters(DEFAULT_FILTERS)}
+        departments={departments}
+        nurses={availableNurses}
+      />
+
+      <div className="max-w-7xl mx-auto px-4 space-y-6 mt-6">
+        <div ref={(el) => { sectionRefs.current.alerts = el; }}>
+          <SafetyAlertsSection
+            patients={filteredPatients}
+            tasks={filteredTasks}
+            onRespond={handleRespondToAlert}
+            onNotifyNurse={handleNotifyNurseFromAlert}
           />
+        </div>
+
+        <div ref={(el) => { sectionRefs.current.overview = el; }} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard
-            title="Total Patients"
-            value={String(patients.length)}
-            subtitle="Across all units"
+            title="Patients"
+            value={String(filteredPatients.length)}
+            subtitle="Match current filters"
             icon={Heart}
             iconBg="bg-purple-100"
             iconColor="text-purple-600"
           />
           <StatCard
-            title="Task Completion"
-            value={`${tasks.length ? completionRate : 0}%`}
-            subtitle={`${completedTasks} of ${tasks.length} tasks`}
+            title="High Risk"
+            value={String(highRiskPatients)}
+            subtitle="High/critical risk patients"
+            icon={AlertTriangle}
+            iconBg="bg-red-100"
+            iconColor="text-red-600"
+          />
+          <StatCard
+            title="Pending / Overdue"
+            value={`${pendingCount + inProgressCount} / ${overdueTasks}`}
+            subtitle={`${completionRate}% completed`}
             icon={CheckCircle}
             iconBg="bg-green-100"
             iconColor="text-green-600"
           />
           <StatCard
-            title="Critical Alerts"
-            value={String(highRiskPatients)}
-            subtitle="High-risk patients"
-            icon={AlertTriangle}
-            iconBg="bg-red-100"
-            iconColor="text-red-600"
+            title="Nurses on Duty"
+            value={String(workloadData.length)}
+            subtitle="Match current filters"
+            icon={Users}
+            iconBg="bg-blue-100"
+            iconColor="text-blue-600"
           />
+        </div>
+
+        <div ref={(el) => { sectionRefs.current.workload = el; }}>
+          <WorkloadSection
+            workloadData={workloadData}
+            assignments={assignments}
+            loading={analyticsLoading}
+            onAssignPatientClick={handleAssignPatientClick}
+            onEditAssignment={handleEditAssignment}
+            onRefresh={loadWorkloadAndAnalytics}
+          />
+        </div>
+
+        <div ref={(el) => { sectionRefs.current.analytics = el; }}>
+          <div className="mb-3">
+            <h2 className="text-lg font-semibold text-gray-900">Analytics</h2>
+            <p className="text-sm text-gray-500">{filterSummary}</p>
+          </div>
+          <AnalyticsSection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
         </div>
 
         {/* Charts */}
@@ -682,7 +924,7 @@ export default function DashboardPage() {
           <Card className="border border-border shadow-sm">
             <CardHeader className="pb-4">
               <CardTitle className="text-lg font-semibold">Task Activity</CardTitle>
-              <CardDescription>Hourly task completion today</CardDescription>
+              <CardDescription>Breakdown of filtered tasks by status</CardDescription>
             </CardHeader>
             <CardContent>
               <div key="admin-task-activity-chart">
@@ -691,10 +933,10 @@ export default function DashboardPage() {
                     <CartesianGrid key="admin-grid" strokeDasharray="3 3" stroke="#E2E8F0" />
                     <XAxis key="admin-x-axis" dataKey="time" stroke="#718096" style={{ fontSize: '12px' }} />
                     <YAxis key="admin-y-axis" stroke="#718096" style={{ fontSize: '12px' }} />
-                    <Tooltip 
+                    <Tooltip
                       key="admin-tooltip"
-                      contentStyle={{ 
-                        backgroundColor: '#fff', 
+                      contentStyle={{
+                        backgroundColor: '#fff',
                         border: '1px solid #E2E8F0',
                         borderRadius: '8px'
                       }}
@@ -728,10 +970,10 @@ export default function DashboardPage() {
                     <CartesianGrid key="admin-area-grid" strokeDasharray="3 3" stroke="#E2E8F0" />
                     <XAxis key="admin-area-x-axis" dataKey="time" stroke="#718096" style={{ fontSize: '12px' }} />
                     <YAxis key="admin-area-y-axis" stroke="#718096" style={{ fontSize: '12px' }} />
-                    <Tooltip 
+                    <Tooltip
                       key="admin-area-tooltip"
-                      contentStyle={{ 
-                        backgroundColor: '#fff', 
+                      contentStyle={{
+                        backgroundColor: '#fff',
                         border: '1px solid #E2E8F0',
                         borderRadius: '8px'
                       }}
@@ -744,114 +986,6 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </div>
-
-        {/* Nurse Workload */}
-        <Card className="border border-border shadow-sm">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-lg font-semibold">Nurse Workload Monitor</CardTitle>
-            <CardDescription>Current shift nurse-to-patient ratios and burnout risk</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {workloadData.length === 0 ? (
-              <p className="text-center text-muted-foreground py-6">No records found.</p>
-            ) : workloadData.map(nurse => (
-              <div
-                key={nurse.nurseId}
-                className={`p-4 border rounded-lg ${
-                  nurse.burnoutRisk === 'high' ? 'border-destructive/30 bg-destructive/5' :
-                  nurse.burnoutRisk === 'medium' ? 'border-warning/30 bg-warning/5' :
-                  'border-success/30 bg-success/5'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h4 className="font-semibold text-foreground">{nurse.nurseName}</h4>
-                    <p className="text-sm text-muted-foreground">{nurse.shift}</p>
-                  </div>
-                  <Badge 
-                    variant={
-                      nurse.burnoutRisk === 'high' ? 'destructive' :
-                      nurse.burnoutRisk === 'medium' ? 'default' : 'outline'
-                    }
-                    className="font-medium"
-                  >
-                    {nurse.burnoutRisk === 'high' ? 'HIGH RISK' :
-                     nurse.burnoutRisk === 'medium' ? 'MEDIUM RISK' : 'LOW RISK'}
-                  </Badge>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-3">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Patients</p>
-                    <p className="text-lg font-bold text-foreground">{nurse.patientCount}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Tasks</p>
-                    <p className="text-lg font-bold text-foreground">{nurse.completedTasks}/{nurse.taskCount}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Completion</p>
-                    <p className="text-lg font-bold text-success">
-                      {nurse.taskCount ? Math.round((nurse.completedTasks / nurse.taskCount) * 100) : 0}%
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Overtime</p>
-                    <p className="text-lg font-bold text-warning">{nurse.overtimeHours}h</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Ratio</p>
-                    <p className="text-lg font-bold text-primary">1:{Math.floor(nurse.patientCount)}</p>
-                  </div>
-                </div>
-                <Progress value={nurse.taskCount ? (nurse.completedTasks / nurse.taskCount) * 100 : 0} className="h-2" />
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        {/* Patient Safety Alerts */}
-        <Card className="border border-border shadow-sm">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-lg font-semibold flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-destructive" />
-              Patient Safety Alerts
-            </CardTitle>
-            <CardDescription>High-priority alerts requiring immediate attention</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {safetyAlerts.length === 0 ? (
-              <p className="text-center text-muted-foreground py-6">No notifications.</p>
-            ) : safetyAlerts.map((alert) => (
-              <Alert
-                key={alert.key}
-                variant={alert.variant === 'destructive' ? 'destructive' : 'default'}
-                className={alert.variant === 'destructive' ? 'border-l-4' : 'border-l-4 border-warning bg-warning/5'}
-              >
-                {alert.variant === 'destructive' ? (
-                  <AlertCircle className="h-5 w-5" />
-                ) : (
-                  <Clock className="h-5 w-5 text-warning" />
-                )}
-                <AlertTitle className="font-semibold">{alert.title}</AlertTitle>
-                <AlertDescription className="mt-2">{alert.description}</AlertDescription>
-                <div className="flex gap-2 mt-3">
-                  <Button
-                    size="sm"
-                    variant={alert.variant === 'destructive' ? 'destructive' : 'default'}
-                    onClick={() => navigate(alert.path || '/workload')}
-                  >
-                    {alert.variant === 'destructive' ? 'Respond Now' : 'View Task'}
-                  </Button>
-                  {alert.nurseName ? (
-                    <Button size="sm" variant="outline" onClick={() => handleNotifyNurse(alert)}>
-                      Notify Nurse
-                    </Button>
-                  ) : null}
-                </div>
-              </Alert>
-            ))}
-          </CardContent>
-        </Card>
 
         {/* Department Overview */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -866,7 +1000,7 @@ export default function DashboardPage() {
                     <span className="text-sm font-medium text-muted-foreground">Patients</span>
                     <span className="text-2xl font-bold text-foreground">{dept.total}</span>
                   </div>
-                  <Progress value={patients.length ? Math.min(100, (dept.total / Math.max(patients.length, 1)) * 100) : 0} className="h-2" />
+                  <Progress value={filteredPatients.length ? Math.min(100, (dept.total / Math.max(filteredPatients.length, 1)) * 100) : 0} className="h-2" />
                   <div className="flex justify-between text-sm pt-2">
                     <span className="text-muted-foreground">Critical: <strong className="text-destructive">{dept.critical}</strong></span>
                     <span className="text-muted-foreground">Stable: <strong className="text-success">{dept.stable}</strong></span>
@@ -877,6 +1011,21 @@ export default function DashboardPage() {
           ))}
         </div>
       </div>
+
+      <AssignPatientModal
+        isOpen={assignModalOpen}
+        onClose={() => {
+          setAssignModalOpen(false);
+          setEditingAssignment(null);
+          setAssignPrefill(null);
+        }}
+        onSubmit={handleAssignSubmit}
+        editingAssignment={editingAssignment}
+        prefill={assignPrefill}
+        availableNurses={availableNurses}
+        allTasks={tasks}
+        allAssignments={assignments}
+      />
     </div>
   );
 }

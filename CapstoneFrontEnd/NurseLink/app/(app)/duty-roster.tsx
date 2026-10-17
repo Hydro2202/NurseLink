@@ -46,6 +46,7 @@ import { DatePicker } from '../../components/DatePicker';
 import { Alert, AlertDescription } from '../../components/Alert';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { DutyAssignmentModal } from '../../components/DutyAssignmentModal';
+import { PresenceDot } from '../../components/PresenceDot';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
@@ -273,6 +274,20 @@ export default function DutyRosterPage() {
   // Keeps live status/overtime honest between refreshes, without re-fetching.
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Presence (online/away/offline) moves on its own, with nothing else on
+  // this screen changing to trigger a refetch. A plain interval, not
+  // LiveContext — presence isn't scoped to this nurse the way
+  // LiveStateView's own "profile" revision is (see api.presence), so
+  // there's nothing to key a revision-based refresh off of.
+  useEffect(() => {
+    const id = setInterval(() => {
+      fetchNurses().then(setNurses).catch(() => {
+        // Silent: this is a background refresh, not a user action.
+      });
+    }, 30000);
     return () => clearInterval(id);
   }, []);
 
@@ -552,6 +567,7 @@ export default function DutyRosterPage() {
                   <Text style={styles.avatarText}>{initials(a.nurseName)}</Text>
                 </View>
                 <Text style={styles.assignNurse} numberOfLines={1}>{a.nurseName}</Text>
+                <PresenceDot presence={a.nursePresence} lastSeenAt={a.nurseLastSeenAt} />
               </View>
               <View style={[styles.statusPill, { backgroundColor: badge.bg }]}>
                 {badge.live ? (

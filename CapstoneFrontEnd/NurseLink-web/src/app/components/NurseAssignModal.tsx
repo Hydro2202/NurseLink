@@ -18,12 +18,16 @@ import {
   SelectValue,
 } from './ui/select';
 import { Loader2 } from 'lucide-react';
+import { PresenceDot } from './PresenceDot';
+import type { NursePresence } from '../types/domain';
 
 export interface AssignTarget {
   id: string;
   name: string;
   department: string;
   shift: string;
+  presence?: NursePresence;
+  lastSeenAt?: string | null;
 }
 
 interface NurseAssignModalProps {
@@ -70,7 +74,10 @@ export function NurseAssignModal({ open, onOpenChange, nurse, onSave }: NurseAss
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>Assign {nurse.name}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            Assign {nurse.name}
+            <PresenceDot presence={nurse.presence} lastSeenAt={nurse.lastSeenAt} showLabel />
+          </DialogTitle>
           <DialogDescription>
             Change this nurse's department or shift. They will be notified.
           </DialogDescription>

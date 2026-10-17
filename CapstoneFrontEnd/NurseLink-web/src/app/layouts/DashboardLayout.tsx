@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   ClipboardList,
   FileText,
-  BarChart3,
   Settings,
   LogOut,
   Activity,
@@ -43,6 +42,7 @@ import { useLiveRefresh } from '../contexts/LiveContext';
 import { HandoverAlertModal } from '../components/HandoverAlertModal';
 import { TaskDueAlertModal } from '../components/TaskDueAlertModal';
 import { ReferralDueAlertModal } from '../components/ReferralDueAlertModal';
+import { NotificationToastHost } from '../components/NotificationToastHost';
 // Tightly cropped to just the circular emblem mark (no "NURSELINK" wordmark,
 // no surrounding empty canvas) — the original figma:asset export is a full
 // lockup on a wide mostly-transparent canvas, which made the mark itself
@@ -129,8 +129,10 @@ export default function DashboardLayout() {
     { name: 'Kardex', href: '/kardex', icon: BookOpen, show: isStaffNurse },
     { name: 'All Patients', href: '/all-patients', icon: Users, show: isSupervisor },
     { name: 'Duty Roster', href: '/duty-roster', icon: CalendarClock, show: isSupervisor },
-    { name: 'Analytics', href: '/analytics', icon: BarChart3, show: isSupervisor },
-    { name: 'Workload Monitor', href: '/workload', icon: BarChart3, show: isSupervisor },
+    // Analytics and Workload Monitor were folded into the dashboard itself
+    // (see pages/DashboardPage.tsx) — /analytics and /workload still exist
+    // as redirects for old links, just no longer as their own nav
+    // destinations.
     { name: 'Settings', href: '/settings', icon: Settings, show: true },
   ].filter(item => item.show);
 
@@ -139,7 +141,6 @@ export default function DashboardLayout() {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Patients', href: '/all-patients', icon: Users },
     { name: 'Duty Roster', href: '/duty-roster', icon: CalendarClock },
-    { name: 'Workload', href: '/workload', icon: BarChart3 },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
 
@@ -286,6 +287,7 @@ export default function DashboardLayout() {
         <HandoverAlertModal />
         <TaskDueAlertModal />
         <ReferralDueAlertModal />
+        <NotificationToastHost />
       </div>
     );
   }
@@ -363,8 +365,7 @@ export default function DashboardLayout() {
               const colors = [
                 { text: 'text-blue-600' }, // Dashboard
                 { text: 'text-purple-600' }, // Patients
-                { text: 'text-green-600' }, // Analytics
-                { text: 'text-orange-600' }, // Workload
+                { text: 'text-teal-600' }, // Duty Roster
                 { text: 'text-gray-600' }, // Settings
               ];
               const colorScheme = colors[index] || colors[0];
@@ -417,6 +418,7 @@ export default function DashboardLayout() {
         />
         {/* Head nurses can have tasks assigned to them too, but never send/receive referrals. */}
         <TaskDueAlertModal />
+        <NotificationToastHost />
       </div>
     );
   }
@@ -604,6 +606,7 @@ export default function DashboardLayout() {
       {isStaffNurse ? <HandoverAlertModal /> : null}
       {isStaffNurse ? <ReferralDueAlertModal /> : null}
       <TaskDueAlertModal />
+      <NotificationToastHost />
     </div>
   );
 }

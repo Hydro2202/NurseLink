@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import type { Nurse, Patient, TaskPriority } from '../types/domain';
 import { fetchNurses, createTask, ApiError } from '../api/nurselink';
 import { Loader2, UserPlus, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { PresenceDot } from './PresenceDot';
+import { sortByPresence } from '../utils/presence';
 import { toast } from 'sonner';
 
 function toIsoLocal(d: Date): string {
@@ -265,9 +267,12 @@ export function TaskAssignmentModal({
                 <SelectValue placeholder="Select nurse" />
               </SelectTrigger>
               <SelectContent>
-                {nurses.map((nurse) => (
+                {sortByPresence(nurses).map((nurse) => (
                   <SelectItem key={nurse.id} value={nurse.id}>
-                    {nurse.name} ({nurse.role})
+                    <span className="inline-flex items-center gap-1.5">
+                      <PresenceDot presence={nurse.presence} lastSeenAt={nurse.lastSeenAt} />
+                      {nurse.name} ({nurse.role})
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>

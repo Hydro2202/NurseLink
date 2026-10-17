@@ -46,12 +46,14 @@ from .handover_tasks import create_handover_tasks
 from .referral_shifts import SHIFT_LABELS
 from .notifications import (
     notify_handover_created,
+    notify_patient_assigned,
     notify_referral_head_nurse_fyi,
     notify_task_assigned,
     notify_task_updated,
     resolve_nurse,
 )
 from .names import full_name, name_variants
+from .presence import presence_fields
 from .utils import next_code
 from .vitals_detection import detect_vital_mentions
 
@@ -3281,12 +3283,15 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
         if not nurse:
             raise serializers.ValidationError({'assignedNurseId': 'Nurse not found.'})
 
+        previous_nurse = patient.assigned_nurse
+
         # Close previous active assignment
         PatientAssignment.objects.filter(patient=patient, status='active').update(
             status='reassigned'
         )
 
         request = self.context.get('request')
+        actor = request.user if request else None
         assignment = PatientAssignment.objects.create(
             patient=patient,
             assigned_nurse=nurse,
@@ -3295,10 +3300,11 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
             priority=validated_data.get('priority') or 'routine',
             notes=validated_data.get('notes') or '',
             status=validated_data.get('status') or 'active',
-            assigned_by=request.user if request else None,
+            assigned_by=actor,
         )
         patient.assigned_nurse = nurse
         patient.save(update_fields=['assigned_nurse'])
+        notify_patient_assigned(assignment, actor, previous_nurse=previous_nurse)
         return assignment
 
     def update(self, instance, validated_data):
@@ -3322,9 +3328,12 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
                 if ' '.join((nurse_name or '').lower().split()) in name_variants(user):
                     nurse = user
                     break
+        reassigned_from = None
         if nurse_id or nurse_name:
             if not nurse:
                 raise serializers.ValidationError({'assignedNurseId': 'Nurse not found.'})
+            if instance.assigned_nurse_id != nurse.pk:
+                reassigned_from = instance.assigned_nurse
             instance.assigned_nurse = nurse
             instance.assigned_nurse_name = full_name(nurse)
             instance.patient.assigned_nurse = nurse
@@ -3334,6 +3343,12 @@ class PatientAssignmentSerializer(serializers.ModelSerializer):
             if attr in validated_data:
                 setattr(instance, attr, validated_data[attr])
         instance.save()
+
+        if reassigned_from is not None:
+            request = self.context.get('request')
+            actor = request.user if request else None
+            notify_patient_assigned(instance, actor, previous_nurse=reassigned_from)
+
         return instance
 
 
@@ -3349,6 +3364,10 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
         source='nurse', queryset=User.objects.filter(nurse_profile__role='staff_nurse')
     )
     nurseName = serializers.SerializerMethodField()
+    # Logged-in-and-using-the-app, not the same as this row's own on-duty
+    # status — see api.presence's module docstring.
+    nursePresence = serializers.SerializerMethodField()
+    nurseLastSeenAt = serializers.SerializerMethodField()
     departmentId = serializers.PrimaryKeyRelatedField(
         source='department', queryset=Department.objects.all()
     )
@@ -3389,7 +3408,7 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = DutyAssignment
         fields = [
-            'id', 'nurseId', 'nurseName', 'departmentId', 'departmentName',
+            'id', 'nurseId', 'nurseName', 'nursePresence', 'nurseLastSeenAt', 'departmentId', 'departmentName',
             'dutyDate', 'shift', 'shiftLabel', 'startTime', 'endTime',
             'regularHours', 'overtimeStart', 'overtimeEnd', 'overtimeHours',
             'totalHours', 'status', 'statusLabel', 'notes',
@@ -3413,6 +3432,14 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
 
     def get_nurseName(self, obj):
         return full_name(obj.nurse)
+
+    def get_nursePresence(self, obj):
+        profile = getattr(obj.nurse, 'nurse_profile', None)
+        return presence_fields(profile)[0]
+
+    def get_nurseLastSeenAt(self, obj):
+        profile = getattr(obj.nurse, 'nurse_profile', None)
+        return presence_fields(profile)[1]
 
     def get_actualEndRecordedBy(self, obj):
         if not obj.actual_end_recorded_by_id:
