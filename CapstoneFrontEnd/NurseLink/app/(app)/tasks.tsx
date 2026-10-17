@@ -29,7 +29,6 @@ import {
 } from 'lucide-react-native';
 import {
   fetchTasks,
-  fetchPatients,
   fetchVitalReadings,
   createTask,
   updateTask,
@@ -95,7 +94,7 @@ export default function TasksPage() {
     scrollToPatient?: string;
   }>();
   const toast = useToast();
-  const { user, isLoading: authLoading } = useAuth();
+  const { user } = useAuth();
   const scrollRef = useRef<ScrollView>(null);
   const taskYOffsets = useRef<Record<string, number>>({});
 
@@ -116,9 +115,6 @@ export default function TasksPage() {
   // nurse ever opens the vitals card for that task this session.
   const [vitalsReadingCounts, setVitalsReadingCounts] = useState<Record<string, number>>({});
   const [vitalsModalTaskId, setVitalsModalTaskId] = useState<string | null>(null);
-  // Codes of the patients this nurse is assigned to. Vitals can only be recorded
-  // for those (the server enforces it); null until loaded.
-  const [myPatientCodes, setMyPatientCodes] = useState<Set<string> | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('newest');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
@@ -170,38 +166,6 @@ export default function TasksPage() {
   // a head nurse — so the list also follows the shared live revision rather
   // than only reloading when this screen happens to regain focus.
   useLiveRefresh('tasks', loadTasks);
-
-  useEffect(() => {
-    // Waits for AuthContext to actually finish resolving the session before
-    // asking — without this, on a fresh login/refresh this effect could run
-    // while `user` was still momentarily null (auth not loaded yet),
-    // immediately 401 against fetchPatients, and permanently land on the
-    // catch's empty Set — not "still loading," but "confirmed no
-    // patients," so the Vitals button never got a second chance even once
-    // the real session came through moments later. That's the flicker: the
-    // button shows (stale cache/first paint), goes hidden
-    // (401 → empty set), and only sometimes comes back if something else
-    // happens to change user?.role afterward.
-    if (authLoading) return;
-    if (!user) return;
-    // Head nurses may record vitals for any patient, so they need no list.
-    if (user.role === 'head_nurse') return;
-    let cancelled = false;
-    fetchPatients({ mine: true })
-      .then((patients) => {
-        if (!cancelled) setMyPatientCodes(new Set(patients.map((p) => p.id)));
-      })
-      .catch(() => {
-        // Without the list the vitals button stays hidden; nothing else depends on it.
-        if (!cancelled) setMyPatientCodes(new Set());
-      });
-    return () => {
-      cancelled = true;
-    };
-    // user?.id (not the whole user object) so an unrelated profile edit
-    // elsewhere doesn't re-trigger this fetch — only auth finishing, a real
-    // account switch, or an actual role change should.
-  }, [authLoading, user?.id, user?.role]);
 
   useEffect(() => {
     // Notifications and the handover screen both point here with highlightId;
@@ -683,11 +647,11 @@ export default function TasksPage() {
                                         onPress={() => handleToggleChecklistItem(task, index)}
                                       >
                                         {item.done ? (
-                                          <CheckSquare size={22} color={Colors.green600} />
+                                          <CheckSquare size={18} color={Colors.green600} />
                                         ) : isLocked ? (
-                                          <Lock size={19} color={Colors.gray400} />
+                                          <Lock size={16} color={Colors.gray400} />
                                         ) : (
-                                          <Square size={22} color={Colors.gray400} />
+                                          <Square size={18} color={Colors.gray400} />
                                         )}
                                         <Text
                                           style={[
@@ -735,16 +699,22 @@ export default function TasksPage() {
                         >
                           <Edit size={16} color={Colors.blue600} />
                         </Button>
-                        {user?.role === 'head_nurse' || myPatientCodes?.has(task.patientId) ? (
-                          <Button
-                            size="icon-sm"
-                            variant="outline"
-                            onPress={() => setVitalsModalTaskId(task.id)}
-                            style={styles.vitalsBtn}
-                          >
-                            <HeartPulse size={16} color={Colors.red600} />
-                          </Button>
-                        ) : null}
+                        {/* Every task here already belongs to this nurse (fetchTasks({ mine: true })),
+                            or to no one in particular for a head nurse, who may record vitals for
+                            any patient — so this no longer depends on a second, separately-loaded
+                            patient list. That list was the source of a visible flicker/disappearing
+                            button: it loaded asynchronously after the task list, so the button
+                            would show, vanish, and sometimes not come back depending on timing. The
+                            backend's own care-scope check (_check_patient_care_scope) still rejects
+                            an actual save if the patient was reassigned away from this nurse. */}
+                        <Button
+                          size="icon-sm"
+                          variant="outline"
+                          onPress={() => setVitalsModalTaskId(task.id)}
+                          style={styles.vitalsBtn}
+                        >
+                          <HeartPulse size={16} color={Colors.red600} />
+                        </Button>
                         {user?.role === 'head_nurse' && task.assignedTo ? (
                           <Button
                             size="icon-sm"
@@ -1054,24 +1024,26 @@ const styles = StyleSheet.create({
   },
   checklistItems: {
     marginTop: 8,
-    gap: 8,
+    gap: 6,
   },
-  // Sized for a comfortable thumb tap on mobile (44px is the standard
-  // minimum touch target) — the old row had no padding or minHeight at
-  // all, just an icon and 12px text packed tight together.
+  // A comfortable thumb tap (36px is close to the 44px minimum target
+  // without the row ballooning on a narrow phone) — the old row had no
+  // padding or minHeight at all, just an icon and 12px text packed tight
+  // together, so this is a moderate bump rather than the much larger one
+  // tried first, which read as oversized on phone.
   checklistItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    minHeight: 44,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
+    gap: 10,
+    minHeight: 36,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
     borderRadius: Radius.md,
     backgroundColor: Colors.gray50,
   },
   checklistItemText: {
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     color: Colors.gray700,
     flex: 1,
   },

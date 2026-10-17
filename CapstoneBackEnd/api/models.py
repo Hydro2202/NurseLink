@@ -904,11 +904,18 @@ class ChartingNote(models.Model):
 
 class VitalSigns(models.Model):
     """
-    One timestamped vital-signs reading for a patient — an insert-only
-    history row, never edited in place, unlike Patient.heart_rate/etc. (the
-    "current snapshot" fields, which VitalSignsSerializer.create keeps in
-    sync for the many existing call sites — Kardex, handover SBAR autofill —
-    that still read the snapshot rather than this history).
+    One timestamped vital-signs reading for a patient — history rows rather
+    than a single mutable snapshot, unlike Patient.heart_rate/etc. (the
+    "current snapshot" fields, which VitalSignsSerializer.create/update keep
+    in sync for the many existing call sites — Kardex, handover SBAR
+    autofill — that still read the snapshot rather than this history).
+
+    A reading can be corrected after the fact (a nurse fixing a typo'd value
+    on their own monitoring history), but never silently: edited/edit_history
+    below keep the original value(s) and who/when changed them, the same
+    audit-trail idea ChartingNote already uses for its own edits, so a
+    correction is always distinguishable from the original entry rather than
+    quietly overwriting it.
 
     source/triggered_by_note is the auto-charting link: an assessment note
     whose text mentioned a vital-sign change (see api/vitals_detection.py)
@@ -965,6 +972,13 @@ class VitalSigns(models.Model):
     notes = models.CharField(max_length=255, blank=True, default='')
     recorded_at = models.DateTimeField(default=timezone.now, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # See the class docstring — set the first time this row is corrected.
+    edited = models.BooleanField(default=False)
+    # One entry per correction: {'at': iso timestamp, 'by': nurse's display
+    # name, 'previous': {field: old value, ...}} for only the fields that
+    # actually changed in that edit. Never includes the current values —
+    # those already live on the row itself.
+    edit_history = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ['-recorded_at']

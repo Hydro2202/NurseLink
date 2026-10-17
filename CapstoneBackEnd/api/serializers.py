@@ -2946,11 +2946,11 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
 
 class VitalSignsSerializer(serializers.ModelSerializer):
     """
-    One timestamped vitals reading — insert-only (VitalSignsViewSet has no
-    update/destroy), so this serializer only ever creates new rows. Creating
-    one also syncs Patient's own heart_rate/etc. "current snapshot" fields,
-    which every existing reader (Kardex, handover SBAR autofill, dashboards)
-    still uses — see create() below.
+    One timestamped vitals reading. Creating or correcting one also syncs
+    Patient's own heart_rate/etc. "current snapshot" fields, which every
+    existing reader (Kardex, handover SBAR autofill, dashboards) still uses
+    — see create()/update() below. A correction (update()) never overwrites
+    silently: see VitalSigns.edited/edit_history.
     """
 
     id = serializers.IntegerField(read_only=True)
@@ -2980,6 +2980,9 @@ class VitalSignsSerializer(serializers.ModelSerializer):
     notes = serializers.CharField(required=False, allow_blank=True)
     recordedAt = serializers.DateTimeField(source='recorded_at', required=False)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    # Never client-writable — only update() sets these, from an actual diff.
+    edited = serializers.BooleanField(read_only=True)
+    editHistory = serializers.ListField(source='edit_history', read_only=True)
 
     class Meta:
         model = VitalSigns
@@ -2987,7 +2990,7 @@ class VitalSignsSerializer(serializers.ModelSerializer):
             'id', 'patientId', 'taskId', 'heartRate', 'bloodPressure', 'temperature',
             'oxygenSaturation', 'respiratoryRate', 'oxygenUse', 'painScale', 'source',
             'triggeredByNoteId', 'recordedById', 'recordedByName', 'notes',
-            'recordedAt', 'createdAt',
+            'recordedAt', 'createdAt', 'edited', 'editHistory',
         ]
 
     def get_recordedByName(self, obj):
@@ -3007,6 +3010,46 @@ class VitalSignsSerializer(serializers.ModelSerializer):
         if note is not None:
             note.vitals_update_status = 'resolved'
             note.save(update_fields=['vitals_update_status'])
+        return instance
+
+    # Fields whose old value is worth keeping a record of when corrected.
+    # patient/task/source/triggered_by_note/recorded_by are structural, not
+    # clinical readings, so they're excluded from the audit trail (and the
+    # view only allows the clinical fields through anyway).
+    TRACKED_FIELDS = (
+        'heart_rate', 'blood_pressure', 'temperature', 'oxygen_saturation',
+        'respiratory_rate', 'oxygen_use', 'pain_scale', 'recorded_at', 'notes',
+    )
+
+    def update(self, instance, validated_data):
+        previous = {
+            field: getattr(instance, field)
+            for field in self.TRACKED_FIELDS
+            if field in validated_data and getattr(instance, field) != validated_data[field]
+        }
+        instance = super().update(instance, validated_data)
+        if previous:
+            request = self.context.get('request')
+            entry = {
+                'at': timezone.now().isoformat(),
+                'by': full_name(request.user) if request and request.user else '',
+                'previous': {
+                    key: (value.isoformat() if hasattr(value, 'isoformat') else value)
+                    for key, value in previous.items()
+                },
+            }
+            instance.edit_history = [*(instance.edit_history or []), entry]
+            instance.edited = True
+            instance.save(update_fields=['edit_history', 'edited'])
+        # Only the patient's single most recent reading feeds the "current
+        # snapshot" fields, so a correction only re-syncs them when this is
+        # still that reading — editing an older, superseded entry must not
+        # pull the snapshot backwards in time.
+        latest = (
+            VitalSigns.objects.filter(patient=instance.patient).order_by('-recorded_at').first()
+        )
+        if latest is not None and latest.pk == instance.pk:
+            self._sync_patient_snapshot(instance)
         return instance
 
     def _sync_patient_snapshot(self, instance):

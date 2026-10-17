@@ -62,6 +62,7 @@ class PreferencesApiTests(APITestCase):
                 'autoRefresh': True,
                 'showCharts': True,
                 'backgroundSync': True,
+                'autoChartingEnabled': True,
             },
         )
 

@@ -1552,11 +1552,20 @@ export async function fetchVitalReadings(
   return apiRequest<AdminVitalReading[]>(`/vital-signs/${query}`);
 }
 
-/** Logs one timestamped vitals reading — insert-only, never edited after
- * the fact. `recordedAt` is left for the server to stamp as "now" unless
- * explicitly overridden. */
+/** Logs one timestamped vitals reading. `recordedAt` is left for the
+ * server to stamp as "now" unless explicitly overridden. */
 export async function createVitalSigns(
   data: Partial<AdminVitalReading> & { patientId: string }
 ): Promise<AdminVitalReading> {
   return apiRequest<AdminVitalReading>('/vital-signs/', { method: 'POST', body: data });
+}
+
+/** Corrects a previously saved reading. The server keeps the old value(s)
+ * of anything that actually changes in `editHistory` — see
+ * VitalSignsSerializer.update — rather than silently overwriting them. */
+export async function updateVitalSigns(
+  id: number,
+  data: Partial<AdminVitalReading>
+): Promise<AdminVitalReading> {
+  return apiRequest<AdminVitalReading>(`/vital-signs/${id}/`, { method: 'PATCH', body: data });
 }

@@ -754,6 +754,11 @@ export interface AdminVitalReading {
   recordedByName: string | null;
   recordedAt: string;
   createdAt: string;
+  /** True once this reading has been corrected at least once — see editHistory. */
+  edited?: boolean;
+  /** One entry per correction: { at, by, previous: { field: old value } }.
+   * Never includes current values — those are the reading's own fields. */
+  editHistory?: { at: string; by: string; previous: Record<string, unknown> }[];
 }
 
 /** One nurse or head nurse account, as the Admin Accounts screen manages

@@ -6,6 +6,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   TextInput,
+  Modal,
+  ScrollView,
   Platform,
   ViewStyle,
 } from 'react-native';
@@ -23,7 +25,8 @@ import {
 import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { TimePicker } from './TimePicker';
-import { fetchVitalReadings, createVitalSigns, ApiError } from '../services/api';
+import { ConfirmDialog } from './ConfirmDialog';
+import { fetchVitalReadings, createVitalSigns, updateVitalSigns, ApiError } from '../services/api';
 import type { AdminVitalReading } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 
@@ -91,6 +94,20 @@ function formatDate(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/** The reverse of TimePicker's own output — an ISO timestamp back to the
+ * "8:05 PM" form the picker (and TIME_PATTERN) expects, so editing a
+ * saved reading's time starts from its actual value instead of blank. */
+function isoToTimePickerValue(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  let hours = d.getHours();
+  const minutes = d.getMinutes();
+  const isPm = hours >= 12;
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  return `${hours}:${String(minutes).padStart(2, '0')} ${isPm ? 'PM' : 'AM'}`;
 }
 
 /** "8:05 PM" -> today's date at that time, as an ISO string for
@@ -212,6 +229,15 @@ export function TaskVitalSignsBars({
   const [form, setForm] = useState(emptyReadingForm());
   const [saving, setSaving] = useState(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
+  // "Are you sure?" gate before a new reading is actually persisted — the
+  // slot index awaiting confirmation, or null when no confirm card is open.
+  const [confirmSaveIndex, setConfirmSaveIndex] = useState<number | null>(null);
+  // Editing a previously saved reading (any completed Monitoring N bar, or
+  // a Monitoring History row) — opens a modal pre-filled from that reading.
+  const [editingReading, setEditingReading] = useState<AdminVitalReading | null>(null);
+  const [editForm, setEditForm] = useState(emptyReadingForm());
+  const [editTimeValue, setEditTimeValue] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -358,6 +384,110 @@ export function TaskVitalSignsBars({
     }
   };
 
+  const openEditReading = (reading: AdminVitalReading) => {
+    const [systolic, diastolic] = (reading.bloodPressure || '').split('/');
+    setEditForm({
+      temperature: reading.temperature != null ? String(reading.temperature) : '',
+      pulseRate: reading.heartRate != null ? String(reading.heartRate) : '',
+      respiratoryRate: reading.respiratoryRate != null ? String(reading.respiratoryRate) : '',
+      systolic: systolic || '',
+      diastolic: diastolic || '',
+      oxygenSaturation: reading.oxygenSaturation != null ? String(reading.oxygenSaturation) : '',
+      oxygenUse: reading.oxygenUse == null ? '' : reading.oxygenUse ? 'yes' : 'no',
+      painScale: reading.painScale != null ? String(reading.painScale) : '',
+    });
+    setEditTimeValue(isoToTimePickerValue(reading.recordedAt));
+    setEditingReading(reading);
+  };
+
+  const closeEditReading = () => {
+    setEditingReading(null);
+    setEditForm(emptyReadingForm());
+    setEditTimeValue('');
+  };
+
+  const setEditField = (
+    key: Exclude<keyof ReturnType<typeof emptyReadingForm>, 'oxygenUse'>,
+    value: string
+  ) => {
+    setEditForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const setEditOxygenUse = (value: 'yes' | 'no') => {
+    setEditForm((prev) => ({ ...prev, oxygenUse: prev.oxygenUse === value ? '' : value }));
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingReading) return;
+
+    const missing: string[] = [];
+    if (editForm.temperature.trim() === '') missing.push('Temperature');
+    if (editForm.systolic.trim() === '') missing.push('Systolic BP');
+    if (editForm.diastolic.trim() === '') missing.push('Diastolic BP');
+    if (editForm.pulseRate.trim() === '') missing.push('Heart Rate');
+    if (editForm.respiratoryRate.trim() === '') missing.push('Resp Rate');
+    if (editForm.oxygenSaturation.trim() === '') missing.push('SpO2');
+    if (editForm.oxygenUse === '') missing.push('O2 Use');
+    if (missing.length > 0) {
+      toast.error('Missing required fields', { description: `Please fill in: ${missing.join(', ')}` });
+      return;
+    }
+
+    const recordedAt = buildRecordedAtIso(editTimeValue);
+    if (!recordedAt) {
+      toast.error('Select a time', { description: 'Choose an hour and minute before saving.' });
+      return;
+    }
+
+    const temperature = parseOptionalNumber(editForm.temperature);
+    const heartRate = parseOptionalNumber(editForm.pulseRate);
+    const respiratoryRate = parseOptionalNumber(editForm.respiratoryRate);
+    const systolic = parseOptionalNumber(editForm.systolic);
+    const diastolic = parseOptionalNumber(editForm.diastolic);
+    const oxygenSaturation = parseOptionalNumber(editForm.oxygenSaturation);
+    const painScale = parseOptionalNumber(editForm.painScale);
+    const invalidField = [
+      ['Temperature', temperature],
+      ['Heart Rate', heartRate],
+      ['Resp Rate', respiratoryRate],
+      ['Systolic BP', systolic],
+      ['Diastolic BP', diastolic],
+      ['SpO2', oxygenSaturation],
+      ['Pain Level', painScale],
+    ].find(([, v]) => v === 'invalid');
+    if (invalidField) {
+      toast.error('Invalid value', { description: `${invalidField[0]} must be a number.` });
+      return;
+    }
+
+    setSavingEdit(true);
+    try {
+      const updated = await updateVitalSigns(editingReading.id, {
+        recordedAt,
+        temperature: temperature as number,
+        heartRate: heartRate as number,
+        respiratoryRate: respiratoryRate as number,
+        bloodPressure: `${systolic}/${diastolic}`,
+        oxygenSaturation: oxygenSaturation as number,
+        oxygenUse: editForm.oxygenUse === 'yes',
+        painScale: painScale === 'invalid' ? undefined : painScale,
+      });
+      setReadings((prev) =>
+        [...prev.map((r) => (r.id === updated.id ? updated : r))].sort(
+          (a, b) => new Date(a.recordedAt).getTime() - new Date(b.recordedAt).getTime()
+        )
+      );
+      closeEditReading();
+      toast.success('Vital signs reading updated');
+    } catch (error) {
+      toast.error('Failed to update vital signs', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.loadingRow}>
@@ -372,6 +502,7 @@ export function TaskVitalSignsBars({
   const newestFirstReadings = [...readings].reverse();
 
   return (
+    <>
     <View style={styles.layout}>
       <View style={styles.mainColumn}>
         <View style={styles.headerRow}>
@@ -407,7 +538,13 @@ export function TaskVitalSignsBars({
           if (status === 'completed' && reading) {
             return (
               <View key={index} style={styles.barFilled}>
-                <Text style={styles.monitoringLabel}>Monitoring {index + 1}</Text>
+                <View style={styles.barFilledTopRow}>
+                  <Text style={styles.monitoringLabel}>Monitoring {index + 1}</Text>
+                  <Pressable onPress={() => openEditReading(reading)} hitSlop={6} style={styles.editReadingBtn}>
+                    <Pencil size={12} color={Colors.gray500} />
+                    <Text style={styles.editReadingBtnText}>Edit</Text>
+                  </Pressable>
+                </View>
                 <View style={styles.barFilledHeader}>
                   <Clock size={13} color={Colors.green700} />
                   <Text style={styles.barFilledTime}>{formatTime(reading.recordedAt)}</Text>
@@ -425,6 +562,7 @@ export function TaskVitalSignsBars({
                   {' · '}
                   {reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'}
                 </Text>
+                {reading.edited ? <Text style={styles.editedTag}>Edited</Text> : null}
               </View>
             );
           }
@@ -636,7 +774,7 @@ export function TaskVitalSignsBars({
                       </Button>
                       <Button
                         size="sm"
-                        onPress={() => handleSaveReading(index)}
+                        onPress={() => setConfirmSaveIndex(index)}
                         loading={saving}
                         style={{ flex: 1, backgroundColor: Colors.blue600 }}
                       >
@@ -761,7 +899,18 @@ export function TaskVitalSignsBars({
                         {' '}O2 {reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'}
                         {reading.oxygenUse != null ? ` · O2 Use ${reading.oxygenUse ? 'Yes' : 'No'}` : ''}
                         {reading.painScale != null ? ` · Pain ${reading.painScale}/10` : ''}
+                        {reading.edited ? ' · (edited)' : ''}
                       </Text>
+                    ) : null}
+                    {isExpanded ? (
+                      <Pressable
+                        onPress={() => openEditReading(reading)}
+                        hitSlop={6}
+                        style={styles.historyEditBtn}
+                      >
+                        <Pencil size={12} color={Colors.blue600} />
+                        <Text style={styles.historyEditBtnText}>Edit this reading</Text>
+                      </Pressable>
                     ) : null}
                   </View>
                 );
@@ -771,6 +920,196 @@ export function TaskVitalSignsBars({
         </View>
       </View>
     </View>
+
+    <ConfirmDialog
+      open={confirmSaveIndex !== null}
+      onOpenChange={(open) => !open && setConfirmSaveIndex(null)}
+      title="Save this vital signs reading?"
+      description="Double-check the values above before saving — once recorded, this reading becomes part of the patient's monitoring history."
+      confirmLabel="Save Reading"
+      loading={saving}
+      onConfirm={async () => {
+        if (confirmSaveIndex !== null) {
+          await handleSaveReading(confirmSaveIndex);
+        }
+        setConfirmSaveIndex(null);
+      }}
+    />
+
+    <Modal
+      visible={editingReading !== null}
+      transparent
+      animationType="fade"
+      onRequestClose={closeEditReading}
+    >
+      <View style={styles.editModalBackdrop}>
+        <View style={[styles.editModalSheet, Shadows.xl]}>
+          <View style={styles.editModalHeader}>
+            <Pencil size={18} color={Colors.blue600} />
+            <Text style={styles.editModalTitle}>Edit Vital Signs Reading</Text>
+            <Pressable onPress={closeEditReading} hitSlop={8}>
+              <X size={20} color={Colors.gray500} />
+            </Pressable>
+          </View>
+          {editingReading ? (
+            <Text style={styles.editModalSubtitle}>
+              Originally {formatDate(editingReading.recordedAt)} · {formatTime(editingReading.recordedAt)}
+            </Text>
+          ) : null}
+
+          <ScrollView style={styles.editModalScroll} keyboardShouldPersistTaps="handled">
+            <View style={styles.entryPanel}>
+              <TimePicker
+                label="Monitoring Time"
+                format="12h"
+                value={editTimeValue}
+                onChange={setEditTimeValue}
+              />
+
+              <VitalSignRow
+                label="Temperature"
+                hint="Normal: 36.1-37.5°C"
+                abnormal={isAbnormal('temperature', editForm.temperature)}
+              >
+                <VitalValueInput
+                  value={editForm.temperature}
+                  onChangeText={(v) => setEditField('temperature', v)}
+                  unit="°C"
+                  abnormal={isAbnormal('temperature', editForm.temperature)}
+                  placeholder="—"
+                />
+              </VitalSignRow>
+
+              <VitalSignRow
+                label="Blood Pressure"
+                hint="Normal: 90-140 / 60-90 mmHg"
+                abnormal={isAbnormal('systolic', editForm.systolic) || isAbnormal('diastolic', editForm.diastolic)}
+              >
+                <View style={styles.bpRow}>
+                  <View style={styles.bpBox}>
+                    <VitalValueInput
+                      value={editForm.systolic}
+                      onChangeText={(v) => setEditField('systolic', v)}
+                      abnormal={isAbnormal('systolic', editForm.systolic)}
+                      placeholder="—"
+                      center
+                    />
+                  </View>
+                  <Text style={styles.bpSlash}>/</Text>
+                  <View style={styles.bpBox}>
+                    <VitalValueInput
+                      value={editForm.diastolic}
+                      onChangeText={(v) => setEditField('diastolic', v)}
+                      abnormal={isAbnormal('diastolic', editForm.diastolic)}
+                      placeholder="—"
+                      center
+                    />
+                  </View>
+                </View>
+              </VitalSignRow>
+
+              <VitalSignRow
+                label="Heart Rate"
+                hint="Normal: 60-100 bpm"
+                abnormal={isAbnormal('pulseRate', editForm.pulseRate)}
+              >
+                <VitalValueInput
+                  value={editForm.pulseRate}
+                  onChangeText={(v) => setEditField('pulseRate', v)}
+                  unit="bpm"
+                  abnormal={isAbnormal('pulseRate', editForm.pulseRate)}
+                  placeholder="—"
+                />
+              </VitalSignRow>
+
+              <VitalSignRow
+                label="Resp Rate"
+                hint="Normal: 12-20/min"
+                abnormal={isAbnormal('respiratoryRate', editForm.respiratoryRate)}
+              >
+                <VitalValueInput
+                  value={editForm.respiratoryRate}
+                  onChangeText={(v) => setEditField('respiratoryRate', v)}
+                  unit="/min"
+                  abnormal={isAbnormal('respiratoryRate', editForm.respiratoryRate)}
+                  placeholder="—"
+                />
+              </VitalSignRow>
+
+              <VitalSignRow
+                label="SpO2"
+                hint="Normal: 95-100%"
+                abnormal={isAbnormal('oxygenSaturation', editForm.oxygenSaturation)}
+              >
+                <VitalValueInput
+                  value={editForm.oxygenSaturation}
+                  onChangeText={(v) => setEditField('oxygenSaturation', v)}
+                  unit="%"
+                  abnormal={isAbnormal('oxygenSaturation', editForm.oxygenSaturation)}
+                  placeholder="—"
+                />
+              </VitalSignRow>
+
+              <VitalSignRow label="O2 Use" hint="On supplemental oxygen?" abnormal={false}>
+                <View style={styles.yesNoRow}>
+                  <Pressable
+                    onPress={() => setEditOxygenUse('yes')}
+                    style={[styles.yesNoBtn, editForm.oxygenUse === 'yes' && styles.yesNoBtnActive]}
+                  >
+                    <Text
+                      style={[styles.yesNoBtnText, editForm.oxygenUse === 'yes' && styles.yesNoBtnTextActive]}
+                    >
+                      Yes
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setEditOxygenUse('no')}
+                    style={[styles.yesNoBtn, editForm.oxygenUse === 'no' && styles.yesNoBtnActive]}
+                  >
+                    <Text
+                      style={[styles.yesNoBtnText, editForm.oxygenUse === 'no' && styles.yesNoBtnTextActive]}
+                    >
+                      No
+                    </Text>
+                  </Pressable>
+                </View>
+              </VitalSignRow>
+
+              <VitalSignRow
+                label="Pain Level"
+                hint="Scale: 0-10"
+                abnormal={isAbnormal('painScale', editForm.painScale)}
+              >
+                <VitalValueInput
+                  value={editForm.painScale}
+                  onChangeText={(v) => setEditField('painScale', v)}
+                  unit="/10"
+                  abnormal={isAbnormal('painScale', editForm.painScale)}
+                  placeholder="—"
+                />
+              </VitalSignRow>
+            </View>
+          </ScrollView>
+
+          <View style={styles.entryActions}>
+            <Button variant="outline" onPress={closeEditReading} style={{ flex: 1 }} disabled={savingEdit}>
+              <Text>Cancel</Text>
+            </Button>
+            <Button
+              onPress={handleSaveEdit}
+              loading={savingEdit}
+              style={{ flex: 1, backgroundColor: Colors.blue600 }}
+            >
+              <View style={styles.btnInner}>
+                <Check size={14} color={Colors.white} />
+                <Text style={{ color: Colors.white, fontWeight: '600', flexShrink: 1 }}>Save Changes</Text>
+              </View>
+            </Button>
+          </View>
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 }
 
@@ -872,6 +1211,14 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 16,
   },
+  historyEditBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 8,
+    alignSelf: 'flex-start',
+  },
+  historyEditBtnText: { fontSize: 11, fontWeight: '700', color: Colors.blue600 },
   loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
   loadingText: { fontSize: 12, color: Colors.gray500 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
@@ -887,6 +1234,10 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 4,
   },
+  barFilledTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  editReadingBtn: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  editReadingBtnText: { fontSize: 10, fontWeight: '700', color: Colors.gray500 },
+  editedTag: { fontSize: 10, fontStyle: 'italic', color: Colors.gray500 },
   barFilledHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   barFilledTime: { fontSize: 12, fontWeight: '700', color: Colors.green700 },
   barFilledBy: { fontSize: 11, color: Colors.gray500, marginLeft: 'auto' },
@@ -1088,4 +1439,24 @@ const styles = StyleSheet.create({
     borderColor: Colors.blue200,
   },
   addSlotText: { fontSize: 12, fontWeight: '600', color: Colors.blue600 },
+  editModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  editModalSheet: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    width: '100%',
+    maxWidth: 480,
+    maxHeight: '90%',
+    padding: 16,
+    gap: 12,
+  },
+  editModalHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  editModalTitle: { flex: 1, fontSize: 16, fontWeight: '700', color: Colors.foreground },
+  editModalSubtitle: { fontSize: 12, color: Colors.gray500 },
+  editModalScroll: { flexShrink: 1 },
 });

@@ -51,6 +51,7 @@ import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
+import { Switch } from '../../components/Switch';
 import { Alert, AlertDescription } from '../../components/Alert';
 import { StructuredNursingNote } from '../../components/StructuredNursingNote';
 import { FDARNursingNote } from '../../components/FDARNursingNote';
@@ -110,8 +111,9 @@ type StructuredData = Required<
 export default function ChartingScreen() {
   const { user } = useAuth();
   const toast = useToast();
-  const { preferences } = usePreferences();
+  const { preferences, save: savePreferences } = usePreferences();
   const autoChartingEnabled = preferences.autoChartingEnabled;
+  const [togglingAutoCharting, setTogglingAutoCharting] = useState(false);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [notes, setNotes] = useState<ChartingNote[]>([]);
   const [loading, setLoading] = useState(true);
@@ -185,6 +187,27 @@ export default function ChartingScreen() {
   const getNurseName = () => {
     if (!user) return 'Unknown Nurse, RN';
     return `${user.name}, RN`;
+  };
+
+  // A quick toggle right where it matters, in addition to the one in
+  // Settings — saves immediately (no separate Save button) so the nurse
+  // always sees, at a glance, whether this screen is in AI or manual mode.
+  const handleToggleAutoCharting = async (next: boolean) => {
+    setTogglingAutoCharting(true);
+    try {
+      await savePreferences({ autoChartingEnabled: next });
+      toast.success(next ? 'Auto Charting turned on' : 'Auto Charting turned off', {
+        description: next
+          ? 'New notes will be generated with AI again.'
+          : 'New notes will be written manually from now on.',
+      });
+    } catch (error) {
+      toast.error('Could not change Auto Charting', {
+        description: error instanceof ApiError ? error.message : 'Please try again.',
+      });
+    } finally {
+      setTogglingAutoCharting(false);
+    }
   };
 
   const getAttendingPhysician = (patient?: Patient | null) => {
@@ -767,11 +790,34 @@ export default function ChartingScreen() {
       showsVerticalScrollIndicator={false}
     >
       {/* Header */}
-      <View>
-        <Text style={styles.pageTitle}>Charting</Text>
-        <Text style={styles.pageSubtitle}>
-          {autoChartingEnabled ? 'AI-assisted documentation' : 'Manual documentation'}
-        </Text>
+      <View style={styles.headerRow}>
+        <View style={styles.flex1}>
+          <Text style={styles.pageTitle}>Charting</Text>
+          <Text style={styles.pageSubtitle}>
+            {autoChartingEnabled ? 'AI-assisted documentation' : 'Manual documentation'}
+          </Text>
+        </View>
+        <View style={styles.autoChartingToggle}>
+          <View style={styles.titleRow}>
+            <Sparkles size={14} color={autoChartingEnabled ? Colors.blue600 : Colors.gray400} />
+            <Text style={styles.autoChartingToggleLabel}>Auto Charting</Text>
+          </View>
+          <View style={styles.titleRow}>
+            <Text
+              style={[
+                styles.autoChartingToggleState,
+                autoChartingEnabled ? styles.autoChartingToggleStateOn : styles.autoChartingToggleStateOff,
+              ]}
+            >
+              {autoChartingEnabled ? 'ON' : 'OFF'}
+            </Text>
+            {togglingAutoCharting ? (
+              <ActivityIndicator size="small" color={Colors.blue600} />
+            ) : (
+              <Switch value={autoChartingEnabled} onValueChange={handleToggleAutoCharting} />
+            )}
+          </View>
+        </View>
       </View>
 
       {/* AI / Manual Info Alert */}
@@ -1748,6 +1794,12 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  flex1: { flex: 1 },
   pageTitle: {
     fontSize: 24,
     fontWeight: '700',
@@ -1758,6 +1810,27 @@ const styles = StyleSheet.create({
     color: Colors.gray600,
     marginTop: 2,
   },
+  autoChartingToggle: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.white,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 4,
+    alignItems: 'flex-end',
+  },
+  autoChartingToggleLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.gray700,
+  },
+  autoChartingToggleState: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  autoChartingToggleStateOn: { color: Colors.blue600 },
+  autoChartingToggleStateOff: { color: Colors.gray400 },
   alertBlue: {
     fontSize: 13,
     color: Colors.blue900,

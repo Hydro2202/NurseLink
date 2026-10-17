@@ -4643,10 +4643,10 @@ class ChartingViewSet(viewsets.ModelViewSet):
 
 class VitalSignsViewSet(viewsets.ModelViewSet):
     """
-    Timestamped vitals history for a patient — insert-only (no update/
-    destroy: a charted reading is never edited in place, only superseded by
-    a newer one), one row per reading rather than the single mutable
-    snapshot on Patient.
+    Timestamped vitals history for a patient — one row per reading rather
+    than the single mutable snapshot on Patient. No destroy: a charted
+    reading is never deleted, only corrected in place (PATCH) with an audit
+    trail (see VitalSigns.edited/edit_history) or superseded by a newer one.
 
     `latest` is what the auto-charting prompt on a flagged ChartingNote
     pre-fills its quick-entry form from — the "previous values" the nurse
@@ -4655,11 +4655,17 @@ class VitalSignsViewSet(viewsets.ModelViewSet):
 
     serializer_class = VitalSignsSerializer
     permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
-    http_method_names = ['get', 'post', 'head', 'options']
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def perform_create(self, serializer):
         # Same rule as labs and medications: only for patients assigned to you (head nurse: any).
         _check_patient_care_scope(self.request, serializer.validated_data.get('patient'), 'record vitals')
+        serializer.save()
+
+    def perform_update(self, serializer):
+        # Same scope rule as creating one — correcting a reading is still
+        # recording vitals for that patient.
+        _check_patient_care_scope(self.request, serializer.instance.patient, 'edit vitals')
         serializer.save()
 
     def get_queryset(self):

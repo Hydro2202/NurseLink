@@ -199,12 +199,19 @@ class VitalSignsCreateTests(VitalsAutoChartingTestCase):
         self.assertEqual(response.status_code, 201, response.content)
         self.assertEqual(response.data['painScale'], 7)
 
-    def test_cannot_update_or_delete_a_charted_reading(self):
+    def test_can_correct_but_not_delete_a_charted_reading(self):
         create = self.client.post(
             '/api/vital-signs/', {'patientId': self.patient.patient_code, 'heartRate': 70}, format='json',
         )
         vid = create.data['id']
-        self.assertEqual(self.client.patch(f'/api/vital-signs/{vid}/', {'heartRate': 999}, format='json').status_code, 405)
+
+        patched = self.client.patch(f'/api/vital-signs/{vid}/', {'heartRate': 999}, format='json')
+        self.assertEqual(patched.status_code, 200, patched.content)
+        self.assertEqual(patched.data['heartRate'], 999)
+        self.assertTrue(patched.data['edited'])
+        self.assertEqual(len(patched.data['editHistory']), 1)
+        self.assertEqual(patched.data['editHistory'][0]['previous']['heart_rate'], 70)
+
         self.assertEqual(self.client.delete(f'/api/vital-signs/{vid}/').status_code, 405)
 
     def test_unauthenticated_cannot_access(self):
