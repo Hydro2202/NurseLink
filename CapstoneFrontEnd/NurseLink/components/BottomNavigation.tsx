@@ -13,6 +13,7 @@ import {
   Calendar,
   ShieldCheck,
   IdCard,
+  BarChart3,
   type LucideIcon,
 } from 'lucide-react-native';
 import { Colors, Shadows } from '../constants/colors';
@@ -49,8 +50,7 @@ const SUPERVISOR_NAV: NavItem[] = [
   { name: 'Patients', href: '/(app)/all-patients', icon: Users, color: Colors.purple600 },
   // Read-only oversight of every referral — see handover.tsx's isHeadNurse branch.
   { name: 'Referral', href: '/(app)/handover', icon: FileText, color: Colors.orange600 },
-  // Analytics and Workload Monitor were folded into the dashboard itself
-  // (see dashboard.tsx) — no longer their own nav destinations.
+  { name: 'Analytics', href: '/(app)/analytics', icon: BarChart3, color: Colors.blue700 },
   { name: 'Settings', href: '/(app)/settings', icon: Settings, color: Colors.gray600 },
 ];
 

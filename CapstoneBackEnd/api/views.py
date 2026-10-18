@@ -129,6 +129,7 @@ from .permissions import (
     IsApprovedNurseOrAdmin,
     IsApprovedNurseOrAdminReadOnly,
     IsSupervisor,
+    IsSupervisorOrAdminReadOnly,
     get_user_role,
 )
 from .schema_examples import (
@@ -6245,7 +6246,11 @@ class WorkloadView(APIView):
 
 
 class AnalyticsView(APIView):
-    permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
+    # Head-nurse-only — unlike WorkloadView (which a staff nurse can also
+    # read, with sensitive fields redacted, for other screens), nothing on
+    # the staff side ever reads this endpoint, and the Analytics page it
+    # feeds is head-nurse-only in the frontend too (see analytics.tsx).
+    permission_classes = [permissions.IsAuthenticated, IsSupervisorOrAdminReadOnly]
 
     @extend_schema(
         tags=['Analytics'],

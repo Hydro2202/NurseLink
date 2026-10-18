@@ -419,7 +419,7 @@ export default function HandoverPage() {
         )}
 
         {type === 'incoming' && handover.status === 'accepted' && (
-          <Button className="w-full bg-blue-600 hover:bg-blue-700" onClick={() => handleComplete(handover.id)} disabled={actionLoading === handover.id}>
+          <Button className="w-full md:w-auto bg-blue-600 hover:bg-blue-700" onClick={() => handleComplete(handover.id)} disabled={actionLoading === handover.id}>
             {actionLoading === handover.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle className="w-4 h-4 mr-2" />}
             Mark Completed
           </Button>

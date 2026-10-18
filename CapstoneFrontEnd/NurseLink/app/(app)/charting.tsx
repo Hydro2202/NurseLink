@@ -894,6 +894,7 @@ export default function ChartingScreen() {
                 onPress={handleGenerateNote}
                 disabled={isGenerating || !inputText || !selectedPatient}
                 style={{ backgroundColor: Colors.blue600 }}
+                fullWidth
               >
                 {isGenerating ? (
                   <View style={styles.btnInner}>
@@ -967,6 +968,7 @@ export default function ChartingScreen() {
                   !(manualFocus.trim() || manualData.trim() || manualAction.trim() || manualResponse.trim())
                 }
                 style={{ backgroundColor: Colors.blue600 }}
+                fullWidth
               >
                 <View style={styles.btnInner}>
                   {isSavingManual ? (

@@ -11,7 +11,7 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 // Wrapper that honours the Show Charts & Graphs setting; same API.
-import { BarChart, LineChart } from '../../components/Charts';
+import { BarChart } from '../../components/Charts';
 import {
   Activity,
   AlertTriangle,
@@ -29,20 +29,15 @@ import {
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import type {
-  AnalyticsData, Patient, Task, WorkloadData, DutyAssignment, Department, PatientAssignmentRecord,
-} from '../../types/domain';
+import type { Patient, Task, WorkloadData, DutyAssignment, PatientAssignmentRecord } from '../../types/domain';
 import type { PatientAssignment } from '../../types';
 import {
   fetchPatients,
   fetchTasks,
   fetchWorkload,
-  fetchAnalytics,
   fetchDutyAssignments,
   fetchAssignments,
-  fetchDepartments,
   createAssignment,
-  updateAssignment,
   notifyPatientNurse,
   ApiError,
 } from '../../services/api';
@@ -55,20 +50,7 @@ import { Progress } from '../../components/Progress';
 import { Button } from '../../components/Button';
 import { AssignPatientModal, type AssignPatientPrefill } from '../../components/AssignPatientModal';
 import { SafetyAlertsSection, type SafetyAlert } from '../../components/dashboard/SafetyAlertsSection';
-import { WorkloadSection } from '../../components/dashboard/WorkloadSection';
-import { AnalyticsSection } from '../../components/dashboard/AnalyticsSection';
-import { FilterBar } from '../../components/dashboard/FilterBar';
 import { SectionNav, type DashboardSection } from '../../components/dashboard/SectionNav';
-import {
-  DEFAULT_FILTERS,
-  filterPatients,
-  filterTasks,
-  loadSavedFilters,
-  saveFilters,
-  toApiParams,
-  resolveDateRange,
-  type DashboardFilters,
-} from '../../utils/dashboardFilters';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 
 function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
@@ -92,25 +74,7 @@ function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
 const DASHBOARD_SECTIONS: DashboardSection[] = [
   { key: 'alerts', label: 'Alerts' },
   { key: 'overview', label: 'Overview' },
-  { key: 'workload', label: 'Workload' },
-  { key: 'analytics', label: 'Analytics' },
 ];
-
-function filterSummaryLabel(filters: DashboardFilters, departments: Department[]): string {
-  const range = resolveDateRange(filters);
-  const parts: string[] = [];
-  if (!range) parts.push('Last 7 days');
-  else if (range.startDate === range.endDate) parts.push(range.startDate === new Date().toISOString().slice(0, 10) ? 'Today' : range.startDate);
-  else parts.push(`${range.startDate} – ${range.endDate}`);
-  if (filters.departmentId) {
-    const dept = departments.find((d) => String(d.id) === filters.departmentId);
-    if (dept) parts.push(dept.name);
-  }
-  if (filters.shift) parts.push(`${filters.shift.charAt(0).toUpperCase()}${filters.shift.slice(1)} shift`);
-  if (filters.nurseId) parts.push('1 nurse');
-  if (filters.risk) parts.push(`${filters.risk} risk`);
-  return parts.join(' · ');
-}
 
 // Same local-calendar-day helpers as my-duty.tsx — never toISOString(),
 // which converts to UTC and can shift the day.
@@ -206,17 +170,13 @@ export default function DashboardPage() {
   const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
   const [dutyAssignments, setDutyAssignments] = useState<DutyAssignment[]>([]);
 
-  // Head-nurse-only: the filter bar, the Analytics/Workload data it drives,
-  // and the Assign Patient modal shared between "Respond Now" on a Safety
-  // Alert and the Workload section's own "Assign Patient" button.
-  const [filters, setFilters] = useState<DashboardFilters>(DEFAULT_FILTERS);
-  const [filtersLoaded, setFiltersLoaded] = useState(false);
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
-  const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  // Head-nurse-only: just enough workload data for the "Nurses on Duty"
+  // stat card and the nurse picker in the shared Assign Patient modal — the
+  // full Nurse Workload / Patient Assignments tables now live on their own
+  // Analytics page (see analytics.tsx), linked from "View all analytics →"
+  // below instead of rendered inline here.
   const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
   const [assignModalOpen, setAssignModalOpen] = useState(false);
-  const [editingAssignment, setEditingAssignment] = useState<PatientAssignment | null>(null);
   const [assignPrefill, setAssignPrefill] = useState<AssignPatientPrefill | null>(null);
   const [activeSection, setActiveSection] = useState<string>('alerts');
   const sectionRefs = useRef<Record<string, View | null>>({});
@@ -255,66 +215,37 @@ export default function DashboardPage() {
     })();
   }, [loadDashboard]);
 
-  // Load the head nurse's last filter choice once, then persist every
-  // change after that — see utils/dashboardFilters.ts.
-  useEffect(() => {
+  const loadWorkloadSummary = useCallback(async () => {
     if (isStaffNurse) return;
-    (async () => {
-      const saved = await loadSavedFilters();
-      setFilters(saved);
-      setFiltersLoaded(true);
-    })();
-  }, [isStaffNurse]);
-
-  useEffect(() => {
-    if (isStaffNurse || !filtersLoaded) return;
-    void saveFilters(filters);
-  }, [filters, isStaffNurse, filtersLoaded]);
-
-  useEffect(() => {
-    if (isStaffNurse) return;
-    fetchDepartments().then(setDepartments).catch(() => {
-      // Non-critical — the Department filter just shows no options.
-    });
-  }, [isStaffNurse]);
-
-  const loadWorkloadAndAnalytics = useCallback(async () => {
-    if (isStaffNurse || !filtersLoaded) return;
-    const apiParams = toApiParams(filters);
-    setAnalyticsLoading(true);
     try {
-      const [workload, assignmentData, analytics] = await Promise.all([
-        fetchWorkload(apiParams),
+      const [workload, assignmentData] = await Promise.all([
+        fetchWorkload(),
         fetchAssignments({ status: 'active' }),
-        fetchAnalytics(apiParams),
       ]);
       setWorkloadData(workload);
       setAssignments(assignmentData.map(toLocalAssignment));
-      setAnalyticsData(analytics);
     } catch (error) {
-      console.warn('Failed to load workload/analytics:', error);
-    } finally {
-      setAnalyticsLoading(false);
+      console.warn('Failed to load workload summary:', error);
     }
-  }, [isStaffNurse, filtersLoaded, filters]);
+  }, [isStaffNurse]);
 
   useEffect(() => {
     (async () => {
-      await loadWorkloadAndAnalytics();
+      await loadWorkloadSummary();
     })();
-  }, [loadWorkloadAndAnalytics]);
+  }, [loadWorkloadSummary]);
 
   // Presence (online/away/offline) moves on its own, with nothing else on
   // this screen changing to trigger a refetch.
   useEffect(() => {
     if (isStaffNurse) return;
     const timer = setInterval(() => {
-      fetchWorkload(toApiParams(filters)).then(setWorkloadData).catch(() => {
+      fetchWorkload().then(setWorkloadData).catch(() => {
         // Silent: this is a background refresh, not a user action.
       });
     }, 30000);
     return () => clearInterval(timer);
-  }, [isStaffNurse, filters]);
+  }, [isStaffNurse]);
 
   const scrollToSection = useCallback((key: string) => {
     setActiveSection(key);
@@ -372,36 +303,16 @@ export default function DashboardPage() {
     void loadDashboard();
   });
 
-  // Head-nurse-only: the filter bar applies client-side, over whatever the
-  // dashboard already fetched — see utils/dashboardFilters.ts's own note on
-  // why patients/tasks don't get backend filters (only Analytics/Workload
-  // do). A no-op for staff nurses (filteredX === x), so every stat/chart
-  // below that switched from patients/tasks to filteredPatients/filteredTasks
-  // is unaffected for them.
-  const patientById = useMemo(() => new Map(patients.map((p) => [p.id, p])), [patients]);
-  const selectedNurseName = useMemo(
-    () => workloadData.find((n) => n.nurseId === filters.nurseId)?.nurseName,
-    [workloadData, filters.nurseId]
-  );
-  const filteredPatients = useMemo(
-    () => (isStaffNurse ? patients : filterPatients(patients, filters)),
-    [isStaffNurse, patients, filters]
-  );
-  const filteredTasks = useMemo(
-    () => (isStaffNurse ? tasks : filterTasks(tasks, filters, { patientById, nurseName: selectedNurseName })),
-    [isStaffNurse, tasks, filters, patientById, selectedNurseName]
-  );
-
-  const urgentTasks = filteredTasks.filter((t) => t.priority === 'high' && t.status !== 'completed').length;
-  const overdueTasks = filteredTasks.filter((t) => t.status === 'overdue').length;
-  const completedTasks = filteredTasks.filter((t) => t.status === 'completed').length;
-  const totalTasks = filteredTasks.length || 1;
-  const highRiskPatients = filteredPatients.filter(
+  const urgentTasks = tasks.filter((t) => t.priority === 'high' && t.status !== 'completed').length;
+  const overdueTasks = tasks.filter((t) => t.status === 'overdue').length;
+  const completedTasks = tasks.filter((t) => t.status === 'completed').length;
+  const totalTasks = tasks.length || 1;
+  const highRiskPatients = patients.filter(
     (p) => p.riskLevel === 'high' || p.riskLevel === 'critical'
   ).length;
   const completionRate = Math.round((completedTasks / totalTasks) * 100);
-  const inProgressCount = filteredTasks.filter((t) => t.status === 'in_progress').length;
-  const pendingCount = filteredTasks.filter((t) => t.status === 'pending').length;
+  const inProgressCount = tasks.filter((t) => t.status === 'in_progress').length;
+  const pendingCount = tasks.filter((t) => t.status === 'pending').length;
 
   const staffTaskTrendData = useMemo(() => {
     const buckets = [
@@ -413,23 +324,6 @@ export default function DashboardPage() {
     ];
     return buckets;
   }, [pendingCount, inProgressCount, overdueTasks, completedTasks, urgentTasks]);
-
-  const adminTaskTrendData = useMemo(() => staffTaskTrendData, [staffTaskTrendData]);
-
-  const vitalHrData = useMemo(() => {
-    if (!filteredPatients.length) return [];
-    return filteredPatients.slice(0, 5).map((p, i) => ({
-      value: p.vitalSigns?.heartRate || 0,
-      label: p.id || `P${i + 1}`,
-    }));
-  }, [filteredPatients]);
-
-  const vitalSpo2Data = useMemo(() => {
-    if (!filteredPatients.length) return [];
-    return filteredPatients.slice(0, 5).map((p) => ({
-      value: p.vitalSigns?.oxygenSaturation || 0,
-    }));
-  }, [filteredPatients]);
 
   // The nurse's actual scheduled shift, per the Duty Roster — the ground
   // truth for what they're working right now, as opposed to
@@ -471,7 +365,6 @@ export default function DashboardPage() {
   const handleRespondToAlert = (alert: SafetyAlert) => {
     if (alert.variant === 'destructive' && alert.patient) {
       const p = alert.patient;
-      setEditingAssignment(null);
       setAssignPrefill({
         patientId: p.id,
         patientName: p.name,
@@ -508,18 +401,6 @@ export default function DashboardPage() {
     });
   };
 
-  const handleAssignPatientClick = () => {
-    setEditingAssignment(null);
-    setAssignPrefill(null);
-    setAssignModalOpen(true);
-  };
-
-  const handleEditAssignment = (assignment: PatientAssignment) => {
-    setEditingAssignment(assignment);
-    setAssignPrefill(null);
-    setAssignModalOpen(true);
-  };
-
   const handleAssignSubmit = async (
     data: Omit<PatientAssignment, 'id' | 'assignedAt' | 'updatedAt' | 'status'>
   ) => {
@@ -532,42 +413,19 @@ export default function DashboardPage() {
         notes: data.notes,
         ward: data.ward,
       };
-      const saved = editingAssignment
-        ? await updateAssignment(editingAssignment.id, payload)
-        : await createAssignment(payload);
+      const saved = await createAssignment(payload);
       const local = toLocalAssignment(saved);
-      setAssignments((prev) =>
-        editingAssignment
-          ? prev.map((a) => (a.id === editingAssignment.id ? local : a))
-          : [local, ...prev.filter((a) => a.patientId !== local.patientId)]
-      );
-      await Promise.all([loadDashboard(), loadWorkloadAndAnalytics()]);
-      setEditingAssignment(null);
+      setAssignments((prev) => [local, ...prev.filter((a) => a.patientId !== local.patientId)]);
+      await Promise.all([loadDashboard(), loadWorkloadSummary()]);
       setAssignPrefill(null);
       setAssignModalOpen(false);
-      toast.success(editingAssignment ? 'Assignment updated' : 'Patient assigned');
+      toast.success('Patient assigned');
     } catch (error) {
       toast.error('Failed to save assignment', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     }
   };
-
-  const departmentStats = useMemo(() => {
-    const buckets: Record<string, { label: string; total: number; critical: number; stable: number }> = {
-      ICU: { label: 'ICU Department', total: 0, critical: 0, stable: 0 },
-      Ward: { label: 'General Ward', total: 0, critical: 0, stable: 0 },
-      ER: { label: 'Emergency', total: 0, critical: 0, stable: 0 },
-    };
-    filteredPatients.forEach((p) => {
-      const room = (p.room || '').toUpperCase();
-      const key = room.includes('ICU') ? 'ICU' : room.includes('ER') || room.includes('EMERGENCY') ? 'ER' : 'Ward';
-      buckets[key].total += 1;
-      if (p.riskLevel === 'high' || p.riskLevel === 'critical') buckets[key].critical += 1;
-      else buckets[key].stable += 1;
-    });
-    return Object.values(buckets);
-  }, [filteredPatients]);
 
   const availableNurses = useMemo(
     () => workloadData.map((n) => ({ id: n.nurseId, name: n.nurseName, patientCount: n.patientCount })),
@@ -930,9 +788,9 @@ export default function DashboardPage() {
     );
   }
 
-  // Head Nurse Dashboard
-  const filterSummary = filterSummaryLabel(filters, departments);
-
+  // Head Nurse Dashboard — deliberately light: Safety Alerts, a handful of
+  // summary stat cards, and a link out to the full Analytics page (charts
+  // and nurse workload all live there now — see analytics.tsx).
   return (
     <View style={styles.hnRoot}>
       <SectionNav sections={DASHBOARD_SECTIONS} activeKey={activeSection} onSelect={scrollToSection} />
@@ -960,19 +818,11 @@ export default function DashboardPage() {
           </View>
         </View>
 
-        <FilterBar
-          filters={filters}
-          onChange={setFilters}
-          onReset={() => setFilters(DEFAULT_FILTERS)}
-          departments={departments}
-          nurses={availableNurses}
-        />
-
         <View style={styles.body}>
           <View ref={(r) => { sectionRefs.current.alerts = r; }}>
             <SafetyAlertsSection
-              patients={filteredPatients}
-              tasks={filteredTasks}
+              patients={patients}
+              tasks={tasks}
               onRespond={handleRespondToAlert}
               onNotifyNurse={handleNotifyNurseFromAlert}
             />
@@ -982,8 +832,8 @@ export default function DashboardPage() {
             <View style={styles.statsCol}>
               <StatCard
                 title="Patients"
-                value={String(filteredPatients.length)}
-                subtitle="Match current filters"
+                value={String(patients.length)}
+                subtitle="All registered patients"
                 icon={Heart}
                 iconBg={Colors.purple100}
                 iconColor={Colors.purple600}
@@ -1013,7 +863,7 @@ export default function DashboardPage() {
               <StatCard
                 title="Nurses on Duty"
                 value={String(workloadData.length)}
-                subtitle="Match current filters"
+                subtitle="Currently on shift"
                 icon={Users}
                 iconBg={Colors.blue100}
                 iconColor={Colors.blue600}
@@ -1021,127 +871,36 @@ export default function DashboardPage() {
             </View>
           </View>
 
-          <View ref={(r) => { sectionRefs.current.workload = r; }}>
-            <WorkloadSection
-              workloadData={workloadData}
-              assignments={assignments}
-              loading={analyticsLoading}
-              onAssignPatientClick={handleAssignPatientClick}
-              onEditAssignment={handleEditAssignment}
-              onRefresh={loadWorkloadAndAnalytics}
-            />
-          </View>
-
-          <View ref={(r) => { sectionRefs.current.analytics = r; }} style={styles.analyticsSection}>
-            <Text style={styles.sectionTitle}>Analytics</Text>
-            <Text style={styles.sectionSub}>{filterSummary}</Text>
-            <AnalyticsSection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
-          </View>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Task Activity</CardTitle>
-              <CardDescription>Breakdown of filtered tasks by status</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <BarChart
-                data={adminTaskTrendData}
-                width={chartWidth}
-                height={250}
-                barWidth={28}
-                spacing={28}
-                roundedTop
-                frontColor="#2D9CDB"
-                yAxisThickness={0}
-                xAxisThickness={1}
-                xAxisColor={Colors.border}
-                rulesColor={Colors.border}
-                rulesType="dashed"
-                noOfSections={4}
-                maxValue={10}
-                yAxisTextStyle={styles.chartAxis}
-                xAxisLabelTextStyle={styles.chartAxis}
-              />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Vital Signs Trends</CardTitle>
-              <CardDescription>Average patient vitals throughout the day</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <View style={styles.legendRow}>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#E53E3E' }]} />
-                  <Text style={styles.legendText}>Heart Rate</Text>
+          <Card style={styles.patientsCta}>
+            <LinearGradient
+              colors={[Colors.blue50, '#EEF2FF']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.patientsCtaGradient}
+            >
+              <View style={styles.patientsCtaRow}>
+                <View style={styles.patientsCtaLeft}>
+                  <View style={styles.patientsCtaIcon}>
+                    <BarChart3 size={20} color={Colors.blue600} />
+                  </View>
+                  <View style={styles.flex1}>
+                    <Text style={styles.patientsCtaTitle}>Full Analytics & Workload</Text>
+                    <Text style={styles.patientsCtaSub}>
+                      Charts, task trends and nurse workload in one place
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#2D9CDB' }]} />
-                  <Text style={styles.legendText}>SpO2</Text>
-                </View>
+                <Button
+                  size="sm"
+                  onPress={() => router.push('/(app)/analytics' as any)}
+                  style={styles.viewAllBtn}
+                >
+                  <Text style={styles.viewAllBtnText}>View all analytics</Text>
+                  <ArrowRight size={14} color={Colors.white} />
+                </Button>
               </View>
-              <LineChart
-                data={vitalHrData}
-                data2={vitalSpo2Data}
-                width={chartWidth}
-                height={250}
-                spacing={Math.max((chartWidth - 40) / 5, 40)}
-                color1="#E53E3E"
-                color2="#2D9CDB"
-                thickness={2}
-                areaChart
-                startFillColor1="#E53E3E"
-                startFillColor2="#2D9CDB"
-                endFillColor1="#E53E3E"
-                endFillColor2="#2D9CDB"
-                startOpacity={0.3}
-                endOpacity={0.05}
-                hideDataPoints={false}
-                dataPointsColor1="#E53E3E"
-                dataPointsColor2="#2D9CDB"
-                dataPointsRadius={4}
-                yAxisThickness={0}
-                xAxisThickness={1}
-                xAxisColor={Colors.border}
-                rulesColor={Colors.border}
-                rulesType="dashed"
-                noOfSections={4}
-                maxValue={110}
-                yAxisTextStyle={styles.chartAxis}
-                xAxisLabelTextStyle={styles.chartAxis}
-              />
-            </CardContent>
+            </LinearGradient>
           </Card>
-
-          <View style={styles.deptGrid}>
-            {departmentStats.map((dept) => {
-              const capacity = Math.max(dept.total, 1);
-              const occupancyPct = filteredPatients.length ? Math.min(100, (dept.total / capacity) * 100) : 0;
-              return (
-                <Card key={dept.label} style={styles.deptCard}>
-                  <CardHeader>
-                    <CardTitle>{dept.label}</CardTitle>
-                  </CardHeader>
-                  <CardContent style={styles.gap12}>
-                    <View style={styles.deptRow}>
-                      <Text style={styles.deptLabel}>Patients</Text>
-                      <Text style={styles.deptValue}>{dept.total}</Text>
-                    </View>
-                    <Progress value={occupancyPct} height={8} />
-                    <View style={styles.deptFooter}>
-                      <Text style={styles.deptMeta}>
-                        Critical: <Text style={styles.criticalText}>{dept.critical}</Text>
-                      </Text>
-                      <Text style={styles.deptMeta}>
-                        Stable: <Text style={styles.stableText}>{dept.stable}</Text>
-                      </Text>
-                    </View>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </View>
         </View>
       </ScrollView>
 
@@ -1149,11 +908,10 @@ export default function DashboardPage() {
         isOpen={assignModalOpen}
         onClose={() => {
           setAssignModalOpen(false);
-          setEditingAssignment(null);
           setAssignPrefill(null);
         }}
         onSubmit={handleAssignSubmit}
-        editingAssignment={editingAssignment}
+        editingAssignment={null}
         prefill={assignPrefill}
         availableNurses={availableNurses}
         allTasks={tasks}
@@ -1177,9 +935,6 @@ const styles = StyleSheet.create({
   },
   scrollContentAdmin: {
     paddingBottom: 40,
-  },
-  analyticsSection: {
-    marginTop: 4,
   },
   headerBar: {
     backgroundColor: Colors.card,
@@ -1534,97 +1289,5 @@ const styles = StyleSheet.create({
   flex1: {
     flex: 1,
     minWidth: 0,
-  },
-  legendRow: {
-    flexDirection: 'row',
-    gap: 16,
-    marginBottom: 12,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  legendDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  legendText: {
-    fontSize: 12,
-    color: Colors.mutedForeground,
-  },
-  workloadCard: {
-    padding: 16,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  workloadHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-    gap: 8,
-  },
-  workloadMetrics: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 12,
-  },
-  metric: {
-    minWidth: 70,
-  },
-  metricLabel: {
-    fontSize: 11,
-    color: Colors.mutedForeground,
-  },
-  metricValue: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: Colors.foreground,
-  },
-  alertActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 10,
-  },
-  deptGrid: {
-    gap: 16,
-  },
-  deptCard: {},
-  deptRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  deptLabel: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: Colors.mutedForeground,
-  },
-  deptValue: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: Colors.foreground,
-  },
-  deptFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingTop: 8,
-  },
-  deptMeta: {
-    fontSize: 13,
-    color: Colors.mutedForeground,
-  },
-  criticalText: {
-    fontWeight: '700',
-    color: Colors.destructive,
-  },
-  stableText: {
-    fontWeight: '700',
-    color: Colors.success,
   },
 });

@@ -10,6 +10,7 @@ import RouteLoadingFallback from './components/RouteLoadingFallback';
 const SignUpPage = lazy(() => import('./pages/SignUpPage'));
 const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
 const TasksPage = lazy(() => import('./pages/TasksPage'));
 const NurseTasksPage = lazy(() => import('./pages/NurseTasksPage'));
 const HandoverPage = lazy(() => import('./pages/HandoverPage'));
@@ -74,19 +75,18 @@ export const router = createBrowserRouter([
         element: lazyRoute(<KardexPage />),
       },
       {
-        // Analytics was folded into the head nurse dashboard's own
-        // Analytics section (see pages/DashboardPage.tsx +
-        // components/dashboard/AnalyticsSection.tsx) — this route stays so
-        // old bookmarks/links keep working, redirecting straight to that
-        // section instead of 404ing.
+        // The one Analytics destination — stats, charts and workload all
+        // live on this single page now (see pages/AnalyticsPage.tsx).
         path: 'analytics',
-        element: <Navigate to="/dashboard?section=analytics" replace />,
+        element: lazyRoute(<AnalyticsPage />),
       },
       {
-        // Same story for Workload Monitor — including notify_safety_alert's
-        // action_path on notifications saved before that change.
+        // Workload Monitor is no longer its own page — its content now
+        // lives on the Analytics page. This route stays so old bookmarks/
+        // links — including notify_safety_alert's action_path on
+        // notifications saved before that change — keep working.
         path: 'workload',
-        element: <Navigate to="/dashboard?section=workload" replace />,
+        element: <Navigate to="/analytics?section=workload" replace />,
       },
       {
         path: 'settings',

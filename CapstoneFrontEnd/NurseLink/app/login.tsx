@@ -335,6 +335,7 @@ export default function LoginPage() {
                   loading={isLoading}
                   disabled={isLoading}
                   style={styles.submit}
+                  fullWidth
                 >
                   {isLoading ? 'Signing In...' : 'Sign In'}
                 </Button>

@@ -15,6 +15,7 @@ import {
   BookOpen,
   Users,
   CalendarClock,
+  BarChart3,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -129,10 +130,9 @@ export default function DashboardLayout() {
     { name: 'Kardex', href: '/kardex', icon: BookOpen, show: isStaffNurse },
     { name: 'All Patients', href: '/all-patients', icon: Users, show: isSupervisor },
     { name: 'Duty Roster', href: '/duty-roster', icon: CalendarClock, show: isSupervisor },
-    // Analytics and Workload Monitor were folded into the dashboard itself
-    // (see pages/DashboardPage.tsx) — /analytics and /workload still exist
-    // as redirects for old links, just no longer as their own nav
-    // destinations.
+    // The one Analytics destination — stats, charts and workload all live on
+    // this single page now (see pages/AnalyticsPage.tsx); /workload redirects here.
+    { name: 'Analytics', href: '/analytics', icon: BarChart3, show: isSupervisor },
     { name: 'Settings', href: '/settings', icon: Settings, show: true },
   ].filter(item => item.show);
 
@@ -141,6 +141,7 @@ export default function DashboardLayout() {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Patients', href: '/all-patients', icon: Users },
     { name: 'Duty Roster', href: '/duty-roster', icon: CalendarClock },
+    { name: 'Analytics', href: '/analytics', icon: BarChart3 },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
 
@@ -366,6 +367,7 @@ export default function DashboardLayout() {
                 { text: 'text-blue-600' }, // Dashboard
                 { text: 'text-purple-600' }, // Patients
                 { text: 'text-teal-600' }, // Duty Roster
+                { text: 'text-blue-700' }, // Analytics
                 { text: 'text-gray-600' }, // Settings
               ];
               const colorScheme = colors[index] || colors[0];

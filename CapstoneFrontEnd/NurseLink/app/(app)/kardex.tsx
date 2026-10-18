@@ -901,6 +901,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
             variant="outline"
             style={styles.historyBtn}
             size="lg"
+            fullWidth
           >
             <View style={styles.btnInner}>
               <History size={20} color={Colors.purple600} />

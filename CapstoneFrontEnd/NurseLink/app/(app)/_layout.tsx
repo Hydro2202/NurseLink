@@ -30,6 +30,7 @@ import {
   Stethoscope,
   ShieldCheck,
   IdCard,
+  BarChart3,
   type LucideIcon,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
@@ -403,10 +404,9 @@ export default function AppLayout() {
     { name: 'Charting', href: '/(app)/charting', icon: FileText, show: isStaffNurse },
     { name: 'Kardex', href: '/(app)/kardex', icon: BookOpen, show: isStaffNurse },
     { name: 'All Patients', href: '/(app)/all-patients', icon: Users, show: isSupervisor },
-    // Analytics and Workload Monitor were folded into the dashboard itself
-    // (see dashboard.tsx's Workload/Analytics sections) — /analytics and
-    // /workload still exist as redirects for old links, just no longer as
-    // their own nav destinations.
+    // The one Analytics destination — stats, charts and workload all live on
+    // this single page now (see analytics.tsx); /workload redirects here.
+    { name: 'Analytics', href: '/(app)/analytics', icon: BarChart3, show: isSupervisor },
     { name: 'Settings', href: '/(app)/settings', icon: Settings, show: true },
   ].filter((item) => item.show);
 

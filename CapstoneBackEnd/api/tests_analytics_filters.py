@@ -54,6 +54,24 @@ class AnalyticsFilterTests(TestCase):
         default = self.client.get('/api/analytics/', {}).json()
         self.assertEqual(unfiltered, default)
 
+    def test_staff_nurse_cannot_read_analytics(self):
+        # Analytics is head-nurse-only — unlike /api/workload/, nothing on
+        # the staff side reads this endpoint, and the page it feeds
+        # (analytics.tsx) redirects a staff nurse away client-side too.
+        staff = make_nurse('ben@hospital.com', 'Ben', 'Diaz')
+        self.client.force_authenticate(staff)
+        response = self.client.get('/api/analytics/')
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_has_read_only_access(self):
+        admin = User.objects.create_user(
+            username='admin@hospital.com', email='admin@hospital.com',
+            password='pw-test-1234', is_staff=True,
+        )
+        self.client.force_authenticate(admin)
+        response = self.client.get('/api/analytics/')
+        self.assertEqual(response.status_code, 200)
+
     def test_invalid_start_date_is_a_400(self):
         response = self.client.get('/api/analytics/', {'start_date': 'nope'})
         self.assertEqual(response.status_code, 400)

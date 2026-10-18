@@ -57,6 +57,20 @@ class IsSupervisor(BasePermission):
         return True
 
 
+class IsSupervisorOrAdminReadOnly(BasePermission):
+    """
+    Head nurse only, plus read-only access for an admin (User.is_staff) on
+    top of that — same shape as IsApprovedNurseOrAdminReadOnly, but for
+    endpoints (Analytics) that are head-nurse-only rather than open to every
+    approved nurse. A staff nurse gets the same 403 IsSupervisor would give.
+    """
+
+    def has_permission(self, request, view):
+        if request.user and request.user.is_authenticated and request.user.is_staff:
+            return request.method in SAFE_METHODS
+        return IsSupervisor().has_permission(request, view)
+
+
 class IsApprovedNurse(BasePermission):
     """Any authenticated, admin-approved nurse (staff or head nurse)."""
 

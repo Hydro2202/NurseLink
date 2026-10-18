@@ -365,7 +365,7 @@ export default function SettingsPage() {
               </p>
             </div>
 
-            <Button onClick={handleSaveProfile} className="w-full">
+            <Button onClick={handleSaveProfile} className="w-full md:w-auto">
               <Save className="w-4 h-4 mr-2" />
               Save Profile
             </Button>
@@ -416,7 +416,7 @@ export default function SettingsPage() {
 
           <Button
             onClick={handleSaveAppearance}
-            className="w-full"
+            className="w-full md:w-auto"
             // Disabled until the account's real settings have arrived, so a
             // nurse cannot save defaults over what they already had.
             disabled={preferencesLoading || savingSection !== null}
@@ -504,7 +504,7 @@ export default function SettingsPage() {
 
           <Button
             onClick={handleSaveNotifications}
-            className="w-full"
+            className="w-full md:w-auto"
             // Disabled until the account's real settings have arrived, so a
             // nurse cannot save defaults over what they already had.
             disabled={preferencesLoading || savingSection !== null}
@@ -568,7 +568,7 @@ export default function SettingsPage() {
 
           <Button
             onClick={handleSavePreferences}
-            className="w-full"
+            className="w-full md:w-auto"
             // Disabled until the account's real settings have arrived, so a
             // nurse cannot save defaults over what they already had.
             disabled={preferencesLoading || savingSection !== null}
@@ -595,7 +595,7 @@ export default function SettingsPage() {
         <CardContent className="space-y-4">
           <Button
             variant="outline"
-            className="w-full"
+            className="w-full md:w-auto"
             onClick={() => setShowPasswordChange(true)}
           >
             <KeyRound className="w-4 h-4 mr-2" />
@@ -607,7 +607,7 @@ export default function SettingsPage() {
             <Button
               onClick={() => setShowLogoutDialog(true)}
               variant="destructive"
-              className="w-full"
+              className="w-full md:w-auto"
             >
               <LogOut className="w-4 h-4 mr-2" />
               Logout

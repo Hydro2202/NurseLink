@@ -191,7 +191,7 @@ export function NotificationPanel({ isOpen, onClose, onUnreadChange }: Notificat
         </div>
 
         <div className="p-4 border-t border-border bg-muted">
-          <Button variant="outline" className="w-full" onClick={handleMarkAllAsRead}>
+          <Button variant="outline" className="w-full md:w-auto" onClick={handleMarkAllAsRead}>
             Mark All as Read
           </Button>
         </div>

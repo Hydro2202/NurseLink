@@ -129,6 +129,7 @@ export function Step1PersonalInfo({ data, onChange, onNext }: Step1PersonalInfoP
         loading={checking}
         size="lg"
         style={styles.continueBtn}
+        fullWidth
       >
         Continue
       </Button>

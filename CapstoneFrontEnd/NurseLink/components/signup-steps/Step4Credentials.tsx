@@ -153,6 +153,7 @@ export function Step4Credentials({ data, onChange, onBack }: Step4CredentialsPro
           onPress={() => void logout().finally(() => router.replace('/login'))}
           size="lg"
           style={styles.continueBtnFull}
+          fullWidth
         >
           Go to Login
         </Button>

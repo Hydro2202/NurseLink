@@ -677,7 +677,7 @@ export function TaskVitalSignsBars({
                     <Button
                       type="button"
                       size="sm"
-                      className="mt-2 w-full bg-red-600 hover:bg-red-700 text-white"
+                      className="mt-2 w-full md:w-auto bg-red-600 hover:bg-red-700 text-white"
                       onClick={() => openVitalsForm(index)}
                     >
                       <HeartPulse className="w-3.5 h-3.5" />
@@ -694,7 +694,7 @@ export function TaskVitalSignsBars({
               type="button"
               variant="outline"
               size="sm"
-              className="w-full border-blue-200 text-blue-600 hover:text-blue-700"
+              className="w-full md:w-auto border-blue-200 text-blue-600 hover:text-blue-700"
               onClick={() => setManualSlotFloor((v) => v + 1)}
             >
               <Plus className="w-3.5 h-3.5" />

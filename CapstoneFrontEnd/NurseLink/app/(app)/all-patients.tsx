@@ -293,6 +293,53 @@ export default function AllPatientsPage() {
     })();
   }, [searchQuery, roomFilter, riskFilter, deptFilter, nurseFilter, statusFilter, dischargeDateFrom, dischargeDateTo, sortBy, sortDesc]);
 
+  // Risk has no place in the Discharged view (see the stats/filter/badge
+  // changes below) — clear a leftover risk filter so it can't silently hide
+  // discharged patients that don't match a risk picked while looking at a
+  // different tab.
+  useEffect(() => {
+    (() => {
+      if (statusFilter === 'discharged') setRiskFilter('all');
+    })();
+  }, [statusFilter]);
+
+  // Computed once per mount, not re-read live — "this week"/"this month" on
+  // the stat cards below don't need second-by-second precision, and
+  // calling Date.now() directly in a memo's body is an impure render call
+  // (react-hooks/purity); a useState initializer is the sanctioned
+  // run-once-and-cache escape hatch for exactly this.
+  const [nowMs] = useState(() => Date.now());
+
+  // The Discharged tab's own count — honours search + discharge date range
+  // (the filters relevant to browsing discharge history) but not
+  // department/nurse/room, so the subtitle can call out when one of those
+  // narrows the view further (see the "(showing X)" subtitle text below).
+  const dischargedMatchingDateAndSearch = useMemo(() => {
+    const q = searchQuery.toLowerCase();
+    return patients.filter((p) => {
+      if (p.status !== 'discharged') return false;
+      const matchesSearch =
+        !q || p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || p.room.toLowerCase().includes(q);
+      const dischargedDate = p.dischargedAt ? p.dischargedAt.slice(0, 10) : '';
+      const matchesFrom = !dischargeDateFrom || (dischargedDate && dischargedDate >= dischargeDateFrom);
+      const matchesTo = !dischargeDateTo || (dischargedDate && dischargedDate <= dischargeDateTo);
+      return matchesSearch && matchesFrom && matchesTo;
+    }).length;
+  }, [patients, searchQuery, dischargeDateFrom, dischargeDateTo]);
+
+  // Ground-truth discharge counts for the Discharged tab's stat cards —
+  // always computed over every patient regardless of the current filters,
+  // so these three numbers never mix in a non-discharged patient and never
+  // shrink just because a search/filter happens to be active.
+  const dischargeStats = useMemo(() => {
+    const weekAgo = nowMs - 7 * 86400000;
+    const monthAgo = nowMs - 30 * 86400000;
+    const discharged = patients.filter((p) => p.status === 'discharged');
+    const thisWeek = discharged.filter((p) => p.dischargedAt && new Date(p.dischargedAt).getTime() >= weekAgo).length;
+    const thisMonth = discharged.filter((p) => p.dischargedAt && new Date(p.dischargedAt).getTime() >= monthAgo).length;
+    return { total: discharged.length, thisWeek, thisMonth };
+  }, [patients, nowMs]);
+
   const totalPages = Math.max(1, Math.ceil(sortedPatients.length / PATIENTS_PER_PAGE));
   // Clamped rather than reset to 1 — covers the result set shrinking for a
   // reason other than the effect above (e.g. a patient discharged from
@@ -331,11 +378,19 @@ export default function AllPatientsPage() {
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>All Patients</Text>
-            <Text style={styles.subtitle}>
-              Head nurse view — {filteredPatients.length} of {patients.length} patients
-              {loading ? ' (loading...)' : ''}
-              {statusFilter === 'active' ? ' · discharged patients hidden, switch filter to view' : ''}
-            </Text>
+            {statusFilter === 'discharged' ? (
+              <Text style={styles.subtitle}>
+                {dischargedMatchingDateAndSearch} discharged patient{dischargedMatchingDateAndSearch === 1 ? '' : 's'}
+                {filteredPatients.length !== dischargedMatchingDateAndSearch ? ` (showing ${filteredPatients.length})` : ''}
+                {loading ? ' (loading...)' : ''}
+              </Text>
+            ) : (
+              <Text style={styles.subtitle}>
+                Head nurse view — {filteredPatients.length} of {patients.length} patients
+                {loading ? ' (loading...)' : ''}
+                {statusFilter === 'active' ? ' · discharged patients hidden, switch filter to view' : ''}
+              </Text>
+            )}
           </View>
           {isSupervisor ? (
             <Button
@@ -455,19 +510,21 @@ export default function AllPatientsPage() {
               { label: 'All Records', value: 'all' },
             ]}
           />
-          <Select
-            value={riskFilter}
-            onValueChange={setRiskFilter}
-            placeholder="All Risk Levels"
-            style={styles.filterSelect}
-            options={[
-              { label: 'All Risk Levels', value: 'all' },
-              { label: 'Critical Risk', value: 'critical' },
-              { label: 'High Risk', value: 'high' },
-              { label: 'Moderate Risk', value: 'medium' },
-              { label: 'Low Risk', value: 'low' },
-            ]}
-          />
+          {statusFilter !== 'discharged' ? (
+            <Select
+              value={riskFilter}
+              onValueChange={setRiskFilter}
+              placeholder="All Risk Levels"
+              style={styles.filterSelect}
+              options={[
+                { label: 'All Risk Levels', value: 'all' },
+                { label: 'Critical Risk', value: 'critical' },
+                { label: 'High Risk', value: 'high' },
+                { label: 'Moderate Risk', value: 'medium' },
+                { label: 'Low Risk', value: 'low' },
+              ]}
+            />
+          ) : null}
         </View>
 
         <View style={styles.sortRow}>
@@ -494,60 +551,86 @@ export default function AllPatientsPage() {
           </Pressable>
         </View>
 
-        <View style={styles.statsGrid}>
-          <Card style={styles.statCard}>
-            <CardContent style={styles.statContent}>
-              <Text style={styles.statLabel}>Total</Text>
-              <Text style={styles.statValue}>{patients.length}</Text>
-              <User size={18} color={Colors.blue600} />
-            </CardContent>
-          </Card>
-          <Card style={styles.statCard}>
-            <CardContent style={styles.statContent}>
-              <Text style={styles.statLabel}>Critical</Text>
-              <Text style={[styles.statValue, { color: Colors.red600 }]}>
-                {patients.filter((p) => p.riskLevel === 'critical').length}
-              </Text>
-              <AlertCircle size={18} color={Colors.red600} />
-            </CardContent>
-          </Card>
-          <Card style={styles.statCard}>
-            <CardContent style={styles.statContent}>
-              <Text style={styles.statLabel}>High Risk</Text>
-              <Text style={[styles.statValue, { color: Colors.orange600 }]}>
-                {patients.filter((p) => p.riskLevel === 'high').length}
-              </Text>
-              <AlertCircle size={18} color={Colors.orange600} />
-            </CardContent>
-          </Card>
-          <Card style={styles.statCard}>
-            <CardContent style={styles.statContent}>
-              <Text style={styles.statLabel}>Medium</Text>
-              <Text style={[styles.statValue, { color: Colors.warning }]}>
-                {patients.filter((p) => p.riskLevel === 'medium').length}
-              </Text>
-              <Activity size={18} color={Colors.warning} />
-            </CardContent>
-          </Card>
-          <Card style={styles.statCard}>
-            <CardContent style={styles.statContent}>
-              <Text style={styles.statLabel}>Low Risk</Text>
-              <Text style={[styles.statValue, { color: Colors.green600 }]}>
-                {patients.filter((p) => p.riskLevel === 'low').length}
-              </Text>
-              <Activity size={18} color={Colors.green600} />
-            </CardContent>
-          </Card>
-          <Card style={styles.statCard}>
-            <CardContent style={styles.statContent}>
-              <Text style={styles.statLabel}>Discharged</Text>
-              <Text style={[styles.statValue, { color: Colors.gray600 }]}>
-                {patients.filter((p) => p.status === 'discharged').length}
-              </Text>
-              <LogOut size={18} color={Colors.gray600} />
-            </CardContent>
-          </Card>
-        </View>
+        {statusFilter === 'discharged' ? (
+          <View style={styles.statsGrid}>
+            <Card style={styles.statCard}>
+              <CardContent style={styles.statContent}>
+                <Text style={styles.statLabel}>Total Discharged</Text>
+                <Text style={[styles.statValue, { color: Colors.gray600 }]}>{dischargeStats.total}</Text>
+                <LogOut size={18} color={Colors.gray600} />
+              </CardContent>
+            </Card>
+            <Card style={styles.statCard}>
+              <CardContent style={styles.statContent}>
+                <Text style={styles.statLabel}>Discharged This Week</Text>
+                <Text style={[styles.statValue, { color: Colors.blue600 }]}>{dischargeStats.thisWeek}</Text>
+                <Calendar size={18} color={Colors.blue600} />
+              </CardContent>
+            </Card>
+            <Card style={styles.statCard}>
+              <CardContent style={styles.statContent}>
+                <Text style={styles.statLabel}>Discharged This Month</Text>
+                <Text style={[styles.statValue, { color: Colors.teal600 }]}>{dischargeStats.thisMonth}</Text>
+                <Calendar size={18} color={Colors.teal600} />
+              </CardContent>
+            </Card>
+          </View>
+        ) : (
+          <View style={styles.statsGrid}>
+            <Card style={styles.statCard}>
+              <CardContent style={styles.statContent}>
+                <Text style={styles.statLabel}>Total</Text>
+                <Text style={styles.statValue}>{patients.length}</Text>
+                <User size={18} color={Colors.blue600} />
+              </CardContent>
+            </Card>
+            <Card style={styles.statCard}>
+              <CardContent style={styles.statContent}>
+                <Text style={styles.statLabel}>Critical</Text>
+                <Text style={[styles.statValue, { color: Colors.red600 }]}>
+                  {patients.filter((p) => p.riskLevel === 'critical').length}
+                </Text>
+                <AlertCircle size={18} color={Colors.red600} />
+              </CardContent>
+            </Card>
+            <Card style={styles.statCard}>
+              <CardContent style={styles.statContent}>
+                <Text style={styles.statLabel}>High Risk</Text>
+                <Text style={[styles.statValue, { color: Colors.orange600 }]}>
+                  {patients.filter((p) => p.riskLevel === 'high').length}
+                </Text>
+                <AlertCircle size={18} color={Colors.orange600} />
+              </CardContent>
+            </Card>
+            <Card style={styles.statCard}>
+              <CardContent style={styles.statContent}>
+                <Text style={styles.statLabel}>Medium</Text>
+                <Text style={[styles.statValue, { color: Colors.warning }]}>
+                  {patients.filter((p) => p.riskLevel === 'medium').length}
+                </Text>
+                <Activity size={18} color={Colors.warning} />
+              </CardContent>
+            </Card>
+            <Card style={styles.statCard}>
+              <CardContent style={styles.statContent}>
+                <Text style={styles.statLabel}>Low Risk</Text>
+                <Text style={[styles.statValue, { color: Colors.green600 }]}>
+                  {patients.filter((p) => p.riskLevel === 'low').length}
+                </Text>
+                <Activity size={18} color={Colors.green600} />
+              </CardContent>
+            </Card>
+            <Card style={styles.statCard}>
+              <CardContent style={styles.statContent}>
+                <Text style={styles.statLabel}>Discharged</Text>
+                <Text style={[styles.statValue, { color: Colors.gray600 }]}>
+                  {patients.filter((p) => p.status === 'discharged').length}
+                </Text>
+                <LogOut size={18} color={Colors.gray600} />
+              </CardContent>
+            </Card>
+          </View>
+        )}
 
         {loading ? (
           <View style={styles.center}>
@@ -581,7 +664,7 @@ export default function AllPatientsPage() {
                     </View>
                     <View style={styles.badgeRow}>
                       <Badge variant={statusConfig.variant}>{statusConfig.label}</Badge>
-                      <RiskBadge level={patient.riskLevel} size="sm" />
+                      {!isDischarged ? <RiskBadge level={patient.riskLevel} size="sm" /> : null}
                     </View>
                   </View>
                   <View style={styles.headerActions}>

@@ -238,7 +238,7 @@ export function Step3Verification({ data, onChange, onVerified, onBack }: Step3V
       />
 
       {phase === 'form' && (
-        <Button onPress={handleSendOtp} disabled={!canSend} size="lg" style={styles.continueBtnFull}>
+        <Button onPress={handleSendOtp} disabled={!canSend} size="lg" style={styles.continueBtnFull} fullWidth>
           Send OTP
         </Button>
       )}
@@ -263,6 +263,7 @@ export function Step3Verification({ data, onChange, onVerified, onBack }: Step3V
             loading={phase === 'verifying'}
             size="lg"
             style={styles.continueBtnFull}
+            fullWidth
           >
             Verify
           </Button>
