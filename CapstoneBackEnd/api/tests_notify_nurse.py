@@ -48,6 +48,11 @@ class NotifyNurseTests(TestCase):
         self.assertIn('Ramon Rivera', notification.message)
         self.assertIn('BP 155/77', notification.message)
         self.assertEqual(notification.sender, self.head_nurse)
+        # The recipient is the staff nurse, not the head nurse who raised
+        # the alert — must point at the nurse's own patient list, not the
+        # head-nurse-only dashboard Alerts section (see notify_safety_alert).
+        self.assertEqual(notification.action_path, '/my-patients')
+        self.assertEqual(notification.action_highlight_id, 'P-9001')
 
     def test_a_default_message_is_used_when_none_is_given(self):
         response = self.notify()

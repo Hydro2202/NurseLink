@@ -1259,12 +1259,14 @@ def notify_safety_alert(patient, actor, *, message):
         patient=patient,
         sender=actor,
         action_label='View Patient',
-        # The Workload Monitor page was folded into the dashboard's own
-        # Safety Alerts section — old notifications already saved with the
-        # '/workload' path still work via that route's redirect (see
-        # app/(app)/workload.tsx and web's routes.tsx), so only new
-        # notifications need the new path.
-        action_path='/dashboard?section=alerts',
+        # The recipient here is the patient's assigned nurse (a staff
+        # nurse), not the head nurse who raised the alert — '/dashboard?
+        # section=alerts' used to send every recipient to the HEAD nurse's
+        # own dashboard Alerts section, which doesn't exist on a staff
+        # nurse's dashboard (it just landed them on their own dashboard,
+        # doing nothing useful). Same destination as notify_patient_assigned:
+        # the nurse's own patient list, highlighted on this patient.
+        action_path='/my-patients',
         action_highlight_id=patient.patient_code,
     )
 
