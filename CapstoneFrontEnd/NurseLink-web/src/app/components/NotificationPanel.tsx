@@ -43,7 +43,12 @@ export function NotificationPanel({ isOpen, onClose, onUnreadChange }: Notificat
   const handleActionClick = (action: { label: string; path: string; highlightId?: string }) => {
     onClose();
     if (action.highlightId) {
-      navigate(action.path, { state: { highlightId: action.highlightId } });
+      // MyPatientsPage reads its own highlight state as `viewPatient` (same
+      // convention the handover "newly received patient" flow already uses
+      // to land there) rather than the generic `highlightId` other pages
+      // read — send both so this works regardless of which page the
+      // action path points to.
+      navigate(action.path, { state: { highlightId: action.highlightId, viewPatient: action.highlightId } });
     } else {
       navigate(action.path);
     }

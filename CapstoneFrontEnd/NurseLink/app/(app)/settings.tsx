@@ -36,7 +36,6 @@ import { Colors, Radius } from '../../constants/colors';
 import type { User as ProfileUser } from '../../types';
 import { changePasswordRequest, ApiError, type UserPreferences } from '../../services/api';
 import { playNotificationSound } from '../../utils/notificationSound';
-import { vibrateForNotification, isVibrationSupported } from '../../utils/notificationVibration';
 
 /** Which controls each Save button is responsible for. */
 const SECTIONS = {
@@ -45,9 +44,7 @@ const SECTIONS = {
     'taskNotifications',
     'handoverNotifications',
     'criticalAlerts',
-    'emailNotifications',
     'soundAlerts',
-    'vibrationAlerts',
   ],
   charting: ['autoChartingEnabled'],
 } as const satisfies Record<string, readonly (keyof UserPreferences)[]>;
@@ -111,13 +108,10 @@ export default function SettingsScreen() {
     taskNotifications,
     handoverNotifications,
     criticalAlerts,
-    emailNotifications,
     soundAlerts,
-    vibrationAlerts,
     autoChartingEnabled,
   } = preferences;
-
-  const vibrationSupported = useMemo(() => isVibrationSupported(), []);
+  const isStaffNurse = user?.role === 'staff_nurse';
 
   const saveSection = async (section: SectionName, successMessage: string) => {
     setSavingSection(section);
@@ -148,16 +142,14 @@ export default function SettingsScreen() {
   const handleSaveCharting = () => saveSection('charting', 'Charting preferences saved!');
 
   const handleTestNotification = () => {
-    // Exercises the exact same sound/vibration calls a real notification
-    // would, through the normal (non-critical) pattern — a quick way to
-    // confirm both actually work without waiting for a real event.
+    // Exercises the exact same sound call a real notification would,
+    // through the normal (non-critical) pattern — a quick way to confirm
+    // it actually works without waiting for a real event.
     if (soundAlerts) playNotificationSound(false);
-    if (vibrationAlerts) vibrateForNotification(false);
     toast.info('Test notification', {
-      description:
-        soundAlerts || vibrationAlerts
-          ? 'Played the sound and/or vibration your preferences have on.'
-          : 'Sound and Vibration are both off, so nothing played — turn one on to test it.',
+      description: soundAlerts
+        ? 'Played the sound your preferences have on.'
+        : 'Sound is off, so nothing played — turn it on to test it.',
     });
   };
 
@@ -385,37 +377,12 @@ export default function SettingsScreen() {
           />
           <ToggleRow
             styles={styles}
-            label="Email Notifications"
-            description="Send notifications to your email"
-            value={emailNotifications}
-            onValueChange={(value) => setLocal({ emailNotifications: value })}
-          />
-          <ToggleRow
-            styles={styles}
             label="Sound Alerts"
             description="Play sound for notifications"
             value={soundAlerts}
             onValueChange={(value) => setLocal({ soundAlerts: value })}
+            showSeparator={false}
           />
-          {vibrationSupported ? (
-            <ToggleRow
-              styles={styles}
-              label="Vibration"
-              description="Vibrate device for notifications"
-              value={vibrationAlerts}
-              onValueChange={(value) => setLocal({ vibrationAlerts: value })}
-              showSeparator={false}
-            />
-          ) : (
-            <View>
-              <View style={styles.toggleRow}>
-                <View style={styles.toggleText}>
-                  <Text style={styles.toggleLabelDisabled}>Vibration</Text>
-                  <Text style={styles.toggleDesc}>Not supported on this device</Text>
-                </View>
-              </View>
-            </View>
-          )}
 
           <Button
             variant="outline"
@@ -449,43 +416,47 @@ export default function SettingsScreen() {
         </CardContent>
       </Card>
 
-      {/* Charting Preferences */}
-      <Card>
-        <CardHeader>
-          <View style={styles.titleRow}>
-            <Sparkles size={20} color={c.blue600} />
-            <CardTitle>Charting</CardTitle>
-          </View>
-          <CardDescription>Choose how your nursing notes are documented</CardDescription>
-        </CardHeader>
-        <CardContent style={styles.gap4}>
-          <ToggleRow
-            styles={styles}
-            label="Auto Charting (AI-Assisted)"
-            description="Let AI structure your notes from what you type. Turn off to fill in Focus, Data, Action, and Response yourself."
-            value={autoChartingEnabled}
-            onValueChange={(value) => setLocal({ autoChartingEnabled: value })}
-            showSeparator={false}
-          />
-
-          <Button
-            onPress={handleSaveCharting}
-            disabled={preferencesLoading || savingSection !== null}
-            style={{ backgroundColor: c.blue600 }}
-          >
-            <View style={styles.btnInner}>
-              {savingSection === 'charting' ? (
-                <ActivityIndicator size="small" color={c.white} />
-              ) : (
-                <Save size={16} color={c.white} />
-              )}
-              <Text style={styles.btnTextWhite}>
-                {savingSection === 'charting' ? 'Saving...' : 'Save Charting'}
-              </Text>
+      {/* Charting Preferences — nurse-only; a head nurse doesn't chart, and
+          Auto-Charting is an AI-assist on the Charting screen admins never
+          see either. */}
+      {isStaffNurse ? (
+        <Card>
+          <CardHeader>
+            <View style={styles.titleRow}>
+              <Sparkles size={20} color={c.blue600} />
+              <CardTitle>Charting</CardTitle>
             </View>
-          </Button>
-        </CardContent>
-      </Card>
+            <CardDescription>Choose how your nursing notes are documented</CardDescription>
+          </CardHeader>
+          <CardContent style={styles.gap4}>
+            <ToggleRow
+              styles={styles}
+              label="Auto Charting (AI-Assisted)"
+              description="Let AI structure your notes from what you type. Turn off to fill in Focus, Data, Action, and Response yourself."
+              value={autoChartingEnabled}
+              onValueChange={(value) => setLocal({ autoChartingEnabled: value })}
+              showSeparator={false}
+            />
+
+            <Button
+              onPress={handleSaveCharting}
+              disabled={preferencesLoading || savingSection !== null}
+              style={{ backgroundColor: c.blue600 }}
+            >
+              <View style={styles.btnInner}>
+                {savingSection === 'charting' ? (
+                  <ActivityIndicator size="small" color={c.white} />
+                ) : (
+                  <Save size={16} color={c.white} />
+                )}
+                <Text style={styles.btnTextWhite}>
+                  {savingSection === 'charting' ? 'Saving...' : 'Save Charting'}
+                </Text>
+              </View>
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* Security & Privacy */}
       <Card>

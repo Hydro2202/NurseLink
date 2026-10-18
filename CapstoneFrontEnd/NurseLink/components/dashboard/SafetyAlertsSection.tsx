@@ -99,13 +99,11 @@ export function SafetyAlertsSection({ patients, tasks, onRespond, onNotifyNurse 
             <AlertTitle>{alert.title}</AlertTitle>
             <AlertDescription>{alert.description}</AlertDescription>
             <View style={styles.actions}>
-              <Button
-                size="sm"
-                variant={alert.variant === 'destructive' ? 'destructive' : 'default'}
-                onPress={() => onRespond(alert)}
-              >
-                {alert.variant === 'destructive' ? 'Respond Now' : 'View Task'}
-              </Button>
+              {alert.variant === 'destructive' ? (
+                <Button size="sm" variant="destructive" onPress={() => onRespond(alert)}>
+                  Respond Now
+                </Button>
+              ) : null}
               {alert.nurseName ? (
                 <Button size="sm" variant="outline" onPress={() => onNotifyNurse(alert)}>
                   Notify Nurse

@@ -100,6 +100,12 @@ export default function MyPatientsPage() {
     if (!id) return;
     (() => {
       setHighlightedId(id);
+      // A leftover search/room/risk filter from a previous visit could hide
+      // the exact patient this link was supposed to surface — clear them so
+      // "View Patient" from a notification always actually shows up.
+      setSearchQuery('');
+      setRoomFilter('all');
+      setRiskFilter('all');
     })();
     const timer = setTimeout(() => setHighlightedId(null), 3000);
     return () => clearTimeout(timer);

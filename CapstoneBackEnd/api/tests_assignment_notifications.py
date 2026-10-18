@@ -60,6 +60,7 @@ class PatientAssignmentNotificationTests(APITestCase):
         self.assertIn('201-A', note.message)
         self.assertIn('Ana Cruz', note.message)
         self.assertEqual(note.action_path, '/my-patients')
+        self.assertEqual(note.action_highlight_id, 'P900')
 
     def test_previous_nurse_is_notified_when_reassigned(self):
         self.assign(self.nurse_a)
@@ -139,7 +140,7 @@ class DutyAssignmentNotificationTests(APITestCase):
         self.assertIsNotNone(note)
         self.assertIn('Morning', note.message)
         self.assertIn('Medical Ward', note.message)
-        self.assertEqual(note.action_path, '/duty-roster')
+        self.assertEqual(note.action_path, '/my-duty')
 
     def test_changing_the_shift_notifies_again(self):
         created = self.client.post('/api/duty-assignments/', self._payload(), format='json')

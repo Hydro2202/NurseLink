@@ -79,36 +79,50 @@ export default function MyPatientsPage() {
     loadPatients();
   }, [user]);
 
-  // Auto-scroll and highlight patient when navigating from All Patients page
+  // The patient a notification (e.g. "newly assigned patient") or the
+  // handover flow sent the nurse here to see — same highlightId/viewPatient
+  // convention NotificationPanel sends for every other notification action.
+  const [targetPatientId] = useState<string | null>(() => {
+    const state = location.state as { viewPatient?: string; highlightId?: string } | null;
+    return state?.viewPatient || state?.highlightId || null;
+  });
+
   useEffect(() => {
-    const state = location.state as { viewPatient?: string };
-    if (state?.viewPatient) {
-      const targetPatientId = state.viewPatient;
-      
-      // Wait for DOM to be ready
-      setTimeout(() => {
-        const patientElement = patientRefs.current[targetPatientId];
-        if (patientElement) {
-          // Scroll to patient card with smooth behavior
-          patientElement.scrollIntoView({ 
-            behavior: 'smooth', 
-            block: 'center'
-          });
-          
-          // Add highlight effect
-          setHighlightedPatientId(targetPatientId);
-          
-          // Remove highlight after 3 seconds
-          setTimeout(() => {
-            setHighlightedPatientId(null);
-          }, 3000);
-        }
-      }, 100);
-      
-      // Clear the state to prevent re-triggering on re-render
-      window.history.replaceState({}, document.title);
-    }
+    // Clear the state immediately so a later re-render (or a browser back/
+    // forward) can't re-trigger this; targetPatientId above already
+    // captured it for this mount.
+    if (location.state) window.history.replaceState({}, document.title);
   }, [location]);
+
+  useEffect(() => {
+    if (!targetPatientId) return;
+    // A leftover search/room/risk filter from a previous visit could hide
+    // the exact patient this link was supposed to surface.
+    setSearchQuery('');
+    setRoomFilter('all');
+    setRiskFilter('all');
+  }, [targetPatientId]);
+
+  // Retries while the list is still loading (assignedPatients arrives
+  // asynchronously, and a one-shot timeout could fire before its row — and
+  // therefore its ref — exists yet), not just once at a fixed delay.
+  useEffect(() => {
+    if (!targetPatientId) return;
+    let attempts = 0;
+    const id = setInterval(() => {
+      attempts += 1;
+      const patientElement = patientRefs.current[targetPatientId];
+      if (patientElement) {
+        patientElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setHighlightedPatientId(targetPatientId);
+        setTimeout(() => setHighlightedPatientId(null), 3000);
+        clearInterval(id);
+      } else if (attempts > 20) {
+        clearInterval(id);
+      }
+    }, 150);
+    return () => clearInterval(id);
+  }, [targetPatientId, assignedPatients]);
 
   // Filter patients based on search and filters
   const filteredPatients = useMemo(() => {

@@ -335,6 +335,16 @@ export async function notifyPatientNurse(patientCode: string, message?: string):
   });
 }
 
+/** Head-nurse-only. The Safety Alerts panel's "Notify Nurse" button for a
+ * delayed/overdue task — rejected with a 400 (ApiError) if the task has no
+ * assigned_nurse account to notify. */
+export async function notifyTaskNurse(taskCode: string): Promise<{ detail: string }> {
+  return apiRequest<{ detail: string }>(`/tasks/${taskCode}/notify-nurse/`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
 export async function fetchTasks(options?: {
   mine?: boolean;
   assignedTo?: string;

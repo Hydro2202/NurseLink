@@ -40,7 +40,13 @@ export function NotificationToastCard({ notification, onDismiss }: NotificationT
     }
     onDismiss(notification.id);
     if (!notification.action) return;
-    navigate(notification.action.path, { state: { highlightId: notification.action.highlightId } });
+    // See NotificationPanel's handleActionClick for why both keys are sent.
+    navigate(notification.action.path, {
+      state: {
+        highlightId: notification.action.highlightId,
+        viewPatient: notification.action.highlightId,
+      },
+    });
   };
 
   return (

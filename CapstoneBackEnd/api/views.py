@@ -114,6 +114,7 @@ from .notifications import (
     notify_nurse_reassigned,
     notify_referral_head_nurse_fyi,
     notify_safety_alert,
+    notify_task_delay_flagged,
     notify_task_handover_accepted,
     notify_task_handover_rejected,
     notify_task_handover_verified,
@@ -3258,7 +3259,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'post', 'patch', 'put', 'head', 'options']
 
     def get_permissions(self):
-        if self.action == 'unassign':
+        if self.action in ('unassign', 'notify_nurse'):
             return [permissions.IsAuthenticated(), IsSupervisor()]
         return super().get_permissions()
 
@@ -3387,6 +3388,29 @@ class TaskViewSet(viewsets.ModelViewSet):
             task.status = 'pending'
         task.save(update_fields=['assigned_nurse', 'assigned_to', 'status', 'updated_at'])
         return Response(TaskSerializer(task, context={'request': request}).data)
+
+    @extend_schema(
+        request=None,
+        responses={200: inline_serializer(name='NotifyTaskNurse', fields={'detail': serializers.CharField()})},
+        summary="Notify a delayed task's assigned nurse",
+        description=(
+            "Head-nurse-only. The Safety Alerts panel's \"Notify Nurse\" button for a "
+            'delayed/overdue task. 400 if the task has no assigned_nurse account to notify '
+            '(a name-only legacy assignment has nobody to send this to).'
+        ),
+    )
+    @action(detail=True, methods=['post'], url_path='notify-nurse')
+    def notify_nurse(self, request, task_code=None):
+        task = self.get_object()
+        if task.assigned_nurse_id is None:
+            return Response(
+                {'detail': 'This task has no assigned nurse account to notify.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        notify_task_delay_flagged(task, request.user)
+        nurse_name = full_name(task.assigned_nurse)
+        return Response({'detail': f'{nurse_name} has been notified.'})
 
 
 @extend_schema_view(

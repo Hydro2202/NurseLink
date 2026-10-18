@@ -44,7 +44,12 @@ import {
   type UserPreferences,
 } from '../api/nurselink';
 
-/** Same defaults as mobile's PreferencesContext, used until the server answers. */
+/** Same defaults as mobile's PreferencesContext, used until the server
+ * answers. emailNotifications has no Settings control anymore (removed —
+ * email dispatch is still a real backend feature, see notifications.py),
+ * but the UserPreferences type still carries it since GET /preferences/
+ * still returns it; this placeholder is overwritten the moment the real
+ * fetch resolves and is never written back from this page. */
 const DEFAULT_PREFERENCES: UserPreferences = {
   fontSize: 'medium',
   compactView: false,
@@ -65,7 +70,6 @@ const SECTIONS = {
     'taskNotifications',
     'handoverNotifications',
     'criticalAlerts',
-    'emailNotifications',
     'soundAlerts',
   ],
   system: ['autoRefresh', 'showCharts', 'backgroundSync'],
@@ -117,7 +121,6 @@ export default function SettingsPage() {
     taskNotifications,
     handoverNotifications,
     criticalAlerts,
-    emailNotifications,
     soundAlerts,
     autoRefresh,
     showCharts,
@@ -473,18 +476,6 @@ export default function SettingsPage() {
               </p>
             </div>
             <Switch checked={criticalAlerts} onCheckedChange={(value) => setLocal({ criticalAlerts: value })} />
-          </div>
-
-          <Separator />
-
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label className="text-base">Email Notifications</Label>
-              <p className="text-sm text-gray-600">
-                Send notifications to your email
-              </p>
-            </div>
-            <Switch checked={emailNotifications} onCheckedChange={(value) => setLocal({ emailNotifications: value })} />
           </div>
 
           <Separator />

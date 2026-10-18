@@ -59,6 +59,7 @@ SAFETY_ALERT = 'safety_alert'
 PATIENT_ASSIGNED = 'patient_assigned'
 PATIENT_UNASSIGNED = 'patient_unassigned'
 DUTY_ASSIGNED = 'duty_assigned'
+TASK_DELAY_FLAGGED = 'task_delay_flagged'
 
 # How far ahead of a task's/referral's due moment its "almost due" popup
 # fires. Single constants so the lead time is defined once and the check
@@ -633,6 +634,12 @@ def notify_patient_assigned(assignment, actor=None, *, previous_nurse=None):
                 sender=actor,
                 action_label='Open My Patients',
                 action_path='/my-patients',
+                # my-patients.tsx already has a working highlight-on-arrival
+                # mechanism (see its viewPatient param) — this was the only
+                # piece missing to make "View Patient" on this notification
+                # actually locate the new patient instead of just opening
+                # the plain, unfiltered list.
+                action_highlight_id=patient.patient_code,
             )
         else:
             logger.info(
@@ -765,6 +772,49 @@ def notify_task_due(task):
         message=f'{task.title}{patient} is due now.',
         patient_label=task.patient_name or '',
         patient=task.patient,
+        action_label='Open tasks',
+        action_path='/tasks',
+        action_highlight_id=task.task_code,
+    )
+
+
+def notify_task_delay_flagged(task, actor):
+    """
+    Tell a task's assigned nurse a head nurse flagged it from the Safety
+    Alerts panel's "Notify Nurse" button — the task-alert counterpart of
+    notify_safety_alert's patient-alert "Notify Nurse" button.
+
+    Only reachable when the task has a real assigned_nurse account (see
+    TaskViewSet.notify_nurse) — a name-only legacy assignment (assigned_to
+    free text with no FK) has no account to notify, and guessing one by
+    name risks notifying the wrong nurse when two accounts share a display
+    name (a real, recurring issue in this app's own data). Same self-notify
+    guard every other notify_* wrapper uses.
+    """
+    recipient = task.assigned_nurse
+    if recipient is None:
+        return None
+    if actor is not None and actor.pk == recipient.pk:
+        return None
+
+    if not wants(recipient, 'task_notifications'):
+        logger.info(
+            '[Settings] %s has task_notifications off; delay flag for %s not notified.',
+            recipient.username, task.task_code,
+        )
+        return None
+
+    actor_name = full_name(actor) if actor else 'A head nurse'
+    patient = f' for {task.patient_name}' if task.patient_name else ''
+    return notify(
+        recipient,
+        notification_type='warning',
+        event=TASK_DELAY_FLAGGED,
+        title='Task flagged as delayed',
+        message=f'{actor_name} flagged "{task.title}"{patient} as delayed. Please follow up.',
+        patient_label=task.patient_name or '',
+        patient=task.patient,
+        sender=actor,
         action_label='Open tasks',
         action_path='/tasks',
         action_highlight_id=task.task_code,
@@ -1126,8 +1176,12 @@ def notify_duty_assigned(duty, actor=None):
         title='Duty assigned',
         message=f'{actor_name} put you on {duty.get_shift_display()} shift, {when}{where}.',
         sender=actor,
-        action_label='Open Duty Roster',
-        action_path='/duty-roster',
+        # /my-duty, not /duty-roster — the recipient here is always the nurse
+        # the shift belongs to, viewing their own schedule, never the head
+        # nurse's roster-management screen (which this used to send every
+        # recipient to, head nurse or not).
+        action_label='Open My Duty',
+        action_path='/my-duty',
     )
 
 

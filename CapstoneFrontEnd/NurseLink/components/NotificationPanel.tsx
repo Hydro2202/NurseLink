@@ -58,7 +58,14 @@ export function resolveNotificationAction(path: string, highlightId?: string | n
       params[key] = value;
     });
   }
-  if (highlightId) params.highlightId = highlightId;
+  if (highlightId) {
+    params.highlightId = highlightId;
+    // my-patients.tsx reads its own highlight param as `viewPatient` (same
+    // convention HandoverAlertModal already uses to land there) rather than
+    // the generic `highlightId` every other screen reads — send both so
+    // this works regardless of which screen the action path points to.
+    params.viewPatient = highlightId;
+  }
   return { href: mapAppPath(routePath), params };
 }
 

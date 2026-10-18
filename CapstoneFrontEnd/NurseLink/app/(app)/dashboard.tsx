@@ -39,6 +39,7 @@ import {
   fetchAssignments,
   createAssignment,
   notifyPatientNurse,
+  notifyTaskNurse,
   ApiError,
 } from '../../services/api';
 import { useLiveRefresh } from '../../contexts/LiveContext';
@@ -382,23 +383,22 @@ export default function DashboardPage() {
   };
 
   const handleNotifyNurseFromAlert = async (alert: SafetyAlert) => {
-    // Patient (critical vitals) alerts have a real assigned nurse resolved
-    // server-side from the patient record, so these actually reach the
-    // nurse's notification inbox. Task alerts' "nurse" is free-text
-    // (assignedTo) with no patient to anchor a lookup to, so those stay a
-    // local confirmation only, same as before.
-    if (alert.variant === 'destructive' && alert.patient) {
-      try {
+    // Patient (critical vitals) alerts resolve the nurse server-side from
+    // the patient record; task (delayed) alerts resolve it from the task's
+    // own assigned_nurse account — both go through a real backend
+    // notify-nurse endpoint now, so this only ever reports success when a
+    // notification was actually created.
+    try {
+      if (alert.variant === 'destructive' && alert.patient) {
         const result = await notifyPatientNurse(alert.patient.id, alert.description);
         toast.success(result.detail);
-      } catch (err) {
-        toast.error(err instanceof ApiError ? err.message : 'Could not notify the nurse.');
+      } else if (alert.task) {
+        const result = await notifyTaskNurse(alert.task.id);
+        toast.success(result.detail);
       }
-      return;
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not notify the nurse.');
     }
-    toast.success(`Notification sent to ${alert.nurseName}`, {
-      description: 'The nurse has been notified.',
-    });
   };
 
   const handleAssignSubmit = async (
