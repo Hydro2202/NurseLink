@@ -121,6 +121,10 @@ export default function TasksPage() {
   const { user } = useAuth();
   const scrollRef = useRef<ScrollView>(null);
   const taskYOffsets = useRef<Record<string, number>>({});
+  // Tracks which deep-link target (taskId/patientId pair) has already been
+  // handled, so a later unrelated `tasks` refresh can't re-trigger the
+  // highlight/scroll or the "not found" toast for the same link.
+  const handledDeepLinkRef = useRef<string | null>(null);
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
@@ -206,44 +210,58 @@ export default function TasksPage() {
           : undefined;
     const patientId = typeof params.patientId === 'string' ? params.patientId : undefined;
     const scrollToPatient = params.scrollToPatient === 'true' || params.scrollToPatient === '1';
+    if (!taskId && !(scrollToPatient && patientId)) return;
 
-    if (taskId) {
-      (() => {
-        setHighlightedTaskId(taskId);
-      })();
-      const t1 = setTimeout(() => {
-        const y = taskYOffsets.current[taskId];
-        if (y !== undefined && scrollRef.current) {
-          scrollRef.current.scrollTo({ y: Math.max(y - 80, 0), animated: true });
-        }
-      }, 150);
-      const t2 = setTimeout(() => setHighlightedTaskId(null), 3000);
-      return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
-      };
+    // Handle each distinct deep link exactly once — this effect also reruns
+    // on every unrelated live `tasks` refresh (see the deps list), which
+    // would otherwise re-show the "not found" toast or re-highlight the
+    // task repeatedly for as long as the nurse stays on this screen.
+    const linkKey = `${taskId ?? ''}|${scrollToPatient ? patientId ?? '' : ''}`;
+    if (loading || handledDeepLinkRef.current === linkKey) return;
+
+    // A leftover search query or status tab from an earlier visit to this
+    // same screen (expo-router keeps it mounted — see the comment above the
+    // useLiveRefresh call below) could hide the exact task this link was
+    // supposed to surface.
+    setSearchQuery('');
+    setSelectedTab('all');
+
+    const targetId = taskId || tasks.find((task) => task.patientId === patientId)?.id;
+    // get_queryset() already scopes the fetched list to tasks this nurse can
+    // see — if the id didn't resolve, or resolved but isn't in that list,
+    // there is nothing valid to open.
+    if (!targetId || !tasks.some((task) => task.id === targetId)) {
+      handledDeepLinkRef.current = linkKey;
+      toast.error('Task not found', {
+        description: 'This task is no longer available, or you do not have access to it.',
+      });
+      return;
     }
 
-    if (scrollToPatient && patientId) {
-      const patientTask = tasks.find((task) => task.patientId === patientId);
-      if (patientTask) {
-        (() => {
-          setHighlightedTaskId(patientTask.id);
-        })();
-        const t1 = setTimeout(() => {
-          const y = taskYOffsets.current[patientTask.id];
-          if (y !== undefined && scrollRef.current) {
-            scrollRef.current.scrollTo({ y: Math.max(y - 80, 0), animated: true });
-          }
-        }, 150);
-        const t2 = setTimeout(() => setHighlightedTaskId(null), 3000);
-        return () => {
-          clearTimeout(t1);
-          clearTimeout(t2);
-        };
+    handledDeepLinkRef.current = linkKey;
+    (() => {
+      setHighlightedTaskId(targetId);
+    })();
+    let attempts = 0;
+    const scrollTimer = setInterval(() => {
+      attempts += 1;
+      const y = taskYOffsets.current[targetId];
+      if (y !== undefined && scrollRef.current) {
+        scrollRef.current.scrollTo({ y: Math.max(y - 80, 0), animated: true });
+        clearInterval(scrollTimer);
+      } else if (attempts > 20) {
+        clearInterval(scrollTimer);
       }
-    }
-  }, [params.taskId, params.highlightId, params.patientId, params.scrollToPatient, tasks]);
+    }, 150);
+    const clearHighlight = setTimeout(() => setHighlightedTaskId(null), 3000);
+    return () => {
+      clearInterval(scrollTimer);
+      clearTimeout(clearHighlight);
+    };
+    // toast is stable (useToast's own context value); omitting it keeps this
+    // from re-running on every unrelated render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.taskId, params.highlightId, params.patientId, params.scrollToPatient, tasks, loading]);
 
   const handleAddTask = () => {
     setSelectedTask(null);

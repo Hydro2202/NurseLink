@@ -119,6 +119,14 @@ export default function MyPatientsPage() {
         clearInterval(id);
       } else if (attempts > 20) {
         clearInterval(id);
+        // fetchPatients({mine:true}) already scopes this to patients this
+        // nurse can see — if the fetch has settled and the patient still
+        // isn't in it, there is nothing valid to highlight.
+        if (!assignedPatients.some((p) => p.id === targetPatientId)) {
+          toast.error('Patient not found', {
+            description: 'This patient is no longer available, or you do not have access to them.',
+          });
+        }
       }
     }, 150);
     return () => clearInterval(id);

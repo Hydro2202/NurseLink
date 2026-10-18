@@ -61,7 +61,7 @@ export default function MyPatientsPage() {
   const { user } = useAuth();
   const router = useRouter();
   const toast = useToast();
-  const params = useLocalSearchParams<{ viewPatient?: string }>();
+  const params = useLocalSearchParams<{ viewPatient?: string; highlightId?: string }>();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -96,8 +96,26 @@ export default function MyPatientsPage() {
   }, [loadPatients]);
 
   useEffect(() => {
-    const id = typeof params.viewPatient === 'string' ? params.viewPatient : null;
+    const id =
+      typeof params.viewPatient === 'string'
+        ? params.viewPatient
+        : typeof params.highlightId === 'string'
+          ? params.highlightId
+          : null;
     if (!id) return;
+    if (loading) return; // wait for the real, permission-scoped list first
+
+    // fetchPatients({mine:true}) already scopes this to patients this nurse
+    // can see — if the patient isn't in that list, there is nothing valid
+    // to highlight (deleted, discharged-and-reassigned, or not actually
+    // theirs), so say so instead of silently doing nothing.
+    if (!patients.some((p) => p.id === id)) {
+      toast.error('Patient not found', {
+        description: 'This patient is no longer available, or you do not have access to them.',
+      });
+      return;
+    }
+
     (() => {
       setHighlightedId(id);
       // A leftover search/room/risk filter from a previous visit could hide
@@ -109,7 +127,8 @@ export default function MyPatientsPage() {
     })();
     const timer = setTimeout(() => setHighlightedId(null), 3000);
     return () => clearTimeout(timer);
-  }, [params.viewPatient]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.viewPatient, params.highlightId, loading]);
 
   const roomPrefixes = useMemo(() => {
     const prefixes = new Set(patients.map((p) => p.room.split('-')[0]));

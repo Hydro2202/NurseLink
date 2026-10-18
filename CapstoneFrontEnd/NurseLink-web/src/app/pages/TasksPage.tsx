@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
 import { useLiveRefresh } from '../contexts/LiveContext';
@@ -187,57 +187,78 @@ export default function TasksPage() {
     };
   }, [user?.role]);
 
-  // Handle navigation from dashboard - scroll to and highlight specific task
+  // The task this screen should land on and highlight — from the dashboard's
+  // "Upcoming Tasks" arrow / TaskDueAlertModal (state.taskId), or from a
+  // notification (NotificationPanel/NotificationToastCard send
+  // state.highlightId, same convention as mobile's tasks.tsx). Captured once
+  // via a lazy initializer, not re-read from location.state on every render,
+  // so clearing the browser history entry below can't make a slower-loading
+  // task list lose track of what it was supposed to scroll to.
+  const [targetTaskId] = useState<string | null>(() => {
+    const state = location.state as { taskId?: string; highlightId?: string } | null;
+    return state?.taskId || state?.highlightId || null;
+  });
+  const [targetPatientTask] = useState<{ patientId: string; scrollToPatient: boolean } | null>(() => {
+    const state = location.state as { patientId?: string; scrollToPatient?: boolean } | null;
+    return state?.scrollToPatient && state?.patientId
+      ? { patientId: state.patientId, scrollToPatient: true }
+      : null;
+  });
+
   useEffect(() => {
-    const state = location.state as { taskId?: string; patientId?: string; scrollToPatient?: boolean } | null;
-    
-    // Handle scroll to specific task
-    if (state?.taskId) {
-      setHighlightedTaskId(state.taskId);
-      
-      // Scroll to task after render
-      setTimeout(() => {
-        const element = document.getElementById(`task-${state.taskId}`);
-        if (element) {
-          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      }, 100);
-
-      // Remove highlight after 3 seconds
-      setTimeout(() => {
-        setHighlightedTaskId(null);
-      }, 3000);
-
-      // Clear the state to prevent re-highlighting on re-renders
-      window.history.replaceState({}, document.title);
+    // Clear the state right away so a browser back/forward can't re-trigger
+    // this; the two captures above already have what they need for this mount.
+    if (location.state) window.history.replaceState({}, document.title);
+    // A leftover search query or status tab from an earlier visit to this
+    // same page (React Router doesn't remount TasksPage just because a
+    // notification navigated here again) could hide the exact task this
+    // link was supposed to surface.
+    if (targetTaskId || targetPatientTask) {
+      setSearchQuery('');
+      setSelectedTab('all');
     }
-    
-    // Handle scroll to patient's first task
-    if (state?.scrollToPatient && state?.patientId) {
-      // Find the first task for this patient
-      const patientTask = tasks.find(task => task.patientId === state.patientId);
-      
-      if (patientTask) {
-        setHighlightedTaskId(patientTask.id);
-        
-        // Scroll to task after render
-        setTimeout(() => {
-          const element = document.getElementById(`task-${patientTask.id}`);
-          if (element) {
-            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }
-        }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-        // Remove highlight after 3 seconds
-        setTimeout(() => {
-          setHighlightedTaskId(null);
-        }, 3000);
+  // Handled exactly once per mount — without this, every later unrelated
+  // live `tasks` refresh would re-run this effect (it depends on `tasks`)
+  // and re-trigger the highlight/scroll, or re-show the "not found" toast,
+  // for as long as the nurse stays on this page.
+  const deepLinkHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (deepLinkHandledRef.current) return;
+    if (!targetTaskId && !targetPatientTask) return;
+    if (loading) return; // wait for the real, permission-scoped list first
+
+    const id = targetTaskId || tasks.find((t) => t.patientId === targetPatientTask?.patientId)?.id;
+    // fetchTasks() already scopes to tasks this nurse can see — if the id
+    // didn't resolve, or resolved but isn't in that list, there is nothing
+    // valid to open.
+    if (!id || !tasks.some((t) => t.id === id)) {
+      deepLinkHandledRef.current = true;
+      toast.error('Task not found', {
+        description: 'This task is no longer available, or you do not have access to it.',
+      });
+      return;
+    }
+
+    deepLinkHandledRef.current = true;
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts += 1;
+      const element = document.getElementById(`task-${id}`);
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setHighlightedTaskId(id);
+        setTimeout(() => setHighlightedTaskId(null), 3000);
+        clearInterval(timer);
+      } else if (attempts > 20) {
+        clearInterval(timer);
       }
-
-      // Clear the state to prevent re-highlighting on re-renders
-      window.history.replaceState({}, document.title);
-    }
-  }, [location.state, tasks]);
+    }, 150);
+    return () => clearInterval(timer);
+  }, [targetTaskId, targetPatientTask, tasks, loading]);
 
   const handleAddTask = () => {
     setSelectedTask(null);
