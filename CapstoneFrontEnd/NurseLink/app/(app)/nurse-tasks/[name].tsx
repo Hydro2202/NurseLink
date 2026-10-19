@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -39,6 +39,7 @@ import { TaskModal } from '../../../components/TaskModal';
 import { DeleteConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
+import { Pagination, usePagination } from '../../../components/Pagination';
 
 type SortBy = 'newest' | 'oldest' | 'priority' | 'status';
 
@@ -238,6 +239,11 @@ export default function NurseTasksPage() {
     { id: 'completed', label: 'Done', count: counts.completed, color: Colors.green700 },
   ];
 
+
+  // 10 per page; Next/Prev jumps back to the top.
+  const scrollRef = useRef<ScrollView>(null);
+  const paged = usePagination(filteredTasks, { scrollRef, resetKey: `${searchQuery}|${selectedTab}` });
+
   if (loading) {
     return (
       <View style={[styles.root, { alignItems: 'center', justifyContent: 'center' }]}>
@@ -249,6 +255,7 @@ export default function NurseTasksPage() {
   return (
     <View style={styles.root}>
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
@@ -345,7 +352,7 @@ export default function NurseTasksPage() {
               </CardContent>
             </Card>
           ) : (
-            filteredTasks.map((task) => (
+            paged.pageItems.map((task) => (
               <Card
                 key={task.id}
                 style={{
@@ -465,6 +472,12 @@ export default function NurseTasksPage() {
               </Card>
             ))
           )}
+          <Pagination
+            page={paged.page}
+            totalPages={paged.totalPages}
+            onPageChange={paged.setPage}
+            total={paged.total}
+          />
         </View>
       </ScrollView>
 

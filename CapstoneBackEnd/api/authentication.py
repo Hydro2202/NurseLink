@@ -9,10 +9,33 @@ from .access import account_block_code, account_blocked_exception
 from .models import AuthSession
 
 
+# Writing last_used on every request would add a DB write per API call; once
+# a minute is plenty for an idle timeout measured in hours.
+LAST_USED_WRITE_INTERVAL_SECONDS = 60
+
+
 def session_is_expired(session: AuthSession) -> bool:
-    """Shared by the REST auth class below and the WebSocket middleware."""
-    age = (timezone.now() - session.created).total_seconds()
-    return age > settings.TOKEN_TTL_SECONDS
+    """
+    Shared by the REST auth class below and the WebSocket middleware.
+
+    Expired after TOKEN_TTL_SECONDS of inactivity (counted from the last
+    authenticated request, or login if never used), or once it is older than
+    TOKEN_MAX_AGE_SECONDS regardless of use.
+    """
+    now = timezone.now()
+    last_activity = session.last_used or session.created
+    if (now - last_activity).total_seconds() > settings.TOKEN_TTL_SECONDS:
+        return True
+    return (now - session.created).total_seconds() > settings.TOKEN_MAX_AGE_SECONDS
+
+
+def touch_session(session: AuthSession) -> None:
+    """Record activity on a session (throttled to one write a minute)."""
+    now = timezone.now()
+    if session.last_used and (now - session.last_used).total_seconds() < LAST_USED_WRITE_INTERVAL_SECONDS:
+        return
+    AuthSession.objects.filter(pk=session.pk).update(last_used=now)
+    session.last_used = now
 
 
 class BearerTokenAuthentication(TokenAuthentication):
@@ -84,6 +107,7 @@ class BearerTokenAuthentication(TokenAuthentication):
         code = account_block_code(user)
         if code:
             raise account_blocked_exception(code)
+        touch_session(session)
         return user, session
 
     def authenticate_header(self, request):

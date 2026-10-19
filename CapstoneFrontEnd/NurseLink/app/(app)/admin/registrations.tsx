@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Search, X, Trash2, Sparkles } from 'lucide-react-native';
@@ -15,6 +15,7 @@ import { Tabs, type TabItem } from '../../../components/Tabs';
 import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
+import { Pagination, usePagination } from '../../../components/Pagination';
 
 // Matches the backend's clear-abandoned filter exactly (RegistrationSessionViewSet.clear_abandoned)
 // — used here only to show a live count before the admin commits to it.
@@ -96,6 +97,10 @@ export default function AdminRegistrationsPage() {
     });
   }, [sessions, search, verifiedFilter]);
 
+  // 10 per page; Next/Prev jumps back to the top of the list.
+  const scrollRef = useRef<ScrollView>(null);
+  const paged = usePagination(filtered, { scrollRef, resetKey: `${search}|${verifiedFilter}` });
+
   const abandonedCount = useMemo(() => sessions.filter(isAbandoned).length, [sessions]);
 
   const handleDelete = async () => {
@@ -138,7 +143,12 @@ export default function AdminRegistrationsPage() {
 
   return (
     <View style={styles.root}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
         <Text style={styles.title}>Registrations</Text>
         <Text style={styles.subtitle}>
           Every sign-up and the details the applicant entered — the basis for each Accounts decision.
@@ -171,7 +181,7 @@ export default function AdminRegistrationsPage() {
           <Text style={styles.empty}>No registration sessions match.</Text>
         ) : (
           <View style={styles.list}>
-            {filtered.map((session) => (
+            {paged.pageItems.map((session) => (
               <Pressable key={session.id} onPress={() => setSelected(session)}>
                 <View style={[styles.row, Shadows.sm]}>
                   <View style={{ flex: 1 }}>
@@ -197,6 +207,12 @@ export default function AdminRegistrationsPage() {
             ))}
           </View>
         )}
+        <Pagination
+          page={paged.page}
+          totalPages={paged.totalPages}
+          onPageChange={paged.setPage}
+          total={paged.total}
+        />
       </ScrollView>
 
       <Modal visible={!!selected} transparent animationType="fade" onRequestClose={() => setSelected(null)}>

@@ -52,6 +52,7 @@ from .notifications import (
     notify_task_updated,
     resolve_nurse,
 )
+from .duty_status import local_today
 from .names import full_name, name_variants
 from .presence import presence_fields
 from .utils import next_code
@@ -1832,6 +1833,13 @@ class TaskSerializer(serializers.ModelSerializer):
                 errors['dueTime'] = 'Due time is required.'
             if errors:
                 raise serializers.ValidationError(errors)
+        # A task can't be due in the past. Checked on create and whenever the
+        # due date is changed; an existing task's own (now past) date can be
+        # left as it is when editing other fields.
+        due_date = attrs.get('due_date')
+        changed = self.instance is None or due_date != getattr(self.instance, 'due_date', None)
+        if due_date and changed and due_date < local_today():
+            raise serializers.ValidationError({'dueDate': 'Due date cannot be in the past.'})
         return attrs
 
     def validate_checklist(self, value):
@@ -3111,12 +3119,27 @@ class VitalSignsSerializer(serializers.ModelSerializer):
             patient.oxygen_saturation = instance.oxygen_saturation
         if instance.respiratory_rate is not None:
             patient.respiratory_rate = instance.respiratory_rate
-        patient.save(
-            update_fields=[
-                'heart_rate', 'blood_pressure', 'temperature',
-                'oxygen_saturation', 'respiratory_rate', 'updated_at',
-            ]
+        update_fields = [
+            'heart_rate', 'blood_pressure', 'temperature',
+            'oxygen_saturation', 'respiratory_rate', 'updated_at',
+        ]
+        # Risk used to be assessed only when a Kardex was saved, so vitals
+        # recorded afterwards (task vitals, quick entry) never flagged a
+        # deteriorating patient as high/critical. Re-assess from the current
+        # snapshot (0/'' = never charted, so not passed). Only ever raises the
+        # level: a nurse's deliberate higher rating (e.g. fall risk) is not
+        # silently lowered by one normal reading -- lowering stays manual.
+        assessed = assess_risk_level(
+            temperature=patient.temperature or None,
+            pulse_rate=patient.heart_rate or None,
+            respiratory_rate=patient.respiratory_rate or None,
+            blood_pressure=patient.blood_pressure or None,
+            oxygen_saturation=patient.oxygen_saturation or None,
         )
+        if RISK_ORDER.get(assessed, 0) > RISK_ORDER.get(patient.risk_level, 0):
+            patient.risk_level = assessed
+            update_fields.append('risk_level')
+        patient.save(update_fields=update_fields)
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -3667,6 +3690,9 @@ def validate_blood_pressure_format(value):
     if systolic <= diastolic:
         raise serializers.ValidationError('Systolic must be higher than diastolic.')
     return value
+
+
+RISK_ORDER = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
 
 
 def assess_risk_level(*, temperature=None, pulse_rate=None, respiratory_rate=None,
@@ -4289,7 +4315,9 @@ class KardexRecordSerializer(serializers.ModelSerializer):
         attending = (validated_data.get('attending_physician') or '').strip()
 
         admission_raw = (validated_data.get('admission_date') or '').strip()
-        admission_date = timezone.now().date()
+        # The hospital's calendar day (DUTY_LOCAL_TIMEZONE), not UTC's -- the
+        # two differ for 8 hours a day in Manila.
+        admission_date = local_today()
         if admission_raw:
             for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y'):
                 try:
@@ -4297,6 +4325,18 @@ class KardexRecordSerializer(serializers.ModelSerializer):
                     break
                 except ValueError:
                     continue
+
+        # A new admission can't be dated in the past. Re-saving an existing
+        # patient's Kardex may keep their original admission date unchanged.
+        if admission_date < local_today():
+            existing = (
+                Patient.objects.filter(patient_code=patient_id).only('admission_date').first()
+                if patient_id else None
+            )
+            if existing is None or existing.admission_date != admission_date:
+                raise serializers.ValidationError(
+                    {'admissionDate': 'Admission date cannot be in the past.'}
+                )
 
         def _num(value, cast=int, default=0):
             try:

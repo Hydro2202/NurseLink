@@ -456,7 +456,8 @@ export function PatientKardexModal({
                   required
                   value={form.admissionDate}
                   onChange={(v) => setField('admissionDate', v)}
-                  maxDate={todayIso()}
+                  minDate={todayIso()}
+                  helperText="Today or later"
                 />
               </View>
               <View style={[styles.field, styles.colThird]}>

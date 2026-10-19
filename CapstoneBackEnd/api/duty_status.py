@@ -6,6 +6,8 @@ morning-shift nurse even with nothing on the roster. Screens that show a
 nurse's shift (the Assign Nurse picker, the Team tab, the nurse's profile) now
 ask this module instead: a shift is shown only when the nurse has a real duty.
 """
+from datetime import timedelta
+
 from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
@@ -84,3 +86,27 @@ def today_overtime_hours(nurse_ids):
             hours = duty.overtime_hours
         totals[duty.nurse_id] = round(totals.get(duty.nurse_id, 0) + hours, 2)
     return totals
+
+
+def nurses_on_duty_now(department_id=None):
+    """
+    User ids of everyone on shift right now: clocked in and not out, or inside
+    the scheduled hours of a duty that isn't cancelled, completed or clocked
+    out. Optionally limited to one department.
+    """
+    local_now = timezone.now().astimezone(ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
+    today = local_now.date()
+    duties = (
+        DutyAssignment.objects.filter(duty_date__in=(today, today - timedelta(days=1)))
+        .exclude(status__in=['cancelled', 'completed'])
+        .filter(actual_end_time__isnull=True)
+    )
+    if department_id is not None:
+        duties = duties.filter(department_id=department_id)
+    on_duty = set()
+    for duty in duties:
+        if duty.actual_start_time is not None or (
+            duty.scheduled_start_datetime() <= local_now <= duty.scheduled_end_datetime()
+        ):
+            on_duty.add(duty.nurse_id)
+    return on_duty

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator, Modal, Pressable } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { Search, X, Pencil, Trash2 } from 'lucide-react-native';
@@ -25,6 +25,7 @@ import { Button } from '../../../components/Button';
 import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
+import { Pagination, usePagination } from '../../../components/Pagination';
 
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'info' | 'outline';
 
@@ -692,6 +693,10 @@ export default function AdminGenericSectionPage() {
     return result.filter((r) => r.search.toLowerCase().includes(q));
   }, [rows, search, activeFilters, filterValues]);
 
+  // 10 per page; Next/Prev jumps back to the top of the list.
+  const scrollRef = useRef<ScrollView>(null);
+  const paged = usePagination(filtered, { scrollRef, resetKey: `${section}|${search}|${JSON.stringify(filterValues)}` });
+
   const loadOptions = async () => {
     if (ctx.departments.length || ctx.nurseIds.length) return;
     try {
@@ -766,7 +771,12 @@ export default function AdminGenericSectionPage() {
 
   return (
     <View style={styles.root}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
         <Text style={styles.title}>{config.title}</Text>
         <Text style={styles.subtitle}>{config.description}</Text>
 
@@ -795,7 +805,7 @@ export default function AdminGenericSectionPage() {
           <Text style={styles.empty}>Nothing here yet.</Text>
         ) : (
           <View style={styles.list}>
-            {filtered.map((row) => (
+            {paged.pageItems.map((row) => (
               <Pressable
                 key={row.key}
                 onPress={() => config.detailFields && setSelected(row)}
@@ -836,6 +846,12 @@ export default function AdminGenericSectionPage() {
             ))}
           </View>
         )}
+        <Pagination
+          page={paged.page}
+          totalPages={paged.totalPages}
+          onPageChange={paged.setPage}
+          total={paged.total}
+        />
       </ScrollView>
 
       <Modal visible={!!selected} transparent animationType="fade" onRequestClose={() => setSelected(null)}>

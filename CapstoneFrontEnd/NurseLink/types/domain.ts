@@ -847,6 +847,11 @@ export interface AdminFaceVerificationAttempt {
 }
 
 export interface AnalyticsData {
+  /** Admissions vs discharges per day over the selected window. */
+  patientFlow?: { date: string; label: string; admissions: number; discharges: number }[];
+  /** Current patients by status (admitted / observation / discharged). */
+  patientStatus?: { status: string; label: string; value: number }[];
+  avgLengthOfStayDays?: number | null;
   taskCompletion: { value: number; label: string; frontColor?: string }[];
   workloadTrend: { value: number; label: string }[];
   avgTasks: { value: number }[];

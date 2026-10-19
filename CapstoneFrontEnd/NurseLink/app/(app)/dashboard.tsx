@@ -39,6 +39,7 @@ import {
   fetchAssignments,
   createAssignment,
   notifyPatientNurse,
+  sendEmergencyAlert,
   notifyTaskNurse,
   ApiError,
 } from '../../services/api';
@@ -51,7 +52,6 @@ import { Progress } from '../../components/Progress';
 import { Button } from '../../components/Button';
 import { AssignPatientModal, type AssignPatientPrefill } from '../../components/AssignPatientModal';
 import { SafetyAlertsSection, type SafetyAlert } from '../../components/dashboard/SafetyAlertsSection';
-import { SectionNav, type DashboardSection } from '../../components/dashboard/SectionNav';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 
 function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
@@ -71,11 +71,6 @@ function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
     updatedAt: new Date(record.updatedAt),
   };
 }
-
-const DASHBOARD_SECTIONS: DashboardSection[] = [
-  { key: 'alerts', label: 'Alerts' },
-  { key: 'overview', label: 'Overview' },
-];
 
 // Same local-calendar-day helpers as my-duty.tsx — never toISOString(),
 // which converts to UTC and can shift the day.
@@ -179,7 +174,6 @@ export default function DashboardPage() {
   const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [assignPrefill, setAssignPrefill] = useState<AssignPatientPrefill | null>(null);
-  const [activeSection, setActiveSection] = useState<string>('alerts');
   const sectionRefs = useRef<Record<string, View | null>>({});
   const scrollRef = useRef<ScrollView>(null);
 
@@ -248,8 +242,9 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, [isStaffNurse]);
 
+  // Deep links (?section=...) from notifications still jump to a section;
+  // the on-page tab bar was removed.
   const scrollToSection = useCallback((key: string) => {
-    setActiveSection(key);
     const node = sectionRefs.current[key];
     const scrollNode = findNodeHandle(scrollRef.current);
     if (!node || scrollNode === null) return;
@@ -366,6 +361,15 @@ export default function DashboardPage() {
   const handleRespondToAlert = (alert: SafetyAlert) => {
     if (alert.variant === 'destructive' && alert.patient) {
       const p = alert.patient;
+      // Alert the responders right away (popup + sound on their devices),
+      // then open the assign form as before.
+      sendEmergencyAlert(p.id, alert.description)
+        .then((result) => toast.success('Emergency alert sent', { description: result.detail }))
+        .catch((error) =>
+          toast.error('Could not send the emergency alert', {
+            description: error instanceof ApiError ? error.message : 'Please try again.',
+          })
+        );
       setAssignPrefill({
         patientId: p.id,
         patientName: p.name,
@@ -549,28 +553,28 @@ export default function DashboardPage() {
             <Text style={styles.sectionSub}>Common tasks and shortcuts</Text>
             <View style={styles.quickGrid}>
               <Pressable
-                style={[styles.quickBtn, { backgroundColor: Colors.green600 }]}
+                style={styles.quickBtn}
                 onPress={() => router.push('/(app)/tasks' as any)}
               >
                 <ClipboardList size={20} color={Colors.white} />
                 <Text style={styles.quickBtnText}>Tasks</Text>
               </Pressable>
               <Pressable
-                style={[styles.quickBtn, { backgroundColor: Colors.purple600 }]}
+                style={styles.quickBtn}
                 onPress={() => router.push('/(app)/handover' as any)}
               >
                 <FileText size={20} color={Colors.white} />
                 <Text style={styles.quickBtnText}>Referral</Text>
               </Pressable>
               <Pressable
-                style={[styles.quickBtn, { backgroundColor: Colors.orange600 }]}
+                style={styles.quickBtn}
                 onPress={() => router.push('/(app)/charting' as any)}
               >
                 <Activity size={20} color={Colors.white} />
                 <Text style={styles.quickBtnText}>Charting</Text>
               </Pressable>
               <Pressable
-                style={[styles.quickBtn, { backgroundColor: Colors.teal600 }]}
+                style={styles.quickBtn}
                 onPress={() => router.push('/(app)/kardex' as any)}
               >
                 <ClipboardList size={20} color={Colors.white} />
@@ -793,7 +797,6 @@ export default function DashboardPage() {
   // and nurse workload all live there now — see analytics.tsx).
   return (
     <View style={styles.hnRoot}>
-      <SectionNav sections={DASHBOARD_SECTIONS} activeKey={activeSection} onSelect={scrollToSection} />
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
@@ -1129,6 +1132,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
+    // One brand color for every quick action (was green/purple/orange/teal).
+    backgroundColor: Colors.blue600,
     ...Shadows.sm,
   },
   quickBtnText: {

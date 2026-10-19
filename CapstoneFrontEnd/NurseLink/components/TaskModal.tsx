@@ -317,6 +317,8 @@ export function TaskModal({
                   required
                   value={formData.dueDate}
                   onChange={(dueDate) => setFormData({ ...formData, dueDate })}
+                  minDate={todayIso()}
+                  helperText="Today or later"
                   error={errors.dueDate}
                 />
                 <TimePicker
