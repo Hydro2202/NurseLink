@@ -559,17 +559,17 @@ export default function DashboardPage() {
                 },
                 {
                   key: 'referral', label: 'Referral', description: 'Send or review SBAR referrals',
-                  icon: FileText, tint: Colors.indigo50, accent: Colors.indigo600,
+                  icon: FileText, tint: Colors.gray100, accent: Colors.gray600,
                   onPress: () => router.push('/(app)/handover' as any),
                 },
                 {
                   key: 'charting', label: 'Charting', description: 'Write a nursing note',
-                  icon: Activity, tint: Colors.teal50, accent: Colors.teal600,
+                  icon: Activity, tint: Colors.green50, accent: Colors.green600,
                   onPress: () => router.push('/(app)/charting' as any),
                 },
                 {
                   key: 'kardex', label: 'Kardex', description: 'Admit or update a patient',
-                  icon: BookOpen, tint: Colors.sky50, accent: Colors.sky600,
+                  icon: BookOpen, tint: Colors.yellow50, accent: Colors.yellow700,
                   onPress: () => router.push('/(app)/kardex' as any),
                 },
               ]}
