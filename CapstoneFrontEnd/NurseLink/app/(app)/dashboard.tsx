@@ -5,7 +5,6 @@ import {
   ScrollView,
   StyleSheet,
   useWindowDimensions,
-  Pressable,
   findNodeHandle,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -26,6 +25,7 @@ import {
   BarChart3,
   TrendingUp,
   ArrowRight,
+  BookOpen,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -47,12 +47,13 @@ import { useLiveRefresh } from '../../contexts/LiveContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { RiskBadge } from '../../components/RiskBadge';
-import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
 import { Progress } from '../../components/Progress';
 import { Button } from '../../components/Button';
 import { AssignPatientModal, type AssignPatientPrefill } from '../../components/AssignPatientModal';
 import { SafetyAlertsSection, type SafetyAlert } from '../../components/dashboard/SafetyAlertsSection';
-import { Colors, Shadows, Radius } from '../../constants/colors';
+import { OverdueBanner } from '../../components/dashboard/OverdueBanner';
+import { QuickActions } from '../../components/dashboard/QuickActions';
+import { Colors, Radius } from '../../constants/colors';
 
 function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
   return {
@@ -463,13 +464,11 @@ export default function DashboardPage() {
 
         <View style={styles.body}>
           {overdueTasks > 0 ? (
-            <Alert variant="destructive" style={styles.alert}>
-              <AlertTitle>Urgent Attention Required</AlertTitle>
-              <AlertDescription>
-                You have {overdueTasks} overdue task{overdueTasks > 1 ? 's' : ''} that need immediate
-                attention.
-              </AlertDescription>
-            </Alert>
+            <OverdueBanner
+              count={overdueTasks}
+              message={`You have ${overdueTasks} overdue task${overdueTasks > 1 ? 's' : ''} that need immediate attention.`}
+              onView={() => router.push({ pathname: '/(app)/tasks', params: { filter: 'overdue' } } as any)}
+            />
           ) : null}
 
           <View style={styles.statsGrid}>
@@ -551,36 +550,30 @@ export default function DashboardPage() {
           <View>
             <Text style={styles.sectionTitle}>Quick Actions</Text>
             <Text style={styles.sectionSub}>Common tasks and shortcuts</Text>
-            <View style={styles.quickGrid}>
-              <Pressable
-                style={styles.quickBtn}
-                onPress={() => router.push('/(app)/tasks' as any)}
-              >
-                <ClipboardList size={20} color={Colors.white} />
-                <Text style={styles.quickBtnText}>Tasks</Text>
-              </Pressable>
-              <Pressable
-                style={styles.quickBtn}
-                onPress={() => router.push('/(app)/handover' as any)}
-              >
-                <FileText size={20} color={Colors.white} />
-                <Text style={styles.quickBtnText}>Referral</Text>
-              </Pressable>
-              <Pressable
-                style={styles.quickBtn}
-                onPress={() => router.push('/(app)/charting' as any)}
-              >
-                <Activity size={20} color={Colors.white} />
-                <Text style={styles.quickBtnText}>Charting</Text>
-              </Pressable>
-              <Pressable
-                style={styles.quickBtn}
-                onPress={() => router.push('/(app)/kardex' as any)}
-              >
-                <ClipboardList size={20} color={Colors.white} />
-                <Text style={styles.quickBtnText}>Kardex</Text>
-              </Pressable>
-            </View>
+            <QuickActions
+              actions={[
+                {
+                  key: 'tasks', label: 'Tasks', description: 'Your assigned care tasks',
+                  icon: ClipboardList, tint: Colors.blue50, accent: Colors.blue600,
+                  onPress: () => router.push('/(app)/tasks' as any),
+                },
+                {
+                  key: 'referral', label: 'Referral', description: 'Send or review SBAR referrals',
+                  icon: FileText, tint: Colors.indigo50, accent: Colors.indigo600,
+                  onPress: () => router.push('/(app)/handover' as any),
+                },
+                {
+                  key: 'charting', label: 'Charting', description: 'Write a nursing note',
+                  icon: Activity, tint: Colors.teal50, accent: Colors.teal600,
+                  onPress: () => router.push('/(app)/charting' as any),
+                },
+                {
+                  key: 'kardex', label: 'Kardex', description: 'Admit or update a patient',
+                  icon: BookOpen, tint: Colors.sky50, accent: Colors.sky600,
+                  onPress: () => router.push('/(app)/kardex' as any),
+                },
+              ]}
+            />
           </View>
 
           <Card>
@@ -822,6 +815,13 @@ export default function DashboardPage() {
         </View>
 
         <View style={styles.body}>
+          {overdueTasks > 0 ? (
+            <OverdueBanner
+              count={overdueTasks}
+              message={`${overdueTasks} task${overdueTasks > 1 ? 's are' : ' is'} overdue across the ward.`}
+              onView={() => router.push({ pathname: '/(app)/tasks', params: { filter: 'overdue' } } as any)}
+            />
+          ) : null}
           <View ref={(r) => { sectionRefs.current.alerts = r; }}>
             <SafetyAlertsSection
               patients={patients}
@@ -1117,29 +1117,6 @@ const styles = StyleSheet.create({
     color: Colors.gray500,
     marginBottom: 12,
     marginTop: 2,
-  },
-  quickGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  quickBtn: {
-    width: '47%',
-    flexGrow: 1,
-    minWidth: 140,
-    height: 80,
-    borderRadius: Radius.xl,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    // One brand color for every quick action (was green/purple/orange/teal).
-    backgroundColor: Colors.blue600,
-    ...Shadows.sm,
-  },
-  quickBtnText: {
-    color: Colors.white,
-    fontSize: 12,
-    fontWeight: '600',
   },
   cardTitleRow: {
     flexDirection: 'row',
