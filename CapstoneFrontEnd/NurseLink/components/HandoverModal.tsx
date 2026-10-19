@@ -617,8 +617,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
 
                     <View style={styles.recommendationBox}>
                       <View style={styles.labelRow}>
-                        <View style={[styles.badge, { backgroundColor: Colors.purple100 }]}>
-                          <Text style={[styles.badgeText, { color: Colors.purple700 }]}>R</Text>
+                        <View style={[styles.badge, { backgroundColor: Colors.blue100 }]}>
+                          <Text style={[styles.badgeText, { color: Colors.blue700 }]}>R</Text>
                         </View>
                         <Text style={styles.label}>Recommendation *</Text>
                         <Text style={styles.recHint}>(Enter your recommendations)</Text>

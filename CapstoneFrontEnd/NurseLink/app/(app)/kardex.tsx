@@ -674,7 +674,8 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
                 required
                 value={admissionDate}
                 onChange={setAdmissionDate}
-                maxDate={todayIso()}
+                minDate={todayIso()}
+                helperText="Today or later"
               />
             </View>
             <View style={[styles.field, styles.colThird]}>
@@ -904,7 +905,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
             fullWidth
           >
             <View style={styles.btnInner}>
-              <History size={20} color={Colors.purple600} />
+              <History size={20} color={Colors.blue600} />
               <Text style={styles.historyBtnText}>
                 View Kardex History
                 {kardexHistory.length > 0 ? ` (${kardexHistory.length})` : ''}
@@ -947,7 +948,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
         <Card>
           <CardHeader>
             <View style={styles.titleRow}>
-              <Clock size={20} color={Colors.purple600} />
+              <Clock size={20} color={Colors.blue600} />
               <CardTitle>Recent Kardex Activity</CardTitle>
             </View>
           </CardHeader>
@@ -1107,7 +1108,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
           <View style={[styles.historySheet, Shadows.xl]}>
             <View style={styles.historyHeader}>
               <View style={[styles.titleRow, { flex: 1 }]}>
-                <History size={20} color={Colors.purple600} />
+                <History size={20} color={Colors.blue600} />
                 <Text style={styles.modalTitle}>
                   Kardex History ({kardexHistory.length})
                 </Text>
@@ -1142,7 +1143,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
                 <View style={styles.gap4}>
                   <View style={styles.metaBanner}>
                     <View style={styles.metaBannerItem}>
-                      <Calendar size={16} color={Colors.purple600} />
+                      <Calendar size={16} color={Colors.blue600} />
                       <View>
                         <Text style={styles.metaBannerLabel}>Saved On</Text>
                         <Text style={styles.metaBannerValue}>
@@ -1151,7 +1152,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
                       </View>
                     </View>
                     <View style={styles.metaBannerItem}>
-                      <User size={16} color={Colors.purple600} />
+                      <User size={16} color={Colors.blue600} />
                       <View>
                         <Text style={styles.metaBannerLabel}>Saved By</Text>
                         <Text style={styles.metaBannerValue}>
@@ -1403,7 +1404,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
                       <View style={styles.reviewPanel}>
                         <View style={styles.reviewPanelHeader}>
                           <View style={styles.titleRow}>
-                            <FileText size={20} color={Colors.purple600} />
+                            <FileText size={20} color={Colors.blue600} />
                             <Text style={styles.sectionHeading}>Head Nurse Review</Text>
                           </View>
                           <View style={styles.actionRequiredChip}>
@@ -1557,7 +1558,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
                           style={styles.viewDetailsBtn}
                         >
                           <View style={styles.btnInner}>
-                            <Eye size={16} color={Colors.purple600} />
+                            <Eye size={16} color={Colors.blue600} />
                             <Text style={styles.historyBtnText}>View Details</Text>
                           </View>
                         </Button>
@@ -1852,11 +1853,11 @@ const styles = StyleSheet.create({
   },
   historyBtn: {
     borderWidth: 1,
-    borderColor: Colors.purple600,
+    borderColor: Colors.blue600,
     height: 48,
   },
   historyBtnText: {
-    color: Colors.purple600,
+    color: Colors.blue600,
     fontWeight: '600',
     fontSize: 14,
   },
@@ -1911,7 +1912,7 @@ const styles = StyleSheet.create({
     width: 9,
     height: 9,
     borderRadius: 5,
-    backgroundColor: Colors.purple600,
+    backgroundColor: Colors.blue600,
     marginTop: 4,
   },
   timelineLine: {
@@ -1942,7 +1943,7 @@ const styles = StyleSheet.create({
   viewAllText: {
     fontSize: 13,
     fontWeight: '600',
-    color: Colors.purple600,
+    color: Colors.blue600,
   },
   modalBackdrop: {
     flex: 1,
@@ -2031,9 +2032,9 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.white,
   },
   metaBanner: {
-    backgroundColor: Colors.purple50,
+    backgroundColor: Colors.blue50,
     borderWidth: 2,
-    borderColor: Colors.purple100,
+    borderColor: Colors.blue100,
     borderRadius: Radius.lg,
     padding: 16,
     gap: 12,
@@ -2065,9 +2066,9 @@ const styles = StyleSheet.create({
   reviewNotesLabel: { fontSize: 12, fontWeight: '700', color: Colors.gray700 },
   reviewNotesText: { fontSize: 13, color: Colors.gray700, lineHeight: 18 },
   reviewPanel: {
-    backgroundColor: Colors.purple50,
+    backgroundColor: Colors.blue50,
     borderWidth: 1,
-    borderColor: Colors.purple100,
+    borderColor: Colors.blue100,
     borderRadius: Radius.lg,
     padding: 16,
     gap: 12,
@@ -2083,7 +2084,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: Colors.purple600,
+    backgroundColor: Colors.blue600,
   },
   actionRequiredText: {
     fontSize: 10,
@@ -2149,6 +2150,6 @@ const styles = StyleSheet.create({
   },
   viewDetailsBtn: {
     borderWidth: 1,
-    borderColor: Colors.purple600,
+    borderColor: Colors.blue600,
   },
 });

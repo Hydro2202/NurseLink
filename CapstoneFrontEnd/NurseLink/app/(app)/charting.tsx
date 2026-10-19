@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -67,6 +67,7 @@ import {
   resolveNoteForDisplay,
   structuredHasClinicalContent,
 } from '../../utils/chartingStructured';
+import { Pagination, usePagination } from '../../components/Pagination';
 
 type StructuredData = Required<
   Pick<
@@ -337,6 +338,8 @@ export default function ChartingScreen() {
       );
       setStructuredData(preview);
       setShowPreview(true);
+      // Take the nurse straight to the generated structured note.
+      scrollToPreviewRef.current = true;
       if (res.fallback) {
         toast.warning('AI charting unavailable', {
           description:
@@ -739,6 +742,11 @@ export default function ChartingScreen() {
     }
   };
 
+  const scrollRef = useRef<ScrollView>(null);
+  // Set when a note is generated; the preview card scrolls into view once
+  // it has been laid out (see its onLayout).
+  const scrollToPreviewRef = useRef(false);
+
   const filteredNotes = notes.filter((note) => {
     const q = searchQuery.toLowerCase();
     if (!q) return true;
@@ -759,6 +767,8 @@ export default function ChartingScreen() {
       formattedDate.includes(q)
     );
   });
+  // 10 per page; Next/Prev jumps back to the top.
+  const pagedNotes = usePagination(filteredNotes, { scrollRef, resetKey: searchQuery });
 
   const patientOptions = patients.map((patient) => ({
     label: `${patient.name} • ${patient.room}`,
@@ -778,6 +788,7 @@ export default function ChartingScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={styles.screen}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
@@ -988,6 +999,14 @@ export default function ChartingScreen() {
 
       {/* AI Generated Preview */}
       {showPreview ? (
+        <View
+          onLayout={(e) => {
+            if (!scrollToPreviewRef.current) return;
+            scrollToPreviewRef.current = false;
+            const y = e.nativeEvent.layout.y;
+            scrollRef.current?.scrollTo({ y: Math.max(y - 12, 0), animated: true });
+          }}
+        >
         <Card style={styles.previewCard}>
           <CardHeader>
             <View style={styles.previewHeader}>
@@ -1090,6 +1109,7 @@ export default function ChartingScreen() {
             </Alert>
           </CardContent>
         </Card>
+        </View>
       ) : null}
 
       {/* My Charting History — view-only archive by date */}
@@ -1137,7 +1157,7 @@ export default function ChartingScreen() {
               <Text style={styles.emptyText}>No charting notes found</Text>
             </View>
           ) : (
-            filteredNotes.map((note) => (
+            pagedNotes.pageItems.map((note) => (
               <View key={note.id} style={styles.noteCard}>
                 <View style={styles.noteHeader}>
                   <View style={{ flex: 1 }}>
@@ -1276,6 +1296,12 @@ export default function ChartingScreen() {
               </View>
             ))
           )}
+          <Pagination
+            page={pagedNotes.page}
+            totalPages={pagedNotes.totalPages}
+            onPageChange={pagedNotes.setPage}
+            total={pagedNotes.total}
+          />
         </CardContent>
       </Card>
 

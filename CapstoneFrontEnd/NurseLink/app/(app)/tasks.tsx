@@ -49,6 +49,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useLiveRefresh } from '../../contexts/LiveContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
+import { Pagination, usePagination } from '../../components/Pagination';
 
 type SortBy = 'newest' | 'oldest' | 'priority' | 'status';
 
@@ -500,6 +501,22 @@ export default function TasksPage() {
     { id: 'completed', label: 'Done', count: counts.completed, color: Colors.green700 },
   ];
 
+
+  // 10 per page; Next/Prev jumps back to the top.
+  const paged = usePagination(filteredTasks, {
+    scrollRef,
+    resetKey: `${searchQuery}|${selectedTab}|${sortBy}`,
+  });
+  // A task opened from a link may sit on a later page: show that page first
+  // (the deep-link effect above then scrolls to it).
+  const { setPage: goToTaskPage, pageSize: taskPageSize } = paged;
+  useEffect(() => {
+    if (!highlightedTaskId) return;
+    const index = filteredTasks.findIndex((task) => task.id === highlightedTaskId);
+    if (index >= 0) goToTaskPage(Math.floor(index / taskPageSize) + 1);
+    // Only when the highlighted task changes, not on every live refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightedTaskId]);
   return (
     <View style={styles.root}>
       {loading ? (
@@ -598,7 +615,7 @@ export default function TasksPage() {
               </CardContent>
             </Card>
           ) : (
-            filteredTasks.map((task) => (
+            paged.pageItems.map((task) => (
               <View
                 key={task.id}
                 onLayout={(e) => {
@@ -813,6 +830,12 @@ export default function TasksPage() {
               </View>
             ))
           )}
+          <Pagination
+            page={paged.page}
+            totalPages={paged.totalPages}
+            onPageChange={paged.setPage}
+            total={paged.total}
+          />
         </View>
       </ScrollView>
       )}

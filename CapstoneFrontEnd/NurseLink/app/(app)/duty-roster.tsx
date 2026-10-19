@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -45,6 +45,7 @@ import { Select } from '../../components/Select';
 import { DatePicker } from '../../components/DatePicker';
 import { Alert, AlertDescription } from '../../components/Alert';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { Pagination, usePagination } from '../../components/Pagination';
 import { DutyAssignmentModal } from '../../components/DutyAssignmentModal';
 import { PresenceDot } from '../../components/PresenceDot';
 import { useAuth } from '../../contexts/AuthContext';
@@ -52,7 +53,10 @@ import { useToast } from '../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 
 type DateFilter = 'today' | 'tomorrow' | 'week' | 'nextWeek' | 'custom' | 'all';
-type ViewMode = 'list' | 'weekly' | 'onduty';
+type ViewMode = 'list' | 'weekly';
+
+// Weekly view: entries shown per day before "Show all".
+const WEEK_DAY_PREVIEW = 4;
 
 const SHIFT_LABELS: Record<string, string> = { morning: 'Morning', afternoon: 'Evening', night: 'Night' };
 
@@ -224,6 +228,12 @@ export default function DutyRosterPage() {
   const [shiftFilter, setShiftFilter] = useState('');
   const [deptFilter, setDeptFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  // Weekly view: one day at a time ('' = whole week), and which day columns
+  // have been expanded past WEEK_DAY_PREVIEW.
+  const [weekDayFilter, setWeekDayFilter] = useState('');
+  const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
+  const [onDutyExpanded, setOnDutyExpanded] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<'add' | 'edit'>('add');
@@ -522,13 +532,26 @@ export default function DutyRosterPage() {
     { label: 'Cancelled', value: 'cancelled' },
   ];
 
-  const filtersActive = dateFilter !== 'week' || !!shiftFilter || !!deptFilter || !!statusFilter;
+  const filtersActive =
+    dateFilter !== 'week' || !!shiftFilter || !!deptFilter || !!statusFilter || !!weekDayFilter;
   const clearFilters = () => {
     setDateFilter('week');
     setShiftFilter('');
     setDeptFilter('');
     setStatusFilter('');
+    setWeekDayFilter('');
   };
+
+  // List view: 10 per page, back to page 1 when the filters change.
+  const listPage = usePagination(filtered, {
+    scrollRef,
+    resetKey: `${search}|${dateFilter}|${customDate}|${shiftFilter}|${deptFilter}|${statusFilter}`,
+  });
+  const visibleWeekDays = weekDayFilter ? weekDays.filter((d) => d === weekDayFilter) : weekDays;
+  const weekDayOptions = [
+    { label: 'All days', value: '' },
+    ...weekDays.map((d) => ({ label: formatDateLabel(d), value: d })),
+  ];
 
   // Crossfade the list/weekly body whenever the view or the filtered result
   // changes, instead of an abrupt re-render.
@@ -536,7 +559,7 @@ export default function DutyRosterPage() {
   useEffect(() => {
     bodyAnim.setValue(0);
     Animated.timing(bodyAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
-  }, [view, filtered.length, onDutyNow.length, bodyAnim]);
+  }, [view, filtered.length, bodyAnim]);
 
   const renderCard = (a: DutyAssignment) => {
     const shiftColors = SHIFT_COLORS[a.shift] || SHIFT_COLORS.morning;
@@ -657,7 +680,12 @@ export default function DutyRosterPage() {
 
   return (
     <View style={styles.root}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
         <View>
           <Text style={styles.title}>Duty Roster</Text>
           <Text style={styles.subtitle}>Manage nurse schedules, departments, shifts, and overtime</Text>
@@ -715,6 +743,47 @@ export default function DutyRosterPage() {
           ))}
         </View>
 
+        {/* Who is clocked in right now — always visible above the roster
+            instead of a third view next to List and Weekly. */}
+        <Card style={styles.onDutyCard}>
+          <CardContent style={styles.onDutyBody}>
+            <View style={styles.onDutyHeader}>
+              <UserCheck size={16} color={Colors.green700} />
+              <Text style={styles.onDutyTitle}>On duty now</Text>
+              <View style={styles.onDutyCount}>
+                <Text style={styles.onDutyCountText}>{onDutyNow.length}</Text>
+              </View>
+            </View>
+            {onDutyNow.length === 0 ? (
+              <Text style={styles.onDutyEmpty}>No nurse is clocked in right now.</Text>
+            ) : (
+              <View style={styles.onDutyChips}>
+                {(onDutyExpanded ? onDutyNow : onDutyNow.slice(0, 8)).map((a) => (
+                  <Pressable
+                    key={a.id}
+                    onPress={() => isSupervisor && openEdit(a)}
+                    style={styles.onDutyChip}
+                    accessibilityLabel={`${a.nurseName}, ${a.departmentName}, ${SHIFT_LABELS[a.shift]}`}
+                  >
+                    <Animated.View style={[styles.liveDot, { backgroundColor: Colors.green600, opacity: pulseAnim }]} />
+                    <Text style={styles.onDutyChipName} numberOfLines={1}>{a.nurseName}</Text>
+                    <Text style={styles.onDutyChipMeta} numberOfLines={1}>
+                      {a.departmentName} · {SHIFT_LABELS[a.shift]}
+                    </Text>
+                  </Pressable>
+                ))}
+                {onDutyNow.length > 8 ? (
+                  <Pressable onPress={() => setOnDutyExpanded((v) => !v)} style={styles.onDutyMore} hitSlop={6}>
+                    <Text style={styles.onDutyMoreText}>
+                      {onDutyExpanded ? 'Show less' : `+${onDutyNow.length - 8} more`}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            )}
+          </CardContent>
+        </Card>
+
         <View style={styles.controls}>
           <View style={styles.searchWrap}>
             <Input
@@ -762,6 +831,14 @@ export default function DutyRosterPage() {
               options={statusOptions}
               style={statusFilter ? { ...styles.filterSelect, ...styles.filterSelectActive } : styles.filterSelect}
             />
+            {view === 'weekly' ? (
+              <Select
+                value={weekDayFilter}
+                onValueChange={setWeekDayFilter}
+                options={weekDayOptions}
+                style={weekDayFilter ? { ...styles.filterSelect, ...styles.filterSelectActive } : styles.filterSelect}
+              />
+            ) : null}
           </View>
           {filtersActive ? (
             <Pressable onPress={clearFilters} style={styles.clearFiltersBtn} hitSlop={6}>
@@ -773,25 +850,16 @@ export default function DutyRosterPage() {
 
         <View style={styles.segmentedWrap}>
           <View style={styles.segmented}>
-            {(['list', 'weekly', 'onduty'] as ViewMode[]).map((mode) => (
+            {(['list', 'weekly'] as ViewMode[]).map((mode) => (
               <Pressable key={mode} onPress={() => setView(mode)} style={[styles.segment, view === mode && styles.segmentActive]}>
                 {mode === 'list' ? (
                   <List size={13} color={view === mode ? Colors.white : Colors.gray600} />
-                ) : mode === 'weekly' ? (
-                  <LayoutGrid size={13} color={view === mode ? Colors.white : Colors.gray600} />
                 ) : (
-                  <UserCheck size={13} color={view === mode ? Colors.white : Colors.gray600} />
+                  <LayoutGrid size={13} color={view === mode ? Colors.white : Colors.gray600} />
                 )}
                 <Text style={[styles.segmentText, view === mode && styles.segmentTextActive]}>
-                  {mode === 'list' ? 'List' : mode === 'weekly' ? 'Weekly' : 'On Duty'}
+                  {mode === 'list' ? 'List' : 'Weekly'}
                 </Text>
-                {mode === 'onduty' && onDutyNow.length > 0 ? (
-                  <View style={[styles.segmentCountBadge, view === mode && styles.segmentCountBadgeActive]}>
-                    <Text style={[styles.segmentCountText, view === mode && styles.segmentCountTextActive]}>
-                      {onDutyNow.length}
-                    </Text>
-                  </View>
-                ) : null}
               </Pressable>
             ))}
           </View>
@@ -802,18 +870,12 @@ export default function DutyRosterPage() {
             <ActivityIndicator size="large" color={Colors.blue600} />
             <Text style={styles.loadingText}>Loading duty roster...</Text>
           </View>
-        ) : (view === 'onduty' ? onDutyNow.length === 0 : filtered.length === 0) ? (
+        ) : filtered.length === 0 ? (
           <View style={styles.empty}>
             <CalendarDays size={40} color={Colors.gray300} />
-            <Text style={styles.emptyTitle}>
-              {view === 'onduty' ? 'No One Is Currently On Duty' : 'No Duty Assignments Yet'}
-            </Text>
-            <Text style={styles.emptyText}>
-              {view === 'onduty'
-                ? 'No nurse is clocked in right now — check back once a shift starts, or adjust the shift/department filters above.'
-                : 'There are no nurse assignments for the selected date or filters.'}
-            </Text>
-            {isSupervisor && view !== 'onduty' ? (
+            <Text style={styles.emptyTitle}>No Duty Assignments Yet</Text>
+            <Text style={styles.emptyText}>There are no nurse assignments for the selected date or filters.</Text>
+            {isSupervisor ? (
               <Button onPress={openAdd} style={styles.newBtn}>
                 <Plus size={16} color={Colors.white} />
                 <Text style={styles.newBtnText}>Assign Nurse</Text>
@@ -823,19 +885,27 @@ export default function DutyRosterPage() {
         ) : (
           <Animated.View style={{ opacity: bodyAnim }}>
             {view === 'list' ? (
-              <View style={styles.list}>{filtered.map(renderCard)}</View>
-            ) : view === 'onduty' ? (
-              <View style={styles.list}>{onDutyNow.map(renderCard)}</View>
+              <>
+                <View style={styles.list}>{listPage.pageItems.map(renderCard)}</View>
+                <Pagination
+                  page={listPage.page}
+                  totalPages={listPage.totalPages}
+                  onPageChange={listPage.setPage}
+                  total={listPage.total}
+                />
+              </>
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.weekScroll}>
                 <View style={styles.weekRow}>
-                  {weekDays.map((day) => {
-                    const dayAssignments = filtered.filter((a) => a.dutyDate === day);
+                  {visibleWeekDays.map((day) => {
+                    const allForDay = filtered.filter((a) => a.dutyDate === day);
+                    const dayExpanded = !!expandedDays[day] || !!weekDayFilter;
+                    const dayAssignments = dayExpanded ? allForDay : allForDay.slice(0, WEEK_DAY_PREVIEW);
                     return (
                       <View key={day} style={styles.weekCol}>
                         <View style={styles.weekColHeader}>
                           <Text style={styles.weekColDate}>{formatDateLabel(day)}</Text>
-                          <Text style={styles.weekColCount}>{dayAssignments.length} assigned</Text>
+                          <Text style={styles.weekColCount}>{allForDay.length} assigned</Text>
                         </View>
                         {dayAssignments.length === 0 ? (
                           <Text style={styles.weekColEmpty}>No duties</Text>
@@ -877,6 +947,17 @@ export default function DutyRosterPage() {
                             );
                           })
                         )}
+                        {!weekDayFilter && allForDay.length > WEEK_DAY_PREVIEW ? (
+                          <Pressable
+                            onPress={() => setExpandedDays((prev) => ({ ...prev, [day]: !prev[day] }))}
+                            style={styles.weekShowAll}
+                            hitSlop={6}
+                          >
+                            <Text style={styles.weekShowAllText}>
+                              {expandedDays[day] ? 'Show less' : `Show all (${allForDay.length})`}
+                            </Text>
+                          </Pressable>
+                        ) : null}
                       </View>
                     );
                   })}
@@ -953,6 +1034,28 @@ export default function DutyRosterPage() {
 }
 
 const styles = StyleSheet.create({
+  onDutyCard: { borderLeftWidth: 4, borderLeftColor: Colors.green600 },
+  onDutyBody: { gap: 10, paddingVertical: 12 },
+  onDutyHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  onDutyTitle: { fontSize: 14, fontWeight: '800', color: Colors.gray900 },
+  onDutyCount: {
+    minWidth: 22, height: 22, borderRadius: 11, paddingHorizontal: 6,
+    backgroundColor: Colors.green50, alignItems: 'center', justifyContent: 'center',
+  },
+  onDutyCountText: { fontSize: 12, fontWeight: '800', color: Colors.green700 },
+  onDutyEmpty: { fontSize: 12.5, color: Colors.mutedForeground },
+  onDutyChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  onDutyChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: 320,
+    paddingVertical: 6, paddingHorizontal: 10, borderRadius: Radius.full,
+    backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green200,
+  },
+  onDutyChipName: { fontSize: 12.5, fontWeight: '700', color: Colors.gray900, flexShrink: 1 },
+  onDutyChipMeta: { fontSize: 11.5, color: Colors.gray600, flexShrink: 1 },
+  onDutyMore: { paddingVertical: 6, paddingHorizontal: 8, justifyContent: 'center' },
+  onDutyMoreText: { fontSize: 12.5, fontWeight: '700', color: Colors.blue700 },
+  weekShowAll: { paddingVertical: 6, alignItems: 'center' },
+  weekShowAllText: { fontSize: 12, fontWeight: '700', color: Colors.blue700 },
   root: { flex: 1, backgroundColor: Colors.background },
   scroll: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 32, gap: 16, maxWidth: 1180, width: '100%', alignSelf: 'center' },

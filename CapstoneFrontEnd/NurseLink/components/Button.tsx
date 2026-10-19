@@ -166,10 +166,9 @@ const desktopSizeTextStyles: Record<Size, TextStyle> = {
 };
 
 const variantStyles: Record<Variant, ViewStyle> = {
-  // Colors.primary (#3B82F6), not blue600 (#2563EB) — blue600 is web's
-  // *hover* color for this exact button (--primary-hover); its resting
-  // state is Colors.primary.
-  default: { backgroundColor: Colors.primary },
+  // blue600 — the same blue every screen's primary action already used
+  // (most passed it as an override), so all primary buttons now match.
+  default: { backgroundColor: Colors.blue600 },
   outline: {
     backgroundColor: Colors.white,
     // 2px, matching web's border-2 outline buttons.
@@ -195,5 +194,5 @@ const variantTextStyles: Record<Variant, TextStyle> = {
   destructive: { color: Colors.white },
   secondary: { color: Colors.foreground },
   success: { color: Colors.white },
-  link: { color: Colors.primary, textDecorationLine: 'underline' },
+  link: { color: Colors.blue600, textDecorationLine: 'underline' },
 };

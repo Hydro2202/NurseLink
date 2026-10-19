@@ -225,9 +225,25 @@ if not TRUSTED_PROXIES and env_bool('RENDER', False):
     TRUSTED_PROXIES = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', '127.0.0.1/32']
 
 # --- Session token lifetime (api/authentication.py, api/consumers.py) ----
-# An AuthSession older than this is rejected on both the REST API and the
-# WebSocket, regardless of use. Logging in again always issues a fresh one.
+# Idle timeout: an AuthSession not used for this long is rejected on both the
+# REST API and the WebSocket. Activity keeps it alive, so nobody is signed out
+# while working. (The app itself also signs out after 30 minutes without any
+# mouse/keyboard/touch input -- see AuthContext.)
 TOKEN_TTL_SECONDS = int(os.environ.get('TOKEN_TTL_SECONDS', str(24 * 60 * 60)))
+# --- Encryption at rest for patient data (api/encryption.py) -------------
+# A Fernet key. Set it in production and back it up: losing it makes the
+# encrypted patient fields unreadable. Unset, a key derived from SECRET_KEY is
+# used (so rotating SECRET_KEY would then lose that data).
+FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '').strip()
+# What the fallback key is derived from. Not SECRET_KEY itself: in debug that
+# is random per process, which would make local data unreadable after every
+# restart -- local dev uses a fixed, local-only value instead.
+FIELD_ENCRYPTION_FALLBACK_SECRET = os.environ.get('DJANGO_SECRET_KEY', '').strip() or (
+    'nurselink-local-development-only' if DEBUG else SECRET_KEY
+)
+
+# Hard cap regardless of activity; logging in again issues a fresh session.
+TOKEN_MAX_AGE_SECONDS = int(os.environ.get('TOKEN_MAX_AGE_SECONDS', str(7 * 24 * 60 * 60)))
 
 # --- WebSocket connect tickets (api/ws_tickets.py) ------------------------
 # Lifetime of a one-time ticket from POST /api/auth/ws-ticket/. Short by

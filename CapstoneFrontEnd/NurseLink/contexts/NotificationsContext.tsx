@@ -212,8 +212,11 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
     // and notificationVibration.ts's own docs — so a screen never needs its
     // own check.
     const critical = notification.type === 'critical';
-    if (soundAlerts) playNotificationSound(critical);
-    if (vibrationAlerts) vibrateForNotification(critical);
+    // An emergency ("Respond Now") always sounds and vibrates, whatever the
+    // nurse's sound/vibration preferences — it's a call to come now.
+    const emergency = notification.event === 'emergency_response';
+    if (soundAlerts || emergency) playNotificationSound(critical || emergency);
+    if (vibrationAlerts || emergency) vibrateForNotification(critical || emergency);
 
     // The popup card (NotificationToastHost, mounted in every (app) layout)
     // — same genuinely-new-only guard as the sound above, so the backlog a

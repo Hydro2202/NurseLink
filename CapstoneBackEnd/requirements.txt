@@ -24,3 +24,5 @@ channels[daphne]>=4.3,<5
 # to a different process than the one that sent them — required whenever more
 # than one server process is running. See CHANNEL_LAYERS in settings.py.
 channels-redis>=4.2,<5
+# Encryption at rest for sensitive patient fields (api/encryption.py).
+cryptography>=42

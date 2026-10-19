@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
 import { Search, Plus, X, Stethoscope, Trash2 } from 'lucide-react-native';
 import {
@@ -17,6 +17,7 @@ import { Select } from '../../../components/Select';
 import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
+import { Pagination, usePagination } from '../../../components/Pagination';
 
 interface DoctorForm {
   fullName: string;
@@ -93,6 +94,10 @@ export default function AdminDoctorsPage() {
     );
   }, [doctors, search]);
 
+  // 10 per page; Next/Prev jumps back to the top of the list.
+  const scrollRef = useRef<ScrollView>(null);
+  const paged = usePagination(filtered, { scrollRef, resetKey: search });
+
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY_FORM);
@@ -150,7 +155,12 @@ export default function AdminDoctorsPage() {
 
   return (
     <View style={styles.root}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.headerRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>Doctors</Text>
@@ -177,7 +187,7 @@ export default function AdminDoctorsPage() {
           <Text style={styles.empty}>No doctors match.</Text>
         ) : (
           <View style={styles.list}>
-            {filtered.map((doctor) => (
+            {paged.pageItems.map((doctor) => (
               <Pressable key={doctor.id} onPress={() => openEdit(doctor)}>
                 <View style={[styles.row, Shadows.sm]}>
                   <View style={styles.rowIconWrap}>
@@ -199,6 +209,12 @@ export default function AdminDoctorsPage() {
             ))}
           </View>
         )}
+        <Pagination
+          page={paged.page}
+          totalPages={paged.totalPages}
+          onPageChange={paged.setPage}
+          total={paged.total}
+        />
       </ScrollView>
 
       <Modal visible={formOpen} transparent animationType="fade" onRequestClose={() => setFormOpen(false)}>

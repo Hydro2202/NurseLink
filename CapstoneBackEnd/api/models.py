@@ -8,6 +8,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
+from .encryption import EncryptedJSONField, EncryptedTextField
 from .names import full_name
 
 
@@ -188,15 +189,16 @@ class Patient(models.Model):
     middle_name = models.CharField(max_length=100, blank=True, default='')
     last_name = models.CharField(max_length=100, blank=True, default='')
     date_of_birth = models.DateField(null=True, blank=True)
-    contact_number = models.CharField(max_length=20, blank=True, default='')
-    address = models.CharField(max_length=255, blank=True, default='')
-    emergency_contact_name = models.CharField(max_length=200, blank=True, default='')
-    emergency_contact_number = models.CharField(max_length=20, blank=True, default='')
+    # Encrypted at rest (api/encryption.py).
+    contact_number = EncryptedTextField(blank=True, default='')
+    address = EncryptedTextField(blank=True, default='')
+    emergency_contact_name = EncryptedTextField(blank=True, default='')
+    emergency_contact_number = EncryptedTextField(blank=True, default='')
     bed_number = models.CharField(max_length=20, blank=True, default='')
     age = models.PositiveIntegerField(validators=[MaxValueValidator(150)])
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
     room = models.CharField(max_length=50, db_index=True)
-    diagnosis = models.CharField(max_length=255)
+    diagnosis = EncryptedTextField()
     admission_date = models.DateField()
     risk_level = models.CharField(max_length=10, choices=RISK_CHOICES, default='low', db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='admitted', db_index=True)
@@ -237,8 +239,8 @@ class Patient(models.Model):
     height_cm = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
     weight_kg = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
 
-    allergies = models.JSONField(default=list, blank=True)
-    medications = models.JSONField(default=list, blank=True)
+    allergies = EncryptedJSONField(default=list, blank=True)
+    medications = EncryptedJSONField(default=list, blank=True)
     alerts = models.JSONField(default=list, blank=True)
 
     assigned_nurse = models.ForeignKey(
@@ -683,10 +685,10 @@ class HandoverNote(models.Model):
     )
     nurse_from = models.CharField(max_length=200)
     nurse_to = models.CharField(max_length=200)
-    situation = models.TextField(blank=True, default='')
-    background = models.TextField(blank=True, default='')
-    assessment = models.TextField(blank=True, default='')
-    recommendation = models.TextField(blank=True, default='')
+    situation = EncryptedTextField(blank=True, default='')
+    background = EncryptedTextField(blank=True, default='')
+    assessment = EncryptedTextField(blank=True, default='')
+    recommendation = EncryptedTextField(blank=True, default='')
     unfinished_tasks = models.JSONField(default=list, blank=True)
     photos = models.JSONField(default=list, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='sent', db_index=True)
@@ -857,7 +859,7 @@ class ChartingNote(models.Model):
     nurse_name = models.CharField(max_length=200, blank=True, default='')
     timestamp = models.DateTimeField()
     note_type = models.CharField(max_length=30, choices=TYPE_CHOICES, default='progress')
-    content = models.TextField()
+    content = EncryptedTextField()
     # Section-by-section structure rendered by the app (Auto Charting). Persisted so
     # View Full Note can rehydrate the exact approved chart without regex-parsing
     # free text (and without inventing clinical content that was never saved).
@@ -878,10 +880,10 @@ class ChartingNote(models.Model):
     # narrative sections, each independently editable in the nurse-facing
     # UI. Legacy rows leave these blank; content/structured_data remain
     # their source of truth.
-    focus = models.TextField(blank=True, default='')
-    data = models.TextField(blank=True, default='')
-    action = models.TextField(blank=True, default='')
-    response = models.TextField(blank=True, default='')
+    focus = EncryptedTextField(blank=True, default='')
+    data = EncryptedTextField(blank=True, default='')
+    action = EncryptedTextField(blank=True, default='')
+    response = EncryptedTextField(blank=True, default='')
     ai_generated = models.BooleanField(default=False)
     edited = models.BooleanField(default=False)
     confirmed = models.BooleanField(default=False)
@@ -1457,9 +1459,9 @@ class KardexRecord(models.Model):
     bed_number = models.CharField(max_length=50, blank=True, default='')
     admission_date = models.CharField(max_length=50, blank=True, default='')
     attending_physician = models.CharField(max_length=200, blank=True, default='')
-    chief_complaint = models.TextField(blank=True, default='')
-    admitting_diagnosis = models.TextField(blank=True, default='')
-    final_diagnosis = models.TextField(blank=True, default='')
+    chief_complaint = EncryptedTextField(blank=True, default='')
+    admitting_diagnosis = EncryptedTextField(blank=True, default='')
+    final_diagnosis = EncryptedTextField(blank=True, default='')
     diet = models.CharField(max_length=200, blank=True, default='')
     ivf = models.CharField(max_length=200, blank=True, default='')
     temperature = models.CharField(max_length=20, blank=True, default='')
@@ -1467,8 +1469,8 @@ class KardexRecord(models.Model):
     respiratory_rate = models.CharField(max_length=20, blank=True, default='')
     blood_pressure = models.CharField(max_length=20, blank=True, default='')
     oxygen_saturation = models.CharField(max_length=20, blank=True, default='')
-    allergies = models.JSONField(default=list, blank=True)
-    special_endorsements = models.TextField(blank=True, default='')
+    allergies = EncryptedJSONField(default=list, blank=True)
+    special_endorsements = EncryptedTextField(blank=True, default='')
     saved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -2173,6 +2175,10 @@ class AuthSession(models.Model):
         related_name='auth_sessions',
     )
     created = models.DateTimeField(auto_now_add=True)
+    # Last authenticated request. The session times out after
+    # TOKEN_TTL_SECONDS without use, not a fixed time after login, so a nurse
+    # who is actively working is never signed out mid-shift.
+    last_used = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f'Session for {self.user_id} ({self.created:%Y-%m-%d %H:%M})'

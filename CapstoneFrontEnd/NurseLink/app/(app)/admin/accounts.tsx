@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
 import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import {
@@ -40,6 +40,7 @@ import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { useLiveRefresh } from '../../../contexts/LiveContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
+import { Pagination, usePagination } from '../../../components/Pagination';
 
 const STATUS_TABS: TabItem[] = [
   { value: 'all', label: 'All' },
@@ -151,6 +152,10 @@ export default function AdminAccountsPage() {
       return a.name.toLowerCase().includes(q) || a.email.toLowerCase().includes(q);
     });
   }, [accounts, search, statusFilter, roleFilter]);
+
+  // 10 per page; Next/Prev jumps back to the top of the list.
+  const scrollRef = useRef<ScrollView>(null);
+  const paged = usePagination(filtered, { scrollRef, resetKey: `${search}|${statusFilter}|${roleFilter}` });
 
   const refreshSelected = (updated: AdminAccount) => {
     setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
@@ -321,7 +326,12 @@ export default function AdminAccountsPage() {
 
   return (
     <View style={styles.root}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
         <Text style={styles.title}>Accounts</Text>
         <Text style={styles.subtitle}>Every nurse and head nurse account, regardless of status.</Text>
 
@@ -345,7 +355,7 @@ export default function AdminAccountsPage() {
           <Text style={styles.empty}>No accounts match.</Text>
         ) : (
           <View style={styles.list}>
-            {filtered.map((account) => (
+            {paged.pageItems.map((account) => (
               <Pressable key={account.id} onPress={() => setSelected(account)}>
                 <View style={[styles.row, Shadows.sm]}>
                   <View style={{ flex: 1 }}>
@@ -372,6 +382,12 @@ export default function AdminAccountsPage() {
             ))}
           </View>
         )}
+        <Pagination
+          page={paged.page}
+          totalPages={paged.totalPages}
+          onPageChange={paged.setPage}
+          total={paged.total}
+        />
       </ScrollView>
 
       <Modal visible={!!selected} transparent animationType="fade" onRequestClose={() => setSelected(null)}>

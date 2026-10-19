@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -38,6 +38,7 @@ import { LabsAndMedicationsModal } from '../../components/LabsAndMedicationsModa
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Colors, Radius } from '../../constants/colors';
 import { useToast } from '../../contexts/ToastContext';
+import { Pagination, usePagination } from '../../components/Pagination';
 
 function getAttendingPhysician(patient: Patient): string {
   return patient.attendingPhysician || patient.assignedNurseName || 'Not Assigned';
@@ -150,8 +151,23 @@ export default function MyPatientsPage() {
     });
   }, [patients, searchQuery, roomFilter, riskFilter]);
 
+  // 10 per page; Next/Prev jumps back to the top.
+  const scrollRef = useRef<ScrollView>(null);
+  const paged = usePagination(filteredPatients, {
+    scrollRef,
+    resetKey: `${searchQuery}|${roomFilter}|${riskFilter}`,
+  });
+  // A patient opened from a notification may sit on a later page: go there.
+  const { setPage: goToPage, pageSize } = paged;
+  useEffect(() => {
+    if (!highlightedId) return;
+    const index = filteredPatients.findIndex((p) => p.id === highlightedId);
+    if (index >= 0) goToPage(Math.floor(index / pageSize) + 1);
+  }, [highlightedId, filteredPatients, goToPage, pageSize]);
+
   return (
     <ScrollView
+      ref={scrollRef}
       style={styles.scroll}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
@@ -222,7 +238,7 @@ export default function MyPatientsPage() {
           </CardContent>
         </Card>
       ) : (
-        filteredPatients.map((patient) => (
+        paged.pageItems.map((patient) => (
           <Card
             key={patient.id}
             style={{
@@ -374,6 +390,12 @@ export default function MyPatientsPage() {
           </Card>
         ))
       )}
+      <Pagination
+        page={paged.page}
+        totalPages={paged.totalPages}
+        onPageChange={paged.setPage}
+        total={paged.total}
+      />
 
       <PatientKardexModal
         open={editOpen}

@@ -297,6 +297,8 @@ export function TaskAssignmentModal({
                   required
                   value={dueDate}
                   onChange={setDueDate}
+                  minDate={todayIso()}
+                  helperText="Today or later"
                 />
                 <TimePicker
                   style={{ flex: 1 }}

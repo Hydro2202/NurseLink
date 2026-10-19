@@ -56,6 +56,7 @@ TASK_HANDOVER_ACCEPTED = 'task_handover_accepted'
 TASK_HANDOVER_REJECTED = 'task_handover_rejected'
 NEW_REGISTRATION_PENDING = 'new_registration_pending'
 SAFETY_ALERT = 'safety_alert'
+EMERGENCY_RESPONSE = 'emergency_response'
 PATIENT_ASSIGNED = 'patient_assigned'
 PATIENT_UNASSIGNED = 'patient_unassigned'
 DUTY_ASSIGNED = 'duty_assigned'
@@ -1310,3 +1311,59 @@ def notify_admin_new_registration(new_user):
         if result is not None:
             created.append(result)
     return created
+
+
+def notify_emergency_response(patient, actor, *, message=''):
+    """
+    "Respond Now" on a critical patient alert: an emergency call to everyone
+    who should come -- the patient's assigned nurse, every nurse on duty right
+    now in the patient's department, and the head nurses. Unlike other
+    alerts this ignores the critical-alerts preference: it is an emergency,
+    and the app always shows its popup with sound (see NotificationsContext).
+    Returns the list of users notified.
+    """
+    from .duty_status import nurses_on_duty_now
+
+    recipient_ids = set(nurses_on_duty_now(patient.department_id)) if patient.department_id else set()
+    if patient.assigned_nurse_id:
+        recipient_ids.add(patient.assigned_nurse_id)
+    recipient_ids.update(
+        NurseProfile.objects.filter(
+            role='head_nurse', approval_status='approved', is_active_staff=True,
+        ).values_list('user_id', flat=True)
+    )
+    if actor is not None:
+        recipient_ids.discard(actor.pk)
+
+    recipients = list(
+        User.objects.filter(
+            pk__in=recipient_ids, is_active=True,
+            nurse_profile__approval_status='approved', nurse_profile__is_active_staff=True,
+        ).select_related('nurse_profile')
+    )
+    actor_name = full_name(actor) if actor else 'A head nurse'
+    detail = (message or '').strip()
+    text = f'{actor_name} called an emergency for {patient.name} (Room {patient.room or "—"}). Respond now.'
+    if detail:
+        text = f'{text} {detail}'
+    for recipient in recipients:
+        notify(
+            recipient,
+            notification_type='critical',
+            event=EMERGENCY_RESPONSE,
+            title='EMERGENCY — Respond Now',
+            message=text[:1000],
+            patient_label=patient.name,
+            patient=patient,
+            sender=actor,
+            action_label='View Patient',
+            # Head nurses aren't assigned patients of their own; their list is
+            # All Patients. Staff nurses land on My Patients, like safety alerts.
+            action_path=(
+                '/all-patients'
+                if getattr(recipient.nurse_profile, 'role', '') == 'head_nurse'
+                else '/my-patients'
+            ),
+            action_highlight_id=patient.patient_code,
+        )
+    return recipients

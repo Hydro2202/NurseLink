@@ -53,6 +53,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useNotifications } from '../../contexts/NotificationsContext';
 import { useLive, useLiveRefresh } from '../../contexts/LiveContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
+import { Pagination, usePagination } from '../../components/Pagination';
 
 type SortBy = 'newest' | 'oldest' | 'patient' | 'status';
 
@@ -493,6 +494,28 @@ export default function HandoverPage() {
     [handovers, searchQuery, sortBy, shiftFilter]
   );
 
+  // 10 per page per list; Next/Prev jumps back to the top.
+  const scrollRef = useRef<ScrollView>(null);
+  const listKey = `${searchQuery}|${sortBy}|${shiftFilter}`;
+  const oversightPage = usePagination(oversightHandovers, { scrollRef, resetKey: listKey });
+  const incomingPage = usePagination(incomingHandovers, { scrollRef, resetKey: listKey });
+  const outgoingPage = usePagination(outgoingHandovers, { scrollRef, resetKey: listKey });
+  // A referral opened from a notification may sit on a later page.
+  useEffect(() => {
+    if (!highlightId) return;
+    const lists = [
+      [oversightHandovers, oversightPage.setPage],
+      [incomingHandovers, incomingPage.setPage],
+      [outgoingHandovers, outgoingPage.setPage],
+    ] as const;
+    for (const [list, setPage] of lists) {
+      const index = list.findIndex((h) => h.id === highlightId);
+      if (index >= 0) setPage(Math.floor(index / oversightPage.pageSize) + 1);
+    }
+    // Only when the highlighted referral changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightId]);
+
   const renderHandoverCard = (handover: HandoverWithMeta, type: 'incoming' | 'outgoing' | 'oversight') => (
     <Card
       key={handover.id}
@@ -570,7 +593,7 @@ export default function HandoverPage() {
             </View>
           </View>
           <View style={styles.sbarRow}>
-            <CheckCircle size={16} color={Colors.purple600} style={styles.sbarIcon} />
+            <CheckCircle size={16} color={Colors.blue600} style={styles.sbarIcon} />
             <View style={styles.flex1}>
               <Text style={styles.sbarLabel}>Recommendation</Text>
               <Text style={styles.sbarText}>{handover.sbar.recommendation}</Text>
@@ -720,6 +743,7 @@ export default function HandoverPage() {
   return (
     <View style={styles.root}>
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -791,8 +815,14 @@ export default function HandoverPage() {
                 </CardContent>
               </Card>
             ) : (
-              oversightHandovers.map((h) => renderHandoverCard(h, 'oversight'))
+              oversightPage.pageItems.map((h) => renderHandoverCard(h, 'oversight'))
             )}
+            <Pagination
+              page={oversightPage.page}
+              totalPages={oversightPage.totalPages}
+              onPageChange={oversightPage.setPage}
+              total={oversightPage.total}
+            />
           </View>
         ) : (
           <>
@@ -815,7 +845,15 @@ export default function HandoverPage() {
                     </CardContent>
                   </Card>
                 ) : (
-                  incomingHandovers.map((h) => renderHandoverCard(h, 'incoming'))
+                  <>
+                    {incomingPage.pageItems.map((h) => renderHandoverCard(h, 'incoming'))}
+                    <Pagination
+                      page={incomingPage.page}
+                      totalPages={incomingPage.totalPages}
+                      onPageChange={incomingPage.setPage}
+                      total={incomingPage.total}
+                    />
+                  </>
                 )
               ) : outgoingHandovers.length === 0 ? (
                 <Card>
@@ -825,7 +863,15 @@ export default function HandoverPage() {
                   </CardContent>
                 </Card>
               ) : (
-                outgoingHandovers.map((h) => renderHandoverCard(h, 'outgoing'))
+                <>
+                  {outgoingPage.pageItems.map((h) => renderHandoverCard(h, 'outgoing'))}
+                  <Pagination
+                    page={outgoingPage.page}
+                    totalPages={outgoingPage.totalPages}
+                    onPageChange={outgoingPage.setPage}
+                    total={outgoingPage.total}
+                  />
+                </>
               )}
             </View>
           </>

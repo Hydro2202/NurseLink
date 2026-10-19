@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, LayoutChangeEvent, useWindowDimensions } from 'react-native';
 import { BarChart, LineChart, PieChart } from '../Charts';
-import { TrendingUp, Activity, ListChecks, Clock, PieChart as PieChartIcon } from 'lucide-react-native';
+import { TrendingUp, Activity, ListChecks, Clock, PieChart as PieChartIcon, BedDouble, Users } from 'lucide-react-native';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../Card';
 import { Colors } from '../../constants/colors';
 import type { AnalyticsData } from '../../types/domain';
@@ -127,8 +127,111 @@ export function AnalyticsSection({ data, loading, filterSummary }: AnalyticsSect
   const taskTypeLegend = taskTypes.map((t) => ({ color: t.color, label: humanizeCategory(t.label), value: t.text }));
   const totalTasks = data?.kpis.totalTasks ?? 0;
 
+  // Patient flow: admissions (blue) and discharges (green) side by side per day.
+  const patientFlow = data?.patientFlow || [];
+  const flowBars = patientFlow.flatMap((d) => [
+    { value: d.admissions, label: d.label, spacing: 2, frontColor: Colors.blue600, labelWidth: 44 },
+    { value: d.discharges, frontColor: Colors.green600 },
+  ]);
+  const totalAdmissions = patientFlow.reduce((sum, d) => sum + d.admissions, 0);
+  const totalDischarges = patientFlow.reduce((sum, d) => sum + d.discharges, 0);
+  const STATUS_COLORS: Record<string, string> = {
+    admitted: Colors.blue600,
+    observation: Colors.warning,
+    discharged: Colors.green600,
+  };
+  const patientStatus = (data?.patientStatus || []).map((s) => ({
+    ...s,
+    color: STATUS_COLORS[s.status] || Colors.gray400,
+  }));
+  const totalPatients = patientStatus.reduce((sum, s) => sum + s.value, 0);
+
   return (
     <View style={styles.grid}>
+      <ChartCard
+        itemStyle={itemStyle}
+        icon={BedDouble}
+        iconTint={Colors.blue50}
+        iconColor={Colors.blue600}
+        title="Patient Flow"
+        description={`Admissions vs discharges · ${filterSummary}`}
+        hasData={totalAdmissions + totalDischarges > 0}
+        footnote={
+          `${totalAdmissions} admitted · ${totalDischarges} discharged` +
+          (data?.avgLengthOfStayDays != null ? ` · average stay ${data.avgLengthOfStayDays} day(s)` : '')
+        }
+      >
+        {(chartWidth) => {
+          const sizing = computeBarSizing(patientFlow.length, chartWidth);
+          return (
+            <View>
+              <View style={styles.flowLegend}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendSwatch, { backgroundColor: Colors.blue600 }]} />
+                  <Text style={styles.legendLabel}>Admissions</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendSwatch, { backgroundColor: Colors.green600 }]} />
+                  <Text style={styles.legendLabel}>Discharges</Text>
+                </View>
+              </View>
+              <BarChart
+                data={flowBars}
+                width={chartWidth}
+                height={200}
+                barWidth={Math.max(sizing.barWidth / 2, 8)}
+                spacing={sizing.spacing}
+                roundedTop
+                noOfSections={4}
+                yAxisThickness={0}
+                xAxisThickness={1}
+                xAxisColor={Colors.border}
+                rulesColor={Colors.border}
+                rulesType="dashed"
+                yAxisTextStyle={yAxisTextStyle}
+                xAxisLabelTextStyle={axisLabelStyle}
+              />
+            </View>
+          );
+        }}
+      </ChartCard>
+
+      <ChartCard
+        itemStyle={itemStyle}
+        icon={Users}
+        iconTint={Colors.blue50}
+        iconColor={Colors.blue600}
+        title="Patients by Status"
+        description="Current admitted, under observation and discharged patients"
+        hasData={totalPatients > 0}
+      >
+        {() => (
+          <View style={styles.pieWrap}>
+            <PieChart
+              data={patientStatus.filter((s) => s.value > 0)}
+              donut
+              radius={92}
+              innerRadius={58}
+              centerLabelComponent={() => (
+                <View style={styles.pieCenter}>
+                  <Text style={styles.pieCenterValue}>{totalPatients}</Text>
+                  <Text style={styles.pieCenterLabel}>Patients</Text>
+                </View>
+              )}
+            />
+            <View style={styles.legendGrid}>
+              {patientStatus.map((s) => (
+                <View key={s.status} style={styles.legendItem}>
+                  <View style={[styles.legendSwatch, { backgroundColor: s.color }]} />
+                  <Text style={styles.legendLabel}>
+                    {s.label} <Text style={styles.legendValue}>{s.value}</Text>
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+      </ChartCard>
       <ChartCard
         itemStyle={itemStyle}
         icon={TrendingUp}
@@ -328,6 +431,7 @@ const styles = StyleSheet.create({
   chartFootnote: { fontSize: 11, color: Colors.mutedForeground, marginTop: 8 },
   noData: { fontSize: 13, color: Colors.mutedForeground, textAlign: 'center', paddingVertical: 32 },
   pieWrap: { alignItems: 'center' },
+  flowLegend: { flexDirection: 'row', gap: 16, marginBottom: 8 },
   legendGrid: {
     flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 16, paddingTop: 14,
     borderTopWidth: 1, borderTopColor: Colors.border, width: '100%', justifyContent: 'center',

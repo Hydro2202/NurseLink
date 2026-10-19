@@ -113,6 +113,7 @@ from .notifications import (
     notify_duty_assigned,
     notify_nurse_reassigned,
     notify_referral_head_nurse_fyi,
+    notify_emergency_response,
     notify_safety_alert,
     notify_task_delay_flagged,
     notify_task_handover_accepted,
@@ -2798,7 +2799,8 @@ class PatientViewSet(viewsets.ModelViewSet):
                 Q(name__icontains=search)
                 | Q(patient_code__icontains=search)
                 | Q(room__icontains=search)
-                | Q(diagnosis__icontains=search)
+                # diagnosis is encrypted at rest (api/encryption.py), so the
+                # database can't search it.
             )
         return qs
 
@@ -3170,6 +3172,33 @@ class PatientViewSet(viewsets.ModelViewSet):
             'assigned to notify.'
         ),
     )
+    @extend_schema(
+        request=inline_serializer(
+            name='EmergencyResponseRequest',
+            fields={'message': serializers.CharField(required=False, allow_blank=True)},
+        ),
+        summary='"Respond Now": emergency alert with sound to the staff who should respond',
+        description=(
+            "Sends a critical, sound-on popup to the patient's assigned nurse, every nurse on "
+            "duty right now in the patient's department, and the head nurses."
+        ),
+    )
+    @action(detail=True, methods=['post'], url_path='emergency')
+    def emergency(self, request, patient_code=None):
+        patient = self.get_object()
+        message = (request.data.get('message') or '').strip()[:500]
+        recipients = notify_emergency_response(patient, request.user, message=message)
+        names = [full_name(u) for u in recipients]
+        return Response({
+            'notified': len(recipients),
+            'names': names,
+            'detail': (
+                f'Emergency alert sent to {len(recipients)} staff member'
+                f'{"" if len(recipients) == 1 else "s"}.'
+                if recipients else 'No other staff are on duty to alert right now.'
+            ),
+        })
+
     @action(detail=True, methods=['post'], url_path='notify-nurse')
     def notify_nurse(self, request, patient_code=None):
         patient = self.get_object()
@@ -6462,8 +6491,54 @@ class AnalyticsView(APIView):
             overdue = tasks.filter(status='overdue', assigned_nurse_id__in=bar_nurse_ids).count()
             delay_data.append({'value': overdue, 'label': label})
 
+        # Patient flow -- admissions vs discharges per day over the same window,
+        # current patients by status, and average length of stay for visits
+        # that ended in the window. Department/risk filters apply.
+        visits = PatientVisit.objects.all()
+        flow_patients = Patient.objects.all()
+        if department_id:
+            visits = visits.filter(patient__department_id=department_id)
+            flow_patients = flow_patients.filter(department_id=department_id)
+        if risk_param:
+            visits = visits.filter(patient__risk_level=risk_param)
+            flow_patients = flow_patients.filter(risk_level=risk_param)
+        admissions_by_day = dict(
+            visits.filter(admission_date__range=(start_date, end_date))
+            .values('admission_date').annotate(c=Count('id')).values_list('admission_date', 'c')
+        )
+        local_tz = ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)
+        discharges_by_day = {}
+        stays = []
+        for admitted, discharged in visits.filter(discharge_date__isnull=False).values_list(
+            'admission_date', 'discharge_date'
+        ):
+            day = discharged.astimezone(local_tz).date()
+            if start_date <= day <= end_date:
+                discharges_by_day[day] = discharges_by_day.get(day, 0) + 1
+                stays.append(max((day - admitted).days, 0))
+        patient_flow = []
+        day = start_date
+        while day <= end_date:
+            patient_flow.append({
+                'date': day.isoformat(),
+                'label': day.strftime('%b %d'),
+                'admissions': admissions_by_day.get(day, 0),
+                'discharges': discharges_by_day.get(day, 0),
+            })
+            day += timedelta(days=1)
+        status_counts = dict(
+            flow_patients.values('status').annotate(c=Count('id')).values_list('status', 'c')
+        )
+        patient_status = [
+            {'status': key, 'label': label, 'value': status_counts.get(key, 0)}
+            for key, label in Patient.STATUS_CHOICES
+        ]
+
         return Response(
             {
+                'patientFlow': patient_flow,
+                'patientStatus': patient_status,
+                'avgLengthOfStayDays': round(sum(stays) / len(stays), 1) if stays else None,
                 'taskCompletion': task_completion,
                 'workloadTrend': workload_trend,
                 'avgTasks': avg_tasks_series,

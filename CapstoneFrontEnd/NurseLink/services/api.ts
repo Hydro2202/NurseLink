@@ -724,6 +724,18 @@ export async function deletePatient(patientCode: string): Promise<void> {
 
 /** Head-nurse-only. Notifies the patient's assigned nurse (resolved
  * server-side) via the real notification inbox — not a local-only toast. */
+/** "Respond Now": emergency popup + sound to the assigned nurse, everyone on
+ * duty in the patient's department, and the head nurses. */
+export async function sendEmergencyAlert(
+  patientCode: string,
+  message?: string
+): Promise<{ detail: string; notified: number; names: string[] }> {
+  return apiRequest(`/patients/${patientCode}/emergency/`, {
+    method: 'POST',
+    body: message ? { message } : {},
+  });
+}
+
 export async function notifyPatientNurse(patientCode: string, message?: string): Promise<{ detail: string }> {
   return apiRequest<{ detail: string }>(`/patients/${patientCode}/notify-nurse/`, {
     method: 'POST',
