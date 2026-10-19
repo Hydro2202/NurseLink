@@ -783,6 +783,14 @@ export default function AppLayout() {
  * Built per theme rather than once at import — see ThemeContext for why a
  * module-scope StyleSheet can never respond to a settings change.
  */
+// One divider and one header height for every portal (nurse, head nurse,
+// admin) so the sidebar's logo block and the top header end on the same line,
+// and every separator is the same weight and color.
+const DESKTOP_HEADER_HEIGHT = 88;
+const DIVIDER_WIDTH = 1;
+// Outer inset shared by the sidebar's logo, nav and footer blocks.
+const SIDEBAR_GUTTER = 16;
+
 const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n: number) => number) =>
   StyleSheet.create({
   loading: {
@@ -808,8 +816,8 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     paddingHorizontal: space(12),
     paddingVertical: space(8),
     backgroundColor: c.white,
-    borderBottomWidth: 2,
-    borderBottomColor: c.blue300,
+    borderBottomWidth: DIVIDER_WIDTH,
+    borderBottomColor: c.blue200,
     zIndex: 50,
   },
   brandPill: {
@@ -918,8 +926,8 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     paddingHorizontal: space(16),
     paddingVertical: space(12),
     backgroundColor: c.white,
-    borderBottomWidth: 4,
-    borderBottomColor: c.blue300,
+    borderBottomWidth: DIVIDER_WIDTH,
+    borderBottomColor: c.blue200,
     zIndex: 50,
   },
   supervisorBrand: {
@@ -971,8 +979,8 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     justifyContent: 'space-between',
     paddingHorizontal: space(16),
     paddingVertical: space(12),
-    borderBottomWidth: 2,
-    borderBottomColor: c.blue100,
+    borderBottomWidth: DIVIDER_WIDTH,
+    borderBottomColor: c.blue200,
   },
   hnMenuTitle: {
     fontSize: scale(17),
@@ -1026,8 +1034,8 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
   sidebar: {
     width: 256,
     backgroundColor: c.white,
-    borderRightWidth: 4,
-    borderRightColor: c.blue300,
+    borderRightWidth: DIVIDER_WIDTH,
+    borderRightColor: c.blue200,
     zIndex: 40,
   },
   sidebarOverlay: {
@@ -1045,15 +1053,16 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     flexDirection: 'row',
     alignItems: 'center',
     gap: space(12),
-    paddingHorizontal: space(20),
-    paddingVertical: space(18),
-    borderBottomWidth: 4,
-    borderBottomColor: c.blue300,
-    backgroundColor: c.blue50,
+    paddingHorizontal: SIDEBAR_GUTTER,
+    // Same fixed height as desktopHeader: their bottom borders form one line.
+    height: DESKTOP_HEADER_HEIGHT,
+    borderBottomWidth: DIVIDER_WIDTH,
+    borderBottomColor: c.blue200,
+    backgroundColor: c.white,
   },
   sidebarLogoBox: {
-    width: 64,
-    height: 64,
+    width: 56,
+    height: 56,
     borderRadius: 16,
     backgroundColor: c.white,
     padding: space(8),
@@ -1081,22 +1090,22 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     flex: 1,
   },
   sidebarNavContent: {
-    paddingHorizontal: space(12),
-    paddingVertical: space(20),
+    paddingHorizontal: SIDEBAR_GUTTER,
+    paddingVertical: space(16),
     gap: space(8),
   },
   navLink: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space(12),
-    paddingHorizontal: space(16),
-    paddingVertical: space(14),
-    borderRadius: 16,
+    paddingHorizontal: space(12),
+    paddingVertical: space(12),
+    borderRadius: 12,
   },
+  // No scale-up: a grown pill pokes past the shared left/right edges.
   navLinkActive: {
     backgroundColor: c.blue600,
-    ...Shadows.md,
-    transform: [{ scale: 1.02 }],
+    ...Shadows.sm,
   },
   navLinkText: {
     fontSize: scale(14),
@@ -1108,19 +1117,19 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     fontWeight: '900',
   },
   sidebarFooter: {
-    borderTopWidth: 4,
-    borderTopColor: c.blue300,
-    padding: space(16),
+    borderTopWidth: DIVIDER_WIDTH,
+    borderTopColor: c.blue200,
+    padding: SIDEBAR_GUTTER,
     gap: space(12),
-    backgroundColor: c.blue50,
+    backgroundColor: c.white,
   },
   sidebarUser: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space(12),
     padding: space(12),
-    backgroundColor: c.blue100,
-    borderRadius: 16,
+    backgroundColor: c.blue50,
+    borderRadius: 12,
   },
   sidebarAvatar: {
     width: 44,
@@ -1171,10 +1180,11 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: space(24),
-    paddingVertical: space(16),
+    // Fixed, matching sidebarLogo (see DESKTOP_HEADER_HEIGHT).
+    height: DESKTOP_HEADER_HEIGHT,
     backgroundColor: c.white,
-    borderBottomWidth: 4,
-    borderBottomColor: c.blue300,
+    borderBottomWidth: DIVIDER_WIDTH,
+    borderBottomColor: c.blue200,
   },
   desktopHeaderLeft: {
     flexDirection: 'row',
@@ -1193,7 +1203,10 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
   },
   desktopContent: {
     flex: 1,
-    padding: space(24),
+    // Every page pads its own content by 16, so 8 here puts page content at
+    // the same 24px left edge as the header title above it.
+    paddingHorizontal: 24 - 16,
+    paddingTop: space(8),
   },
 
   menuBackdrop: {
@@ -1208,7 +1221,7 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     width: 256,
     backgroundColor: c.white,
     borderRadius: Radius.lg,
-    borderWidth: 2,
+    borderWidth: DIVIDER_WIDTH,
     borderColor: c.blue200,
     overflow: 'hidden',
   },

@@ -117,6 +117,8 @@ export default function TasksPage() {
     highlightId?: string;
     patientId?: string;
     scrollToPatient?: string;
+    /** Opens on a filter tab, e.g. ?filter=overdue from the dashboard banner. */
+    filter?: string;
   }>();
   const toast = useToast();
   const { user } = useAuth();
@@ -145,6 +147,17 @@ export default function TasksPage() {
   const [vitalsReadingCounts, setVitalsReadingCounts] = useState<Record<string, number>>({});
   const [vitalsModalTaskId, setVitalsModalTaskId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  // "View Overdue Tasks" (and any other ?filter= link) opens on that tab. A
+  // param, not initial state: this screen stays mounted between visits.
+  useEffect(() => {
+    const filter = typeof params.filter === 'string' ? params.filter : '';
+    if (['all', 'high', 'medium', 'low', 'completed', 'overdue'].includes(filter)) {
+      (() => {
+        setSelectedTab(filter);
+        setSearchQuery('');
+      })();
+    }
+  }, [params.filter]);
   // Default view order: High -> Medium -> Low risk, overdue first within
   // each, then soonest due date/time, completed last — see the 'priority'
   // branch of filteredTasks' sort below.
