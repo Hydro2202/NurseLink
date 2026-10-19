@@ -815,13 +815,6 @@ export default function DashboardPage() {
         </View>
 
         <View style={styles.body}>
-          {overdueTasks > 0 ? (
-            <OverdueBanner
-              count={overdueTasks}
-              message={`${overdueTasks} task${overdueTasks > 1 ? 's are' : ' is'} overdue across the ward.`}
-              onView={() => router.push({ pathname: '/(app)/tasks', params: { filter: 'overdue' } } as any)}
-            />
-          ) : null}
           <View ref={(r) => { sectionRefs.current.alerts = r; }}>
             <SafetyAlertsSection
               patients={patients}
