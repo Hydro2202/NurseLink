@@ -4,7 +4,8 @@ import json
 import logging
 import time
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -17,6 +18,7 @@ from django.db.models import Case, Count, IntegerField, Max, Prefetch, Q, Value,
 from django.utils import timezone
 from zoneinfo import ZoneInfo
 from django.utils.dateparse import parse_date
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
     OpenApiExample,
     extend_schema,
@@ -35,7 +37,12 @@ from rest_framework.views import APIView
 from .email_validation import EmailValidationError
 from .duty_status import current_duties, duty_fields, today_overtime_hours
 from .presence import clear_last_seen, presence_fields, touch_last_seen
+from . import task_events
 from .names import full_name, name_match_q, name_variants
+from .vitals_schedule import end_schedule as end_vitals_schedule
+from .vitals_schedule import generate_for_schedule as generate_vitals_for_schedule
+from .vitals_schedule import generate_if_due as generate_vitals_tasks_if_due
+from .vitals_schedule import schedule_summary as vitals_schedule_summary
 from .face_match import (
     FaceModelError,
     FaceVerificationOutcome,
@@ -90,6 +97,8 @@ from .models import (
     PatientDoctor,
     RegistrationSession,
     Task,
+    TaskEvent,
+    VitalSignsSchedule,
     TaskHandover,
     UserPreferences,
     VitalSigns,
@@ -2927,6 +2936,8 @@ class PatientViewSet(viewsets.ModelViewSet):
                 ]
             )
             PatientAssignment.objects.filter(patient=patient, status='active').update(status='completed')
+            for active_schedule in patient.vitals_schedules.filter(ended_at__isnull=True):
+                end_vitals_schedule(active_schedule, request.user, 'Patient discharged')
 
             visit = patient.visits.filter(discharge_date__isnull=True).order_by('-admission_date').first()
             if visit is None:
@@ -3199,6 +3210,120 @@ class PatientViewSet(viewsets.ModelViewSet):
             ),
         })
 
+    @staticmethod
+    def _vitals_schedule_row(schedule):
+        return {
+            'id': schedule.pk,
+            'frequencyHours': schedule.frequency_hours,
+            'frequencyLabel': schedule.get_frequency_hours_display(),
+            'startAt': schedule.start_at,
+            'basis': schedule.basis,
+            'setBy': schedule.set_by_name,
+            'setAt': schedule.created_at,
+            'endedAt': schedule.ended_at,
+            'endedBy': schedule.ended_by_name,
+            'endReason': schedule.end_reason,
+        }
+
+    def _vitals_schedule_response(self, patient):
+        schedules = list(patient.vitals_schedules.all())
+        active = next((sc for sc in schedules if sc.ended_at is None), None)
+        payload = None
+        if active is not None:
+            payload = {**self._vitals_schedule_row(active), **vitals_schedule_summary(active)}
+        return Response({
+            'patientId': patient.patient_code,
+            'active': payload,
+            'history': [self._vitals_schedule_row(sc) for sc in schedules],
+        })
+
+    @extend_schema(
+        request=inline_serializer(
+            name='VitalsScheduleInput',
+            fields={
+                'frequencyHours': serializers.ChoiceField(choices=[1, 2, 4]),
+                'startAt': serializers.DateTimeField(required=False),
+                'basis': serializers.CharField(required=False, allow_blank=True),
+                'reason': serializers.CharField(required=False, allow_blank=True),
+            },
+        ),
+        responses={200: OpenApiTypes.OBJECT},
+        summary="A patient's vital signs schedule",
+        description=(
+            'GET: the active schedule (with next/last check and monitoring status) and every '
+            'past one. POST: set or change it — frequencyHours 1, 2 or 4 as ordered for this '
+            'patient, startAt for the first check (default: the next full hour), basis = the '
+            'order/protocol it follows. Changing it ends the current schedule (kept in history) '
+            'and only affects checks not yet due. DELETE: stop monitoring. Writes: head nurse, '
+            'or the nurse assigned to the patient.'
+        ),
+    )
+    @action(detail=True, methods=['get', 'post', 'delete'], url_path='vitals-schedule')
+    def vitals_schedule(self, request, patient_code=None):
+        patient = self.get_object()
+        if request.method == 'GET':
+            return self._vitals_schedule_response(patient)
+        _check_patient_care_scope(request, patient, 'set the vital signs schedule')
+        if request.method == 'DELETE':
+            active = patient.vitals_schedules.filter(ended_at__isnull=True).first()
+            if active is not None:
+                reason = str(request.data.get('reason') or '').strip()[:255] or 'Monitoring stopped'
+                end_vitals_schedule(active, request.user, reason)
+            return self._vitals_schedule_response(patient)
+
+        if patient.status == 'discharged':
+            return Response({'detail': 'This patient has been discharged.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            frequency = int(request.data.get('frequencyHours'))
+        except (TypeError, ValueError):
+            frequency = None
+        if frequency not in (1, 2, 4):
+            return Response(
+                {'frequencyHours': ['Choose every 1, 2 or 4 hours, as ordered for this patient.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        now = timezone.now()
+        raw_start = request.data.get('startAt')
+        if raw_start:
+            try:
+                start_at = serializers.DateTimeField().to_internal_value(raw_start)
+            except serializers.ValidationError:
+                start_at = None
+            if start_at is None:
+                return Response({'startAt': ['Enter a valid date and time.']}, status=status.HTTP_400_BAD_REQUEST)
+            if start_at < now - timedelta(hours=1):
+                return Response(
+                    {'startAt': ['The first check cannot be more than an hour in the past.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if start_at > now + timedelta(days=7):
+                return Response(
+                    {'startAt': ['The first check must be within the next 7 days.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            local_now = timezone.localtime(now, ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
+            start_at = local_now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        basis = str(request.data.get('basis') or '').strip()[:255]
+        with transaction.atomic():
+            # Lock the patient row so two simultaneous saves can't both pass
+            # the "is there an active schedule" check.
+            Patient.objects.select_for_update().filter(pk=patient.pk).first()
+            active = patient.vitals_schedules.filter(ended_at__isnull=True).first()
+            if active is not None:
+                if active.frequency_hours == frequency and active.start_at == start_at and active.basis == basis:
+                    return self._vitals_schedule_response(patient)
+                reason = str(request.data.get('reason') or '').strip()[:255]
+                end_vitals_schedule(
+                    active, request.user, reason or f'Changed to every {frequency} hour{"s" if frequency > 1 else ""}'
+                )
+            schedule = VitalSignsSchedule.objects.create(
+                patient=patient, frequency_hours=frequency, start_at=start_at, basis=basis,
+                set_by=request.user, set_by_name=full_name(request.user),
+            )
+        generate_vitals_for_schedule(schedule)
+        return self._vitals_schedule_response(patient)
+
     @action(detail=True, methods=['post'], url_path='notify-nurse')
     def notify_nurse(self, request, patient_code=None):
         patient = self.get_object()
@@ -3257,6 +3382,14 @@ class DoctorViewSet(viewsets.ModelViewSet):
                 | Q(license_number__icontains=search)
             )
         return qs
+
+
+def parse_query_date(value):
+    """YYYY-MM-DD from a query string, or None when blank or malformed."""
+    try:
+        return parse_date(value) if value else None
+    except ValueError:
+        return None
 
 
 @extend_schema_view(
@@ -3324,6 +3457,9 @@ class TaskViewSet(viewsets.ModelViewSet):
             qs = qs.filter(status=status_filter)
         if patient_id:
             qs = qs.filter(patient__patient_code=patient_id)
+        task_type = self.request.query_params.get('taskType')
+        if task_type in ('procedure', 'referral'):
+            qs = qs.filter(task_type=task_type)
         if search:
             qs = qs.filter(
                 Q(title__icontains=search)
@@ -3357,47 +3493,254 @@ class TaskViewSet(viewsets.ModelViewSet):
             '_completed_rank', '_priority_rank', '_overdue_rank', 'due_date', 'due_time', '-created_at',
         )
 
-    @extend_schema(
-        request=None,
-        responses={200: TaskSerializer},
-        summary='Mark a task complete',
-        description=(
-            'No request body — the task is identified by the URL. Stamps `completedAt`. '
-            'Rejected with 400 if the task has an unfinished checklist item — an empty '
-            'checklist is not required and is never blocked.'
-        ),
-    )
-    @action(detail=True, methods=['post'])
-    def complete(self, request, task_code=None):
-        task = self.get_object()
-        # get_queryset() already scopes a staff nurse to their own tasks, so
-        # this can't currently be reached for someone else's task — kept as
-        # an explicit, independent check (same defense-in-depth style as
-        # DutyAssignmentViewSet.start/end) so completing a task can never
-        # silently start working for the wrong nurse again if that scoping
-        # ever changes.
+    def list(self, request, *args, **kwargs):
+        # Scheduled vital signs checks that have come due appear here even
+        # if nobody's live poll has run the generator yet (throttled).
+        generate_vitals_tasks_if_due()
+        return super().list(request, *args, **kwargs)
+
+    def _own_task_or_403(self, request, task, verb):
+        """get_queryset() already scopes a staff nurse to their own tasks;
+        kept as an explicit, independent check (defense in depth)."""
         if get_user_role(request.user) == 'staff_nurse':
             is_owner = task.assigned_nurse_id == request.user.pk or (
                 ' '.join((task.assigned_to or '').lower().split()) in name_variants(request.user)
             )
             if not is_owner:
                 return Response(
-                    {'detail': 'You can only complete your own tasks.'},
+                    {'detail': f'You can only {verb} your own tasks.'},
                     status=status.HTTP_403_FORBIDDEN,
                 )
-        unfinished = [item.get('text', 'item') for item in task.checklist if not item.get('done')]
-        if unfinished:
+        return None
+
+    @extend_schema(
+        request=inline_serializer(name='CompleteTask', fields={'remarks': serializers.CharField()}),
+        responses={200: TaskSerializer},
+        summary='Mark a task complete (Done)',
+        description=(
+            'Body: `{"remarks": "..."}` — the care or procedure performed, findings and the '
+            "patient's response (required). Stamps completedAt and completedBy and records a "
+            '`completed` history event. 400 if remarks are missing or a checklist item is '
+            'unfinished; 409 if the task is already completed (a repeated or double-clicked '
+            'Done never completes it twice).'
+        ),
+    )
+    @action(detail=True, methods=['post'])
+    def complete(self, request, task_code=None):
+        task = self.get_object()
+        denied = self._own_task_or_403(request, task, 'complete')
+        if denied:
+            return denied
+        raw_remarks = str(request.data.get('remarks') or '').strip()
+        if len(' '.join(raw_remarks.split())) < 3:
             return Response(
-                {
-                    'detail': 'Complete the remaining checklist items before finishing this task.',
-                    'unfinishedChecklistItems': unfinished,
-                },
+                {'remarks': ["Document the care performed, findings and the patient's response."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        task.status = 'completed'
-        task.completed_at = timezone.now()
-        task.save(update_fields=['status', 'completed_at', 'updated_at'])
+        with transaction.atomic():
+            # Row lock: two Done clicks (or two devices) racing each other
+            # serialize here, and the second sees the task already completed.
+            task = Task.objects.select_for_update().get(pk=task.pk)
+            if task.status == 'completed':
+                return Response(
+                    {'detail': 'This task is already completed.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            unfinished = [item.get('text', 'item') for item in task.checklist if not item.get('done')]
+            if unfinished:
+                return Response(
+                    {
+                        'detail': 'Complete the remaining checklist items before finishing this task.',
+                        'unfinishedChecklistItems': unfinished,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            previous_status = task.status
+            task.status = 'completed'
+            task.completed_at = timezone.now()
+            task.completed_by = request.user
+            task.completed_by_name = full_name(request.user)
+            task.completion_remarks = raw_remarks
+            task.save(update_fields=[
+                'status', 'completed_at', 'completed_by', 'completed_by_name', 'completion_remarks',
+                'updated_at',
+            ])
+            task_events.record(
+                task, 'completed', actor=request.user, from_status=previous_status,
+                to_status='completed', remarks=raw_remarks,
+            )
+        task = self.get_queryset().get(pk=task.pk)
         return Response(TaskSerializer(task, context={'request': request}).data)
+
+    @extend_schema(
+        request=inline_serializer(name='AmendTaskRemarks', fields={'remarks': serializers.CharField()}),
+        responses={200: TaskSerializer},
+        summary='Correct the remarks of a completed task',
+        description=(
+            'The nurse who completed the task, or a head nurse. The previous remarks are kept '
+            'in the task history (a `remarks_amended` event), never overwritten silently.'
+        ),
+    )
+    @action(detail=True, methods=['post'], url_path='amend-remarks')
+    def amend_remarks(self, request, task_code=None):
+        task = self.get_object()
+        remarks = str(request.data.get('remarks') or '').strip()
+        if len(' '.join(remarks.split())) < 3:
+            return Response({'remarks': ['Remarks cannot be empty.']}, status=status.HTTP_400_BAD_REQUEST)
+        if task.status != 'completed':
+            return Response({'detail': 'Only a completed task has remarks to correct.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if get_user_role(request.user) != 'head_nurse' and task.completed_by_id != request.user.pk:
+            return Response(
+                {'detail': 'Only the nurse who completed this task or a head nurse can correct its remarks.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        with transaction.atomic():
+            task = Task.objects.select_for_update().get(pk=task.pk)
+            previous = task.completion_remarks
+            if previous == remarks:
+                return Response(TaskSerializer(self.get_queryset().get(pk=task.pk), context={'request': request}).data)
+            task.completion_remarks = remarks
+            task.save(update_fields=['completion_remarks', 'updated_at'])
+            task_events.record(
+                task, 'remarks_amended', actor=request.user, remarks=remarks, previous_remarks=previous,
+            )
+        return Response(TaskSerializer(self.get_queryset().get(pk=task.pk), context={'request': request}).data)
+
+    @extend_schema(
+        responses={200: OpenApiTypes.OBJECT},
+        summary='Task history',
+        description=(
+            'Recorded history of the tasks you can access (same scope as the task list): '
+            'creation, assignment, status changes, edits, completion with remarks and remark '
+            'corrections. Tasks that predate the history log contribute only what the task row '
+            'itself recorded (when it was created and completed). Filters: patientId, taskType, '
+            'status (the task\'s current status), event, dateFrom, dateTo (YYYY-MM-DD, local), '
+            'q (keyword over title, patient, remarks and people; remarks are encrypted so this is '
+            'matched here rather than in the database), and for a head nurse assignedTo. '
+            'Newest first, at most 500 rows.'
+        ),
+    )
+    @action(detail=False, methods=['get'])
+    def history(self, request):
+        params = request.query_params
+        tasks = self.get_queryset()
+        task_status = params.get('status')
+        if task_status:
+            tasks = tasks.filter(status=task_status)
+        task_ids = tasks.values('pk')
+        events = TaskEvent.objects.filter(task_id__in=task_ids).select_related('task', 'task__patient')
+        event_filter = params.get('event')
+        if event_filter:
+            events = events.filter(event=event_filter)
+        tz = ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)
+        date_from = parse_query_date(params.get('dateFrom'))
+        date_to = parse_query_date(params.get('dateTo'))
+        lower = datetime.combine(date_from, dtime.min, tzinfo=tz) if date_from else None
+        upper = datetime.combine(date_to + timedelta(days=1), dtime.min, tzinfo=tz) if date_to else None
+        if lower:
+            events = events.filter(created_at__gte=lower)
+        if upper:
+            events = events.filter(created_at__lt=upper)
+
+        def row(task, event, at, actor_name, from_status='', to_status='', remarks='',
+                previous_remarks='', details=None, source='history'):
+            return {
+                'id': f'{source}-{task.pk}-{event}-{at.isoformat()}',
+                'taskId': task.task_code,
+                'taskTitle': task.title,
+                'taskType': task.task_type,
+                'taskStatus': task.status,
+                'category': task.category,
+                'patientId': task.patient.patient_code if task.patient_id else '',
+                'patientName': task.patient_name,
+                'patientRoom': task.patient_room,
+                'assignedTo': task.assigned_to,
+                'event': event,
+                'at': at,
+                'actorName': actor_name,
+                'fromStatus': from_status,
+                'toStatus': to_status,
+                'remarks': remarks,
+                'previousRemarks': previous_remarks,
+                'details': details or {},
+                'source': source,
+            }
+
+        rows = [
+            row(e.task, e.event, e.created_at, e.actor_name, e.from_status, e.to_status,
+                e.remarks, e.previous_remarks, e.details)
+            for e in events[:500]
+        ]
+        # Tasks from before the history log: report what their own row recorded.
+        if not event_filter or event_filter in ('created', 'completed'):
+            logged = set(
+                TaskEvent.objects.filter(task_id__in=task_ids, event__in=('created', 'completed'))
+                .values_list('task_id', 'event')
+            )
+            for task in tasks.select_related('patient')[:500]:
+                if (task.pk, 'created') not in logged and event_filter in (None, '', 'created'):
+                    if (not lower or task.created_at >= lower) and (not upper or task.created_at < upper):
+                        rows.append(row(task, 'created', task.created_at, '', to_status='',
+                                        source='task_record'))
+                if (task.status == 'completed' and task.completed_at and (task.pk, 'completed') not in logged
+                        and event_filter in (None, '', 'completed')):
+                    if (not lower or task.completed_at >= lower) and (not upper or task.completed_at < upper):
+                        rows.append(row(task, 'completed', task.completed_at, task.completed_by_name,
+                                        to_status='completed', remarks=task.completion_remarks,
+                                        source='task_record'))
+        search = (params.get('q') or '').strip().lower()
+        if search:
+            rows = [
+                r for r in rows
+                if search in ' '.join([
+                    r['taskTitle'], r['patientName'], r['patientId'], r['remarks'], r['actorName'],
+                    r['assignedTo'],
+                ]).lower()
+            ]
+        rows.sort(key=lambda r: r['at'], reverse=True)
+        return Response(rows[:500])
+
+    @extend_schema(
+        responses={200: OpenApiTypes.OBJECT},
+        summary='My patients with task counts',
+        description=(
+            'Patients assigned to the signed-in nurse (Patient.assigned_nurse), each with the '
+            'number of unfinished and completed tasks this nurse can see for them. Discharged '
+            'patients are left out unless includeDischarged=true.'
+        ),
+    )
+    @action(detail=False, methods=['get'], url_path='my-patients')
+    def my_patients(self, request):
+        patients = Patient.objects.filter(assigned_nurse=request.user).select_related('department')
+        if request.query_params.get('includeDischarged') not in ('1', 'true', 'True'):
+            patients = patients.exclude(status='discharged')
+        mine = Task.objects.filter(
+            Q(assigned_nurse=request.user) | name_match_q('assigned_to', request.user)
+        )
+        counts = {}
+        for patient_id, task_status, n in mine.filter(patient__in=patients).values_list(
+            'patient_id', 'status'
+        ).annotate(n=Count('pk')):
+            bucket = counts.setdefault(patient_id, {'unfinished': 0, 'finished': 0})
+            bucket['finished' if task_status == 'completed' else 'unfinished'] += n
+        rows = [
+            {
+                'patientId': p.patient_code,
+                'name': p.name,
+                'room': p.room,
+                'bedNumber': p.bed_number,
+                'departmentName': p.department.name if p.department_id else '',
+                'riskLevel': p.risk_level,
+                'status': p.status,
+                'unfinishedTasks': counts.get(p.pk, {}).get('unfinished', 0),
+                'finishedTasks': counts.get(p.pk, {}).get('finished', 0),
+            }
+            for p in patients.order_by('room', 'name')
+        ]
+        # Patients with open work first, then those with finished work, then the rest.
+        rows.sort(key=lambda r: (-r['unfinishedTasks'], -r['finishedTasks']))
+        return Response(rows)
 
     @extend_schema(
         request=None,
@@ -3411,11 +3754,16 @@ class TaskViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def unassign(self, request, task_code=None):
         task = self.get_object()
+        previous_assignee, previous_status = task.assigned_to, task.status
         task.assigned_nurse = None
         task.assigned_to = ''
         if task.status != 'completed':
             task.status = 'pending'
         task.save(update_fields=['assigned_nurse', 'assigned_to', 'status', 'updated_at'])
+        task_events.record(
+            task, 'unassigned', actor=request.user, from_status=previous_status, to_status=task.status,
+            previousAssignee=previous_assignee,
+        )
         return Response(TaskSerializer(task, context={'request': request}).data)
 
     @extend_schema(
@@ -6612,6 +6960,7 @@ class LiveStateView(APIView):
         # reminder_sent_at) — raises a notification the first poll after a
         # task's scheduled due date/time has actually arrived. See its own
         # docstring for why this lives on the poll rather than a scheduler.
+        generate_vitals_tasks_if_due()
         check_due_task_reminders(user)
         check_due_referral_reminders(user)
 

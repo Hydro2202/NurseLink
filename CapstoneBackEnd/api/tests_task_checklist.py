@@ -48,7 +48,7 @@ class TaskChecklistTests(APITestCase):
             task_code='T901', patient=self.patient, patient_name=self.patient.name,
             title='Check vitals', assigned_to='Ben Diaz', assigned_nurse=self.nurse,
         )
-        response = self.client.post('/api/tasks/T901/complete/')
+        response = self.client.post('/api/tasks/T901/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertEqual(len(response.data['unfinishedChecklistItems']), 6)
         task.refresh_from_db()
@@ -63,7 +63,7 @@ class TaskChecklistTests(APITestCase):
         patch = self.client.patch('/api/tasks/T902/', {'checklist': checked}, format='json')
         self.assertEqual(patch.status_code, 200)
 
-        response = self.client.post('/api/tasks/T902/complete/')
+        response = self.client.post('/api/tasks/T902/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['status'], 'completed')
 
@@ -73,7 +73,7 @@ class TaskChecklistTests(APITestCase):
             title='Check vitals', assigned_to='Ben Diaz', assigned_nurse=self.nurse,
             checklist=[],
         )
-        response = self.client.post('/api/tasks/T903/complete/')
+        response = self.client.post('/api/tasks/T903/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 200)
 
     def test_partially_checked_task_is_still_rejected(self):
@@ -85,7 +85,7 @@ class TaskChecklistTests(APITestCase):
         partial[0] = {**partial[0], 'done': True}
         self.client.patch('/api/tasks/T904/', {'checklist': partial}, format='json')
 
-        response = self.client.post('/api/tasks/T904/complete/')
+        response = self.client.post('/api/tasks/T904/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertEqual(len(response.data['unfinishedChecklistItems']), 5)
 
@@ -104,7 +104,7 @@ class TaskChecklistTests(APITestCase):
         self.assertEqual(len(task.checklist), 6)  # untouched
 
         # The real exploit path: swap it in, then try to complete.
-        response = self.client.post('/api/tasks/T905/complete/')
+        response = self.client.post('/api/tasks/T905/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 400)
 
     def test_removing_a_checklist_item_is_rejected(self):

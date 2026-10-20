@@ -40,11 +40,13 @@ import { Badge } from '../../components/Badge';
 import { PatientCareTeam } from '../../components/PatientCareTeam';
 import { VitalSignsGrid } from '../../components/VitalSignsGrid';
 import { KardexLabsAndMedications } from '../../components/KardexLabsAndMedications';
+import { VitalsScheduleCard, VITALS_FREQUENCIES } from '../../components/VitalsScheduleCard';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Colors, Radius, Shadows } from '../../constants/colors';
 import {
   createKardexRecord,
+  saveVitalsSchedule,
   fetchKardexRecords,
   reviewKardexRecord,
   setPatientAssignedDoctors,
@@ -153,6 +155,11 @@ export default function KardexScreen() {
   const [oxygenSaturation, setOxygenSaturation] = useState('');
 
   const [specialEndorsements, setSpecialEndorsements] = useState('');
+  // Ordered vital signs frequency, saved as the patient's schedule right
+  // after the Kardex itself. Optional here: left blank, the patient's Kardex
+  // shows "Vital Signs Schedule Required" until someone sets it.
+  const [vitalsFrequency, setVitalsFrequency] = useState('');
+  const [vitalsBasis, setVitalsBasis] = useState('');
 
   const [doctorIds, setDoctorIds] = useState<number[]>([]);
   const [careTeamValid, setCareTeamValid] = useState(true);
@@ -296,6 +303,8 @@ export default function KardexScreen() {
     setBloodPressure('');
     setOxygenSaturation('');
     setSpecialEndorsements('');
+    setVitalsFrequency('');
+    setVitalsBasis('');
     setDoctorIds([]);
     setCareTeamResetKey((k) => k + 1);
   };
@@ -352,6 +361,21 @@ export default function KardexScreen() {
 
       if (newEntry.patientCode && doctorIds.length > 0) {
         await setPatientAssignedDoctors(newEntry.patientCode, doctorIds);
+      }
+      if (newEntry.patientCode && vitalsFrequency) {
+        try {
+          await saveVitalsSchedule(newEntry.patientCode, {
+            frequencyHours: Number(vitalsFrequency),
+            basis: vitalsBasis.trim(),
+          });
+        } catch (scheduleError) {
+          toast.error('Vital signs schedule not saved', {
+            description:
+              scheduleError instanceof ApiError
+                ? `${scheduleError.message} Set it from the schedule card below.`
+                : 'Set it from the schedule card below.',
+          });
+        }
       }
 
       setKardexHistory((prev) => [newEntry, ...prev]);
@@ -824,6 +848,30 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
             oxygenSaturation={oxygenSaturation}
             onOxygenSaturationChange={setOxygenSaturation}
           />
+          <View style={styles.vitalsScheduleFields}>
+            <Select
+              label="Vital signs monitoring (as ordered)"
+              value={vitalsFrequency}
+              onValueChange={setVitalsFrequency}
+              options={[
+                { label: 'Not set yet', value: '' },
+                ...VITALS_FREQUENCIES.map((f) => ({ label: f.label, value: String(f.hours) })),
+              ]}
+              placeholder="Not set yet"
+              style={styles.vitalsScheduleField}
+            />
+            <Input
+              label="Order / protocol reference"
+              placeholder="e.g., Dr. Reyes order"
+              value={vitalsBasis}
+              onChangeText={setVitalsBasis}
+              containerStyle={styles.vitalsScheduleField}
+            />
+          </View>
+          <Text style={styles.vitalsScheduleHint}>
+            First check is at the next full hour; change it any time from the patient&apos;s Vital Signs Schedule.
+            Left blank, the Kardex shows the schedule as required.
+          </Text>
         </CardContent>
       </Card>
 
@@ -937,7 +985,11 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
               Kardex History.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent style={styles.savedPatientContent}>
+            <VitalsScheduleCard
+              patientId={savedPatient.id}
+              patientName={savedPatient.name}
+            />
             <KardexLabsAndMedications patientId={savedPatient.id} />
           </CardContent>
         </Card>
@@ -1393,6 +1445,10 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
 
                   {selectedHistoryEntry.patientCode ? (
                     <>
+                      <View style={styles.separator} />
+                      <VitalsScheduleCard
+                        patientId={selectedHistoryEntry.patientCode}
+                                />
                       <View style={styles.separator} />
                       <KardexLabsAndMedications patientId={selectedHistoryEntry.patientCode} />
                     </>
@@ -2152,4 +2208,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.blue600,
   },
+  vitalsScheduleFields: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 16 },
+  vitalsScheduleField: { flexGrow: 1, flexBasis: 220 },
+  vitalsScheduleHint: { fontSize: 12, color: Colors.mutedForeground, marginTop: 6 },
+  savedPatientContent: { gap: 16 },
 });

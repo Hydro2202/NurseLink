@@ -32,6 +32,89 @@ export interface Task {
   assignedDoctors?: TaskDoctorAssignment[];
   /** Write-only on create/update: the full set of doctor ids for this task. */
   doctorIds?: number[];
+  /** Procedure = nursing care/procedure; Referral = work from a referral. */
+  taskType?: TaskType;
+  /** Read-only: written by the Done flow (completeTask), never by updateTask. */
+  completionRemarks?: string;
+  completedBy?: string;
+  /** Set on checks generated from a patient's vital signs schedule. */
+  scheduledFor?: string | null;
+  /** Readings needed before the vital signs checklist step can be ticked. */
+  vitalReadingsRequired?: number;
+}
+
+export type TaskType = 'procedure' | 'referral';
+
+export type TaskEventType =
+  | 'created'
+  | 'assigned'
+  | 'unassigned'
+  | 'status_changed'
+  | 'edited'
+  | 'completed'
+  | 'remarks_amended';
+
+/** One row of GET /tasks/history/. */
+export interface TaskHistoryEntry {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  taskType: TaskType;
+  taskStatus: Task['status'];
+  category: Task['category'];
+  patientId: string;
+  patientName: string;
+  patientRoom: string;
+  assignedTo: string;
+  event: TaskEventType;
+  at: string;
+  actorName: string;
+  fromStatus: string;
+  toStatus: string;
+  remarks: string;
+  previousRemarks: string;
+  details: Record<string, unknown>;
+  /** 'task_record' = from the task row itself, for tasks older than the history log. */
+  source: 'history' | 'task_record';
+}
+
+/** One folder of GET /tasks/my-patients/. */
+export interface MyPatientFolder {
+  patientId: string;
+  name: string;
+  room: string;
+  bedNumber: string;
+  departmentName: string;
+  riskLevel: string;
+  status: string;
+  unfinishedTasks: number;
+  finishedTasks: number;
+}
+
+export interface VitalsScheduleRow {
+  id: number;
+  frequencyHours: 1 | 2 | 4;
+  frequencyLabel: string;
+  startAt: string;
+  basis: string;
+  setBy: string;
+  setAt: string;
+  endedAt: string | null;
+  endedBy: string;
+  endReason: string;
+}
+
+export interface VitalsScheduleActive extends VitalsScheduleRow {
+  nextCheckAt: string;
+  lastCheckAt: string | null;
+  overdueChecks: number;
+  monitoringStatus: 'on_schedule' | 'overdue';
+}
+
+export interface VitalsScheduleResponse {
+  patientId: string;
+  active: VitalsScheduleActive | null;
+  history: VitalsScheduleRow[];
 }
 
 export interface TaskChecklistItem {

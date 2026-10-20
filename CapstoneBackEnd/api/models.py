@@ -469,6 +469,13 @@ class Task(models.Model):
             models.Index(fields=['status', 'priority']),
             models.Index(fields=['created_at']),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['patient', 'scheduled_for'],
+                condition=models.Q(scheduled_for__isnull=False),
+                name='unique_vitals_occurrence_per_patient',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.task_code} — {self.title}'
@@ -480,6 +487,46 @@ class Task(models.Model):
         blank=True,
         related_name='tasks',
     )
+
+    # Procedure = nursing care done for the patient (vital signs, wound care,
+    # assessment, medication). Referral = work that comes from a referral
+    # (see source_handover). Set explicitly; migration 0076 classified the
+    # existing rows from source_handover, never from the title.
+    TYPE_CHOICES = [
+        ('procedure', 'Procedure'),
+        ('referral', 'Referral'),
+    ]
+    task_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='procedure', db_index=True)
+    # What the nurse documented when pressing Done: care performed, findings,
+    # patient response. Clinical text, so encrypted at rest like charting.
+    completion_remarks = EncryptedTextField(blank=True, default='')
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tasks_completed',
+    )
+    completed_by_name = models.CharField(max_length=200, blank=True, default='')
+    # Set only on tasks generated from a patient's VitalSignsSchedule: the
+    # occurrence this check belongs to. Unique per patient (see Meta of the
+    # migration-added constraint) so the generator can never create the same
+    # check twice, however often it runs.
+    vitals_schedule = models.ForeignKey(
+        'VitalSignsSchedule',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tasks',
+    )
+    scheduled_for = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    @property
+    def vital_readings_required(self):
+        """A scheduled check (one occurrence of a VitalSignsSchedule) is a
+        single reading; a free-standing vital signs task keeps the original
+        rule of at least two check-ins."""
+        return 1 if self.vitals_schedule_id else 2
 
     #: The mandatory final checklist step on every 'vital_signs' category
     #: task — TaskSerializer.validate_checklist gates it behind at least 2
@@ -502,6 +549,111 @@ class Task(models.Model):
             elif not checklist:
                 self.checklist = [{'text': self.VITAL_SIGNS_CHECKLIST_TEXT, 'done': False}]
         super().save(*args, **kwargs)
+
+
+class TaskEvent(models.Model):
+    """
+    Append-only history of one task: created, (re)assigned, status changes,
+    edits, completion with remarks, and remark corrections. Never edited or
+    deleted through the API, so a correction is always a new row next to the
+    original rather than an overwrite.
+    """
+
+    EVENT_CHOICES = [
+        ('created', 'Created'),
+        ('assigned', 'Assigned'),
+        ('unassigned', 'Unassigned'),
+        ('status_changed', 'Status changed'),
+        ('edited', 'Edited'),
+        ('completed', 'Completed'),
+        ('remarks_amended', 'Remarks corrected'),
+    ]
+
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='events')
+    event = models.CharField(max_length=30, choices=EVENT_CHOICES, db_index=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='task_events',
+    )
+    #: Kept as text so the history still reads correctly after the account is gone.
+    actor_name = models.CharField(max_length=200, blank=True, default='')
+    from_status = models.CharField(max_length=20, blank=True, default='')
+    to_status = models.CharField(max_length=20, blank=True, default='')
+    remarks = EncryptedTextField(blank=True, default='')
+    #: For remarks_amended: the version being replaced.
+    previous_remarks = EncryptedTextField(blank=True, default='')
+    #: Non-clinical extras, e.g. {"fields": ["due date"], "assignedTo": "Ana Cruz"}.
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['task', 'created_at'])]
+
+    def __str__(self):
+        return f'{self.task_id} {self.event} {self.created_at:%Y-%m-%d %H:%M}'
+
+
+class VitalSignsSchedule(models.Model):
+    """
+    How often a patient's vital signs must be taken, as ordered for that
+    patient (physician order / hospital protocol), set by an authorized
+    nurse. Never derived automatically from the risk level.
+
+    Append-only: changing the frequency ends the current row (ended_at) and
+    starts a new one, so every past schedule, who set it and why, stays on
+    record. At most one active row per patient (constraint below).
+    """
+
+    FREQUENCY_CHOICES = [
+        (1, 'Every 1 hour'),
+        (2, 'Every 2 hours'),
+        (4, 'Every 4 hours'),
+    ]
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='vitals_schedules')
+    frequency_hours = models.PositiveSmallIntegerField(choices=FREQUENCY_CHOICES)
+    #: The first check; later ones fall every frequency_hours after it.
+    start_at = models.DateTimeField()
+    #: The order or protocol this follows, e.g. "Dr. Reyes order 10/20".
+    basis = models.CharField(max_length=255, blank=True, default='')
+    set_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='vitals_schedules_set',
+    )
+    set_by_name = models.CharField(max_length=200, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    ended_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='vitals_schedules_ended',
+    )
+    ended_by_name = models.CharField(max_length=200, blank=True, default='')
+    end_reason = models.CharField(max_length=255, blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['patient'],
+                condition=models.Q(ended_at__isnull=True),
+                name='one_active_vitals_schedule_per_patient',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.patient_id} every {self.frequency_hours}h from {self.start_at:%Y-%m-%d %H:%M}'
+
+    @property
+    def interval(self):
+        return timedelta(hours=self.frequency_hours)
+
+    def occurrence_at_or_after(self, moment):
+        """The first scheduled check at or after `moment`."""
+        if moment <= self.start_at:
+            return self.start_at
+        steps = -(-(moment - self.start_at) // self.interval)  # ceiling division
+        return self.start_at + steps * self.interval
 
 
 class Department(models.Model):
