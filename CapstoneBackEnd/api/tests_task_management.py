@@ -329,3 +329,44 @@ class VitalsScheduleTests(Base):
             self.client.force_authenticate(self.nurse)
             self.client.get('/api/tasks/')
         self.assertEqual(Task.objects.filter(vitals_schedule__isnull=False).count(), 1)
+
+
+class VitalsReminderTests(Base):
+    def test_assigned_nurse_is_reminded_five_minutes_before_with_the_time(self):
+        from zoneinfo import ZoneInfo
+
+        from django.conf import settings
+
+        from .models import Notification
+        from .notifications import check_due_task_reminders
+
+        tz = ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)
+        check_at = timezone.now().astimezone(tz).replace(second=0, microsecond=0) + datetime.timedelta(minutes=20)
+        schedule = VitalSignsSchedule.objects.create(patient=self.patient, frequency_hours=1, start_at=check_at)
+        generate_for_schedule(schedule)
+        task = Task.objects.get(vitals_schedule=schedule)
+
+        # 20 minutes out: no reminder yet.
+        check_due_task_reminders(self.nurse)
+        self.assertFalse(Notification.objects.filter(recipient=self.nurse).exists())
+
+        # 4 minutes before: one reminder naming the patient and the time.
+        with patch('api.notifications.timezone.now', return_value=check_at - datetime.timedelta(minutes=4)):
+            check_due_task_reminders(self.nurse)
+            check_due_task_reminders(self.nurse)
+        notes = Notification.objects.filter(recipient=self.nurse)
+        self.assertEqual(notes.count(), 1)
+        note = notes.get()
+        at = check_at.strftime('%I:%M %p').lstrip('0')
+        self.assertIn(at, note.title)
+        self.assertIn('Juan Dela Cruz', note.message)
+        self.assertEqual(note.action_path, '/tasks?openVitals=1')
+        self.assertEqual(note.action_highlight_id, task.task_code)
+        self.assertFalse(Notification.objects.filter(recipient=self.other).exists())
+
+        # Past the due time: no second "due now" for the same check.
+        with patch('api.notifications.timezone.now', return_value=check_at + datetime.timedelta(minutes=2)):
+            check_due_task_reminders(self.nurse)
+        self.assertEqual(Notification.objects.filter(recipient=self.nurse).count(), 1)
+        task.refresh_from_db()
+        self.assertEqual(task.status, 'overdue')

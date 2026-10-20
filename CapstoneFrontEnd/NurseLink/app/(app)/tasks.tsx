@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
   Modal,
 } from 'react-native';
-import { useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 import {
   Clock,
   Edit,
@@ -132,7 +132,10 @@ export default function TasksPage() {
     filter?: string;
     /** Opens a view: all | completed | history | patients. */
     view?: string;
+    /** With highlightId: open that task's Vital Signs Check-ins (from a vitals reminder). */
+    openVitals?: string;
   }>();
+  const router = useRouter();
   const toast = useToast();
   const { user } = useAuth();
   const scrollRef = useRef<ScrollView>(null);
@@ -262,13 +265,18 @@ export default function TasksPage() {
           : undefined;
     const patientId = typeof params.patientId === 'string' ? params.patientId : undefined;
     const scrollToPatient = params.scrollToPatient === 'true' || params.scrollToPatient === '1';
-    if (!taskId && !(scrollToPatient && patientId)) return;
+    const openVitals = params.openVitals === '1' || params.openVitals === 'true';
+    if (!taskId && !(scrollToPatient && patientId)) {
+      // No link pending (or it was consumed below): the same link may be followed again later.
+      handledDeepLinkRef.current = null;
+      return;
+    }
 
     // Handle each distinct deep link exactly once — this effect also reruns
     // on every unrelated live `tasks` refresh (see the deps list), which
     // would otherwise re-show the "not found" toast or re-highlight the
     // task repeatedly for as long as the nurse stays on this screen.
-    const linkKey = `${taskId ?? ''}|${scrollToPatient ? patientId ?? '' : ''}`;
+    const linkKey = `${taskId ?? ''}|${scrollToPatient ? patientId ?? '' : ''}|${openVitals ? 'vitals' : ''}`;
     if (loading || handledDeepLinkRef.current === linkKey) return;
 
     // A leftover search query or status tab from an earlier visit to this
@@ -295,8 +303,15 @@ export default function TasksPage() {
     (() => {
       // A finished task lives under Completed, an open one under All Tasks.
       setView(tasks.find((task) => task.id === targetId)?.status === 'completed' ? 'completed' : 'all');
-      setHighlightedTaskId(targetId);
+      if (!openVitals) setHighlightedTaskId(targetId);
     })();
+    if (openVitals) {
+      // A vital signs reminder: open that task's Check-ins straight away, then
+      // consume the link so tapping the same reminder again reopens it.
+      (() => setVitalsModalTaskId(targetId))();
+      router.setParams({ openVitals: undefined, highlightId: undefined, taskId: undefined });
+      return;
+    }
     let attempts = 0;
     const scrollTimer = setInterval(() => {
       attempts += 1;
@@ -316,7 +331,7 @@ export default function TasksPage() {
     // toast is stable (useToast's own context value); omitting it keeps this
     // from re-running on every unrelated render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.taskId, params.highlightId, params.patientId, params.scrollToPatient, tasks, loading]);
+  }, [params.taskId, params.highlightId, params.patientId, params.scrollToPatient, params.openVitals, tasks, loading]);
 
   const handleAddTask = () => {
     setSelectedTask(null);
