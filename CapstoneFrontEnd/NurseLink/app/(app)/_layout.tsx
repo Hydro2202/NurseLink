@@ -30,6 +30,7 @@ import {
   Stethoscope,
   ShieldCheck,
   IdCard,
+  History,
   BarChart3,
   type LucideIcon,
 } from 'lucide-react-native';
@@ -419,6 +420,7 @@ export default function AppLayout() {
     { name: 'Dashboard', href: '/(app)/admin', icon: LayoutDashboard, show: true, exact: true },
     { name: 'Accounts', href: '/(app)/admin/accounts', icon: ShieldCheck, show: true },
     { name: 'Registrations', href: '/(app)/admin/registrations', icon: IdCard, show: true },
+    { name: 'Audit Log', href: '/(app)/admin/audit-log', icon: History, show: true },
     { name: 'Settings', href: '/(app)/settings', icon: Settings, show: true },
   ].filter((item) => item.show);
 

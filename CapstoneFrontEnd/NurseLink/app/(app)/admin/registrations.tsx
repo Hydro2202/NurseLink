@@ -4,6 +4,7 @@ import { useFocusEffect } from 'expo-router';
 import { Search, X, Trash2, Sparkles } from 'lucide-react-native';
 import {
   fetchAdminRegistrationSessions,
+  fetchAdminRegistrationSession,
   deleteAdminRegistrationSession,
   clearAbandonedRegistrationSessions,
   ApiError,
@@ -16,6 +17,10 @@ import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 import { Pagination, usePagination } from '../../../components/Pagination';
+import { formatDateTime12 } from '../../../utils/time';
+import { PrintButton } from '../../../components/admin/PrintButton';
+import { printReport, type PrintField } from '../../../utils/print';
+import { useAuth } from '../../../contexts/AuthContext';
 
 // Matches the backend's clear-abandoned filter exactly (RegistrationSessionViewSet.clear_abandoned)
 // — used here only to show a live count before the admin commits to it.
@@ -45,9 +50,7 @@ const VERIFIED_TABS: TabItem[] = [
 ];
 
 function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
+  return formatDateTime12(iso) || '—';
 }
 
 export default function AdminRegistrationsPage() {
@@ -60,6 +63,34 @@ export default function AdminRegistrationsPage() {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const { user: currentUser } = useAuth();
+
+  // Opening a registration re-reads it through the server, which logs the view.
+  const openSession = async (session: AdminRegistrationSession) => {
+    setSelected(session);
+    try {
+      setSelected(await fetchAdminRegistrationSession(session.id));
+    } catch (err) {
+      setSelected(null);
+      toast.error('Could not open this registration', {
+        description: err instanceof ApiError ? err.message : 'Please try again.',
+      });
+    }
+  };
+
+  const regFields = (s: AdminRegistrationSession): PrintField[] => [
+    { label: 'Name', value: displayName(s) },
+    { label: 'Email', value: s.email || s.userEmail || '—' },
+    { label: 'Phone', value: s.phone || '—' },
+    { label: 'Requested role', value: s.requestedRole || '—' },
+    { label: 'Role', value: s.role || '—' },
+    { label: 'Department', value: s.department || '—' },
+    { label: 'Verified', value: s.isVerified ? 'Yes' : 'No' },
+    { label: 'Verification method', value: s.verificationMethod || '—' },
+    { label: 'Approval status', value: s.approvalStatus || '—' },
+    { label: 'Started', value: formatDateTime12(s.createdAt) || '—' },
+    { label: 'Last updated', value: formatDateTime12(s.updatedAt) || '—' },
+  ];
 
   const load = useCallback(async () => {
     try {
@@ -149,10 +180,43 @@ export default function AdminRegistrationsPage() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.title}>Registrations</Text>
-        <Text style={styles.subtitle}>
-          Every sign-up and the details the applicant entered — the basis for each Accounts decision.
-        </Text>
+        <View style={styles.titleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Registrations</Text>
+            <Text style={styles.subtitle}>
+              Every sign-up and the details the applicant entered — the basis for each Accounts decision.
+            </Text>
+          </View>
+          <PrintButton
+            label="Print list"
+            disabled={loading}
+            onPrint={() =>
+              printReport(
+                {
+                  title: 'Registrations',
+                  subtitle: 'Sign-ups and identity verification',
+                  printedBy: currentUser?.name,
+                  scope: [
+                    `Verified: ${verifiedFilter === 'all' ? 'All' : verifiedFilter === 'true' ? 'Verified' : 'Unverified'}${
+                      search.trim() ? ` · Search: "${search.trim()}"` : ''
+                    }`,
+                    `${filtered.length} of ${sessions.length} registrations`,
+                  ],
+                  columns: [
+                    { label: 'Name', value: (s: AdminRegistrationSession) => displayName(s), width: '22%' },
+                    { label: 'Email', value: (s: AdminRegistrationSession) => s.email || s.userEmail || '—', width: '26%' },
+                    { label: 'Role', value: (s: AdminRegistrationSession) => s.requestedRole || s.role || '—', width: '12%' },
+                    { label: 'Verified', value: (s: AdminRegistrationSession) => (s.isVerified ? 'Yes' : 'No'), width: '9%' },
+                    { label: 'Status', value: (s: AdminRegistrationSession) => s.approvalStatus || '—', width: '11%' },
+                    { label: 'Started', value: (s: AdminRegistrationSession) => formatDateTime12(s.createdAt) },
+                  ],
+                  rows: filtered,
+                },
+                { recordType: 'registrations', scope: 'list', filters: { verified: verifiedFilter, search: search.trim() } }
+              )
+            }
+          />
+        </View>
 
         {abandonedCount > 0 ? (
           <Pressable onPress={() => setConfirmClearOpen(true)}>
@@ -182,7 +246,7 @@ export default function AdminRegistrationsPage() {
         ) : (
           <View style={styles.list}>
             {paged.pageItems.map((session) => (
-              <Pressable key={session.id} onPress={() => setSelected(session)}>
+              <Pressable key={session.id} onPress={() => void openSession(session)}>
                 <View style={[styles.row, Shadows.sm]}>
                   <View style={{ flex: 1 }}>
                     <View style={styles.rowTop}>
@@ -224,6 +288,21 @@ export default function AdminRegistrationsPage() {
                 <View style={styles.dialogHeader}>
                   <Text style={styles.dialogTitle}>{displayName(selected)}</Text>
                   <View style={styles.dialogHeaderActions}>
+                    <PrintButton
+                      compact
+                      label="Print registration"
+                      onPrint={() =>
+                        printReport(
+                          {
+                            title: `Registration: ${displayName(selected)}`,
+                            subtitle: `Registration ID: ${selected.id}`,
+                            printedBy: currentUser?.name,
+                            fields: regFields(selected),
+                          },
+                          { recordType: 'registrations', scope: 'detail', recordId: String(selected.id), label: displayName(selected) }
+                        )
+                      }
+                    />
                     <Pressable onPress={() => setConfirmDeleteOpen(true)} hitSlop={8}>
                       <Trash2 size={19} color={Colors.red600} />
                     </Pressable>
@@ -294,6 +373,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   scroll: { flex: 1 },
   content: { padding: 16, paddingBottom: 100, gap: 12 },
+  titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' },
   title: { fontSize: 20, fontWeight: '900', color: Colors.gray900 },
   subtitle: { fontSize: 12.5, color: Colors.mutedForeground, marginTop: -6 },
   abandonedCard: {

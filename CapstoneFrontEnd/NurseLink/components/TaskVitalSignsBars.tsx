@@ -29,6 +29,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { fetchVitalReadings, createVitalSigns, updateVitalSigns, ApiError } from '../services/api';
 import type { AdminVitalReading } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
+import { formatClock } from '../utils/time';
 
 const BASE_SLOT_COUNT = 3;
 // Accepts "8:00 AM", "08:00 am", "12:30 PM" — the same light-touch,
@@ -87,7 +88,7 @@ function isAbnormal(field: string, value: string): boolean {
 function formatTime(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return formatClock(d);
 }
 
 function formatDate(iso: string) {

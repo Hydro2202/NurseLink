@@ -6,6 +6,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { Button } from './Button';
 import { useNotifications } from '../contexts/NotificationsContext';
 import type { AppNotification } from '../types/domain';
+import { formatClock } from '../utils/time';
 
 /**
  * The popup a nurse sees when a patient is handed over to them.
@@ -32,7 +33,7 @@ function formatTime(notification: AppNotification): string {
   if (!notification.createdAt) return notification.time;
   const parsed = new Date(notification.createdAt);
   if (Number.isNaN(parsed.getTime())) return notification.time;
-  return parsed.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return formatClock(parsed);
 }
 
 export function HandoverAlertModal() {

@@ -27,6 +27,7 @@ import {
 } from '../../../services/api';
 import { Card, CardContent } from '../../../components/Card';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
+import { formatDateTime12 } from '../../../utils/time';
 
 interface SectionLink {
   key: string;
@@ -161,6 +162,17 @@ export default function AdminIndexPage() {
         </View>
       </Pressable>
 
+      <Pressable onPress={() => router.push('/(app)/admin/audit-log' as any)}>
+        <View style={[styles.wideLink, Shadows.sm]}>
+          <History size={20} color={Colors.blue600} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.wideLinkTitle}>Audit Log</Text>
+            <Text style={styles.wideLinkDesc}>Every record viewed, changed, approved, rejected or printed by an administrator.</Text>
+          </View>
+          <ChevronRight size={18} color={Colors.gray400} />
+        </View>
+      </Pressable>
+
       <Text style={styles.sectionHeading}>Hospital Records</Text>
       <View style={styles.grid}>
         {SECTIONS.map((section) => {
@@ -183,23 +195,24 @@ export default function AdminIndexPage() {
         })}
       </View>
 
-      <Text style={styles.sectionHeading}>Recent Admin Changes</Text>
+      <Text style={styles.sectionHeading}>Recent Admin Activity</Text>
       <View style={[styles.auditCard, Shadows.sm]}>
         {audit.length === 0 ? (
-          <Text style={styles.auditEmpty}>No admin edits or deletes yet.</Text>
+          <Text style={styles.auditEmpty}>No admin activity yet.</Text>
         ) : (
           audit.map((entry) => (
             <View key={entry.id} style={styles.auditRow}>
               <History size={15} color={entry.action === 'delete' ? Colors.red600 : Colors.blue600} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.auditTitle} numberOfLines={1}>
-                  {entry.action === 'delete' ? 'Deleted' : 'Edited'} {RECORD_NOUN[entry.recordType] || entry.recordType}
+                  {entry.actionLabel || (entry.action === 'delete' ? 'Deleted' : 'Edited')}{' '}
+                  {RECORD_NOUN[entry.recordType] || entry.recordType}
                   {entry.recordLabel ? ` · ${entry.recordLabel}` : ''}
                 </Text>
                 <Text style={styles.auditMeta} numberOfLines={1}>
-                  {entry.actorName || 'Admin'} · {new Date(entry.createdAt).toLocaleString()}
+                  {entry.actorName || 'Admin'} · {formatDateTime12(entry.createdAt)}
                   {entry.action === 'update' && Object.keys(entry.changes || {}).length
-                    ? ` · ${Object.keys(entry.changes).join(', ')}`
+                    ? ` · ${Object.keys(entry.changes || {}).join(', ')}`
                     : ''}
                 </Text>
               </View>
@@ -224,6 +237,8 @@ const RECORD_NOUN: Record<string, string> = {
   doctors: 'doctor',
   accounts: 'account',
   registrations: 'registration',
+  corrections: 'identity correction',
+  'audit-log': 'audit log',
 };
 
 const styles = StyleSheet.create({

@@ -4,9 +4,9 @@ import { Clock, X } from 'lucide-react-native';
 import { Colors, Radius, Shadows } from '../constants/colors';
 
 /**
- * Two time conventions already exist in this app, each tied to what the
- * field has always stored and displayed — this component preserves both
- * rather than forcing one, so no backend or display code needs to change:
+ * What the nurse sees and picks is always 12-hour with AM/PM ("2:30 PM").
+ * What gets stored is unchanged — two conventions already exist in this app,
+ * each tied to what the field has always saved, and `format` keeps both:
  *   - '24h': 'HH:MM', zero-padded 24-hour (Task.dueTime, DutyAssignment's
  *     start/end/overtime times). e.g. '07:00', '15:30'.
  *   - '12h': 'h:mm AM/PM' (TaskVitalSignsBars' monitoring time). e.g.
@@ -18,7 +18,6 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 
 const MINUTE_STEP = 5;
 const MINUTES = Array.from({ length: 60 / MINUTE_STEP }, (_, i) => i * MINUTE_STEP);
-const HOURS_24 = Array.from({ length: 24 }, (_, i) => i);
 const HOURS_12 = Array.from({ length: 12 }, (_, i) => i + 1); // 1..12
 
 function pad(n: number): string {
@@ -27,6 +26,10 @@ function pad(n: number): string {
 
 function roundToStep(n: number): number {
   return Math.round(n / MINUTE_STEP) * MINUTE_STEP;
+}
+
+function roundUpToStep(n: number): number {
+  return Math.ceil(n / MINUTE_STEP) * MINUTE_STEP;
 }
 
 interface ParsedTime {
@@ -87,6 +90,9 @@ export interface TimePickerProps {
   style?: ViewStyle;
   helperText?: string;
   accessibilityLabel?: string;
+  /** Earliest selectable time, "HH:MM" 24-hour (e.g. now, when the date is
+   * today). Earlier hours/minutes are disabled. */
+  minTime?: string;
 }
 
 export function TimePicker({
@@ -101,7 +107,11 @@ export function TimePicker({
   style,
   helperText,
   accessibilityLabel,
+  minTime,
 }: TimePickerProps) {
+  const minParsed = minTime ? parse24(minTime) : null;
+  const minMinutes = minParsed ? minParsed.hour * 60 + minParsed.minute : null;
+  const isBefore = (hour24: number, minute: number) => minMinutes !== null && hour24 * 60 + minute < minMinutes;
   const [open, setOpen] = useState(false);
   const formatOut = format === '12h' ? format12 : format24;
   const parsed = useMemo(
@@ -133,11 +143,14 @@ export function TimePicker({
   };
 
   const selectHour = (h: number) => {
-    // In 12h mode the wheel shows 1-12; convert to the internal 0-23 value
-    // using the draft's current AM/PM before committing.
-    const hour24 = format === '12h' ? (h % 12) + (draftPm ? 12 : 0) : h;
+    // The wheel shows 1-12; convert to the internal 0-23 value using the
+    // draft's current AM/PM before committing.
+    const hour24 = (h % 12) + (draftPm ? 12 : 0);
+    // Moving into the earliest allowed hour keeps a valid minute.
+    const minute = isBefore(hour24, draftMinute) && minParsed ? roundUpToStep(minParsed.minute) % 60 : draftMinute;
     setDraftHour(hour24);
-    commit(hour24, draftMinute, draftPm);
+    setDraftMinute(minute);
+    commit(hour24, minute, draftPm);
   };
 
   const selectMinute = (m: number) => {
@@ -146,10 +159,18 @@ export function TimePicker({
   };
 
   const selectAmPm = (isPm: boolean) => {
-    const hour24 = (draftHour % 12) + (isPm ? 12 : 0);
+    let hour24 = (draftHour % 12) + (isPm ? 12 : 0);
+    let minute = draftMinute;
+    if (minParsed && isBefore(hour24, minute)) {
+      // Switching AM/PM landed before the earliest allowed time: jump to it.
+      const earliest = Math.min(roundUpToStep(minMinutes as number), 23 * 60 + 55);
+      hour24 = Math.floor(earliest / 60);
+      minute = earliest % 60;
+    }
     setDraftHour(hour24);
+    setDraftMinute(minute);
     setDraftPm(isPm);
-    commit(hour24, draftMinute, isPm);
+    commit(hour24, minute, isPm);
   };
 
   const clear = () => {
@@ -166,7 +187,7 @@ export function TimePicker({
     close();
   };
 
-  const displayValue = parsed ? formatOut(parsed) : value ? value : '';
+  const displayValue = parsed ? format12(parsed) : value ? value : '';
   const displayHour12 = draftHour % 12 === 0 ? 12 : draftHour % 12;
 
   return (
@@ -192,7 +213,7 @@ export function TimePicker({
       >
         <Clock size={16} color={disabled ? Colors.gray400 : Colors.mutedForeground} />
         <Text style={[styles.triggerText, !displayValue && styles.placeholder]} numberOfLines={1}>
-          {displayValue || placeholder || (format === '12h' ? 'h:mm AM/PM' : 'HH:MM')}
+          {displayValue || placeholder || 'h:mm AM/PM'}
         </Text>
       </Pressable>
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -212,19 +233,21 @@ export function TimePicker({
               <View style={styles.wheelCol}>
                 <Text style={styles.wheelLabel}>Hour</Text>
                 <ScrollView style={styles.wheel} showsVerticalScrollIndicator={false}>
-                  {(format === '12h' ? HOURS_12 : HOURS_24).map((h) => {
-                    const isSelected =
-                      format === '12h' ? displayHour12 === h : draftHour === h;
+                  {HOURS_12.map((h) => {
+                    const isSelected = displayHour12 === h;
+                    const hour24 = (h % 12) + (draftPm ? 12 : 0);
+                    const hourDisabled = isBefore(hour24, 55);
                     return (
                       <Pressable
                         key={h}
                         onPress={() => selectHour(h)}
-                        style={[styles.wheelCell, isSelected && styles.wheelCellActive]}
+                        disabled={hourDisabled}
+                        style={[styles.wheelCell, isSelected && styles.wheelCellActive, hourDisabled && styles.wheelCellDisabled]}
                         accessibilityRole="button"
-                        accessibilityState={{ selected: isSelected }}
+                        accessibilityState={{ selected: isSelected, disabled: hourDisabled }}
                       >
                         <Text style={[styles.wheelText, isSelected && styles.wheelTextActive]}>
-                          {format === '12h' ? h : pad(h)}
+                          {h}
                         </Text>
                       </Pressable>
                     );
@@ -239,13 +262,15 @@ export function TimePicker({
                 <ScrollView style={styles.wheel} showsVerticalScrollIndicator={false}>
                   {MINUTES.map((m) => {
                     const isSelected = draftMinute === m;
+                    const minuteDisabled = isBefore(draftHour, m);
                     return (
                       <Pressable
                         key={m}
                         onPress={() => selectMinute(m)}
-                        style={[styles.wheelCell, isSelected && styles.wheelCellActive]}
+                        disabled={minuteDisabled}
+                        style={[styles.wheelCell, isSelected && styles.wheelCellActive, minuteDisabled && styles.wheelCellDisabled]}
                         accessibilityRole="button"
-                        accessibilityState={{ selected: isSelected }}
+                        accessibilityState={{ selected: isSelected, disabled: minuteDisabled }}
                       >
                         <Text style={[styles.wheelText, isSelected && styles.wheelTextActive]}>
                           {pad(m)}
@@ -256,13 +281,13 @@ export function TimePicker({
                 </ScrollView>
               </View>
 
-              {format === '12h' ? (
                 <View style={styles.ampmCol}>
                   <Pressable
                     onPress={() => selectAmPm(false)}
-                    style={[styles.ampmBtn, !draftPm && styles.ampmBtnActive]}
+                    disabled={isBefore(11, 55)}
+                    style={[styles.ampmBtn, !draftPm && styles.ampmBtnActive, isBefore(11, 55) && styles.wheelCellDisabled]}
                     accessibilityRole="button"
-                    accessibilityState={{ selected: !draftPm }}
+                    accessibilityState={{ selected: !draftPm, disabled: isBefore(11, 55) }}
                   >
                     <Text style={[styles.ampmText, !draftPm && styles.ampmTextActive]}>AM</Text>
                   </Pressable>
@@ -275,7 +300,6 @@ export function TimePicker({
                     <Text style={[styles.ampmText, draftPm && styles.ampmTextActive]}>PM</Text>
                   </Pressable>
                 </View>
-              ) : null}
             </View>
 
             <View style={styles.footer}>
@@ -366,6 +390,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
   },
   wheelCellActive: { backgroundColor: Colors.blue600 },
+  wheelCellDisabled: { opacity: 0.3 },
   wheelText: { fontSize: 16, color: Colors.foreground },
   wheelTextActive: { color: Colors.white, fontWeight: '700' },
   wheelColon: { fontSize: 20, fontWeight: '700', color: Colors.gray400, marginTop: 34 },

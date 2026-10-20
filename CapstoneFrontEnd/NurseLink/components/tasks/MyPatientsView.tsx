@@ -7,6 +7,7 @@ import { Card, CardContent } from '../Card';
 import { Input } from '../Input';
 import { Pagination, usePagination } from '../Pagination';
 import { TaskStatusBadge, TaskTypeBadge, formatDateTime } from './taskLabels';
+import { formatDueDateTime } from '../../utils/time';
 
 interface Props {
   folders: MyPatientFolder[];
@@ -21,8 +22,8 @@ interface Props {
 
 function dueLabel(task: Task) {
   if (task.scheduledFor) return `Scheduled ${formatDateTime(task.scheduledFor)}`;
-  if (!task.dueDate) return task.dueTime ? `Due ${task.dueTime}` : '';
-  return `Due ${task.dueDate}${task.dueTime ? ` ${task.dueTime}` : ''}`;
+  const due = formatDueDateTime(task.dueDate, task.dueTime);
+  return due ? `Due ${due}` : '';
 }
 
 /**

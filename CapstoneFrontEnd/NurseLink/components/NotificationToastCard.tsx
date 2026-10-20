@@ -6,6 +6,7 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { useNotifications } from '../contexts/NotificationsContext';
 import { resolveNotificationAction } from './NotificationPanel';
 import type { AppNotification } from '../types/domain';
+import { formatClock } from '../utils/time';
 
 const STYLE_BY_TYPE: Record<
   AppNotification['type'],
@@ -21,7 +22,7 @@ function formatTime(notification: AppNotification): string {
   if (!notification.createdAt) return notification.time;
   const parsed = new Date(notification.createdAt);
   if (Number.isNaN(parsed.getTime())) return notification.time;
-  return parsed.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return formatClock(parsed);
 }
 
 interface NotificationToastCardProps {

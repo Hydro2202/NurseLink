@@ -84,6 +84,8 @@ urlpatterns = [
         name='admin-record',
     ),
     path('admin/audit-log/', admin_records.AdminAuditLogView.as_view(), name='admin-audit-log'),
+    path('admin/audit-log/print/', admin_records.AdminPrintLogView.as_view(), name='admin-audit-print'),
+    path('admin/audit-log/<int:entry_id>/', admin_records.AdminAuditLogDetailView.as_view(), name='admin-audit-entry'),
     path('auth/me/', views.MeView.as_view(), name='me'),
     path('auth/change-password/', views.ChangePasswordView.as_view(), name='change-password'),
     path('workload/', views.WorkloadView.as_view(), name='workload'),

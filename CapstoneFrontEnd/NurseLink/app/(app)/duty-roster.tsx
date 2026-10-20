@@ -51,6 +51,7 @@ import { PresenceDot } from '../../components/PresenceDot';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
+import { formatClock, formatTime12 } from '../../utils/time';
 
 type DateFilter = 'today' | 'tomorrow' | 'week' | 'nextWeek' | 'custom' | 'all';
 type ViewMode = 'list' | 'weekly';
@@ -104,20 +105,13 @@ function formatDateLabel(iso: string) {
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
 function formatTime(hhmm: string) {
-  const [h, m] = hhmm.split(':').map(Number);
-  const period = h >= 12 ? 'PM' : 'AM';
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${pad(m)} ${period}`;
+  return formatTime12(hhmm);
 }
 // actualStartTime/actualEndTime come from the backend as full ISO
 // datetimes (unlike the scheduled startTime/endTime "HH:MM" strings), so
 // they need the Date constructor rather than the string-split helper above.
 function formatActualTime(iso: string): string {
-  const d = new Date(iso);
-  const h = d.getHours();
-  const period = h >= 12 ? 'PM' : 'AM';
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${pad(d.getMinutes())} ${period}`;
+  return formatClock(iso);
 }
 // duty_date + "HH:MM" as a real Date, purely from local calendar parts —
 // same wrap-past-midnight rule as DutyAssignment.duration_hours on the

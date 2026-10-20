@@ -37,7 +37,7 @@ from rest_framework.views import APIView
 from .email_validation import EmailValidationError
 from .duty_status import current_duties, duty_fields, today_overtime_hours
 from .presence import clear_last_seen, presence_fields, touch_last_seen
-from . import task_events
+from . import admin_audit, task_events
 from .names import full_name, name_match_q, name_variants
 from .vitals_schedule import end_schedule as end_vitals_schedule
 from .vitals_schedule import generate_for_schedule as generate_vitals_for_schedule
@@ -3369,6 +3369,29 @@ class DoctorViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated(), IsAdmin()]
         return super().get_permissions()
 
+    def perform_create(self, serializer):
+        doctor = serializer.save()
+        admin_audit.record(
+            self.request, 'create', 'doctors', doctor.pk, doctor.full_name,
+            changes=dict(serializer.data), summary='Added doctor',
+        )
+
+    def perform_update(self, serializer):
+        before = dict(DoctorSerializer(serializer.instance).data)
+        doctor = serializer.save()
+        after = dict(DoctorSerializer(doctor).data)
+        admin_audit.record(
+            self.request, 'update', 'doctors', doctor.pk, doctor.full_name,
+            changes={k: [before.get(k), v] for k, v in after.items() if before.get(k) != v},
+            summary='Updated doctor',
+        )
+
+    def perform_destroy(self, instance):
+        snapshot = dict(DoctorSerializer(instance).data)
+        pk, label = instance.pk, instance.full_name
+        instance.delete()
+        admin_audit.record(self.request, 'delete', 'doctors', pk, label, changes=snapshot, summary='Deleted doctor')
+
     def get_queryset(self):
         qs = Doctor.objects.select_related('department').all()
         department_id = self.request.query_params.get('department')
@@ -3460,6 +3483,13 @@ class TaskViewSet(viewsets.ModelViewSet):
         task_type = self.request.query_params.get('taskType')
         if task_type in ('procedure', 'referral'):
             qs = qs.filter(task_type=task_type)
+        # active=true: unfinished only (what High/Medium/Low/Overdue list) —
+        # a completed task never counts as active, whatever its priority.
+        if self.request.query_params.get('active') in ('1', 'true', 'True'):
+            qs = qs.exclude(status='completed')
+        priority = self.request.query_params.get('priority')
+        if priority in ('high', 'medium', 'low'):
+            qs = qs.filter(priority=priority)
         if search:
             qs = qs.filter(
                 Q(title__icontains=search)
@@ -6086,11 +6116,21 @@ class AdminUserViewSet(viewsets.ViewSet):
 
     def retrieve(self, request, pk=None):
         profile = get_object_or_404(NurseProfile, user_id=pk)
-        return Response(_admin_user_payload(profile))
+        payload = _admin_user_payload(profile)
+        admin_audit.record(
+            request, 'view', 'accounts', profile.user_id, payload['name'], summary='Viewed account details',
+        )
+        return Response(payload)
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
         profile = get_object_or_404(NurseProfile, user_id=pk)
+        if profile.approval_status == 'approved':
+            return Response(
+                {'detail': 'This account is already approved.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        previous_status = profile.approval_status
         profile.approval_status = 'approved'
         profile.rejection_reason = ''
         update_fields = ['approval_status', 'rejection_reason']
@@ -6105,6 +6145,11 @@ class AdminUserViewSet(viewsets.ViewSet):
                 profile.user_id, profile.role, request.user.pk,
             )
         profile.save(update_fields=update_fields)
+        admin_audit.record(
+            request, 'approve', 'accounts', profile.user_id, full_name(profile.user),
+            changes={'approvalStatus': [previous_status, 'approved'], 'role': profile.role},
+            summary=f'Approved registration as {profile.get_role_display()}',
+        )
         role_label = 'Head Nurse' if profile.role == 'head_nurse' else 'Nurse'
         notify(
             profile.user,
@@ -6121,6 +6166,20 @@ class AdminUserViewSet(viewsets.ViewSet):
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
         profile = get_object_or_404(NurseProfile, user_id=pk)
+        # Rejecting is a decision on a pending registration. An approved
+        # account is suspended with deactivate instead, which keeps its
+        # approval history intact.
+        if profile.approval_status != 'pending':
+            return Response(
+                {
+                    'detail': (
+                        'This account is already approved. Use Deactivate to suspend it.'
+                        if profile.approval_status == 'approved'
+                        else 'This registration has already been rejected.'
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         reason = (request.data.get('reason') or '').strip()
         if not reason:
             return Response(
@@ -6130,6 +6189,11 @@ class AdminUserViewSet(viewsets.ViewSet):
         profile.approval_status = 'rejected'
         profile.rejection_reason = reason
         profile.save(update_fields=['approval_status', 'rejection_reason'])
+        admin_audit.record(
+            request, 'reject', 'accounts', profile.user_id, full_name(profile.user),
+            changes={'approvalStatus': ['pending', 'rejected']},
+            summary='Rejected registration',
+        )
         return Response(_admin_user_payload(profile))
 
     @extend_schema(
@@ -6161,6 +6225,10 @@ class AdminUserViewSet(viewsets.ViewSet):
             'Role changed: user=%s %s -> %s by admin=%s',
             profile.user_id, previous, role, request.user.pk,
         )
+        admin_audit.record(
+            request, 'role_change', 'accounts', profile.user_id, full_name(profile.user),
+            changes={'role': [previous, role]}, summary=f'Changed role to {profile.get_role_display()}',
+        )
         return Response(_admin_user_payload(profile))
 
     @extend_schema(request=None, summary='Lift a "too many sign-in attempts" lockout (admin only)')
@@ -6170,20 +6238,34 @@ class AdminUserViewSet(viewsets.ViewSet):
         for identifier in {profile.user.email, profile.user.username}:
             if identifier:
                 login_throttle.clear_account(identifier)
+        admin_audit.record(
+            request, 'unlock', 'accounts', profile.user_id, full_name(profile.user),
+            summary='Cleared sign-in lockout',
+        )
         return Response({'detail': 'Sign-in lockout cleared.'})
 
     @action(detail=True, methods=['post'])
     def deactivate(self, request, pk=None):
         profile = get_object_or_404(NurseProfile, user_id=pk)
+        was_active = profile.is_active_staff
         profile.is_active_staff = False
         profile.save(update_fields=['is_active_staff'])
+        admin_audit.record(
+            request, 'deactivate', 'accounts', profile.user_id, full_name(profile.user),
+            changes={'isActiveStaff': [was_active, False]}, summary='Deactivated account',
+        )
         return Response(_admin_user_payload(profile))
 
     @action(detail=True, methods=['post'])
     def reactivate(self, request, pk=None):
         profile = get_object_or_404(NurseProfile, user_id=pk)
+        was_active = profile.is_active_staff
         profile.is_active_staff = True
         profile.save(update_fields=['is_active_staff'])
+        admin_audit.record(
+            request, 'reactivate', 'accounts', profile.user_id, full_name(profile.user),
+            changes={'isActiveStaff': [was_active, True]}, summary='Reactivated account',
+        )
         return Response(_admin_user_payload(profile))
 
     def destroy(self, request, pk=None):
@@ -6302,6 +6384,11 @@ class AdminUserViewSet(viewsets.ViewSet):
         # A password an admin just set from outside the account should not
         # leave old sessions alive — force a fresh login everywhere.
         revoke_all_sessions(profile.user)
+        # The password itself is never logged.
+        admin_audit.record(
+            request, 'password_reset', 'accounts', profile.user_id, full_name(profile.user),
+            summary='Set a new password',
+        )
         return Response({'detail': 'Password updated.'})
 
 
@@ -6395,6 +6482,13 @@ class RegistrationSessionViewSet(viewsets.ModelViewSet):
         # actually disabled.
         raise MethodNotAllowed('POST')
 
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        data = self.get_serializer(instance).data
+        label = (full_name(instance.user) if instance.user_id else '') or instance.email or 'Unknown'
+        admin_audit.record(request, 'view', 'registrations', instance.pk, label, summary='Viewed registration details')
+        return Response(data)
+
     def perform_destroy(self, instance):
         # RegistrationSession.user is SET_NULL, so deleting just this audit
         # row left the actual account (User + NurseProfile, cascade-deleted
@@ -6446,6 +6540,11 @@ class RegistrationSessionViewSet(viewsets.ModelViewSet):
             email='', id_first_name='', id_last_name='',
             face_verified=False, otp_verified=False, user__isnull=True,
         ).delete()
+        if deleted:
+            admin_audit.record(
+                request, 'delete', 'registrations', '', 'Abandoned registrations',
+                changes={'deleted': deleted}, summary=f'Cleared {deleted} abandoned registration(s)',
+            )
         return Response({'deleted': deleted})
 
 
@@ -7267,6 +7366,10 @@ class AdminCorrectionViewSet(viewsets.ViewSet):
         logger.info('Correction approved: request=%s user=%s by=%s fields=%s at=%s',
                     correction.pk, user.pk, request.user.pk, sorted(requested),
                     correction.reviewed_at.isoformat())
+        admin_audit.record(
+            request, 'approve', 'corrections', correction.pk, full_name(user),
+            changes={'fields': sorted(requested)}, summary='Approved identity correction',
+        )
         return Response({'id': correction.pk, 'status': 'approved'})
 
     @action(detail=True, methods=['post'])
@@ -7284,6 +7387,10 @@ class AdminCorrectionViewSet(viewsets.ViewSet):
         correction.review_note = note
         correction.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'review_note'])
         logger.info('Correction rejected: request=%s by=%s', correction.pk, request.user.pk)
+        admin_audit.record(
+            request, 'reject', 'corrections', correction.pk, full_name(correction.user),
+            summary='Rejected identity correction',
+        )
         return Response({'id': correction.pk, 'status': 'rejected'})
 
 
@@ -7324,6 +7431,10 @@ class AdminFaceUnlockView(APIView):
         logger.warning(
             'Face lockout cleared by admin: session=%s admin=%s reason=%s at=%s',
             session.session_id, request.user.pk, reason, session.face_unlocked_at.isoformat(),
+        )
+        admin_audit.record(
+            request, 'unlock', 'registrations', session.pk, session.email or 'Registration',
+            changes={'reason': reason}, summary='Cleared face-verification lockout',
         )
         return Response(_face_session_payload(session, matched=False, confidence=0, reason=None,
                                               message='Face verification lockout cleared.'))
