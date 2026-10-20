@@ -1597,19 +1597,92 @@ export async function deleteAdminRecord(type: AdminRecordType, id: string | numb
   await apiRequest(`/admin/records/${type}/${encodeURIComponent(String(id))}/`, { method: 'DELETE' });
 }
 
+export type AdminAuditAction =
+  | 'view' | 'create' | 'update' | 'delete' | 'approve' | 'reject' | 'deactivate'
+  | 'reactivate' | 'role_change' | 'password_reset' | 'unlock' | 'print';
+
+export type AdminAuditCategory = 'view' | 'change' | 'decision' | 'print';
+
 export interface AdminAuditEntry {
   id: number;
+  actorId?: number | null;
   actorName: string;
-  action: 'update' | 'delete';
+  actorRole?: string;
+  action: AdminAuditAction;
+  actionLabel?: string;
+  category?: AdminAuditCategory;
   recordType: string;
   recordId: string;
   recordLabel: string;
-  changes: Record<string, unknown>;
+  summary?: string;
+  status?: 'success' | 'failure' | 'requested';
+  requestId?: string;
+  /** Only on the full entry (fetchAdminAuditEntry) and the dashboard list. */
+  changes?: Record<string, unknown>;
   createdAt: string;
 }
 
 export async function fetchAdminAuditLog(limit = 20): Promise<AdminAuditEntry[]> {
   return apiRequest<AdminAuditEntry[]>(`/admin/audit-log/?limit=${limit}`);
+}
+
+export interface AdminAuditQuery {
+  actor?: string;
+  action?: string;
+  category?: string;
+  recordType?: string;
+  recordId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  order?: 'newest' | 'oldest';
+  page?: number;
+  pageSize?: number;
+  /** Every match (up to 5000) — for printing the full filtered report. */
+  all?: boolean;
+}
+
+export interface AdminAuditPage {
+  count: number;
+  page: number;
+  pageSize: number;
+  results: AdminAuditEntry[];
+}
+
+export async function fetchAdminAuditPage(query: AdminAuditQuery): Promise<AdminAuditPage> {
+  const params = new URLSearchParams();
+  Object.entries(query).forEach(([key, value]) => {
+    if (value === undefined || value === '' || value === false) return;
+    params.set(key, String(value));
+  });
+  if (!params.has('page') && !params.has('all')) params.set('page', '1');
+  return apiRequest<AdminAuditPage>(`/admin/audit-log/?${params}`);
+}
+
+export async function fetchAdminAuditEntry(id: number): Promise<AdminAuditEntry> {
+  return apiRequest<AdminAuditEntry>(`/admin/audit-log/${id}/`);
+}
+
+/** Records that an admin asked to print a report (stored as "requested"). */
+export async function logAdminPrint(body: {
+  recordType: string;
+  title: string;
+  count: number;
+  scope: 'list' | 'detail';
+  recordId?: string;
+  label?: string;
+  filters?: Record<string, unknown>;
+}): Promise<void> {
+  await apiRequest('/admin/audit-log/print/', { method: 'POST', body });
+}
+
+/** One record through the admin endpoint — the server logs it as a VIEW. */
+export async function fetchAdminRecord<T = unknown>(type: AdminRecordType, id: string | number): Promise<T> {
+  return apiRequest<T>(`/admin/records/${type}/${encodeURIComponent(String(id))}/`);
+}
+
+/** One account's details — the server logs it as a VIEW. */
+export async function fetchAdminAccount(id: string): Promise<AdminAccount> {
+  return apiRequest<AdminAccount>(`/admin/users/${id}/`);
 }
 
 export async function updateAdminAccount(
@@ -1621,6 +1694,11 @@ export async function updateAdminAccount(
   }>
 ): Promise<AdminAccount> {
   return apiRequest<AdminAccount>(`/admin/users/${id}/`, { method: 'PATCH', body });
+}
+
+/** One registration's details — the server logs it as a VIEW. */
+export async function fetchAdminRegistrationSession(id: number): Promise<AdminRegistrationSession> {
+  return apiRequest<AdminRegistrationSession>(`/admin/registration-sessions/${id}/`);
 }
 
 export async function fetchAdminRegistrationSessions(options?: {

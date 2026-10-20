@@ -54,6 +54,7 @@ import { SafetyAlertsSection, type SafetyAlert } from '../../components/dashboar
 import { OverdueBanner } from '../../components/dashboard/OverdueBanner';
 import { QuickActions } from '../../components/dashboard/QuickActions';
 import { Colors, Radius } from '../../constants/colors';
+import { formatTime12 } from '../../utils/time';
 
 function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
   return {
@@ -90,10 +91,7 @@ function addDays(iso: string, days: number) {
   return toIsoLocal(d);
 }
 function formatTime(hhmm: string) {
-  const [h, m] = hhmm.split(':').map(Number);
-  const period = h >= 12 ? 'PM' : 'AM';
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${pad(m)} ${period}`;
+  return formatTime12(hhmm);
 }
 function combine(dateIso: string, hhmm: string): Date {
   const [y, mo, da] = dateIso.split('-').map(Number);
@@ -437,11 +435,11 @@ export default function DashboardPage() {
     [workloadData]
   );
 
-  const timeString = currentTime.toLocaleTimeString([], {
+  const timeString = currentTime.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
   });
-  const fullTimeString = currentTime.toLocaleTimeString();
+  const fullTimeString = currentTime.toLocaleTimeString('en-US', { hour12: true });
 
   if (isStaffNurse) {
     return (
@@ -732,7 +730,7 @@ export default function DashboardPage() {
               <CardDescription>Next scheduled tasks in your shift</CardDescription>
             </CardHeader>
             <CardContent style={styles.gap12}>
-              {tasks.slice(0, 4).map((task) => (
+              {tasks.filter((t) => t.status !== 'completed').slice(0, 4).map((task) => (
                 <View
                   key={task.id}
                   style={[
@@ -755,7 +753,7 @@ export default function DashboardPage() {
                         </Badge>
                         <View style={styles.dueRow}>
                           <Clock size={12} color={Colors.mutedForeground} />
-                          <Text style={styles.dueText}>{task.dueTime}</Text>
+                          <Text style={styles.dueText}>{formatTime12(task.dueTime)}</Text>
                         </View>
                       </View>
                       <Text style={styles.taskTitle}>{task.title}</Text>

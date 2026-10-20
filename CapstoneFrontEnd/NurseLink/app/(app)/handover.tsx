@@ -54,6 +54,7 @@ import { useNotifications } from '../../contexts/NotificationsContext';
 import { useLive, useLiveRefresh } from '../../contexts/LiveContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 import { Pagination, usePagination } from '../../components/Pagination';
+import { formatDateTime12, formatShortDateTime12, formatTime12 } from '../../utils/time';
 
 type SortBy = 'newest' | 'oldest' | 'patient' | 'status';
 
@@ -146,7 +147,7 @@ function referralDueChip(handover: HandoverNote): { label: string; color: string
   const due = new Date(handover.dueAt).getTime();
   if (Number.isNaN(due)) return null;
   const diffMin = Math.round((due - Date.now()) / 60000);
-  if (diffMin > 30) return { label: `Due ${new Date(due).toLocaleString()}`, color: Colors.gray600 };
+  if (diffMin > 30) return { label: `Due ${formatShortDateTime12(due)}`, color: Colors.gray600 };
   if (diffMin > 0) return { label: `Due in ${diffMin} min`, color: Colors.orange600 };
   if (diffMin === 0) return { label: 'Due now', color: Colors.red600 };
   return { label: `Overdue by ${Math.abs(diffMin)} min`, color: Colors.red600 };
@@ -636,7 +637,7 @@ export default function HandoverPage() {
                     ]}
                   >
                     {task.description}
-                    {task.dueTime ? ` • ${task.dueTime.slice(0, 5)}` : ''}
+                    {task.dueTime ? ` • ${formatTime12(task.dueTime)}` : ''}
                     {task.priority === 'HIGH' ? ' • High priority' : ''}
                   </Text>
                 </Pressable>
@@ -964,7 +965,7 @@ export default function HandoverPage() {
                       <Text style={styles.historyStatus}>{statusLabel(entry.status)}</Text>
                       <Text style={styles.historyMeta}>
                         {entry.byName || 'Unknown'}
-                        {entry.at ? ` • ${new Date(entry.at).toLocaleString()}` : ''}
+                        {entry.at ? ` • ${formatDateTime12(entry.at)}` : ''}
                       </Text>
                       {entry.note ? <Text style={styles.historyNote}>{entry.note}</Text> : null}
                     </View>

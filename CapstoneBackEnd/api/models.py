@@ -2378,25 +2378,60 @@ class CorrectionRequest(models.Model):
 
 
 class AdminAuditLog(models.Model):
-    """One row per edit or delete an admin makes from the Admin panel."""
+    """
+    Administrator activity: one row per thing an admin did in the Admin
+    portal — viewed a record, changed or deleted one, approved or rejected a
+    registration, suspended an account, requested a print. Written by the
+    server (api/admin_audit.py) once the action has actually succeeded, never
+    from a frontend click, so a direct API call is recorded the same way and a
+    failed or unauthorized request is never logged as done. Append-only: the
+    API offers no way to edit or delete a row.
+    """
 
-    ACTION_CHOICES = [('update', 'Updated'), ('delete', 'Deleted')]
+    ACTION_CHOICES = [
+        ('view', 'Viewed'),
+        ('create', 'Created'),
+        ('update', 'Updated'),
+        ('delete', 'Deleted'),
+        ('approve', 'Approved'),
+        ('reject', 'Rejected'),
+        ('deactivate', 'Deactivated'),
+        ('reactivate', 'Reactivated'),
+        ('role_change', 'Changed role'),
+        ('password_reset', 'Reset password'),
+        ('unlock', 'Unlocked'),
+        ('print', 'Print requested'),
+    ]
+    #: How the Audit Log page groups actions.
+    CATEGORY_ACTIONS = {
+        'view': ('view',),
+        'change': ('create', 'update', 'delete', 'role_change', 'password_reset', 'unlock'),
+        'decision': ('approve', 'reject', 'deactivate', 'reactivate'),
+        'print': ('print',),
+    }
+    STATUS_CHOICES = [('success', 'Success'), ('failure', 'Failure'), ('requested', 'Requested')]
 
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='admin_audit_entries',
     )
     actor_name = models.CharField(max_length=200, blank=True, default='')
-    action = models.CharField(max_length=10, choices=ACTION_CHOICES)
-    record_type = models.CharField(max_length=40)
-    record_id = models.CharField(max_length=60)
+    #: Snapshot of the actor's role at the time (e.g. "Administrator").
+    actor_role = models.CharField(max_length=40, blank=True, default='')
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES, db_index=True)
+    record_type = models.CharField(max_length=40, db_index=True)
+    record_id = models.CharField(max_length=60, blank=True, default='', db_index=True)
     record_label = models.CharField(max_length=255, blank=True, default='')
-    # {field: [before, after]} for an edit; the record's last state for a delete.
+    summary = models.CharField(max_length=255, blank=True, default='')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='success')
+    # {field: [before, after]} for an edit; the record's last state for a
+    # delete; report scope for a print. Never passwords, OTPs or tokens.
     changes = models.JSONField(default=dict, blank=True)
+    request_id = models.CharField(max_length=64, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        ordering = ['-created_at']
+        ordering = ['-created_at', '-id']
 
     def __str__(self):
         return f'{self.actor_name} {self.action} {self.record_type} {self.record_id}'

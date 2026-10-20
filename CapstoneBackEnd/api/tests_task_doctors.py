@@ -14,6 +14,7 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from rest_framework.test import APITestCase
 
+from .duty_status import local_today
 from .models import Department, Doctor, NurseProfile, Patient, PatientDoctor, Task, TaskDoctor
 
 
@@ -61,7 +62,8 @@ class TaskDoctorTests(APITestCase):
             'title': 'Cardiac review',
             'patientId': 'PT01',
             'priority': 'medium',
-            'dueDate': '2026-10-20',
+            # Always tomorrow: due dates in the past are rejected (no past dates rule).
+            'dueDate': (local_today() + datetime.timedelta(days=1)).isoformat(),
             'dueTime': '14:30',
             'patientRoom': '101',
         }

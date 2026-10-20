@@ -58,6 +58,8 @@ import { useLiveRefresh } from '../../contexts/LiveContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 import { Pagination, usePagination } from '../../components/Pagination';
+import { formatTime12 } from '../../utils/time';
+import { countTasksByFilter, isTaskPastDue, matchesTaskFilter } from '../../utils/taskFilters';
 
 type SortBy = 'newest' | 'oldest' | 'priority' | 'status';
 
@@ -91,11 +93,7 @@ export function formatDueDate(iso?: string | null): string {
  * admin generic editor) is never flagged — there's nothing reliable to
  * compare against. */
 export function isTaskOverdue(task: Task): boolean {
-  if (task.status === 'completed' || !task.dueDate || !task.dueTime) return false;
-  const [y, m, d] = task.dueDate.split('-').map(Number);
-  const [h, min] = task.dueTime.split(':').map(Number);
-  if (!y || !m || !d || Number.isNaN(h) || Number.isNaN(min)) return false;
-  return new Date(y, m - 1, d, h, min).getTime() < Date.now();
+  return isTaskPastDue(task);
 }
 
 /** "Due in 12 min" (amber) / "Due now" (red) / "Overdue by 25 min" (red) /
@@ -481,11 +479,7 @@ export default function TasksPage() {
       if (!matchesSearch || !matchesType(task)) return false;
       if (view === 'completed') return true;
 
-      if (selectedTab === 'high') return task.priority === 'high';
-      if (selectedTab === 'medium') return task.priority === 'medium';
-      if (selectedTab === 'low') return task.priority === 'low';
-      if (selectedTab === 'overdue') return task.status === 'overdue';
-      return true;
+      return matchesTaskFilter(task, selectedTab);
     })
     .sort((a, b) => {
       if (view === 'completed' && (sortBy === 'newest' || sortBy === 'priority')) {
@@ -561,13 +555,7 @@ export default function TasksPage() {
   };
 
   const typedUnfinished = unfinishedTasks.filter(matchesType);
-  const counts = {
-    all: typedUnfinished.length,
-    high: typedUnfinished.filter((t) => t.priority === 'high').length,
-    medium: typedUnfinished.filter((t) => t.priority === 'medium').length,
-    low: typedUnfinished.filter((t) => t.priority === 'low').length,
-    overdue: typedUnfinished.filter((t) => t.status === 'overdue').length,
-  };
+  const counts = countTasksByFilter(typedUnfinished);
 
   const filterTabs = [
     { id: 'all', label: 'All', count: counts.all, color: Colors.blue600 },
@@ -845,7 +833,7 @@ export default function TasksPage() {
                               <Text style={[styles.dueText, isTaskOverdue(task) && styles.metaTextOverdue]}>
                                 {formatDueDate(task.dueDate)}
                                 {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
-                                {task.dueTime}
+                                {formatTime12(task.dueTime)}
                               </Text>
                             </View>
                             {(() => {

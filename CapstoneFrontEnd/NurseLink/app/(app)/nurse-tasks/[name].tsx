@@ -40,6 +40,8 @@ import { CompleteTaskDialog } from '../../../components/tasks/CompleteTaskDialog
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 import { Pagination, usePagination } from '../../../components/Pagination';
+import { formatDateTime12, formatTime12 } from '../../../utils/time';
+import { countTasksByFilter, matchesTaskFilter } from '../../../utils/taskFilters';
 
 type SortBy = 'newest' | 'oldest' | 'priority' | 'status';
 
@@ -153,13 +155,8 @@ export default function NurseTasksPage() {
         task.description.toLowerCase().includes(q) ||
         task.patientName.toLowerCase().includes(q);
 
-      if (selectedTab === 'all') return matchesSearch;
-      if (selectedTab === 'high') return matchesSearch && task.priority === 'high';
-      if (selectedTab === 'medium') return matchesSearch && task.priority === 'medium';
-      if (selectedTab === 'low') return matchesSearch && task.priority === 'low';
-      if (selectedTab === 'completed') return matchesSearch && task.status === 'completed';
-      if (selectedTab === 'overdue') return matchesSearch && task.status === 'overdue';
-      return matchesSearch;
+      // Completion wins over priority/due date (utils/taskFilters).
+      return matchesSearch && matchesTaskFilter(task, selectedTab);
     })
     .sort((a, b) => {
       if (sortBy === 'newest') {
@@ -207,14 +204,7 @@ export default function NurseTasksPage() {
   const RISK_LABELS: Record<string, string> = { high: 'High risk', medium: 'Medium risk', low: 'Low risk' };
   const RISK_COLORS: Record<string, string> = { high: Colors.red600, medium: Colors.orange600, low: Colors.green600 };
 
-  const counts = {
-    all: nurseTasks.length,
-    high: nurseTasks.filter((t) => t.priority === 'high').length,
-    medium: nurseTasks.filter((t) => t.priority === 'medium').length,
-    low: nurseTasks.filter((t) => t.priority === 'low').length,
-    overdue: nurseTasks.filter((t) => t.status === 'overdue').length,
-    completed: nurseTasks.filter((t) => t.status === 'completed').length,
-  };
+  const counts = countTasksByFilter(nurseTasks);
 
   const filterTabs = [
     { id: 'all', label: 'All', count: counts.all, color: Colors.blue600 },
@@ -222,7 +212,7 @@ export default function NurseTasksPage() {
     { id: 'medium', label: 'Medium', count: counts.medium, color: Colors.orange600 },
     { id: 'low', label: 'Low', count: counts.low, color: Colors.green600 },
     { id: 'overdue', label: 'Overdue', count: counts.overdue, color: Colors.orange700 },
-    { id: 'completed', label: 'Done', count: counts.completed, color: Colors.green700 },
+    { id: 'completed', label: 'Completed', count: counts.completed, color: Colors.green700 },
   ];
 
 
@@ -369,7 +359,7 @@ export default function NurseTasksPage() {
                       <Text style={[styles.metaText, isTaskOverdue(task) && { color: Colors.red600, fontWeight: '700' }]}>
                         {formatDueDate(task.dueDate)}
                         {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
-                        {task.dueTime}
+                        {formatTime12(task.dueTime)}
                       </Text>
                     </View>
                     {(() => {
@@ -406,6 +396,18 @@ export default function NurseTasksPage() {
                     <View style={styles.orderBox}>
                       <ClipboardList size={13} color={Colors.blue600} />
                       <Text style={styles.orderText}>{task.doctorOrder}</Text>
+                    </View>
+                  ) : null}
+
+                  {task.status === 'completed' ? (
+                    <View style={styles.completedBox}>
+                      <Text style={styles.completedMeta}>
+                        Completed {formatDateTime12(task.completedAt) || '—'}
+                        {task.completedBy ? ` by ${task.completedBy}` : ''}
+                      </Text>
+                      <Text style={styles.completedRemarks}>
+                        {task.completionRemarks || 'No remarks were recorded (completed before remarks were required).'}
+                      </Text>
                     </View>
                   ) : null}
 
@@ -552,4 +554,15 @@ const styles = StyleSheet.create({
   },
   orderText: { flex: 1, fontSize: 12, color: Colors.blue800 },
   actions: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  completedBox: {
+    marginTop: 8,
+    backgroundColor: Colors.green50,
+    borderWidth: 1,
+    borderColor: Colors.green200,
+    borderRadius: Radius.sm,
+    padding: 8,
+    gap: 2,
+  },
+  completedMeta: { fontSize: 12, fontWeight: '600', color: Colors.green700 },
+  completedRemarks: { fontSize: 13, color: Colors.gray800 },
 });

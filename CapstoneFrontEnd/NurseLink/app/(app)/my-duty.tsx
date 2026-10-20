@@ -32,6 +32,7 @@ import { Alert, AlertDescription } from '../../components/Alert';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Colors, Shadows, Radius } from '../../constants/colors';
 import { useLiveRefresh } from '../../contexts/LiveContext';
+import { formatTime12 } from '../../utils/time';
 
 // Mirrors the backend default (DUTY_START_BUFFER_MINUTES) purely so the
 // button's enabled/disabled state feels right immediately — the backend is
@@ -63,10 +64,7 @@ function startOfWeek(iso: string) {
   return toIsoLocal(d);
 }
 function formatTime(hhmm: string) {
-  const [h, m] = hhmm.split(':').map(Number);
-  const period = h >= 12 ? 'PM' : 'AM';
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${pad(m)} ${period}`;
+  return formatTime12(hhmm);
 }
 // Combines a duty_date + "HH:MM" into a real Date, purely from local
 // calendar parts — never toISOString(), which converts to UTC and shifts

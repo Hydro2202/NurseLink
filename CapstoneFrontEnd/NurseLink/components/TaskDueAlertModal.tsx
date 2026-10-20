@@ -7,6 +7,7 @@ import { Button } from './Button';
 import { useNotifications } from '../contexts/NotificationsContext';
 import { fetchTask } from '../services/api';
 import type { AppNotification, Task } from '../types/domain';
+import { formatDueDateTime as formatDueDateTimeLabel } from '../utils/time';
 
 /**
  * The popup a nurse sees when one of their own tasks is due soon or due now
@@ -29,14 +30,7 @@ const RISK_COLORS: Record<string, string> = {
 };
 
 function formatDueDateTime(task: Task): string {
-  if (!task.dueDate) return task.dueTime || '';
-  const [y, m, d] = task.dueDate.split('-').map(Number);
-  if (!y || !m || !d) return task.dueTime || '';
-  const dateLabel = new Date(y, m - 1, d).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-  });
-  return task.dueTime ? `${dateLabel} · ${task.dueTime}` : dateLabel;
+  return formatDueDateTimeLabel(task.dueDate, task.dueTime);
 }
 
 export function TaskDueAlertModal() {

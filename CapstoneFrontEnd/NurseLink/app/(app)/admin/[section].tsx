@@ -5,6 +5,7 @@ import { Search, X, Pencil, Trash2 } from 'lucide-react-native';
 import {
   updateAdminRecord,
   deleteAdminRecord,
+  fetchAdminRecord,
   fetchNurses,
   type AdminRecordType,
   fetchPatients,
@@ -26,6 +27,10 @@ import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 import { Pagination, usePagination } from '../../../components/Pagination';
+import { PrintButton } from '../../../components/admin/PrintButton';
+import { printReport } from '../../../utils/print';
+import { useAuth } from '../../../contexts/AuthContext';
+import { formatDateTime12, formatDueDateTime, formatTime12 } from '../../../utils/time';
 
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'info' | 'outline';
 
@@ -99,9 +104,7 @@ const GENDER_OPTIONS = opts(['Male', 'Male'], ['Female', 'Female']);
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return '—';
-  return new Date(iso).toLocaleString(undefined, {
-    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
+  return formatDateTime12(iso) || '—';
 }
 
 function yn(value: unknown): string {
@@ -259,7 +262,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       badge: { label: t.status.replace('_', ' '), variant: TASK_STATUS_VARIANT[t.status] || 'secondary' },
       meta: [
         `${t.patientName || 'No patient'} · Assigned to ${t.assignedTo || 'Unassigned'}`,
-        `${t.category} · Due ${t.dueDate || ''}${t.dueDate && t.dueTime ? ' ' : ''}${t.dueTime || (t.dueDate ? '' : '—')}`,
+        `${t.category} · Due ${formatDueDateTime(t.dueDate, t.dueTime) || '—'}`,
       ],
       search: `${t.title} ${t.patientName} ${t.assignedTo}`,
     }),
@@ -274,7 +277,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Status', value: t.status.replace('_', ' ') },
       { label: 'Category', value: t.category },
       { label: 'Due date', value: t.dueDate || '—' },
-      { label: 'Due time', value: t.dueTime || '—' },
+      { label: 'Due time', value: formatTime12(t.dueTime) || '—' },
       { label: 'Attending physician', value: t.attendingPhysician || '—' },
       { label: 'Doctor order', value: t.doctorOrder || '—', multiline: true },
       {
@@ -450,7 +453,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       key: String(d.id),
       title: `${d.nurseName} · ${d.shiftLabel} shift`,
       badge: { label: d.statusLabel || d.status, variant: DUTY_STATUS_VARIANT[d.status] || 'secondary' },
-      meta: [`${d.departmentName} · ${d.dutyDate}`, `${d.startTime}–${d.endTime} · ${d.totalHours}h`],
+      meta: [`${d.departmentName} · ${d.dutyDate}`, `${formatTime12(d.startTime)}–${formatTime12(d.endTime)} · ${d.totalHours}h`],
       search: `${d.nurseName} ${d.departmentName}`,
     }),
     detailFields: (d) => [
@@ -458,7 +461,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Department', value: d.departmentName },
       { label: 'Duty date', value: d.dutyDate },
       { label: 'Shift', value: d.shiftLabel },
-      { label: 'Scheduled', value: `${d.startTime}–${d.endTime}` },
+      { label: 'Scheduled', value: `${formatTime12(d.startTime)}–${formatTime12(d.endTime)}` },
       { label: 'Regular hours', value: String(d.regularHours) },
       { label: 'Overtime hours', value: String(d.overtimeHours) },
       { label: 'Total hours', value: String(d.totalHours) },
@@ -642,6 +645,8 @@ export default function AdminGenericSectionPage() {
   const [selected, setSelected] = useState<Row | null>(null);
   const [filterValues, setFilterValues] = useState<Record<string, string>>({});
   const toast = useToast();
+  const { user } = useAuth();
+  const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState<Row | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState('');
@@ -696,6 +701,77 @@ export default function AdminGenericSectionPage() {
   // 10 per page; Next/Prev jumps back to the top of the list.
   const scrollRef = useRef<ScrollView>(null);
   const paged = usePagination(filtered, { scrollRef, resetKey: `${section}|${search}|${JSON.stringify(filterValues)}` });
+
+  // Opening a record re-reads it through the admin endpoint: the details are
+  // current, and the server logs the view (only once it actually served it).
+  const openDetail = async (row: Row) => {
+    if (!config?.detailFields) return;
+    setSelected(row);
+    if (!config.recordId) return;
+    setDetailLoading(true);
+    try {
+      const fresh = await fetchAdminRecord(section as AdminRecordType, config.recordId(row.raw));
+      setSelected({ ...config.toRow(fresh), raw: fresh });
+    } catch (err) {
+      setSelected(null);
+      toast.error('Could not open this record', { description: errorText(err) });
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const filterSummary = () => {
+    const lines: string[] = [];
+    if (search.trim()) lines.push(`Search: "${search.trim()}"`);
+    for (const f of activeFilters) {
+      const value = filterValues[f.key] ?? 'all';
+      if (value !== 'all') {
+        lines.push(`${f.label}: ${f.options.find((o) => o.value === value)?.label || value}`);
+      }
+    }
+    return lines;
+  };
+
+  const printList = () =>
+    printReport(
+      {
+        title: config?.title || 'Records',
+        subtitle: config?.description,
+        scope: [
+          filterSummary().length ? `Filters: ${filterSummary().join(' · ')}` : 'Filters: none (all records)',
+          `${filtered.length} of ${rows.length} record${rows.length === 1 ? '' : 's'}`,
+        ],
+        printedBy: user?.name,
+        columns: [
+          { label: 'Record', value: (r: Row) => r.title, width: '30%' },
+          { label: 'Status', value: (r: Row) => r.badge?.label || '—', width: '16%' },
+          { label: 'Details', value: (r: Row) => r.meta.filter(Boolean).join('\n') },
+        ],
+        // Every filtered record, not just the page on screen.
+        rows: filtered,
+      },
+      {
+        recordType: section as string,
+        scope: 'list',
+        filters: { search: search.trim(), ...filterValues },
+      }
+    );
+
+  const printDetail = (row: Row) =>
+    printReport(
+      {
+        title: `${config?.title || 'Record'}: ${row.title}`,
+        subtitle: config?.recordId ? `Record ID: ${config.recordId(row.raw)}` : undefined,
+        printedBy: user?.name,
+        fields: config?.detailFields ? config.detailFields(row.raw) : [],
+      },
+      {
+        recordType: section as string,
+        scope: 'detail',
+        recordId: config?.recordId ? config.recordId(row.raw) : undefined,
+        label: row.title,
+      }
+    );
 
   const loadOptions = async () => {
     if (ctx.departments.length || ctx.nurseIds.length) return;
@@ -777,8 +853,13 @@ export default function AdminGenericSectionPage() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.title}>{config.title}</Text>
-        <Text style={styles.subtitle}>{config.description}</Text>
+        <View style={styles.titleRow}>
+          <View style={styles.flex1}>
+            <Text style={styles.title}>{config.title}</Text>
+            <Text style={styles.subtitle}>{config.description}</Text>
+          </View>
+          <PrintButton label="Print list" onPrint={printList} disabled={loading || !!error} />
+        </View>
 
         <Input
           placeholder="Search"
@@ -808,7 +889,7 @@ export default function AdminGenericSectionPage() {
             {paged.pageItems.map((row) => (
               <Pressable
                 key={row.key}
-                onPress={() => config.detailFields && setSelected(row)}
+                onPress={() => void openDetail(row)}
                 disabled={!config.detailFields}
               >
                 <View style={[styles.row, Shadows.sm]}>
@@ -863,6 +944,7 @@ export default function AdminGenericSectionPage() {
                   <View style={styles.dialogHeader}>
                     <Text style={styles.dialogTitle}>{selected.title}</Text>
                     <View style={styles.dialogHeaderActions}>
+                      <PrintButton compact label="Print record" onPrint={() => printDetail(selected)} disabled={detailLoading} />
                       {canEdit ? (
                         <>
                           <Pressable onPress={() => openEdit(selected)} hitSlop={8} accessibilityLabel="Edit">
@@ -878,6 +960,7 @@ export default function AdminGenericSectionPage() {
                       </Pressable>
                     </View>
                   </View>
+                  {detailLoading ? <ActivityIndicator style={{ marginTop: 12 }} color={Colors.blue600} /> : null}
                   <View style={styles.detailGrid}>
                     {detailFields?.map((field) =>
                       field.multiline ? (
@@ -992,8 +1075,9 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   scroll: { flex: 1 },
   content: { padding: 16, paddingBottom: 100, gap: 12 },
+  titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' },
   title: { fontSize: 20, fontWeight: '900', color: Colors.gray900 },
-  subtitle: { fontSize: 12.5, color: Colors.mutedForeground, marginTop: -6 },
+  subtitle: { fontSize: 12.5, color: Colors.mutedForeground, marginTop: 2 },
   errorText: { textAlign: 'center', color: Colors.red700, marginTop: 24, fontSize: 13 },
   empty: { textAlign: 'center', color: Colors.mutedForeground, marginTop: 32, fontSize: 13 },
   list: { gap: 10 },

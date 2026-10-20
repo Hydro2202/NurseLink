@@ -18,6 +18,9 @@ import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 import { Pagination, usePagination } from '../../../components/Pagination';
+import { PrintButton } from '../../../components/admin/PrintButton';
+import { printReport } from '../../../utils/print';
+import { useAuth } from '../../../contexts/AuthContext';
 
 interface DoctorForm {
   fullName: string;
@@ -31,6 +34,7 @@ const EMPTY_FORM: DoctorForm = { fullName: '', specialization: '', departmentId:
 
 export default function AdminDoctorsPage() {
   const toast = useToast();
+  const { user: currentUser } = useAuth();
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
@@ -166,6 +170,32 @@ export default function AdminDoctorsPage() {
             <Text style={styles.title}>Doctors</Text>
             <Text style={styles.subtitle}>The hospital doctor directory used by Kardex, Tasks, and Patients.</Text>
           </View>
+          <PrintButton
+            label="Print list"
+            disabled={loading}
+            onPrint={() =>
+              printReport(
+                {
+                  title: 'Doctors',
+                  subtitle: 'Hospital doctor directory',
+                  printedBy: currentUser?.name,
+                  scope: [
+                    search.trim() ? `Search: "${search.trim()}"` : 'Filters: none (all doctors)',
+                    `${filtered.length} of ${doctors.length} doctors`,
+                  ],
+                  columns: [
+                    { label: 'Name', value: (d: Doctor) => d.fullName, width: '28%' },
+                    { label: 'Specialization', value: (d: Doctor) => d.specialization || '—', width: '22%' },
+                    { label: 'Department', value: (d: Doctor) => d.departmentName || '—', width: '22%' },
+                    { label: 'License', value: (d: Doctor) => d.licenseNumber || '—' },
+                    { label: 'Status', value: (d: Doctor) => d.status, width: '10%' },
+                  ],
+                  rows: filtered,
+                },
+                { recordType: 'doctors', scope: 'list', filters: { search: search.trim() } }
+              )
+            }
+          />
           <Button onPress={openCreate} size="sm">
             <View style={styles.btnInner}>
               <Plus size={16} color={Colors.white} />

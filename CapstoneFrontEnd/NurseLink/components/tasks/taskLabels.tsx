@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Colors, Radius } from '../../constants/colors';
 import type { Task, TaskType } from '../../types/domain';
+import { formatDateTime12 } from '../../utils/time';
 
 export const TASK_TYPE_LABELS: Record<TaskType, string> = {
   procedure: 'Procedure',
@@ -47,15 +48,9 @@ export function TaskStatusBadge({ status }: { status: Task['status'] }) {
   );
 }
 
-/** "Oct 20, 2026 · 10:00 PM" in the device's locale. */
+/** "Oct 20, 2026, 10:00 PM" — the shared 12-hour format (utils/time). */
 export function formatDateTime(iso?: string | null): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · ${d.toLocaleTimeString(
-    'en-US',
-    { hour: 'numeric', minute: '2-digit' }
-  )}`;
+  return formatDateTime12(iso);
 }
 
 const styles = StyleSheet.create({
