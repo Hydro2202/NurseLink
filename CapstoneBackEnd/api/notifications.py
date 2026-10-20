@@ -66,6 +66,9 @@ TASK_DELAY_FLAGGED = 'task_delay_flagged'
 # fires. Single constants so the lead time is defined once and the check
 # functions, tests, and any documentation all agree on the same number.
 TASK_REMINDER_LEAD_MINUTES = 15
+#: Scheduled vital signs checks (VitalSignsSchedule) remind the nurse this
+#: many minutes ahead — e.g. at 11:55 for a 12:00 check.
+VITALS_REMINDER_LEAD_MINUTES = 5
 REFERRAL_REMINDER_LEAD_MINUTES = 30
 
 
@@ -748,6 +751,42 @@ def notify_task_due_soon(task):
     )
 
 
+def notify_vitals_check_due(task, scheduled, now):
+    """
+    Remind the assigned nurse that a scheduled vital signs check is coming
+    up, naming the patient and the time the check is due. Opening it goes
+    straight to that task's Vital Signs Check-ins (action path openVitals).
+    Uses the TASK_DUE_SOON event so the app shows its due-task alert and
+    sound, same as other task reminders.
+    """
+    recipient = task.assigned_nurse
+    if recipient is None:
+        return None
+    preference = 'critical_alerts' if task.priority == 'high' else 'task_notifications'
+    if not wants(recipient, preference):
+        return None
+    local = timezone.localtime(scheduled, ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
+    at = local.strftime('%I:%M %p').lstrip('0')
+    room = f' (Room {task.patient_room})' if task.patient_room else ''
+    patient = f'{task.patient_name}{room}' if task.patient_name else 'your patient'
+    if scheduled > now:
+        message = f'Vital signs check for {patient} is due at {at}.'
+    else:
+        message = f'Vital signs check for {patient} was due at {at}. Record it now.'
+    return notify(
+        recipient,
+        notification_type='critical' if task.priority == 'high' else 'warning',
+        event=TASK_DUE_SOON,
+        title=f'Vital Signs due at {at}',
+        message=message,
+        patient_label=task.patient_name or '',
+        patient=task.patient,
+        action_label='Record vital signs',
+        action_path='/tasks?openVitals=1',
+        action_highlight_id=task.task_code,
+    )
+
+
 def notify_task_due(task):
     """
     Tell the assigned nurse it's time to do one of their tasks.
@@ -865,12 +904,22 @@ def check_due_task_reminders(user):
     candidates = Task.objects.filter(
         assigned_nurse=user, due_date__isnull=False,
     ).exclude(status='completed')
+    vitals_lead = timedelta(minutes=VITALS_REMINDER_LEAD_MINUTES)
     for task in candidates:
-        scheduled = _task_scheduled_at(task)
+        scheduled = task.scheduled_for or _task_scheduled_at(task)
         if scheduled is None:
             continue
         update_fields = []
-        if (
+        if task.vitals_schedule_id and task.scheduled_for:
+            # A scheduled vital signs check gets one reminder, 5 minutes
+            # ahead (or as soon as the nurse is next online if that moment
+            # was missed), instead of the generic "due soon"/"due now" pair.
+            if task.reminder_soon_sent_at is None and scheduled - vitals_lead <= now:
+                notify_vitals_check_due(task, scheduled, now)
+                task.reminder_soon_sent_at = now
+                task.reminder_sent_at = now
+                update_fields += ['reminder_soon_sent_at', 'reminder_sent_at']
+        elif (
             task.reminder_soon_sent_at is None
             and scheduled - lead <= now < scheduled
         ):
