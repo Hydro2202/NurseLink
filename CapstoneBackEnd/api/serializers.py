@@ -53,7 +53,9 @@ from .notifications import (
     resolve_nurse,
 )
 from .duty_status import local_today
+from . import task_events
 from .names import full_name, name_variants
+from .permissions import get_user_role
 from .presence import presence_fields
 from .utils import next_code
 from .vitals_detection import detect_vital_mentions
@@ -1722,6 +1724,13 @@ class TaskSerializer(serializers.ModelSerializer):
     patientRoom = serializers.CharField(source='patient_room', required=False, allow_blank=True)
     doctorOrder = serializers.CharField(source='doctor_order', required=False, allow_blank=True)
     checklist = serializers.ListField(child=serializers.DictField(), required=False)
+    taskType = serializers.ChoiceField(source='task_type', choices=Task.TYPE_CHOICES, required=False)
+    # Written only by the `complete` / `amend-remarks` actions, never by a
+    # plain create/update, so completion always goes through the Done flow.
+    completionRemarks = serializers.CharField(source='completion_remarks', read_only=True)
+    completedBy = serializers.CharField(source='completed_by_name', read_only=True)
+    scheduledFor = serializers.DateTimeField(source='scheduled_for', read_only=True)
+    vitalReadingsRequired = serializers.IntegerField(source='vital_readings_required', read_only=True)
 
     class Meta:
         model = Task
@@ -1747,7 +1756,26 @@ class TaskSerializer(serializers.ModelSerializer):
             'patientRoom',
             'doctorOrder',
             'checklist',
+            'taskType',
+            'completionRemarks',
+            'completedBy',
+            'scheduledFor',
+            'vitalReadingsRequired',
         ]
+
+    def validate_status(self, value):
+        current = self.instance.status if self.instance is not None else None
+        if value == current:
+            return value
+        if value == 'completed':
+            raise serializers.ValidationError(
+                'Use the Done button to complete a task, so the completion remarks are recorded.'
+            )
+        if current == 'completed':
+            request = self.context.get('request')
+            if not request or get_user_role(request.user) != 'head_nurse':
+                raise serializers.ValidationError('Only a head nurse can reopen a completed task.')
+        return value
 
     def get_assignedDoctors(self, obj):
         # Plain .all() (not .select_related(...).all()) so this reuses
@@ -1877,9 +1905,11 @@ class TaskSerializer(serializers.ModelSerializer):
             now_done = bool(value[-1].get('done'))
             if now_done and not was_done:
                 reading_count = VitalSigns.objects.filter(task=instance).count()
-                if reading_count < 2:
+                required = instance.vital_readings_required
+                if reading_count < required:
                     raise serializers.ValidationError(
-                        'Record at least 2 vital sign readings before completing this step.'
+                        f'Record at least {required} vital sign reading{"s" if required > 1 else ""} '
+                        'before completing this step.'
                     )
         return value
 
@@ -1947,6 +1977,7 @@ class TaskSerializer(serializers.ModelSerializer):
         task = Task.objects.create(**validated_data)
         if doctors:
             self._sync_doctors(task, doctors, actor)
+        task_events.record(task, 'created', actor=actor, to_status=task.status, assignedTo=task.assigned_to)
         notify_task_assigned(task, actor=request.user if request else None)
         return task
 
@@ -1959,6 +1990,19 @@ class TaskSerializer(serializers.ModelSerializer):
         'due_time': 'due time',
         'due_date': 'due date',
         'assigned_nurse_id': 'reassigned',
+    }
+
+    #: Edits recorded in the task history (status and assignee have their own events).
+    _AUDITED_FIELDS = {
+        'title': 'title',
+        'description': 'description',
+        'priority': 'priority',
+        'due_date': 'due date',
+        'due_time': 'due time',
+        'category': 'category',
+        'task_type': 'task type',
+        'patient_id': 'patient',
+        'doctor_order': "doctor's order",
     }
 
     def update(self, instance, validated_data):
@@ -1981,6 +2025,8 @@ class TaskSerializer(serializers.ModelSerializer):
         # (e.g. re-sending the same status is not an update worth a
         # notification).
         before = {field: getattr(instance, field) for field in self._NOTIFIABLE_FIELDS}
+        audited_before = {field: getattr(instance, field) for field in self._AUDITED_FIELDS}
+        assignee_before = instance.assigned_to
 
         if doctors is not None:
             validated_data['attending_physician'] = (
@@ -1988,8 +2034,14 @@ class TaskSerializer(serializers.ModelSerializer):
             )
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        if instance.status == 'completed' and not instance.completed_at:
-            instance.completed_at = timezone.now()
+        reopened = before['status'] == 'completed' and instance.status != 'completed'
+        if reopened:
+            # The completion (with its remarks) stays in the task's history;
+            # the task itself goes back to being open work.
+            instance.completed_at = None
+            instance.completed_by = None
+            instance.completed_by_name = ''
+            instance.completion_remarks = ''
         # Re-arms both due-task reminders whenever the schedule itself moves
         # — otherwise editing a task to a new due date/time after its old
         # one already fired a reminder would stay silently *_sent_at-set
@@ -2010,6 +2062,25 @@ class TaskSerializer(serializers.ModelSerializer):
             request = self.context.get('request')
             actor = request.user if request and request.user.is_authenticated else None
             self._sync_doctors(instance, doctors, actor)
+
+        request = self.context.get('request')
+        actor = request.user if request and request.user.is_authenticated else None
+        if instance.assigned_to != assignee_before:
+            task_events.record(
+                instance, 'assigned', actor=actor, assignedTo=instance.assigned_to,
+                previousAssignee=assignee_before,
+            )
+        if instance.status != before['status']:
+            task_events.record(
+                instance, 'status_changed', actor=actor, from_status=before['status'],
+                to_status=instance.status, reopened=reopened,
+            )
+        edited = [
+            label for field, label in self._AUDITED_FIELDS.items()
+            if getattr(instance, field) != audited_before[field]
+        ]
+        if edited:
+            task_events.record(instance, 'edited', actor=actor, fields=edited)
 
         changed = [
             label for field, label in self._NOTIFIABLE_FIELDS.items()
@@ -2512,6 +2583,19 @@ class HandoverSerializer(serializers.ModelSerializer):
                 )
             validated_data['nurse_to_user'] = recipient
 
+    #: Edits recorded in the task history (status and assignee have their own events).
+    _AUDITED_FIELDS = {
+        'title': 'title',
+        'description': 'description',
+        'priority': 'priority',
+        'due_date': 'due date',
+        'due_time': 'due time',
+        'category': 'category',
+        'task_type': 'task type',
+        'patient_id': 'patient',
+        'doctor_order': "doctor's order",
+    }
+
     def update(self, instance, validated_data):
         patient_id = validated_data.pop('patientId', serializers.empty)
         if patient_id is not serializers.empty:
@@ -2921,6 +3005,19 @@ class ChartingNoteSerializer(serializers.ModelSerializer):
         instance = ChartingNote.objects.create(**validated_data)
         self._apply_vitals_flag(instance)
         return instance
+
+    #: Edits recorded in the task history (status and assignee have their own events).
+    _AUDITED_FIELDS = {
+        'title': 'title',
+        'description': 'description',
+        'priority': 'priority',
+        'due_date': 'due date',
+        'due_time': 'due time',
+        'category': 'category',
+        'task_type': 'task type',
+        'patient_id': 'patient',
+        'doctor_order': "doctor's order",
+    }
 
     def update(self, instance, validated_data):
         patient_id = validated_data.pop('patientId', serializers.empty)

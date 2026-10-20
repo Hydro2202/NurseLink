@@ -30,6 +30,9 @@ import type {
   PatientVisit,
   Task,
   WorkloadData,
+  TaskHistoryEntry,
+  MyPatientFolder,
+  VitalsScheduleResponse,
 } from '../types/domain';
 
 /**
@@ -811,9 +814,11 @@ export async function fetchTasks(options?: {
   status?: string;
   patientId?: string;
   search?: string;
+  taskType?: string;
 }): Promise<Task[]> {
   const params = new URLSearchParams();
   if (options?.mine) params.set('mine', 'true');
+  if (options?.taskType) params.set('taskType', options.taskType);
   if (options?.assignedTo) params.set('assignedTo', options.assignedTo);
   if (options?.status) params.set('status', options.status);
   if (options?.patientId) params.set('patientId', options.patientId);
@@ -883,8 +888,59 @@ export async function updateDoctor(id: number | string, data: Partial<Doctor>): 
   return apiRequest<Doctor>(`/doctors/${id}/`, { method: 'PATCH', body: data });
 }
 
-export async function completeTask(taskId: string): Promise<Task> {
-  return apiRequest<Task>(`/tasks/${taskId}/complete/`, { method: 'POST' });
+/** Done: completes the task with the nurse's remarks (required). 409 if it
+ * was already completed — the server never completes a task twice. */
+export async function completeTask(taskId: string, remarks: string): Promise<Task> {
+  return apiRequest<Task>(`/tasks/${taskId}/complete/`, { method: 'POST', body: { remarks } });
+}
+
+/** Corrects a completed task's remarks; the old version stays in its history. */
+export async function amendTaskRemarks(taskId: string, remarks: string): Promise<Task> {
+  return apiRequest<Task>(`/tasks/${taskId}/amend-remarks/`, { method: 'POST', body: { remarks } });
+}
+
+export async function fetchTaskHistory(options?: {
+  patientId?: string;
+  taskType?: string;
+  status?: string;
+  event?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  q?: string;
+  mine?: boolean;
+}): Promise<TaskHistoryEntry[]> {
+  const params = new URLSearchParams();
+  Object.entries(options || {}).forEach(([key, value]) => {
+    if (value === true) params.set(key, 'true');
+    else if (typeof value === 'string' && value) params.set(key, value);
+  });
+  const query = params.toString() ? `?${params}` : '';
+  return apiRequest<TaskHistoryEntry[]>(`/tasks/history/${query}`);
+}
+
+export async function fetchMyPatientFolders(): Promise<MyPatientFolder[]> {
+  return apiRequest<MyPatientFolder[]>('/tasks/my-patients/');
+}
+
+export async function fetchVitalsSchedule(patientCode: string): Promise<VitalsScheduleResponse> {
+  return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`);
+}
+
+export async function saveVitalsSchedule(
+  patientCode: string,
+  data: { frequencyHours: number; startAt?: string; basis?: string; reason?: string }
+): Promise<VitalsScheduleResponse> {
+  return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`, {
+    method: 'POST',
+    body: data,
+  });
+}
+
+export async function stopVitalsSchedule(patientCode: string, reason?: string): Promise<VitalsScheduleResponse> {
+  return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`, {
+    method: 'DELETE',
+    body: reason ? { reason } : undefined,
+  });
 }
 
 export async function fetchHandovers(options?: { status?: string }): Promise<HandoverNote[]> {

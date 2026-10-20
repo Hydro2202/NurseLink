@@ -22,6 +22,7 @@ that was never a task, and becomes one.
 import logging
 import re
 
+from . import task_events
 from .models import Task
 from .names import full_name
 from .utils import next_code
@@ -136,9 +137,15 @@ def _reassign(task, nurse, nurse_name):
         logger.info('Handover task %s is %s; not reassigning.', task.task_code, task.status)
         return task
 
+    previous = task.assigned_to
     task.assigned_nurse = nurse
     task.assigned_to = nurse_name
     task.save(update_fields=['assigned_nurse', 'assigned_to', 'updated_at'])
+    if previous != nurse_name:
+        task_events.record(
+            task, 'assigned', actor=nurse, assignedTo=nurse_name, previousAssignee=previous,
+            source='referral accepted',
+        )
     return task
 
 
@@ -174,7 +181,17 @@ def _base_fields(handover, nurse, nurse_name):
         'assigned_to': nurse_name,
         'assigned_nurse': nurse,
         'source_handover': handover,
+        'task_type': 'referral',
     }
+
+
+def _record_created(task, handover):
+    task_events.record(
+        task, 'created', actor=handover.created_by,
+        actor_name=handover.nurse_from or task_events.SYSTEM_ACTOR, to_status=task.status,
+        source='referral', referral=handover.handover_code,
+    )
+    return task
 
 
 def _provenance(handover):
@@ -200,11 +217,11 @@ def _create_summary_task(handover, nurse, nurse_name):
         if (value or '').strip():
             body.append('%s: %s' % (label, value.strip()))
 
-    return Task.objects.create(
+    return _record_created(Task.objects.create(
         title=title,
         description=BLOCK_SEPARATOR.join(body),
         **_base_fields(handover, nurse, nurse_name),
-    )
+    ), handover)
 
 
 def _create_from_text(entry, handover, nurse, nurse_name):
@@ -216,8 +233,8 @@ def _create_from_text(entry, handover, nurse, nurse_name):
     if title != entry:
         body.append(entry)
 
-    return Task.objects.create(
+    return _record_created(Task.objects.create(
         title=title,
         description=BLOCK_SEPARATOR.join(body),
         **_base_fields(handover, nurse, nurse_name),
-    )
+    ), handover)

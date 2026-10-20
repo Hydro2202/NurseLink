@@ -20,7 +20,7 @@ import {
   fetchPatientAssignedDoctors,
   ApiError,
 } from '../services/api';
-import type { Doctor, Patient, Task } from '../types/domain';
+import type { Doctor, Patient, Task, TaskType } from '../types/domain';
 
 interface TaskModalProps {
   open: boolean;
@@ -60,6 +60,7 @@ export function TaskModal({
     title: '',
     description: '',
     priority: 'medium' as 'high' | 'medium' | 'low',
+    taskType: 'procedure' as TaskType,
     patientName: '',
     patientId: '',
     dueDate: '',
@@ -94,6 +95,7 @@ export function TaskModal({
           title: task.title,
           description: task.description || '',
           priority: task.priority === 'high' || task.priority === 'low' ? task.priority : 'medium',
+          taskType: task.taskType === 'referral' ? 'referral' : 'procedure',
           patientName: task.patientName,
           patientId: task.patientId || '',
           dueDate: task.dueDate || '',
@@ -108,6 +110,7 @@ export function TaskModal({
           title: '',
           description: '',
           priority: 'medium',
+          taskType: 'procedure',
           patientName: '',
           patientId: '',
           // Defaults to today rather than blank — matches how "Due Time"
@@ -295,6 +298,16 @@ export function TaskModal({
                   textAlignVertical="top"
                 />
               </View>
+
+              <Select
+                label="Task Type *"
+                value={formData.taskType}
+                onValueChange={(value) => setFormData({ ...formData, taskType: value as TaskType })}
+                options={[
+                  { label: 'Procedure — nursing care or procedure', value: 'procedure' },
+                  { label: 'Referral — follow-up from a referral', value: 'referral' },
+                ]}
+              />
 
               <Select
                 label="Risk Level *"

@@ -881,11 +881,16 @@ def check_due_task_reminders(user):
             notify_task_due(task)
             task.reminder_sent_at = now
             update_fields.append('reminder_sent_at')
-        if task.status != 'overdue' and scheduled < now:
+        became_overdue = task.status != 'overdue' and scheduled < now
+        if became_overdue:
+            previous_status = task.status
             task.status = 'overdue'
             update_fields.append('status')
         if update_fields:
             task.save(update_fields=update_fields)
+        if became_overdue:
+            from . import task_events
+            task_events.record(task, 'status_changed', from_status=previous_status, to_status='overdue')
 
 
 def notify_referral_almost_due(handover):

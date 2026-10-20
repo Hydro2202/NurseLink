@@ -25,7 +25,6 @@ import {
   createTask,
   updateTask,
   unassignTask,
-  completeTask,
   ApiError,
 } from '../../../services/api';
 import { formatDueDate, isTaskOverdue, taskDueChip } from '../tasks';
@@ -37,6 +36,7 @@ import { Input } from '../../../components/Input';
 import { Select } from '../../../components/Select';
 import { TaskModal } from '../../../components/TaskModal';
 import { DeleteConfirmDialog } from '../../../components/ConfirmDialog';
+import { CompleteTaskDialog } from '../../../components/tasks/CompleteTaskDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
 import { Pagination, usePagination } from '../../../components/Pagination';
@@ -67,7 +67,7 @@ export default function NurseTasksPage() {
   const [unassignDialogOpen, setUnassignDialogOpen] = useState(false);
   const [taskToUnassign, setTaskToUnassign] = useState<string | null>(null);
   const [unassignLoading, setUnassignLoading] = useState(false);
-  const [completeLoading, setCompleteLoading] = useState<string | null>(null);
+  const [completingTask, setCompletingTask] = useState<Task | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('priority');
 
@@ -141,22 +141,8 @@ export default function NurseTasksPage() {
     }
   };
 
-  const handleCompleteTask = async (task: Task) => {
-    setCompleteLoading(task.id);
-    try {
-      const updated = await completeTask(task.id);
-      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
-      toast.success('Task completed!', {
-        description: `"${task.title}" marked complete.`,
-      });
-    } catch (error) {
-      toast.error('Failed to complete task', {
-        description: error instanceof ApiError ? error.message : 'Please try again.',
-      });
-    } finally {
-      setCompleteLoading(null);
-    }
-  };
+  // Done opens the remarks dialog; the task is updated only after the server saved it.
+  const handleCompleteTask = (task: Task) => setCompletingTask(task);
 
   const filteredTasks = nurseTasks
     .filter((task) => {
@@ -435,13 +421,9 @@ export default function NurseTasksPage() {
                         size="icon-sm"
                         variant="outline"
                         onPress={() => handleCompleteTask(task)}
-                        disabled={completeLoading === task.id}
+                        accessibilityLabel="Mark as done"
                       >
-                        {completeLoading === task.id ? (
-                          <ActivityIndicator size="small" color={Colors.green600} />
-                        ) : (
-                          <CheckCircle size={16} color={Colors.green600} />
-                        )}
+                        <CheckCircle size={16} color={Colors.green600} />
                       </Button>
                     ) : null}
                     <Button
@@ -487,6 +469,16 @@ export default function NurseTasksPage() {
         task={selectedTask}
         mode={taskModalMode}
         onSave={handleSaveTask}
+      />
+
+      <CompleteTaskDialog
+        task={completingTask}
+        onClose={() => setCompletingTask(null)}
+        onCompleted={(updated) => {
+          setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+          setCompletingTask(null);
+          toast.success('Task completed', { description: `"${updated.title}" was saved with the remarks.` });
+        }}
       />
 
       <DeleteConfirmDialog
