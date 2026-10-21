@@ -113,10 +113,10 @@ export function ReferralDueAlertModal() {
           >
             <Bell className="w-5 h-5 text-white" />
           </div>
-          <h2 className="text-lg font-extrabold">{isOverdue ? 'Referral Overdue' : 'Referral Almost Due'}</h2>
+          <h2 className="text-lg font-extrabold">{isOverdue ? 'Endorsement Overdue' : 'Endorsement Almost Due'}</h2>
         </div>
 
-        <p className="text-sm">{current.message || 'A referral needs your attention.'}</p>
+        <p className="text-sm">{current.message || 'An endorsement needs your attention.'}</p>
 
         {loading ? (
           <div className="py-3 text-center text-sm text-muted-foreground">Loading…</div>
@@ -151,14 +151,14 @@ export function ReferralDueAlertModal() {
             Dismiss
           </Button>
           <Button className="flex-1" onClick={viewReferral}>
-            Open Referral
+            Open Endorsement
             <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
           </Button>
         </div>
 
         {queue.length > 1 ? (
           <p className="text-xs text-muted-foreground text-center">
-            {queue.length - 1} more referral{queue.length - 1 > 1 ? 's' : ''} waiting
+            {queue.length - 1} more endorsement{queue.length - 1 > 1 ? 's' : ''} waiting
           </p>
         ) : null}
       </DialogContent>

@@ -38,7 +38,7 @@ interface SectionLink {
 }
 
 // Mirrors the Django admin index's grouped list (Charting notes, Departments,
-// Doctors, Duty assignments, Referral notes, Kardex records, Patients,
+// Doctors, Duty assignments, Endorsement notes, Kardex records, Patients,
 // Task handovers, Tasks, Vital signs...) as tappable cards. Accounts and
 // Registrations get their own dedicated screens (real workflows, not just a
 // browse view); everything else routes through admin/[section], where every
@@ -46,7 +46,7 @@ interface SectionLink {
 const SECTIONS: SectionLink[] = [
   { key: 'patients', name: 'Patients', description: 'Every admitted, observed, and discharged patient.', icon: Users, href: '/(app)/admin/patients' },
   { key: 'tasks', name: 'Tasks', description: 'Every care task across every nurse.', icon: ClipboardList, href: '/(app)/admin/tasks' },
-  { key: 'handovers', name: 'Referral Notes', description: 'SBAR patient referrals between nurses.', icon: FileText, href: '/(app)/admin/handovers' },
+  { key: 'handovers', name: 'Endorsement Notes', description: 'SBAR patient endorsements between nurses.', icon: FileText, href: '/(app)/admin/handovers' },
   { key: 'task-handovers', name: 'Task Handovers', description: 'Shift-to-shift task handoffs.', icon: ArrowLeftRight, href: '/(app)/admin/task-handovers' },
   { key: 'charting', name: 'Charting Notes', description: 'Nursing notes and auto-charted entries.', icon: FileText, href: '/(app)/admin/charting' },
   { key: 'duty', name: 'Duty Assignments', description: 'The full shift roster, every department.', icon: Calendar, href: '/(app)/admin/duty' },
@@ -227,7 +227,7 @@ export default function AdminIndexPage() {
 const RECORD_NOUN: Record<string, string> = {
   patients: 'patient',
   tasks: 'task',
-  handovers: 'referral',
+  handovers: 'endorsement',
   'task-handovers': 'task handover',
   charting: 'charting note',
   duty: 'duty assignment',

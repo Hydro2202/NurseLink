@@ -51,7 +51,7 @@ const RECORD_TYPES: { value: string; label: string }[] = [
   { value: 'all', label: 'Any record type' },
   { value: 'patients', label: 'Patients' },
   { value: 'tasks', label: 'Tasks' },
-  { value: 'handovers', label: 'Referrals' },
+  { value: 'handovers', label: 'Endorsements' },
   { value: 'task-handovers', label: 'Task handovers' },
   { value: 'charting', label: 'Charting' },
   { value: 'duty', label: 'Duty assignments' },

@@ -330,6 +330,79 @@ class VitalsScheduleTests(Base):
             self.client.get('/api/tasks/')
         self.assertEqual(Task.objects.filter(vitals_schedule__isnull=False).count(), 1)
 
+    def test_prn_mode_generates_no_recurring_tasks(self):
+        res = self.set_schedule(self.nurse, mode='prn')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data['active']['mode'], 'prn')
+        self.assertIsNone(res.data['active']['frequencyHours'])
+        self.assertEqual(res.data['active']['monitoringStatus'], 'prn')
+        call_command('generate_vitals_tasks', verbosity=0)
+        self.assertEqual(Task.objects.filter(vitals_schedule__isnull=False).count(), 0)
+
+    def test_an_unspecified_patient_has_no_active_schedule_and_no_tasks(self):
+        self.client.force_authenticate(self.nurse)
+        self.assertIsNone(self.client.get('/api/patients/P900/vitals-schedule/').data['active'])
+        call_command('generate_vitals_tasks', verbosity=0)
+        self.assertEqual(Task.objects.filter(vitals_schedule__isnull=False).count(), 0)
+
+
+class VitalsMonitoringOrderOnPatientEditTests(Base):
+    """
+    Edit Patient Information's "Vital Signs Monitoring (as ordered)"
+    dropdown and the Kardex's own vitals-schedule editor both write through
+    PatientViewSet/vitals_schedule.set_monitoring_order onto the same
+    VitalSignsSchedule rows — there is exactly one source of truth,
+    regardless of which screen changed it.
+    """
+
+    def edit_patient(self, user, **body):
+        self.client.force_authenticate(user)
+        return self.client.patch(f'/api/patients/{self.patient.patient_code}/', body, format='json')
+
+    def test_default_is_not_specified_and_survives_an_unrelated_edit(self):
+        self.patient.refresh_from_db()
+        self.assertEqual(self.patient.vitals_monitoring_order, 'not_specified')
+        res = self.edit_patient(self.nurse, diagnosis='Updated diagnosis')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data['vitalsMonitoringOrder'], 'not_specified')
+        self.patient.refresh_from_db()
+        self.assertEqual(self.patient.diagnosis, 'Updated diagnosis')
+
+    def test_setting_every_2h_from_patient_edit_schedules_tasks(self):
+        res = self.edit_patient(self.nurse, vitalsMonitoringOrder='every_2h')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data['vitalsMonitoringOrder'], 'every_2h')
+        schedule = VitalSignsSchedule.objects.get(patient=self.patient, ended_at__isnull=True)
+        self.assertEqual(schedule.mode, 'scheduled')
+        self.assertEqual(schedule.frequency_hours, 2)
+
+    def test_switching_to_prn_then_not_specified_ends_the_active_row_each_time(self):
+        self.edit_patient(self.nurse, vitalsMonitoringOrder='every_4h')
+        first = VitalSignsSchedule.objects.get(patient=self.patient, ended_at__isnull=True)
+
+        res = self.edit_patient(self.nurse, vitalsMonitoringOrder='prn')
+        self.assertEqual(res.data['vitalsMonitoringOrder'], 'prn')
+        first.refresh_from_db()
+        self.assertIsNotNone(first.ended_at)
+        prn_row = VitalSignsSchedule.objects.get(patient=self.patient, ended_at__isnull=True)
+        self.assertEqual(prn_row.mode, 'prn')
+
+        res = self.edit_patient(self.nurse, vitalsMonitoringOrder='not_specified')
+        self.assertEqual(res.data['vitalsMonitoringOrder'], 'not_specified')
+        prn_row.refresh_from_db()
+        self.assertIsNotNone(prn_row.ended_at)
+        self.assertFalse(VitalSignsSchedule.objects.filter(patient=self.patient, ended_at__isnull=True).exists())
+
+    def test_task_cards_denormalize_the_patient_order(self):
+        self.edit_patient(self.nurse, vitalsMonitoringOrder='every_1h')
+        schedule = VitalSignsSchedule.objects.get(patient=self.patient, ended_at__isnull=True)
+        generate_for_schedule(schedule, now=schedule.start_at)
+        task = Task.objects.filter(vitals_schedule=schedule).first()
+        self.assertIsNotNone(task)
+        self.client.force_authenticate(self.nurse)
+        res = self.client.get(f'/api/tasks/{task.task_code}/')
+        self.assertEqual(res.data['vitalsMonitoringOrder'], 'every_1h')
+
 
 class VitalsReminderTests(Base):
     def test_assigned_nurse_is_reminded_five_minutes_before_with_the_time(self):

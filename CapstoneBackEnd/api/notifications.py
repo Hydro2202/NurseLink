@@ -322,22 +322,20 @@ def notify_handover_created(handover):
     )
     patient_count = handover.handover_patients.count()
     if patient_count > 1:
-        title = 'Patient Endorsement'
-        message = f'{patient_count} patients have been referred to you by {handover.nurse_from}.'
+        message = f'{patient_count} patients have been endorsed to you by {handover.nurse_from}.'
     else:
-        title = 'Patient Endorsement' if handover.is_endorsement else 'Patient Referral'
-        message = f'Patient {patient_name or "a patient"} has been referred to you by {handover.nurse_from}.'
+        message = f'Patient {patient_name or "a patient"} has been endorsed to you by {handover.nurse_from}.'
     return notify(
         recipient,
         notification_type='warning',
         event=HANDOVER_RECEIVED,
-        title=title,
+        title='Patient Endorsement',
         message=message,
         patient_label=patient_name,
         patient=handover.patient,
         handover=handover,
         sender=handover.created_by,
-        action_label='Review referral',
+        action_label='Review endorsement',
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )
@@ -345,12 +343,12 @@ def notify_handover_created(handover):
 
 def notify_handover_acknowledged(handover, nurse):
     """
-    Tell the outgoing nurse their referral was opened/received.
+    Tell the outgoing nurse their endorsement was opened/received.
 
     This is the lightweight "seen it" step — no responsibility has
     transferred yet and no tasks have moved (that happens on accept, see
     notify_handover_accepted). Skipped when a nurse acknowledges their own
-    referral, which is just noise.
+    endorsement, which is just noise.
     """
     recipient = handover.created_by
     if recipient is None or recipient.pk == nurse.pk:
@@ -364,16 +362,16 @@ def notify_handover_acknowledged(handover, nurse):
         recipient,
         notification_type='info',
         event=HANDOVER_ACKNOWLEDGED,
-        title='Referral received',
+        title='Endorsement received',
         message=(
-            f'{nurse_name} received your referral for '
+            f'{nurse_name} received your endorsement for '
             f'{handover.patient_name or "a patient"} and has not yet accepted it.'
         ),
         patient_label=handover.patient_name or '',
         patient=handover.patient,
         handover=handover,
         sender=nurse,
-        action_label='View referral',
+        action_label='View endorsement',
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )
@@ -381,11 +379,12 @@ def notify_handover_acknowledged(handover, nurse):
 
 def notify_handover_accepted(handover, nurse, adopted_tasks):
     """
-    Tell the outgoing nurse their referral was accepted.
+    Tell the outgoing nurse their endorsement was accepted.
 
     They are the one person who needs to know the patient is now somebody
     else's responsibility, and how much of their unfinished work was picked
-    up. Skipped when a nurse accepts their own referral, which is just noise.
+    up. Skipped when a nurse accepts their own endorsement, which is just
+    noise.
     """
     recipient = handover.created_by
     if recipient is None or recipient.pk == nurse.pk:
@@ -407,24 +406,24 @@ def notify_handover_accepted(handover, nurse, adopted_tasks):
         recipient,
         notification_type='success',
         event=HANDOVER_ACCEPTED,
-        title='Referral accepted',
+        title='Endorsement accepted',
         message=(
-            f'{nurse_name} accepted your referral for '
+            f'{nurse_name} accepted your endorsement for '
             f'{handover.patient_name or "a patient"}.{tail}'
         ),
         patient_label=handover.patient_name or '',
         patient=handover.patient,
         handover=handover,
         sender=nurse,
-        action_label='View referral',
+        action_label='View endorsement',
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )
 
 
 def notify_handover_declined(handover, nurse, reason):
-    """Tell the outgoing nurse their referral was declined, and why, so they
-    can reassign the patient to someone else."""
+    """Tell the outgoing nurse their endorsement was declined, and why, so
+    they can reassign the patient to someone else."""
     recipient = handover.created_by
     if recipient is None or recipient.pk == nurse.pk:
         return None
@@ -438,16 +437,16 @@ def notify_handover_declined(handover, nurse, reason):
         recipient,
         notification_type='warning',
         event=HANDOVER_DECLINED,
-        title='Referral declined',
+        title='Endorsement declined',
         message=(
-            f'{nurse_name} declined your referral for '
+            f'{nurse_name} declined your endorsement for '
             f'{handover.patient_name or "a patient"}.{tail}'
         ),
         patient_label=handover.patient_name or '',
         patient=handover.patient,
         handover=handover,
         sender=nurse,
-        action_label='View referral',
+        action_label='View endorsement',
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )
@@ -481,7 +480,7 @@ def notify_handover_cancelled(handover, nurse):
 
 
 def notify_handover_completed(handover, nurse):
-    """Tell the outgoing nurse a referral they sent has been marked complete."""
+    """Tell the outgoing nurse an endorsement they sent has been marked complete."""
     recipient = handover.created_by
     if recipient is None or recipient.pk == nurse.pk:
         return None
@@ -494,16 +493,16 @@ def notify_handover_completed(handover, nurse):
         recipient,
         notification_type='success',
         event=HANDOVER_COMPLETED,
-        title='Referral completed',
+        title='Endorsement completed',
         message=(
-            f'{nurse_name} marked the referral for '
+            f'{nurse_name} marked the endorsement for '
             f'{handover.patient_name or "a patient"} as completed.'
         ),
         patient_label=handover.patient_name or '',
         patient=handover.patient,
         handover=handover,
         sender=nurse,
-        action_label='View referral',
+        action_label='View endorsement',
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )
@@ -511,21 +510,21 @@ def notify_handover_completed(handover, nurse):
 
 def notify_referral_head_nurse_fyi(handover, verb, detail=''):
     """
-    Keep every head nurse informed of a referral event — created,
+    Keep every head nurse informed of an endorsement event — created,
     accepted, declined, or completed — purely for oversight. Head nurses
-    never approve or act on a referral (see HandoverViewSet.accept/decline/
-    complete, which authorize only the two nurses involved), so this is
-    deliberately not actionable: no action_label/action_path, and the title
-    says "For your information" rather than anything implying a decision is
-    needed.
+    never approve or act on an endorsement (see HandoverViewSet.accept/
+    decline/complete, which authorize only the two nurses involved), so
+    this is deliberately not actionable: no action_label/action_path, and
+    the title says "For your information" rather than anything implying a
+    decision is needed.
 
     Every head nurse gets this, same as HandoverViewSet.get_queryset() now
-    lets every head nurse list every referral — no department silo. This
+    lets every head nurse list every endorsement — no department silo. This
     used to filter to head nurse(s) whose own NurseProfile.department
     string exactly equaled the sender's or recipient's, which meant a head
     nurse got zero of these the moment their department string didn't
-    match (an admin-only department, a differently-worded ward name, or a
-    referral between two nurses with no department set at all).
+    match (an admin-only department, a differently-worded ward name, or an
+    endorsement between two nurses with no department set at all).
     """
     profiles = NurseProfile.objects.filter(role='head_nurse').select_related('user')
 
@@ -547,9 +546,9 @@ def notify_referral_head_nurse_fyi(handover, verb, detail=''):
                 head_nurse,
                 notification_type='info',
                 event=REFERRAL_HEAD_NURSE_FYI,
-                title=f'Referral {verb} — For your information',
+                title=f'Endorsement {verb} — For your information',
                 message=(
-                    f'Referral for {patient_name} from {handover.nurse_from} to '
+                    f'Endorsement for {patient_name} from {handover.nurse_from} to '
                     f'{handover.nurse_to} was {verb}.{tail}'
                 ),
                 patient_label=handover.patient_name or '',
@@ -944,7 +943,7 @@ def check_due_task_reminders(user):
 
 def notify_referral_almost_due(handover):
     """
-    Tell the receiving nurse a pending referral is due in
+    Tell the receiving nurse a pending endorsement is due in
     REFERRAL_REMINDER_LEAD_MINUTES. Receiver only — they're the one who
     still has to act on it; see notify_referral_overdue for why the
     overdue case also tells the sender.
@@ -964,15 +963,15 @@ def notify_referral_almost_due(handover):
         recipient,
         notification_type='warning',
         event=REFERRAL_ALMOST_DUE,
-        title='Referral almost due',
+        title='Endorsement almost due',
         message=(
-            f'The referral for {patient_label} from {handover.nurse_from} is due in '
+            f'The endorsement for {patient_label} from {handover.nurse_from} is due in '
             f'{REFERRAL_REMINDER_LEAD_MINUTES} minutes.'
         ),
         patient_label=handover.patient_name or '',
         patient=handover.patient,
         handover=handover,
-        action_label='Review referral',
+        action_label='Review endorsement',
         action_path='/handover',
         action_highlight_id=handover.handover_code,
     )
@@ -980,10 +979,10 @@ def notify_referral_almost_due(handover):
 
 def notify_referral_overdue(handover):
     """
-    Tell both nurses once a pending referral's due time has passed: the
+    Tell both nurses once a pending endorsement's due time has passed: the
     receiver, who still hasn't acted, and the sender, whose patient is
     still waiting on someone. Each is gated by their own notification
-    preference independently, so one having referral alerts off never
+    preference independently, so one having endorsement alerts off never
     silences the other's.
     """
     patient_count = handover.handover_patients.count()
@@ -998,12 +997,12 @@ def notify_referral_overdue(handover):
             receiver,
             notification_type='critical',
             event=REFERRAL_OVERDUE,
-            title='Referral overdue',
-            message=f'The referral for {patient_label} from {handover.nurse_from} is now overdue.',
+            title='Endorsement overdue',
+            message=f'The endorsement for {patient_label} from {handover.nurse_from} is now overdue.',
             patient_label=handover.patient_name or '',
             patient=handover.patient,
             handover=handover,
-            action_label='Review referral',
+            action_label='Review endorsement',
             action_path='/handover',
             action_highlight_id=handover.handover_code,
         ))
@@ -1017,15 +1016,15 @@ def notify_referral_overdue(handover):
             sender,
             notification_type='warning',
             event=REFERRAL_OVERDUE,
-            title='Referral overdue',
+            title='Endorsement overdue',
             message=(
-                f'Your referral for {patient_label} to {handover.nurse_to} is now overdue '
+                f'Your endorsement for {patient_label} to {handover.nurse_to} is now overdue '
                 'and still pending.'
             ),
             patient_label=handover.patient_name or '',
             patient=handover.patient,
             handover=handover,
-            action_label='View referral',
+            action_label='View endorsement',
             action_path='/handover',
             action_highlight_id=handover.handover_code,
         ))

@@ -95,10 +95,10 @@ class HandoverNotificationTests(APITestCase):
         note = rows[0]
 
         self.assertEqual(note['event'], 'handover_received')
-        self.assertEqual(note['title'], 'Patient Referral')
+        self.assertEqual(note['title'], 'Patient Endorsement')
         self.assertEqual(
             note['message'],
-            'Patient Lawrence Cruz has been referred to you by Maria Santos.',
+            'Patient Lawrence Cruz has been endorsed to you by Maria Santos.',
         )
         self.assertEqual(note['patient'], 'Lawrence Cruz')
         self.assertEqual(note['senderName'], 'Maria Santos')

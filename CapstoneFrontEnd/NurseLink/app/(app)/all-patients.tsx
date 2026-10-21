@@ -38,6 +38,7 @@ import {
   ApiError,
 } from '../../services/api';
 import type { Department, Patient } from '../../types/domain';
+import { vitalsMonitoringOrderLabel } from '../../components/tasks/taskLabels';
 import { Card, CardContent } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
@@ -61,6 +62,10 @@ import { bmiCategory } from '../../utils/bmi';
 
 function getAttendingPhysician(patient: Patient) {
   return patient.attendingPhysician || 'Not Assigned';
+}
+
+function getVitalsMonitoringOrderLabel(patient: Patient) {
+  return vitalsMonitoringOrderLabel(patient.vitalsMonitoringOrder);
 }
 
 /** Groups a patient's Kardex-assigned doctors by department, so a card with
@@ -795,6 +800,10 @@ export default function AllPatientsPage() {
                       <Text style={styles.detailLabel}>Attending Physician</Text>
                     </View>
                     <Text style={styles.detailValue}>{getAttendingPhysician(patient)}</Text>
+                  </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Vital Signs Monitoring</Text>
+                    <Text style={styles.detailValue}>{getVitalsMonitoringOrderLabel(patient)}</Text>
                   </View>
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>

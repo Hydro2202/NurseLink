@@ -47,6 +47,7 @@ import { createKardexRecord, fetchKardexRecords, reviewKardexRecord, ApiError } 
 import type { DuplicatePatientMatch, KardexHistory } from '../types/domain';
 import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
 import { KardexLabsAndMedications } from '../components/KardexLabsAndMedications';
+import { VitalsScheduleCard } from '../components/VitalsScheduleCard';
 
 const STATUS_BADGE: Record<
   KardexHistory['status'],
@@ -996,6 +997,9 @@ export default function KardexPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Vital Signs Monitoring (as ordered) for the patient just saved */}
+      {savedPatient && <VitalsScheduleCard patientId={savedPatient.id} />}
 
       {/* Recent Kardex Activity */}
       {kardexHistory.length > 0 && (

@@ -458,9 +458,9 @@ export default function SettingsPage() {
 
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <Label className="text-base">Handover Notifications</Label>
+              <Label className="text-base">Endorsement Notifications</Label>
               <p className="text-sm text-gray-600">
-                Receive shift handover alerts
+                Receive endorsement alerts
               </p>
             </div>
             <Switch checked={handoverNotifications} onCheckedChange={(value) => setLocal({ handoverNotifications: value })} />

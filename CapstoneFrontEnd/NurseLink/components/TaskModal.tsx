@@ -305,7 +305,7 @@ export function TaskModal({
                 onValueChange={(value) => setFormData({ ...formData, taskType: value as TaskType })}
                 options={[
                   { label: 'Procedure — nursing care or procedure', value: 'procedure' },
-                  { label: 'Referral — follow-up from a referral', value: 'referral' },
+                  { label: 'Endorsement — follow-up from an endorsement', value: 'referral' },
                 ]}
               />
 

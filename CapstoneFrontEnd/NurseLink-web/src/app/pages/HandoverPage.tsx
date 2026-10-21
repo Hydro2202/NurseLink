@@ -179,11 +179,11 @@ export default function HandoverPage() {
         unfinishedTasks: handoverData.unfinishedTasks || [],
       });
       setHandovers((prev) => [newHandover, ...prev]);
-      toast.success('Referral submitted successfully!', {
-        description: `Referral note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
+      toast.success('Endorsement submitted successfully!', {
+        description: `Endorsement note for ${newHandover.patientName} has been sent to ${newHandover.nurseTo}.`,
       });
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Failed to submit referral');
+      toast.error(error instanceof ApiError ? error.message : 'Failed to submit endorsement');
       throw error;
     }
   };
@@ -193,9 +193,9 @@ export default function HandoverPage() {
     try {
       const updated = await acceptHandover(id);
       setHandovers((prev) => prev.map((h) => (h.id === id ? updated : h)));
-      toast.success('Referral accepted', { description: `You've accepted the referral for ${updated.patientName}.` });
+      toast.success('Endorsement accepted', { description: `You've accepted the endorsement for ${updated.patientName}.` });
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Failed to accept referral');
+      toast.error(error instanceof ApiError ? error.message : 'Failed to accept endorsement');
     } finally {
       setActionLoading(null);
     }
@@ -206,9 +206,9 @@ export default function HandoverPage() {
     try {
       const updated = await completeHandover(id);
       setHandovers((prev) => prev.map((h) => (h.id === id ? updated : h)));
-      toast.success('Referral marked completed');
+      toast.success('Endorsement marked completed');
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Failed to complete referral');
+      toast.error(error instanceof ApiError ? error.message : 'Failed to complete endorsement');
     } finally {
       setActionLoading(null);
     }
@@ -220,11 +220,11 @@ export default function HandoverPage() {
     try {
       const updated = await declineHandover(declineTarget, declineReason.trim() || undefined);
       setHandovers((prev) => prev.map((h) => (h.id === declineTarget ? updated : h)));
-      toast.success('Referral declined');
+      toast.success('Endorsement declined');
       setDeclineTarget(null);
       setDeclineReason('');
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Failed to decline referral');
+      toast.error(error instanceof ApiError ? error.message : 'Failed to decline endorsement');
     } finally {
       setActionLoading(null);
     }
@@ -244,9 +244,9 @@ export default function HandoverPage() {
       setHandovers((prev) => prev.filter((h) => h.id !== handoverToDelete));
       setDeleteDialogOpen(false);
       setHandoverToDelete(null);
-      toast.success('Referral deleted', { description: `Referral for ${deleted?.patientName} has been removed.` });
+      toast.success('Endorsement deleted', { description: `Endorsement for ${deleted?.patientName} has been removed.` });
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Failed to delete referral');
+      toast.error(error instanceof ApiError ? error.message : 'Failed to delete endorsement');
     } finally {
       setDeleteLoading(false);
     }
@@ -439,7 +439,7 @@ export default function HandoverPage() {
   return (
     <div className="p-4 pb-24 space-y-6 max-w-4xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Referral</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Endorsement</h1>
         <p className="text-gray-600">{isHeadNurse ? 'Department oversight — view only, for your information' : 'SBAR-based digital endorsement'}</p>
       </div>
 
@@ -447,7 +447,7 @@ export default function HandoverPage() {
         <Info className="h-4 w-4" />
         <AlertDescription>
           {isHeadNurse
-            ? 'Referrals move directly between nurses with no approval step. You can see every referral and its full history here, but cannot accept, decline, or edit one.'
+            ? 'Endorsements move directly between nurses with no approval step. You can see every endorsement and its full history here, but cannot accept, decline, or edit one.'
             : "Demo system: don't enter real patient information."}
         </AlertDescription>
       </Alert>
@@ -457,7 +457,7 @@ export default function HandoverPage() {
           <Search className="absolute left-3 top-3 h-5 w-5 text-muted-foreground" />
           <Input
             type="text"
-            placeholder="Search referrals..."
+            placeholder="Search endorsements..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-10"
@@ -490,7 +490,7 @@ export default function HandoverPage() {
         ) : (
           <Button onClick={handleCreateHandover} className="w-full sm:w-auto">
             <Plus className="w-4 h-4 mr-2" />
-            New Referral
+            New Endorsement
           </Button>
         )}
       </div>
@@ -501,7 +501,7 @@ export default function HandoverPage() {
             <Card>
               <CardContent className="py-12 text-center">
                 <Eye className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                <p className="text-gray-500">No referrals yet</p>
+                <p className="text-gray-500">No endorsements yet</p>
               </CardContent>
             </Card>
           ) : (
@@ -520,7 +520,7 @@ export default function HandoverPage() {
               <Card>
                 <CardContent className="py-12 text-center">
                   <Clock className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                  <p className="text-gray-500">No incoming referrals</p>
+                  <p className="text-gray-500">No incoming endorsements</p>
                 </CardContent>
               </Card>
             ) : (
@@ -533,7 +533,7 @@ export default function HandoverPage() {
               <Card>
                 <CardContent className="py-12 text-center">
                   <FileText className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                  <p className="text-gray-500">No outgoing referrals</p>
+                  <p className="text-gray-500">No outgoing endorsements</p>
                 </CardContent>
               </Card>
             ) : (
@@ -550,14 +550,14 @@ export default function HandoverPage() {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={confirmDeleteHandover}
         loading={deleteLoading}
-        title="Delete Referral"
-        description="Are you sure you want to delete this referral? This action cannot be undone."
+        title="Delete Endorsement"
+        description="Are you sure you want to delete this endorsement? This action cannot be undone."
       />
 
       <Dialog open={!!declineTarget} onOpenChange={(open) => !open && setDeclineTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Decline Referral</DialogTitle>
+            <DialogTitle>Decline Endorsement</DialogTitle>
             <DialogDescription>Let the sending nurse know why, so they can reassign the patient.</DialogDescription>
           </DialogHeader>
           <Textarea value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} rows={4} placeholder="Reason (optional)" />
@@ -572,11 +572,11 @@ export default function HandoverPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Referral history */}
+      {/* Endorsement history */}
       <Dialog open={!!historyTarget} onOpenChange={(open) => !open && setHistoryTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Referral History</DialogTitle>
+            <DialogTitle>Endorsement History</DialogTitle>
             {historyTarget ? (
               <DialogDescription>
                 {historyTarget.patientName} · {historyTarget.nurseFrom} → {historyTarget.nurseTo}
@@ -585,7 +585,7 @@ export default function HandoverPage() {
           </DialogHeader>
           <div className="max-h-80 overflow-y-auto">
             {(historyTarget?.statusHistory ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4">No history recorded for this referral.</p>
+              <p className="text-sm text-muted-foreground py-4">No history recorded for this endorsement.</p>
             ) : (
               (historyTarget?.statusHistory ?? []).map((entry, idx) => (
                 <div key={idx} className="flex gap-2.5 py-2.5 border-b border-gray-100 last:border-0">

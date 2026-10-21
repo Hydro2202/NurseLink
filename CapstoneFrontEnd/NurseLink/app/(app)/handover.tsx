@@ -198,7 +198,7 @@ export default function HandoverPage() {
       // A background refresh that fails should not interrupt the nurse; the
       // next live tick will try again.
       if (!options?.quiet) {
-        toast.error('Failed to load referrals', {
+        toast.error('Failed to load endorsements', {
           description: error instanceof ApiError ? error.message : 'Please try again.',
         });
       }
@@ -384,13 +384,13 @@ export default function HandoverPage() {
       setHandovers((prev) =>
         prev.map((h) => (h.id === handoverId ? { ...updated, createdAt: updated.date } : h))
       );
-      toast.success('Referral marked completed', {
-        description: `Referral for ${updated.patientName} is closed out.`,
+      toast.success('Endorsement marked completed', {
+        description: `Endorsement for ${updated.patientName} is closed out.`,
       });
       void pollLive();
       void refreshNotifications();
     } catch (error) {
-      toast.error('Failed to complete referral', {
+      toast.error('Failed to complete endorsement', {
         description: error instanceof ApiError ? error.message : 'Please try again.',
       });
     } finally {
@@ -812,7 +812,7 @@ export default function HandoverPage() {
               <Card>
                 <CardContent style={styles.empty}>
                   <Eye size={48} color={Colors.gray500} />
-                  <Text style={styles.emptyText}>No referrals yet</Text>
+                  <Text style={styles.emptyText}>No endorsements yet</Text>
                 </CardContent>
               </Card>
             ) : (
@@ -842,7 +842,7 @@ export default function HandoverPage() {
                   <Card>
                     <CardContent style={styles.empty}>
                       <Clock size={48} color={Colors.gray500} />
-                      <Text style={styles.emptyText}>No incoming referrals</Text>
+                      <Text style={styles.emptyText}>No incoming endorsements</Text>
                     </CardContent>
                   </Card>
                 ) : (
@@ -860,7 +860,7 @@ export default function HandoverPage() {
                 <Card>
                   <CardContent style={styles.empty}>
                     <FileText size={48} color={Colors.gray500} />
-                    <Text style={styles.emptyText}>No outgoing referrals</Text>
+                    <Text style={styles.emptyText}>No outgoing endorsements</Text>
                   </CardContent>
                 </Card>
               ) : (
@@ -948,7 +948,7 @@ export default function HandoverPage() {
       >
         <Pressable style={styles.backdrop} onPress={() => setHistoryTarget(null)}>
           <Pressable style={[styles.declineDialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.declineTitle}>Referral History</Text>
+            <Text style={styles.declineTitle}>Endorsement History</Text>
             {historyTarget ? (
               <Text style={styles.declineDescription}>
                 {historyTarget.patientName} • {historyTarget.nurseFrom} → {historyTarget.nurseTo}

@@ -40,6 +40,69 @@ TASK_TITLE = 'Vital Signs Monitoring'
 
 RISK_TO_PRIORITY = {'critical': 'high', 'high': 'high', 'medium': 'medium', 'low': 'low'}
 
+#: The 5 values Edit Patient Information's "Vital Signs Monitoring (as
+#: ordered)" dropdown can save — every_1h/2h/4h map onto a 'scheduled' row's
+#: frequency_hours; 'prn' and 'not_specified' have no frequency at all (see
+#: VitalSignsSchedule.MODE_CHOICES and Patient.vitals_monitoring_order).
+ORDER_VALUE_TO_FREQUENCY = {'every_1h': 1, 'every_2h': 2, 'every_4h': 4}
+MONITORING_ORDER_VALUES = (*ORDER_VALUE_TO_FREQUENCY, 'prn', 'not_specified')
+
+
+def current_monitoring_order(patient):
+    """The single value Patient.vitals_monitoring_order exposes, derived
+    from this patient's active VitalSignsSchedule row (or its absence)."""
+    active = patient.vitals_schedules.filter(ended_at__isnull=True).first()
+    if active is None:
+        return 'not_specified'
+    if active.mode == 'prn':
+        return 'prn'
+    for value, hours in ORDER_VALUE_TO_FREQUENCY.items():
+        if hours == active.frequency_hours:
+            return value
+    return 'not_specified'  # defensive: an unrecognized frequency_hours value
+
+
+def set_monitoring_order(patient, order_value, user, basis=''):
+    """Set, change or clear a patient's Vital Signs Monitoring (as ordered).
+
+    The single entry point both Edit Patient Information's simple dropdown
+    and the richer Kardex vitals-schedule editor ultimately funnel through
+    (the latter via its own startAt/basis handling in views.py, which calls
+    VitalSignsSchedule.objects.create directly but follows the identical
+    end-active-then-create-new shape), so there is exactly one place that
+    decides what changing the order actually does — never two independently
+    maintained copies of this logic.
+    """
+    if order_value not in MONITORING_ORDER_VALUES:
+        raise ValueError(f'Unknown monitoring order {order_value!r}')
+    active = patient.vitals_schedules.filter(ended_at__isnull=True).first()
+
+    if order_value == 'not_specified':
+        if active is not None:
+            end_schedule(active, user, 'Not specified')
+        return None
+
+    mode = 'prn' if order_value == 'prn' else 'scheduled'
+    frequency = ORDER_VALUE_TO_FREQUENCY.get(order_value)
+    if active is not None and active.mode == mode and active.frequency_hours == frequency:
+        return active  # no real change — leave history alone
+
+    if active is not None:
+        label = 'as needed (PRN)' if mode == 'prn' else f'every {frequency} hour{"s" if frequency != 1 else ""}'
+        end_schedule(active, user, f'Changed to {label}')
+
+    now = timezone.now()
+    local_now = _local(now)
+    start_at = local_now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    schedule = VitalSignsSchedule.objects.create(
+        patient=patient, mode=mode, frequency_hours=frequency, start_at=start_at, basis=basis,
+        set_by=user if user is not None and user.is_authenticated else None,
+        set_by_name=full_name(user) if user is not None and user.is_authenticated else '',
+    )
+    if mode == 'scheduled':
+        generate_for_schedule(schedule)
+    return schedule
+
 
 def _local(moment):
     return timezone.localtime(moment, ZoneInfo(settings.DUTY_LOCAL_TIMEZONE))
@@ -123,9 +186,11 @@ def generate_for_schedule(schedule, now=None):
 
 def generate_all(now=None):
     total = 0
-    for schedule in VitalSignsSchedule.objects.filter(ended_at__isnull=True).select_related(
-        'patient', 'patient__assigned_nurse', 'patient__department'
-    ):
+    # mode='scheduled' only — a PRN order has no interval to generate from,
+    # by design (see VitalSignsSchedule.MODE_CHOICES).
+    for schedule in VitalSignsSchedule.objects.filter(
+        ended_at__isnull=True, mode='scheduled'
+    ).select_related('patient', 'patient__assigned_nurse', 'patient__department'):
         total += generate_for_schedule(schedule, now=now)
     return total
 
@@ -145,9 +210,18 @@ def schedule_summary(schedule, now=None):
     """What the Kardex shows for one patient's active schedule."""
     now = now or timezone.now()
     patient = schedule.patient
+    last_reading = patient.vital_signs_history.order_by('-recorded_at').first()
+    if schedule.mode == 'prn':
+        # No interval, so no "next check" or overdue concept — monitoring
+        # happens as the documented order and workflow call for it.
+        return {
+            'nextCheckAt': None,
+            'lastCheckAt': last_reading.recorded_at if last_reading else None,
+            'overdueChecks': 0,
+            'monitoringStatus': 'prn',
+        }
     open_checks = schedule.tasks.exclude(status='completed')
     overdue = open_checks.filter(scheduled_for__lt=now).count()
-    last_reading = patient.vital_signs_history.order_by('-recorded_at').first()
     return {
         'nextCheckAt': schedule.occurrence_at_or_after(now),
         'lastCheckAt': last_reading.recorded_at if last_reading else None,

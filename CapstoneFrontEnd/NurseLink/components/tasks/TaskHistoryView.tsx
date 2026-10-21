@@ -147,7 +147,7 @@ export function TaskHistoryView({ scrollRef, patients, canViewAllNurses, refresh
             options={[
               { label: 'All types', value: 'all' },
               { label: 'Procedure', value: 'procedure' },
-              { label: 'Referral', value: 'referral' },
+              { label: 'Endorsement', value: 'referral' },
             ]}
             style={styles.filter}
           />

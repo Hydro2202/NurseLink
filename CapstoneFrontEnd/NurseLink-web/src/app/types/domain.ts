@@ -36,7 +36,17 @@ export interface Task {
    * ticked — 1 for a task generated from the Kardex-interval schedule, 2
    * for a free-standing one (see Task.vital_readings_required). */
   vitalReadingsRequired?: number;
+  /** Read-only, denormalized from the patient's active VitalSignsSchedule
+   * (or the schedule that generated this task) — see
+   * Task.vitals_monitoring_order. */
+  vitalsMonitoringOrder?: VitalsMonitoringOrder;
 }
+
+/** The 5 values Edit Patient Information's "Vital Signs Monitoring (as
+ * ordered)" dropdown can save — see Patient.vitals_monitoring_order.
+ * 'not_specified' isn't a stored value on the backend, just the absence of
+ * an active VitalSignsSchedule row; selecting it ends the active one. */
+export type VitalsMonitoringOrder = 'every_1h' | 'every_2h' | 'every_4h' | 'prn' | 'not_specified';
 
 export interface TaskChecklistItem {
   text: string;
@@ -150,6 +160,41 @@ export interface Patient {
   editHistory?: { editedBy: string; editedAt: string; changes: string[] }[];
   lastEditedAt?: string | null;
   lastEditedByName?: string | null;
+  /** The physician's order for how often vital signs must be taken — see
+   * api/vitals_schedule.py's current_monitoring_order()/set_monitoring_order().
+   * Read on every Patient GET; settable via a PATCH that includes it. */
+  vitalsMonitoringOrder?: VitalsMonitoringOrder;
+}
+
+/** One row of a patient's vitals-monitoring history — see
+ * PatientViewSet._vitals_schedule_row(). */
+export interface VitalsScheduleRow {
+  id: number;
+  mode: 'scheduled' | 'prn';
+  frequencyHours: 1 | 2 | 4 | null;
+  frequencyLabel: string;
+  startAt: string;
+  basis: string;
+  setBy: string;
+  setAt: string;
+  endedAt: string | null;
+  endedBy: string;
+  endReason: string;
+}
+
+/** The active row also carries monitoring-status fields the history rows
+ * don't — see PatientViewSet._vitals_schedule_response()/schedule_summary(). */
+export interface VitalsScheduleActive extends VitalsScheduleRow {
+  nextCheckAt: string | null;
+  lastCheckAt: string | null;
+  overdueChecks: number;
+  monitoringStatus: 'on_schedule' | 'overdue' | 'prn';
+}
+
+export interface VitalsScheduleResponse {
+  patientId: string;
+  active: VitalsScheduleActive | null;
+  history: VitalsScheduleRow[];
 }
 
 export interface Department {

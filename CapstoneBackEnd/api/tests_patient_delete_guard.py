@@ -85,7 +85,7 @@ class PatientDeleteGuardTests(TestCase):
             shift='morning', date=timezone.localdate(), nurse_from='Ana Nurse', nurse_to='Ben Nurse',
             nurse_to_user=self.other, status='sent', created_by=self.nurse,
         )
-        self.assert_blocked('referrals')
+        self.assert_blocked('endorsements')
 
     def test_blocked_by_medication_record(self):
         med = KardexMedication.objects.create(

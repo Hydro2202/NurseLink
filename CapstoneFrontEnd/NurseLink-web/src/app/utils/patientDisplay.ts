@@ -3,7 +3,7 @@
  * Ported verbatim (logic and thresholds) from the mobile app's
  * app/(app)/all-patients.tsx so both platforms flag the same readings.
  */
-import type { Patient } from '../types/domain';
+import type { Patient, VitalsMonitoringOrder } from '../types/domain';
 
 /** Groups a patient's Kardex-assigned doctors by department, so a card with
  * "Cardiology: Dr. A, Dr. B" reads as one line per department rather than
@@ -63,6 +63,22 @@ export const VITAL_SEVERITY_CLASSES: Record<VitalSeverity, { box: string; text: 
   warning: { box: 'bg-orange-50 border-orange-300', text: 'text-orange-700' },
   normal: { box: 'bg-blue-50 border-blue-100', text: 'text-gray-900' },
 };
+
+/** "Every 2 hours" / "As needed (PRN)" / "Not specified" — the display text
+ * for Patient.vitalsMonitoringOrder, shared by the patient detail view,
+ * Kardex's vitals-schedule card, and task cards so the 5 enum values never
+ * get a second, slightly different label somewhere else. */
+export const VITALS_MONITORING_ORDER_LABELS: Record<VitalsMonitoringOrder, string> = {
+  every_1h: 'Every 1 hour',
+  every_2h: 'Every 2 hours',
+  every_4h: 'Every 4 hours',
+  prn: 'As needed (PRN)',
+  not_specified: 'Not specified',
+};
+
+export function vitalsMonitoringOrderLabel(order: VitalsMonitoringOrder | null | undefined): string {
+  return VITALS_MONITORING_ORDER_LABELS[order || 'not_specified'];
+}
 
 /** Today as YYYY-MM-DD in the browser's local timezone (not UTC — a
  * toISOString() slice would report yesterday's date before 8 AM in UTC+8). */

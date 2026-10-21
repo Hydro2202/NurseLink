@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router';
 import type { Task } from '../types/domain';
 import { fetchTasks, createTask, updateTask, unassignTask, completeTask, ApiError } from '../api/nurselink';
 import { formatDueDate, isTaskOverdue, taskDueChip } from './TasksPage';
+import { vitalsMonitoringOrderLabel } from '../utils/patientDisplay';
 import { Card, CardContent } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -384,8 +385,8 @@ export default function NurseTasksPage() {
                         <span className="text-gray-500">Patient: {task.patientName} ({task.patientId})</span>
                       </div>
 
-                      {/* Secondary Info: Doctor and Room */}
-                      {(task.attendingPhysician || task.patientRoom) && (
+                      {/* Secondary Info: Doctor, Room, and (for a Vital Signs Check) the monitoring order */}
+                      {(task.attendingPhysician || task.patientRoom || task.category === 'vital_signs') && (
                         <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500">
                           {task.attendingPhysician && (
                             <span className="flex items-center gap-1">
@@ -397,6 +398,12 @@ export default function NurseTasksPage() {
                             <span className="flex items-center gap-1">
                               <Bed className="w-3.5 h-3.5" />
                               <span className="font-medium">Room:</span> {task.patientRoom}
+                            </span>
+                          )}
+                          {task.category === 'vital_signs' && (
+                            <span className="flex items-center gap-1">
+                              <span className="font-medium">Vital Signs Monitoring:</span>{' '}
+                              {vitalsMonitoringOrderLabel(task.vitalsMonitoringOrder)}
                             </span>
                           )}
                         </div>

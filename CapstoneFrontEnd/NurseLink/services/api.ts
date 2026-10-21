@@ -928,7 +928,15 @@ export async function fetchVitalsSchedule(patientCode: string): Promise<VitalsSc
 
 export async function saveVitalsSchedule(
   patientCode: string,
-  data: { frequencyHours: number; startAt?: string; basis?: string; reason?: string }
+  data: {
+    /** Defaults to 'scheduled' server-side if omitted. */
+    mode?: 'scheduled' | 'prn';
+    /** Required when mode is 'scheduled' (or omitted); ignored for 'prn'. */
+    frequencyHours?: number;
+    startAt?: string;
+    basis?: string;
+    reason?: string;
+  }
 ): Promise<VitalsScheduleResponse> {
   return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`, {
     method: 'POST',

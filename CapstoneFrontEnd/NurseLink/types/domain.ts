@@ -41,7 +41,15 @@ export interface Task {
   scheduledFor?: string | null;
   /** Readings needed before the vital signs checklist step can be ticked. */
   vitalReadingsRequired?: number;
+  /** Denormalized from the patient's Vital Signs Monitoring (as ordered) —
+   * read-only, for task-card display without a separate patient lookup. */
+  vitalsMonitoringOrder?: VitalsMonitoringOrder;
 }
+
+/** Edit Patient Information's "Vital Signs Monitoring (as ordered)" value —
+ * 'not_specified' means no active VitalSignsSchedule row exists at all, not
+ * a stored choice (see api/vitals_schedule.py's current_monitoring_order). */
+export type VitalsMonitoringOrder = 'every_1h' | 'every_2h' | 'every_4h' | 'prn' | 'not_specified';
 
 export type TaskType = 'procedure' | 'referral';
 
@@ -93,7 +101,10 @@ export interface MyPatientFolder {
 
 export interface VitalsScheduleRow {
   id: number;
-  frequencyHours: 1 | 2 | 4;
+  mode: 'scheduled' | 'prn';
+  /** null when mode === 'prn' — a PRN order has no interval. */
+  frequencyHours: 1 | 2 | 4 | null;
+  /** "Every 2 hours", or "As needed (PRN)" when mode === 'prn'. */
   frequencyLabel: string;
   startAt: string;
   basis: string;
@@ -105,10 +116,11 @@ export interface VitalsScheduleRow {
 }
 
 export interface VitalsScheduleActive extends VitalsScheduleRow {
-  nextCheckAt: string;
+  /** null when mode === 'prn' — no interval means no "next check". */
+  nextCheckAt: string | null;
   lastCheckAt: string | null;
   overdueChecks: number;
-  monitoringStatus: 'on_schedule' | 'overdue';
+  monitoringStatus: 'on_schedule' | 'overdue' | 'prn';
 }
 
 export interface VitalsScheduleResponse {
@@ -307,6 +319,11 @@ export interface Patient {
   editHistory?: { editedBy: string; editedAt: string; changes: string[] }[];
   lastEditedAt?: string | null;
   lastEditedByName?: string | null;
+  /** Physician's order for how often vitals must be taken — the single
+   * source of truth for Kardex display and nurse task generation. Include
+   * it in an updatePatient() call to change it; omitting it leaves the
+   * current order untouched. See PatientSerializer.vitalsMonitoringOrder. */
+  vitalsMonitoringOrder?: VitalsMonitoringOrder;
 }
 
 /**

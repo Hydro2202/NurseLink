@@ -42,6 +42,7 @@ import { Colors, Shadows, Radius } from '../../../constants/colors';
 import { Pagination, usePagination } from '../../../components/Pagination';
 import { formatDateTime12, formatTime12 } from '../../../utils/time';
 import { countTasksByFilter, matchesTaskFilter } from '../../../utils/taskFilters';
+import { vitalsMonitoringOrderLabel } from '../../../components/tasks/taskLabels';
 
 type SortBy = 'newest' | 'oldest' | 'priority' | 'status';
 
@@ -386,6 +387,14 @@ export default function NurseTasksPage() {
                       ) : null}
                     </View>
                   )}
+
+                  {task.category === 'vital_signs' ? (
+                    <View style={styles.metaRow}>
+                      <Text style={styles.metaText}>
+                        Vital Signs Monitoring: {vitalsMonitoringOrderLabel(task.vitalsMonitoringOrder)}
+                      </Text>
+                    </View>
+                  ) : null}
 
                   {task.doctorOrder ? (
                     <View style={styles.orderBox}>

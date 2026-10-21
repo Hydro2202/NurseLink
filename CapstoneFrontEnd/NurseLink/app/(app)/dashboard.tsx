@@ -556,7 +556,7 @@ export default function DashboardPage() {
                   onPress: () => router.push('/(app)/tasks' as any),
                 },
                 {
-                  key: 'referral', label: 'Referral', description: 'Send or review SBAR referrals',
+                  key: 'referral', label: 'Endorsement', description: 'Send or review SBAR endorsements',
                   icon: FileText, tint: Colors.gray100, accent: Colors.gray600,
                   onPress: () => router.push('/(app)/handover' as any),
                 },

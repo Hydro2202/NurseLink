@@ -1,12 +1,12 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Colors, Radius } from '../../constants/colors';
-import type { Task, TaskType } from '../../types/domain';
+import type { Task, TaskType, VitalsMonitoringOrder } from '../../types/domain';
 import { formatDateTime12 } from '../../utils/time';
 
 export const TASK_TYPE_LABELS: Record<TaskType, string> = {
   procedure: 'Procedure',
-  referral: 'Referral',
+  referral: 'Endorsement',
 };
 
 const TYPE_COLORS: Record<TaskType, { bg: string; fg: string }> = {
@@ -51,6 +51,20 @@ export function TaskStatusBadge({ status }: { status: Task['status'] }) {
 /** "Oct 20, 2026, 10:00 PM" — the shared 12-hour format (utils/time). */
 export function formatDateTime(iso?: string | null): string {
   return formatDateTime12(iso);
+}
+
+export const VITALS_MONITORING_ORDER_LABELS: Record<VitalsMonitoringOrder, string> = {
+  every_1h: 'Every 1 hour',
+  every_2h: 'Every 2 hours',
+  every_4h: 'Every 4 hours',
+  prn: 'As needed (PRN)',
+  not_specified: 'Not specified',
+};
+
+/** "Every 2 hours" / "As needed (PRN)" / "Not specified" for a Vital Signs
+ * Check task card or modal — see Task.vitalsMonitoringOrder. */
+export function vitalsMonitoringOrderLabel(order?: VitalsMonitoringOrder | null): string {
+  return VITALS_MONITORING_ORDER_LABELS[order || 'not_specified'];
 }
 
 const styles = StyleSheet.create({

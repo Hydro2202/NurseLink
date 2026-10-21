@@ -92,10 +92,10 @@ export function HandoverAlertModal() {
           <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center flex-shrink-0">
             <Bell className="w-5 h-5 text-white" />
           </div>
-          <h2 className="text-lg font-extrabold">New Patient Referral</h2>
+          <h2 className="text-lg font-extrabold">New Patient Endorsement</h2>
         </div>
 
-        <p className="text-sm">A patient has been referred to you.</p>
+        <p className="text-sm">A patient has been endorsed to you.</p>
 
         <div className="space-y-2 p-3.5 bg-muted rounded-lg border border-border">
           {current.patient ? (
@@ -126,14 +126,14 @@ export function HandoverAlertModal() {
             Dismiss
           </Button>
           <Button className="flex-1" onClick={viewHandover}>
-            View Referral
+            View Endorsement
             <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
           </Button>
         </div>
 
         {queue.length > 1 ? (
           <p className="text-xs text-muted-foreground text-center">
-            {queue.length - 1} more referral{queue.length - 1 > 1 ? 's' : ''} waiting
+            {queue.length - 1} more endorsement{queue.length - 1 > 1 ? 's' : ''} waiting
           </p>
         ) : null}
       </DialogContent>

@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useNavigate, useLocation } from 'react-router';
 import { Patient } from '../types/domain';
 import { fetchPatients, deletePatient, ApiError } from '../api/nurselink';
+import { vitalsMonitoringOrderLabel } from '../utils/patientDisplay';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
@@ -373,6 +374,19 @@ export default function MyPatientsPage() {
                           <p className="text-xs text-gray-500 mb-1">Attending Physician</p>
                           <p className="text-sm font-medium text-gray-900">
                             {getAttendingPhysician(patient)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Vital Signs Monitoring (as ordered) */}
+                    <div className="bg-white rounded-lg p-3 border border-gray-200">
+                      <div className="flex items-start gap-2">
+                        <Activity className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-gray-500 mb-1">Vital Signs Monitoring</p>
+                          <p className="text-sm font-medium text-gray-900">
+                            {vitalsMonitoringOrderLabel(patient.vitalsMonitoringOrder)}
                           </p>
                         </div>
                       </div>

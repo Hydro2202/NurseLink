@@ -16,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { AlertCircle, Edit2, Loader2, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { updatePatient, fetchDepartments, ApiError } from '../api/nurselink';
-import type { Department, Patient } from '../types/domain';
+import type { Department, Patient, VitalsMonitoringOrder } from '../types/domain';
 import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
 import { localTodayIso } from '../utils/patientDisplay';
 
@@ -36,6 +36,7 @@ type FormState = {
   room: string;
   diagnosis: string;
   riskLevel: Patient['riskLevel'];
+  vitalsMonitoringOrder: VitalsMonitoringOrder;
   attendingPhysician: string;
   departmentId: string;
   admissionDate: string;
@@ -56,6 +57,7 @@ function formFromPatient(patient: Patient): FormState {
     room: patient.room || '',
     diagnosis: patient.diagnosis || '',
     riskLevel: patient.riskLevel || 'low',
+    vitalsMonitoringOrder: patient.vitalsMonitoringOrder || 'not_specified',
     attendingPhysician: patient.attendingPhysician || '',
     departmentId: patient.departmentId != null ? String(patient.departmentId) : '',
     admissionDate: patient.admissionDate || '',
@@ -120,6 +122,7 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
         room: form.room.trim(),
         diagnosis: form.diagnosis.trim(),
         riskLevel: form.riskLevel,
+        vitalsMonitoringOrder: form.vitalsMonitoringOrder,
         attendingPhysician: form.attendingPhysician.trim(),
         departmentId: form.departmentId ? Number(form.departmentId) : null,
         admissionDate: form.admissionDate,
@@ -224,6 +227,25 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label>Vital Signs Monitoring (as ordered)</Label>
+              <Select
+                value={form.vitalsMonitoringOrder}
+                onValueChange={(v) => setField('vitalsMonitoringOrder', v as VitalsMonitoringOrder)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="every_1h">Every 1 hour</SelectItem>
+                  <SelectItem value="every_2h">Every 2 hours</SelectItem>
+                  <SelectItem value="every_4h">Every 4 hours</SelectItem>
+                  <SelectItem value="prn">As needed (PRN)</SelectItem>
+                  <SelectItem value="not_specified">Not specified</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-1">

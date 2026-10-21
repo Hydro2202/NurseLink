@@ -174,7 +174,7 @@ const SECTIONS: Record<string, SectionConfig> = {
     ],
     recordId: (p) => p.id,
     deleteWarning:
-      "Deleting this patient also deletes their tasks, Kardex, charting notes, vital signs and referrals for every account. This cannot be undone.",
+      "Deleting this patient also deletes their tasks, Kardex, charting notes, vital signs and endorsements for every account. This cannot be undone.",
     editFields: [
       { key: 'name', label: 'Full name', get: (p) => p.name },
       { key: 'age', label: 'Age', type: 'number', get: (p) => p.age },
@@ -317,8 +317,8 @@ const SECTIONS: Record<string, SectionConfig> = {
     ],
   },
   handovers: {
-    title: 'Referral Notes',
-    description: 'SBAR patient referrals between nurses.',
+    title: 'Endorsement Notes',
+    description: 'SBAR patient endorsements between nurses.',
     fetch: () => fetchHandovers(),
     toRow: (h) => ({
       key: h.id,
@@ -352,7 +352,7 @@ const SECTIONS: Record<string, SectionConfig> = {
       { label: 'Adopted tasks', value: joinOrDash(h.adoptedTasks) },
     ],
     recordId: (h) => h.id,
-    deleteWarning: 'Deletes this referral for the sender, the receiving nurse and head nurses. This cannot be undone.',
+    deleteWarning: 'Deletes this endorsement for the sender, the receiving nurse and head nurses. This cannot be undone.',
     editFields: [
       { key: 'sbar.situation', label: 'Situation', type: 'multiline', get: (h) => h.sbar?.situation },
       { key: 'sbar.background', label: 'Background', type: 'multiline', get: (h) => h.sbar?.background },

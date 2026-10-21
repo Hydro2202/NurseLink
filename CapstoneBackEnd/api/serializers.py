@@ -59,6 +59,7 @@ from .permissions import get_user_role
 from .presence import presence_fields
 from .utils import next_code
 from .vitals_detection import detect_vital_mentions
+from .vitals_schedule import MONITORING_ORDER_VALUES, set_monitoring_order
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -1212,6 +1213,13 @@ class PatientSerializer(serializers.ModelSerializer):
     editHistory = serializers.ListField(source='edit_history', read_only=True)
     lastEditedAt = serializers.SerializerMethodField(read_only=True)
     lastEditedByName = serializers.SerializerMethodField(read_only=True)
+    # Reads as Patient.vitals_monitoring_order (the active VitalSignsSchedule
+    # row, or 'not_specified' if there isn't one). Not a real model field, so
+    # create()/update() pop it out of validated_data and hand it to
+    # set_monitoring_order() instead of the generic setattr loop below.
+    vitalsMonitoringOrder = serializers.ChoiceField(
+        choices=list(MONITORING_ORDER_VALUES), source='vitals_monitoring_order', required=False,
+    )
 
     class Meta:
         model = Patient
@@ -1261,6 +1269,7 @@ class PatientSerializer(serializers.ModelSerializer):
             'lastEditedAt',
             'lastEditedByName',
             'confirmDuplicate',
+            'vitalsMonitoringOrder',
         ]
 
     def get_lastEditedAt(self, obj):
@@ -1453,6 +1462,7 @@ class PatientSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(duplicate_patient_payload(matches))
 
         self._apply_vitals(validated_data)
+        monitoring_order = validated_data.pop('vitals_monitoring_order', None)
         code = validated_data.pop('patient_code', None) or next_code(Patient, 'patient_code', 'P')
         validated_data['patient_code'] = code
         request = self.context.get('request')
@@ -1460,10 +1470,13 @@ class PatientSerializer(serializers.ModelSerializer):
             validated_data['assigned_nurse'] = request.user
         patient = Patient.objects.create(**validated_data)
         open_patient_visit(patient)
+        if monitoring_order:
+            set_monitoring_order(patient, monitoring_order, request.user if request else None)
         return patient
 
     def update(self, instance, validated_data):
         validated_data.pop('patient_code', None)
+        monitoring_order = validated_data.pop('vitals_monitoring_order', None)
         self._apply_vitals(validated_data)
 
         changed_labels = []
@@ -1491,6 +1504,10 @@ class PatientSerializer(serializers.ModelSerializer):
             instance.edit_history = history
 
         instance.save()
+
+        if monitoring_order is not None:
+            request = self.context.get('request')
+            set_monitoring_order(instance, monitoring_order, request.user if request else None)
 
         # A discharged patient's current fields are what the card shows as
         # "Last Diagnosis"/"Last Room"/etc. — correcting them (e.g. a
@@ -1731,6 +1748,7 @@ class TaskSerializer(serializers.ModelSerializer):
     completedBy = serializers.CharField(source='completed_by_name', read_only=True)
     scheduledFor = serializers.DateTimeField(source='scheduled_for', read_only=True)
     vitalReadingsRequired = serializers.IntegerField(source='vital_readings_required', read_only=True)
+    vitalsMonitoringOrder = serializers.CharField(source='vitals_monitoring_order', read_only=True)
 
     class Meta:
         model = Task
@@ -1761,6 +1779,7 @@ class TaskSerializer(serializers.ModelSerializer):
             'completedBy',
             'scheduledFor',
             'vitalReadingsRequired',
+            'vitalsMonitoringOrder',
         ]
 
     def validate_status(self, value):

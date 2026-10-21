@@ -3091,7 +3091,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         checks = (
             ('charting notes', ChartingNote.objects.filter(patient=patient)),
             ('vital signs', VitalSigns.objects.filter(patient=patient)),
-            ('referrals', HandoverNote.objects.filter(patient=patient)),
+            ('endorsements', HandoverNote.objects.filter(patient=patient)),
             ('medication records', MedicationIntake.objects.filter(medication__patient=patient)),
             ('completed tasks', Task.objects.filter(patient=patient, status='completed')),
             ('past visits', patient.visits.filter(discharge_date__isnull=False)),
@@ -3214,8 +3214,12 @@ class PatientViewSet(viewsets.ModelViewSet):
     def _vitals_schedule_row(schedule):
         return {
             'id': schedule.pk,
+            'mode': schedule.mode,
             'frequencyHours': schedule.frequency_hours,
-            'frequencyLabel': schedule.get_frequency_hours_display(),
+            'frequencyLabel': (
+                schedule.get_frequency_hours_display() if schedule.mode == 'scheduled'
+                else schedule.get_mode_display()
+            ),
             'startAt': schedule.start_at,
             'basis': schedule.basis,
             'setBy': schedule.set_by_name,
@@ -3241,7 +3245,8 @@ class PatientViewSet(viewsets.ModelViewSet):
         request=inline_serializer(
             name='VitalsScheduleInput',
             fields={
-                'frequencyHours': serializers.ChoiceField(choices=[1, 2, 4]),
+                'mode': serializers.ChoiceField(choices=['scheduled', 'prn'], required=False),
+                'frequencyHours': serializers.ChoiceField(choices=[1, 2, 4], required=False),
                 'startAt': serializers.DateTimeField(required=False),
                 'basis': serializers.CharField(required=False, allow_blank=True),
                 'reason': serializers.CharField(required=False, allow_blank=True),
@@ -3251,11 +3256,12 @@ class PatientViewSet(viewsets.ModelViewSet):
         summary="A patient's vital signs schedule",
         description=(
             'GET: the active schedule (with next/last check and monitoring status) and every '
-            'past one. POST: set or change it — frequencyHours 1, 2 or 4 as ordered for this '
-            'patient, startAt for the first check (default: the next full hour), basis = the '
-            'order/protocol it follows. Changing it ends the current schedule (kept in history) '
-            'and only affects checks not yet due. DELETE: stop monitoring. Writes: head nurse, '
-            'or the nurse assigned to the patient.'
+            'past one. POST: set or change it — mode "scheduled" (default) or "prn"; a scheduled '
+            'order also needs frequencyHours 1, 2 or 4 as ordered for this patient, startAt for '
+            'the first check (default: the next full hour), basis = the order/protocol it '
+            'follows. Changing it ends the current schedule (kept in history) and only affects '
+            'checks not yet due. DELETE: stop monitoring (equivalent to "Not specified"). '
+            'Writes: head nurse, or the nurse assigned to the patient.'
         ),
     )
     @action(detail=True, methods=['get', 'post', 'delete'], url_path='vitals-schedule')
@@ -3273,15 +3279,21 @@ class PatientViewSet(viewsets.ModelViewSet):
 
         if patient.status == 'discharged':
             return Response({'detail': 'This patient has been discharged.'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            frequency = int(request.data.get('frequencyHours'))
-        except (TypeError, ValueError):
+        mode = str(request.data.get('mode') or 'scheduled').strip()
+        if mode not in ('scheduled', 'prn'):
+            return Response({'mode': ['Choose Scheduled or As needed (PRN).']}, status=status.HTTP_400_BAD_REQUEST)
+        if mode == 'prn':
             frequency = None
-        if frequency not in (1, 2, 4):
-            return Response(
-                {'frequencyHours': ['Choose every 1, 2 or 4 hours, as ordered for this patient.']},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        else:
+            try:
+                frequency = int(request.data.get('frequencyHours'))
+            except (TypeError, ValueError):
+                frequency = None
+            if frequency not in (1, 2, 4):
+                return Response(
+                    {'frequencyHours': ['Choose every 1, 2 or 4 hours, as ordered for this patient.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         now = timezone.now()
         raw_start = request.data.get('startAt')
         if raw_start:
@@ -3311,17 +3323,23 @@ class PatientViewSet(viewsets.ModelViewSet):
             Patient.objects.select_for_update().filter(pk=patient.pk).first()
             active = patient.vitals_schedules.filter(ended_at__isnull=True).first()
             if active is not None:
-                if active.frequency_hours == frequency and active.start_at == start_at and active.basis == basis:
+                if (
+                    active.mode == mode and active.frequency_hours == frequency
+                    and active.start_at == start_at and active.basis == basis
+                ):
                     return self._vitals_schedule_response(patient)
                 reason = str(request.data.get('reason') or '').strip()[:255]
-                end_vitals_schedule(
-                    active, request.user, reason or f'Changed to every {frequency} hour{"s" if frequency > 1 else ""}'
+                default_reason = (
+                    'Changed to as needed (PRN)' if mode == 'prn'
+                    else f'Changed to every {frequency} hour{"s" if frequency > 1 else ""}'
                 )
+                end_vitals_schedule(active, request.user, reason or default_reason)
             schedule = VitalSignsSchedule.objects.create(
-                patient=patient, frequency_hours=frequency, start_at=start_at, basis=basis,
+                patient=patient, mode=mode, frequency_hours=frequency, start_at=start_at, basis=basis,
                 set_by=request.user, set_by_name=full_name(request.user),
             )
-        generate_vitals_for_schedule(schedule)
+        if mode == 'scheduled':
+            generate_vitals_for_schedule(schedule)
         return self._vitals_schedule_response(patient)
 
     @action(detail=True, methods=['post'], url_path='notify-nurse')
@@ -3898,25 +3916,25 @@ class HandoverViewSet(viewsets.ModelViewSet):
         return qs
 
     def update(self, request, *args, **kwargs):
-        # Covers PUT and PATCH. A referral's content (SBAR, recipient) is the
-        # sender's statement; nobody else may rewrite it. Without this, any
-        # approved staff nurse could edit any referral in the ward.
+        # Covers PUT and PATCH. An endorsement's content (SBAR, recipient) is
+        # the sender's statement; nobody else may rewrite it. Without this,
+        # any approved staff nurse could edit any endorsement in the ward.
         handover = self.get_object()
         if handover.created_by_id != request.user.id:
-            raise PermissionDenied('Only the nurse who sent this referral can edit it.')
+            raise PermissionDenied('Only the nurse who sent this endorsement can edit it.')
         return super().update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         # Sender and receiver both see a delete button in the app; anyone
-        # else in the ward must not be able to remove a referral.
+        # else in the ward must not be able to remove an endorsement.
         handover = self.get_object()
         if request.user.id not in (handover.created_by_id, handover.nurse_to_user_id):
-            raise PermissionDenied('Only the sending or receiving nurse can delete this referral.')
+            raise PermissionDenied('Only the sending or receiving nurse can delete this endorsement.')
         return super().destroy(request, *args, **kwargs)
 
     def _ensure_recipient(self, handover):
         """
-        Only the receiving nurse drives a referral through
+        Only the receiving nurse drives an endorsement through
         received/accepted/declined/completed. Head nurses are explicitly
         rejected here even though CanManageReferral already blocks their
         writes at the viewset level — belt and suspenders, since these are
@@ -3925,9 +3943,9 @@ class HandoverViewSet(viewsets.ModelViewSet):
         this makes that failure mode explicit rather than incidental).
         """
         if get_user_role(self.request.user) == 'head_nurse':
-            raise PermissionDenied('Head nurses have view-only access to referrals.')
+            raise PermissionDenied('Head nurses have view-only access to endorsements.')
         if not handover.nurse_to_user_id or handover.nurse_to_user_id != self.request.user.id:
-            raise PermissionDenied('Only the receiving nurse can update this referral.')
+            raise PermissionDenied('Only the receiving nurse can update this endorsement.')
 
     @extend_schema(
         responses={200: inline_serializer(
@@ -4144,12 +4162,12 @@ class HandoverViewSet(viewsets.ModelViewSet):
     @extend_schema(
         request=None,
         responses={200: HandoverSerializer},
-        summary='Mark a referral received',
+        summary='Mark an endorsement received',
         description=(
-            'No request body — the referral is identified by the URL. This is the '
+            'No request body — the endorsement is identified by the URL. This is the '
             'lightweight "seen it" step: it does not move any tasks and does not commit '
             'the receiving nurse to the patient — see /accept/ for that. Calling it again, '
-            'or after the referral has moved past "received", is a no-op.'
+            'or after the endorsement has moved past "received", is a no-op.'
         ),
     )
     @action(detail=True, methods=['post'])
@@ -4177,12 +4195,12 @@ class HandoverViewSet(viewsets.ModelViewSet):
     @extend_schema(
         request=None,
         responses={200: HandoverSerializer},
-        summary='Accept a referral',
+        summary='Accept an endorsement',
         description=(
-            'No request body — the referral is identified by the URL. Accepting moves its '
+            'No request body — the endorsement is identified by the URL. Accepting moves its '
             "unfinished work onto the accepting nurse's task list and tells the sending "
             'nurse it was accepted. Valid from "sent" or "received"; accepting twice is a '
-            'no-op; a declined or completed referral cannot be accepted.'
+            'no-op; a declined or completed endorsement cannot be accepted.'
         ),
     )
     @action(detail=True, methods=['post', 'patch'])
@@ -4307,7 +4325,7 @@ class HandoverViewSet(viewsets.ModelViewSet):
         so there is nothing to roll back here."""
         handover = self.get_object()
         if get_user_role(request.user) == 'head_nurse':
-            raise PermissionDenied('Head nurses have view-only access to referrals.')
+            raise PermissionDenied('Head nurses have view-only access to endorsements.')
         if handover.created_by_id != request.user.id:
             raise PermissionDenied('Only the nurse who sent this endorsement can cancel it.')
 
@@ -4347,10 +4365,10 @@ class HandoverViewSet(viewsets.ModelViewSet):
     @extend_schema(
         request=None,
         responses={200: HandoverSerializer},
-        summary='Decline a referral',
+        summary='Decline an endorsement',
         description=(
             'Optional {"reason": "..."} body. Valid from "sent" or "received"; declining '
-            'twice is a no-op; an accepted or completed referral cannot be declined.'
+            'twice is a no-op; an accepted or completed endorsement cannot be declined.'
         ),
     )
     @action(detail=True, methods=['post'])
@@ -4390,9 +4408,9 @@ class HandoverViewSet(viewsets.ModelViewSet):
     @extend_schema(
         request=None,
         responses={200: HandoverSerializer},
-        summary='Mark a referral completed',
+        summary='Mark an endorsement completed',
         description=(
-            'No request body — the referral is identified by the URL. Only valid from '
+            'No request body — the endorsement is identified by the URL. Only valid from '
             '"accepted". Completing twice is a no-op.'
         ),
     )
@@ -4405,7 +4423,7 @@ class HandoverViewSet(viewsets.ModelViewSet):
             return Response(HandoverSerializer(handover, context={'request': request}).data)
         if handover.status != 'accepted':
             return Response(
-                {'detail': 'Only an accepted referral can be marked completed.'},
+                {'detail': 'Only an accepted endorsement can be marked completed.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

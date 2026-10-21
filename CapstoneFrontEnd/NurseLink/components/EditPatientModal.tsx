@@ -8,7 +8,7 @@ import { Select } from './Select';
 import { DatePicker, todayIso } from './DatePicker';
 import { Alert, AlertDescription } from './Alert';
 import { updatePatient, fetchDepartments, ApiError } from '../services/api';
-import type { Department, Patient } from '../types/domain';
+import type { Department, Patient, VitalsMonitoringOrder } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
 
@@ -34,6 +34,7 @@ type FormState = {
   room: string;
   diagnosis: string;
   riskLevel: string;
+  vitalsMonitoringOrder: VitalsMonitoringOrder;
   attendingPhysician: string;
   departmentId: string;
   admissionDate: string;
@@ -53,6 +54,7 @@ function formFromPatient(patient: Patient): FormState {
     room: patient.room || '',
     diagnosis: patient.diagnosis || '',
     riskLevel: patient.riskLevel || 'low',
+    vitalsMonitoringOrder: patient.vitalsMonitoringOrder || 'not_specified',
     attendingPhysician: patient.attendingPhysician || '',
     departmentId: patient.departmentId != null ? String(patient.departmentId) : '',
     admissionDate: patient.admissionDate || '',
@@ -116,6 +118,7 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
         room: form.room.trim(),
         diagnosis: form.diagnosis.trim(),
         riskLevel: form.riskLevel as Patient['riskLevel'],
+        vitalsMonitoringOrder: form.vitalsMonitoringOrder,
         attendingPhysician: form.attendingPhysician.trim(),
         departmentId: form.departmentId ? Number(form.departmentId) : null,
         admissionDate: form.admissionDate,
@@ -213,6 +216,19 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
                     style={styles.field}
                   />
                 </View>
+
+                <Select
+                  label="Vital Signs Monitoring (as ordered)"
+                  value={form.vitalsMonitoringOrder}
+                  onValueChange={(v) => setField('vitalsMonitoringOrder', v as VitalsMonitoringOrder)}
+                  options={[
+                    { label: 'Every 1 hour', value: 'every_1h' },
+                    { label: 'Every 2 hours', value: 'every_2h' },
+                    { label: 'Every 4 hours', value: 'every_4h' },
+                    { label: 'As needed (PRN)', value: 'prn' },
+                    { label: 'Not specified', value: 'not_specified' },
+                  ]}
+                />
 
                 <Input
                   label={isDischarged ? 'Last Diagnosis *' : 'Diagnosis *'}

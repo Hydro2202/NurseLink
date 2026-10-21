@@ -362,8 +362,8 @@ export default function SettingsScreen() {
           />
           <ToggleRow
             styles={styles}
-            label="Referral Notifications"
-            description="Receive patient referral alerts"
+            label="Endorsement Notifications"
+            description="Receive patient endorsement alerts"
             value={handoverNotifications}
             onValueChange={(value) => setLocal({ handoverNotifications: value })}
           />

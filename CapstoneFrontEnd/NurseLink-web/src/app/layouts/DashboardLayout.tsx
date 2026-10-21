@@ -125,7 +125,7 @@ export default function DashboardLayout() {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, show: true },
     { name: 'My Duty', href: '/my-duty', icon: CalendarClock, show: isStaffNurse },
     { name: 'Tasks', href: '/tasks', icon: ClipboardList, show: isStaffNurse },
-    { name: 'Handover', href: '/handover', icon: FileText, show: isStaffNurse },
+    { name: 'Endorsement', href: '/handover', icon: FileText, show: isStaffNurse },
     { name: 'Charting', href: '/charting', icon: FileText, show: isStaffNurse },
     { name: 'Kardex', href: '/kardex', icon: BookOpen, show: isStaffNurse },
     { name: 'All Patients', href: '/all-patients', icon: Users, show: isSupervisor },

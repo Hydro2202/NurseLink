@@ -50,15 +50,15 @@ function emptyReferralMessage(
   const shift = nextShiftLabel || 'the next';
   switch (reason) {
     case 'user_off_duty':
-      return "You're off duty, so you can't refer patients right now.";
+      return "You're off duty, so you can't endorse patients right now.";
     case 'no_next_shift_staff':
       return `Nobody is scheduled on the ${shift} shift yet. Ask your Head Nurse to update the Duty Roster.`;
     case 'only_self_scheduled':
-      return `You're the only one scheduled for the ${shift} shift — there's no one else to refer to yet.`;
+      return `You're the only one scheduled for the ${shift} shift — there's no one else to endorse to yet.`;
     case 'no_eligible_nurse_on_next_shift':
-      return `Someone is scheduled for the ${shift} shift, but not as a staff nurse who can receive a referral.`;
+      return `Someone is scheduled for the ${shift} shift, but not as a staff nurse who can receive an endorsement.`;
     default:
-      return 'No nurses are available for a referral right now.';
+      return 'No nurses are available for an endorsement right now.';
   }
 }
 
@@ -229,7 +229,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     const newErrors: Record<string, string> = {};
 
     if (!onDuty) {
-      newErrors.form = "You are not on duty right now, so you can't create a referral.";
+      newErrors.form = "You are not on duty right now, so you can't create an endorsement.";
     }
 
     if (!selectedPatientId) {
@@ -316,7 +316,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
               : { form: error.message }),
         }));
       } else {
-        setErrors((prev) => ({ ...prev, form: 'Failed to save the referral. Please try again.' }));
+        setErrors((prev) => ({ ...prev, form: 'Failed to save the endorsement. Please try again.' }));
       }
     } finally {
       setLoading(false);
@@ -329,10 +329,10 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <FileText className="w-5 h-5 text-primary" />
-            Create Referral Note
+            Create Endorsement Note
           </DialogTitle>
           <DialogDescription>
-            Complete the SBAR form to submit a referral note to the incoming nurse.
+            Complete the SBAR form to submit an endorsement note to the incoming nurse.
           </DialogDescription>
         </DialogHeader>
 
@@ -590,7 +590,7 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                   Submitting...
                 </>
               ) : (
-                'Submit Handover'
+                'Submit Endorsement'
               )}
             </Button>
           </DialogFooter>

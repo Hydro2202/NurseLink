@@ -44,7 +44,12 @@ import type { MyPatientFolder, Task } from '../../types/domain';
 import { CompleteTaskDialog } from '../../components/tasks/CompleteTaskDialog';
 import { TaskHistoryView } from '../../components/tasks/TaskHistoryView';
 import { MyPatientsView } from '../../components/tasks/MyPatientsView';
-import { TaskStatusBadge, TaskTypeBadge, formatDateTime } from '../../components/tasks/taskLabels';
+import {
+  TaskStatusBadge,
+  TaskTypeBadge,
+  formatDateTime,
+  vitalsMonitoringOrderLabel,
+} from '../../components/tasks/taskLabels';
 import { Card, CardContent } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
@@ -614,7 +619,7 @@ export default function TasksPage() {
               </View>
               <View style={styles.flex1}>
                 <Text style={styles.title}>Tasks</Text>
-                <Text style={styles.subtitle}>Manage nursing procedures, referrals, and patient care activities.</Text>
+                <Text style={styles.subtitle}>Manage nursing procedures, endorsements, and patient care activities.</Text>
               </View>
               <Button size="sm" onPress={handleAddTask} style={styles.addBtn} accessibilityLabel="Add task">
                 <Plus size={16} color={Colors.white} />
@@ -715,7 +720,7 @@ export default function TasksPage() {
             options={[
               { label: 'All types', value: 'all' },
               { label: 'Procedure', value: 'procedure' },
-              { label: 'Referral', value: 'referral' },
+              { label: 'Endorsement', value: 'referral' },
             ]}
             placeholder="Type"
             style={styles.sortSelect}
@@ -850,6 +855,14 @@ export default function TasksPage() {
                               <Text style={styles.metaText}>Nurse: {task.assignedTo}</Text>
                             ) : null}
                           </View>
+                          {task.category === 'vital_signs' ? (
+                            <View style={styles.metaRow}>
+                              <Text style={styles.metaTextSm}>
+                                <Text style={styles.metaBold}>Vital Signs Monitoring: </Text>
+                                {vitalsMonitoringOrderLabel(task.vitalsMonitoringOrder)}
+                              </Text>
+                            </View>
+                          ) : null}
                           {task.status === 'completed' ? (
                             <View style={styles.completedBox}>
                               <Text style={styles.completedMeta}>
@@ -1076,6 +1089,9 @@ export default function TasksPage() {
               <Text style={styles.vitalsModalSubtitle}>
                 Assigned nurse: {vitalsModalTask.assignedTo || '—'}
                 {vitalsModalTask.dueTime ? ` · Scheduled ${vitalsModalTask.dueTime}` : ''}
+              </Text>
+              <Text style={styles.vitalsModalSubtitle}>
+                Vital Signs Monitoring: {vitalsMonitoringOrderLabel(vitalsModalTask.vitalsMonitoringOrder)}
               </Text>
               <ScrollView style={styles.vitalsModalScroll} keyboardShouldPersistTaps="handled">
                 <TaskVitalSignsBars

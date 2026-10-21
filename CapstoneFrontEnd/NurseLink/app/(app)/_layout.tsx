@@ -396,10 +396,10 @@ export default function AppLayout() {
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, show: true },
     { name: 'Tasks', href: '/(app)/tasks', icon: ClipboardList, show: isStaffNurse },
-    // Head nurses get a read-only oversight view of every referral — see
+    // Head nurses get a read-only oversight view of every endorsement — see
     // handover.tsx's isHeadNurse branch — never an approval gate, so this
     // is the same screen, not a separate one.
-    { name: 'Referral', href: '/(app)/handover', icon: FileText, show: isStaffNurse || isSupervisor },
+    { name: 'Endorsement', href: '/(app)/handover', icon: FileText, show: isStaffNurse || isSupervisor },
     { name: 'My Duty', href: '/(app)/my-duty', icon: Stethoscope, show: isStaffNurse },
     { name: 'Duty Roster', href: '/(app)/duty-roster', icon: Calendar, show: isSupervisor },
     { name: 'Charting', href: '/(app)/charting', icon: FileText, show: isStaffNurse },
@@ -534,7 +534,7 @@ export default function AppLayout() {
   }
 
   // Mobile: Head Nurse — a hamburger-triggered slide-in menu instead of the
-  // bottom tab bar. Head nurse has more sections (Dashboard, Referral, Duty
+  // bottom tab bar. Head nurse has more sections (Dashboard, Endorsement, Duty
   // Roster, All Patients, Analytics, Workload, Settings) than fit a phone-
   // width tab bar without overflowing; see HeadNurseMobileMenu above. Staff
   // nurse (the branch just above) is untouched — still BottomNavigation.

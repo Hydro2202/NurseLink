@@ -274,6 +274,17 @@ class Patient(models.Model):
     def bmi(self):
         return compute_bmi(self.height_cm, self.weight_kg)
 
+    @property
+    def vitals_monitoring_order(self):
+        """'every_1h' / 'every_2h' / 'every_4h' / 'prn' / 'not_specified' —
+        the single value Edit Patient Information, the patient details view,
+        Kardex and task cards all read, derived from this patient's active
+        VitalSignsSchedule row (see vitals_schedule.current_monitoring_order).
+        A local import avoids a circular import with vitals_schedule.py,
+        which itself imports Task/VitalSignsSchedule from this module."""
+        from .vitals_schedule import current_monitoring_order
+        return current_monitoring_order(self)
+
 
 class PatientVisit(models.Model):
     """
@@ -494,7 +505,7 @@ class Task(models.Model):
     # existing rows from source_handover, never from the title.
     TYPE_CHOICES = [
         ('procedure', 'Procedure'),
-        ('referral', 'Referral'),
+        ('referral', 'Endorsement'),
     ]
     task_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='procedure', db_index=True)
     # What the nurse documented when pressing Done: care performed, findings,
@@ -527,6 +538,25 @@ class Task(models.Model):
         single reading; a free-standing vital signs task keeps the original
         rule of at least two check-ins."""
         return 1 if self.vitals_schedule_id else 2
+
+    @property
+    def vitals_monitoring_order(self):
+        """Denormalized convenience for task cards, mirroring patient_name/
+        patient_room above: a Vital Signs Check task card shouldn't need a
+        separate lookup on its patient just to show "Every 2 hours". Reads
+        the generating schedule directly when there is one (cheaper, and
+        correct even if the patient's order has since changed); otherwise
+        falls back to the patient's current order."""
+        if self.vitals_schedule_id:
+            from .vitals_schedule import ORDER_VALUE_TO_FREQUENCY
+            schedule = self.vitals_schedule
+            if schedule.mode == 'prn':
+                return 'prn'
+            for value, hours in ORDER_VALUE_TO_FREQUENCY.items():
+                if hours == schedule.frequency_hours:
+                    return value
+            return 'not_specified'
+        return self.patient.vitals_monitoring_order if self.patient_id else 'not_specified'
 
     #: The mandatory final checklist step on every 'vital_signs' category
     #: task — TaskSerializer.validate_checklist gates it behind at least 2
@@ -617,9 +647,21 @@ class VitalSignsSchedule(models.Model):
         (2, 'Every 2 hours'),
         (4, 'Every 4 hours'),
     ]
+    #: 'scheduled' (the original fixed-interval case, frequency_hours set) or
+    #: 'prn' (as needed — no interval, no recurring tasks generated). There
+    #: is deliberately no third stored value for "not specified": that state
+    #: is the absence of any active row at all, already meaningful before
+    #: this field existed, so it stays represented that way rather than as
+    #: data that could drift out of sync with "no active row".
+    MODE_CHOICES = [
+        ('scheduled', 'Scheduled'),
+        ('prn', 'As needed (PRN)'),
+    ]
 
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='vitals_schedules')
-    frequency_hours = models.PositiveSmallIntegerField(choices=FREQUENCY_CHOICES)
+    mode = models.CharField(max_length=10, choices=MODE_CHOICES, default='scheduled')
+    #: Required when mode='scheduled'; always null for 'prn'.
+    frequency_hours = models.PositiveSmallIntegerField(choices=FREQUENCY_CHOICES, null=True, blank=True)
     #: The first check; later ones fall every frequency_hours after it.
     start_at = models.DateTimeField()
     #: The order or protocol this follows, e.g. "Dr. Reyes order 10/20".
@@ -649,6 +691,8 @@ class VitalSignsSchedule(models.Model):
         ]
 
     def __str__(self):
+        if self.mode == 'prn':
+            return f'{self.patient_id} as needed (PRN) from {self.start_at:%Y-%m-%d %H:%M}'
         return f'{self.patient_id} every {self.frequency_hours}h from {self.start_at:%Y-%m-%d %H:%M}'
 
     @property

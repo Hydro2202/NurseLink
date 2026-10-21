@@ -70,6 +70,7 @@ import {
   temperatureSeverity,
   spo2Severity,
   localTodayIso,
+  vitalsMonitoringOrderLabel,
   VITAL_SEVERITY_CLASSES,
   type VitalSeverity,
 } from '../utils/patientDisplay';
@@ -853,6 +854,9 @@ export default function AllPatientsPage() {
                           }
                         >
                           {getAttendingPhysician(patient)}
+                        </DetailRow>
+                        <DetailRow label="Vital Signs Monitoring">
+                          {vitalsMonitoringOrderLabel(patient.vitalsMonitoringOrder)}
                         </DetailRow>
                         <DetailRow label={isDischarged ? 'Last Assigned Nurse' : 'Assigned Nurse'}>
                           {isDischarged

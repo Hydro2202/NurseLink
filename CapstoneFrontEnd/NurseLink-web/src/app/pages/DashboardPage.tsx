@@ -462,7 +462,7 @@ export default function DashboardPage() {
                 onClick={() => navigate('/handover')}
               >
                 <FileText className="w-5 h-5" />
-                <span className="text-xs font-medium">Handover</span>
+                <span className="text-xs font-medium">Endorsement</span>
               </Button>
               <Button
                 className="h-20 flex flex-col gap-2 bg-orange-600 hover:bg-orange-700 text-white border-0 shadow-sm hover:shadow-md transition-all rounded-xl"

@@ -39,7 +39,7 @@ const STAFF_NAV: NavItem[] = [
   { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, color: Colors.blue600 },
   { name: 'My Duty', href: '/(app)/my-duty', icon: Stethoscope, color: Colors.teal600 },
   { name: 'Tasks', href: '/(app)/tasks', icon: ClipboardList, color: Colors.green600 },
-  { name: 'Referral', href: '/(app)/handover', icon: FileText, color: Colors.purple600 },
+  { name: 'Endorsement', href: '/(app)/handover', icon: FileText, color: Colors.purple600 },
   { name: 'Charting', href: '/(app)/charting', icon: FileText, color: Colors.orange600 },
   { name: 'Kardex', href: '/(app)/kardex', icon: BookOpen, color: Colors.gray600 },
 ];
@@ -48,8 +48,8 @@ const SUPERVISOR_NAV: NavItem[] = [
   { name: 'Dashboard', href: '/(app)/dashboard', icon: LayoutDashboard, color: Colors.blue600 },
   { name: 'Duty Roster', href: '/(app)/duty-roster', icon: Calendar, color: Colors.teal600 },
   { name: 'Patients', href: '/(app)/all-patients', icon: Users, color: Colors.purple600 },
-  // Read-only oversight of every referral — see handover.tsx's isHeadNurse branch.
-  { name: 'Referral', href: '/(app)/handover', icon: FileText, color: Colors.orange600 },
+  // Read-only oversight of every endorsement — see handover.tsx's isHeadNurse branch.
+  { name: 'Endorsement', href: '/(app)/handover', icon: FileText, color: Colors.orange600 },
   { name: 'Analytics', href: '/(app)/analytics', icon: BarChart3, color: Colors.blue700 },
   { name: 'Settings', href: '/(app)/settings', icon: Settings, color: Colors.gray600 },
 ];

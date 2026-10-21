@@ -19,6 +19,7 @@ import type {
   Patient,
   PatientAssignmentRecord,
   Task,
+  VitalsScheduleResponse,
   WorkloadData,
 } from '../types/domain';
 
@@ -326,6 +327,33 @@ export async function updatePatient(patientCode: string, data: Partial<Patient>)
 
 export async function deletePatient(patientCode: string): Promise<void> {
   await apiRequest(`/patients/${patientCode}/`, { method: 'DELETE' });
+}
+
+/** The active schedule (with next/last check and monitoring status) and
+ * every past one — see PatientViewSet.vitals_schedule. */
+export async function fetchVitalsSchedule(patientCode: string): Promise<VitalsScheduleResponse> {
+  return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`);
+}
+
+/** Set or change the schedule — mode 'scheduled' (default, needs
+ * frequencyHours 1/2/4) or 'prn'. Changing it ends the current schedule
+ * (kept in history) and only affects checks not yet due. */
+export async function saveVitalsSchedule(
+  patientCode: string,
+  data: { mode?: 'scheduled' | 'prn'; frequencyHours?: number; startAt?: string; basis?: string; reason?: string }
+): Promise<VitalsScheduleResponse> {
+  return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`, {
+    method: 'POST',
+    body: data,
+  });
+}
+
+/** Stop monitoring — ends the active schedule, if any. */
+export async function stopVitalsSchedule(patientCode: string, reason?: string): Promise<VitalsScheduleResponse> {
+  return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`, {
+    method: 'DELETE',
+    body: reason ? { reason } : undefined,
+  });
 }
 
 export async function notifyPatientNurse(patientCode: string, message?: string): Promise<{ detail: string }> {

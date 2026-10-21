@@ -364,10 +364,12 @@ export default function KardexScreen() {
       }
       if (newEntry.patientCode && vitalsFrequency) {
         try {
-          await saveVitalsSchedule(newEntry.patientCode, {
-            frequencyHours: Number(vitalsFrequency),
-            basis: vitalsBasis.trim(),
-          });
+          await saveVitalsSchedule(
+            newEntry.patientCode,
+            vitalsFrequency === 'prn'
+              ? { mode: 'prn', basis: vitalsBasis.trim() }
+              : { mode: 'scheduled', frequencyHours: Number(vitalsFrequency), basis: vitalsBasis.trim() }
+          );
         } catch (scheduleError) {
           toast.error('Vital signs schedule not saved', {
             description:
@@ -856,6 +858,7 @@ ${buildLabsAndMedicationsPrintSection(entry)}`;
               options={[
                 { label: 'Not set yet', value: '' },
                 ...VITALS_FREQUENCIES.map((f) => ({ label: f.label, value: String(f.hours) })),
+                { label: 'As needed (PRN)', value: 'prn' },
               ]}
               placeholder="Not set yet"
               style={styles.vitalsScheduleField}

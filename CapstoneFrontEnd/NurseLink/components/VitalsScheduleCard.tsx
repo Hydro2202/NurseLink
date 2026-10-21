@@ -53,6 +53,7 @@ export function VitalsScheduleCard({ patientId, patientName, canEdit: canEditPro
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [mode, setMode] = useState<'scheduled' | 'prn'>('scheduled');
   const [frequency, setFrequency] = useState<number | null>(null);
   const [startDate, setStartDate] = useState('');
   const [startTime, setStartTime] = useState('');
@@ -83,6 +84,7 @@ export function VitalsScheduleCard({ patientId, patientName, canEdit: canEditPro
 
   const startEditing = () => {
     const next = nextFullHour();
+    setMode(active?.mode ?? 'scheduled');
     setFrequency(active?.frequencyHours ?? null);
     setStartDate(next.date);
     setStartTime(next.time);
@@ -93,7 +95,7 @@ export function VitalsScheduleCard({ patientId, patientName, canEdit: canEditPro
   };
 
   const save = async () => {
-    if (!frequency) {
+    if (mode === 'scheduled' && !frequency) {
       setFormError('Choose the frequency ordered for this patient.');
       return;
     }
@@ -102,7 +104,8 @@ export function VitalsScheduleCard({ patientId, patientName, canEdit: canEditPro
     try {
       setData(
         await saveVitalsSchedule(patientId, {
-          frequencyHours: frequency,
+          mode,
+          frequencyHours: mode === 'scheduled' ? frequency! : undefined,
           startAt: toIso(startDate, startTime),
           basis: basis.trim(),
           reason: reason.trim() || undefined,
@@ -173,7 +176,9 @@ export function VitalsScheduleCard({ patientId, patientName, canEdit: canEditPro
           <View style={styles.grid}>
             <View style={styles.cell}>
               <Text style={styles.muted}>Next scheduled check</Text>
-              <Text style={styles.value}>{formatDateTime(active.nextCheckAt)}</Text>
+              <Text style={styles.value}>
+                {active.mode === 'prn' ? 'As needed' : formatDateTime(active.nextCheckAt)}
+              </Text>
             </View>
             <View style={styles.cell}>
               <Text style={styles.muted}>Most recent check</Text>
@@ -214,11 +219,14 @@ export function VitalsScheduleCard({ patientId, patientName, canEdit: canEditPro
           <Text style={styles.label}>Monitoring frequency (as ordered) *</Text>
           <View style={styles.segment}>
             {VITALS_FREQUENCIES.map((f) => {
-              const selected = frequency === f.hours;
+              const selected = mode === 'scheduled' && frequency === f.hours;
               return (
                 <Pressable
                   key={f.hours}
-                  onPress={() => setFrequency(f.hours)}
+                  onPress={() => {
+                    setMode('scheduled');
+                    setFrequency(f.hours);
+                  }}
                   style={[styles.segmentBtn, selected && styles.segmentBtnActive]}
                   accessibilityRole="radio"
                   accessibilityState={{ selected }}
@@ -227,17 +235,30 @@ export function VitalsScheduleCard({ patientId, patientName, canEdit: canEditPro
                 </Pressable>
               );
             })}
+            <Pressable
+              onPress={() => {
+                setMode('prn');
+                setFrequency(null);
+              }}
+              style={[styles.segmentBtn, mode === 'prn' && styles.segmentBtnActive]}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: mode === 'prn' }}
+            >
+              <Text style={[styles.segmentText, mode === 'prn' && styles.segmentTextActive]}>As needed (PRN)</Text>
+            </Pressable>
           </View>
-          <View style={styles.row}>
-            <DatePicker
-              style={styles.flex1}
-              label="First check date"
-              value={startDate}
-              onChange={setStartDate}
-              minDate={todayIso()}
-            />
-            <TimePicker style={styles.flex1} label="First check time" value={startTime} onChange={setStartTime} />
-          </View>
+          {mode === 'scheduled' ? (
+            <View style={styles.row}>
+              <DatePicker
+                style={styles.flex1}
+                label="First check date"
+                value={startDate}
+                onChange={setStartDate}
+                minDate={todayIso()}
+              />
+              <TimePicker style={styles.flex1} label="First check time" value={startTime} onChange={setStartTime} />
+            </View>
+          ) : null}
           <Input
             label="Order / protocol reference"
             placeholder="e.g., Dr. Reyes order 10/20, post-op protocol"
