@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
 import { useLocalSearchParams, useFocusEffect } from 'expo-router';
 import {
@@ -29,8 +29,13 @@ import {
   grantAdminAccountRole,
   clearAdminAccountLoginLock,
   ApiError,
+  fetchAdminAccount,
 } from '../../../services/api';
 import type { AdminAccount } from '../../../types/domain';
+import { PrintButton } from '../../../components/admin/PrintButton';
+import { printReport, type PrintField } from '../../../utils/print';
+import { useAuth } from '../../../contexts/AuthContext';
+import { formatDateTime12 } from '../../../utils/time';
 import { Input } from '../../../components/Input';
 import { Badge } from '../../../components/Badge';
 import { Button } from '../../../components/Button';
@@ -40,6 +45,7 @@ import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { useLiveRefresh } from '../../../contexts/LiveContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
+import { Pagination, usePagination } from '../../../components/Pagination';
 
 const STATUS_TABS: TabItem[] = [
   { value: 'all', label: 'All' },
@@ -78,6 +84,7 @@ function formatDate(iso: string | null): string {
 export default function AdminAccountsPage() {
   const params = useLocalSearchParams<{ status?: string }>();
   const toast = useToast();
+  const { user: currentUser } = useAuth();
   const [accounts, setAccounts] = useState<AdminAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -151,6 +158,10 @@ export default function AdminAccountsPage() {
       return a.name.toLowerCase().includes(q) || a.email.toLowerCase().includes(q);
     });
   }, [accounts, search, statusFilter, roleFilter]);
+
+  // 10 per page; Next/Prev jumps back to the top of the list.
+  const scrollRef = useRef<ScrollView>(null);
+  const paged = usePagination(filtered, { scrollRef, resetKey: `${search}|${statusFilter}|${roleFilter}` });
 
   const refreshSelected = (updated: AdminAccount) => {
     setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
@@ -319,11 +330,94 @@ export default function AdminAccountsPage() {
     }
   };
 
+  // Opening an account re-reads it through the server, which logs the view.
+  const openAccount = async (account: AdminAccount) => {
+    setSelected(account);
+    try {
+      setSelected(await fetchAdminAccount(account.id));
+    } catch (err) {
+      setSelected(null);
+      toast.error('Could not open this account', {
+        description: err instanceof ApiError ? err.message : 'Please try again.',
+      });
+    }
+  };
+
+  const roleText = (a: AdminAccount) => (a.role === 'head_nurse' ? 'Head Nurse' : 'Nurse');
+  const statusText = (a: AdminAccount) =>
+    `${a.approvalStatus}${a.isActiveStaff ? '' : ' (deactivated)'}`;
+
+  const printList = () =>
+    printReport(
+      {
+        title: 'Accounts',
+        subtitle: 'Nurse and head nurse accounts',
+        printedBy: currentUser?.name,
+        scope: [
+          `Status: ${statusFilter === 'all' ? 'All' : statusFilter} · Role: ${
+            roleFilter === 'all' ? 'All' : roleFilter === 'head_nurse' ? 'Head Nurse' : 'Nurse'
+          }${search.trim() ? ` · Search: "${search.trim()}"` : ''}`,
+          `${filtered.length} of ${accounts.length} accounts`,
+        ],
+        columns: [
+          { label: 'Name', value: (a: AdminAccount) => a.name, width: '22%' },
+          { label: 'Email', value: (a: AdminAccount) => a.email, width: '24%' },
+          { label: 'Role', value: roleText, width: '11%' },
+          { label: 'Status', value: statusText, width: '13%' },
+          { label: 'Department', value: (a: AdminAccount) => a.department || '—' },
+          { label: 'Joined', value: (a: AdminAccount) => formatDateTime12(a.dateJoined) || '—', width: '16%' },
+        ],
+        rows: filtered,
+      },
+      {
+        recordType: 'accounts',
+        scope: 'list',
+        filters: { status: statusFilter, role: roleFilter, search: search.trim() },
+      }
+    );
+
+  const printAccount = (a: AdminAccount) => {
+    const fields: PrintField[] = [
+      { label: 'Name', value: a.name },
+      { label: 'Email', value: a.email },
+      { label: 'Phone', value: a.phoneNumber || '—' },
+      { label: 'Role', value: roleText(a) },
+      { label: 'Requested role', value: a.requestedRole === 'head_nurse' ? 'Head Nurse' : a.requestedRole ? 'Nurse' : '—' },
+      { label: 'Approval status', value: a.approvalStatus },
+      { label: 'Active', value: a.isActiveStaff ? 'Yes' : 'No (deactivated)' },
+      { label: 'Department', value: a.department || '—' },
+      { label: 'Clinical role', value: a.clinicalRole || '—' },
+      { label: 'Specialization', value: a.specialization || '—' },
+      { label: 'License number', value: a.licenseNumber || '—' },
+      { label: 'Employee ID', value: a.employeeId || '—' },
+      { label: 'Hospital', value: a.hospitalName || '—' },
+      { label: 'Verification', value: a.verificationMethod || '—' },
+      { label: 'Role granted by', value: a.roleGrantedBy || '—' },
+      { label: 'Role granted at', value: formatDateTime12(a.roleGrantedAt) || '—' },
+      { label: 'Joined', value: formatDateTime12(a.dateJoined) || '—' },
+    ];
+    if (a.rejectionReason) fields.push({ label: 'Rejection reason', value: a.rejectionReason, multiline: true });
+    return printReport(
+      { title: `Account: ${a.name}`, subtitle: `Account ID: ${a.id}`, printedBy: currentUser?.name, fields },
+      { recordType: 'accounts', scope: 'detail', recordId: a.id, label: a.name }
+    );
+  };
+
   return (
     <View style={styles.root}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <Text style={styles.title}>Accounts</Text>
-        <Text style={styles.subtitle}>Every nurse and head nurse account, regardless of status.</Text>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.titleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Accounts</Text>
+            <Text style={styles.subtitle}>Every nurse and head nurse account, regardless of status.</Text>
+          </View>
+          <PrintButton label="Print list" onPrint={printList} disabled={loading} />
+        </View>
 
         <Input
           placeholder="Search by name or email"
@@ -345,8 +439,8 @@ export default function AdminAccountsPage() {
           <Text style={styles.empty}>No accounts match.</Text>
         ) : (
           <View style={styles.list}>
-            {filtered.map((account) => (
-              <Pressable key={account.id} onPress={() => setSelected(account)}>
+            {paged.pageItems.map((account) => (
+              <Pressable key={account.id} onPress={() => void openAccount(account)}>
                 <View style={[styles.row, Shadows.sm]}>
                   <View style={{ flex: 1 }}>
                     <View style={styles.rowTop}>
@@ -372,6 +466,12 @@ export default function AdminAccountsPage() {
             ))}
           </View>
         )}
+        <Pagination
+          page={paged.page}
+          totalPages={paged.totalPages}
+          onPageChange={paged.setPage}
+          total={paged.total}
+        />
       </ScrollView>
 
       <Modal visible={!!selected} transparent animationType="fade" onRequestClose={() => setSelected(null)}>
@@ -381,6 +481,7 @@ export default function AdminAccountsPage() {
               <>
                 <View style={styles.dialogHeader}>
                   <Text style={styles.dialogTitle}>{selected.name}</Text>
+                  <PrintButton compact label="Print account" onPrint={() => printAccount(selected)} />
                   <Pressable onPress={() => setSelected(null)} hitSlop={8}>
                     <X size={20} color={Colors.gray500} />
                   </Pressable>
@@ -467,7 +568,9 @@ export default function AdminAccountsPage() {
                       </View>
                     </Button>
                   ) : null}
-                  {selected.approvalStatus !== 'rejected' ? (
+                  {/* Reject is a decision on a pending registration only. An approved
+                      account is managed with Deactivate below, never rejected. */}
+                  {selected.approvalStatus === 'pending' ? (
                     <Button variant="destructive" onPress={() => setRejectOpen(true)} disabled={busy}>
                       <View style={styles.btnInner}>
                         <XCircle size={16} color={Colors.white} />
@@ -685,8 +788,9 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
   scroll: { flex: 1 },
   content: { padding: 16, paddingBottom: 100, gap: 12 },
+  titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' },
   title: { fontSize: 20, fontWeight: '900', color: Colors.gray900 },
-  subtitle: { fontSize: 12.5, color: Colors.mutedForeground, marginTop: -6 },
+  subtitle: { fontSize: 12.5, color: Colors.mutedForeground, marginTop: 2 },
   empty: { textAlign: 'center', color: Colors.mutedForeground, marginTop: 32, fontSize: 13 },
   list: { gap: 10 },
   row: {

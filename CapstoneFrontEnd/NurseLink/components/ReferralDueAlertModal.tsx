@@ -7,6 +7,7 @@ import { Button } from './Button';
 import { useNotifications } from '../contexts/NotificationsContext';
 import { fetchHandover } from '../services/api';
 import type { AppNotification, HandoverNote } from '../types/domain';
+import { formatShortDateTime12 } from '../utils/time';
 
 /**
  * The popup a nurse sees when a pending referral they're involved in is
@@ -26,7 +27,7 @@ function formatDueAt(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return formatShortDateTime12(d);
 }
 
 export function ReferralDueAlertModal() {

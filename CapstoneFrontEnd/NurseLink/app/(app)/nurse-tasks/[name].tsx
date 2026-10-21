@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -25,7 +25,6 @@ import {
   createTask,
   updateTask,
   unassignTask,
-  completeTask,
   ApiError,
 } from '../../../services/api';
 import { formatDueDate, isTaskOverdue, taskDueChip } from '../tasks';
@@ -37,8 +36,12 @@ import { Input } from '../../../components/Input';
 import { Select } from '../../../components/Select';
 import { TaskModal } from '../../../components/TaskModal';
 import { DeleteConfirmDialog } from '../../../components/ConfirmDialog';
+import { CompleteTaskDialog } from '../../../components/tasks/CompleteTaskDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
+import { Pagination, usePagination } from '../../../components/Pagination';
+import { formatDateTime12, formatTime12 } from '../../../utils/time';
+import { countTasksByFilter, matchesTaskFilter } from '../../../utils/taskFilters';
 
 type SortBy = 'newest' | 'oldest' | 'priority' | 'status';
 
@@ -66,7 +69,7 @@ export default function NurseTasksPage() {
   const [unassignDialogOpen, setUnassignDialogOpen] = useState(false);
   const [taskToUnassign, setTaskToUnassign] = useState<string | null>(null);
   const [unassignLoading, setUnassignLoading] = useState(false);
-  const [completeLoading, setCompleteLoading] = useState<string | null>(null);
+  const [completingTask, setCompletingTask] = useState<Task | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('priority');
 
@@ -140,22 +143,8 @@ export default function NurseTasksPage() {
     }
   };
 
-  const handleCompleteTask = async (task: Task) => {
-    setCompleteLoading(task.id);
-    try {
-      const updated = await completeTask(task.id);
-      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
-      toast.success('Task completed!', {
-        description: `"${task.title}" marked complete.`,
-      });
-    } catch (error) {
-      toast.error('Failed to complete task', {
-        description: error instanceof ApiError ? error.message : 'Please try again.',
-      });
-    } finally {
-      setCompleteLoading(null);
-    }
-  };
+  // Done opens the remarks dialog; the task is updated only after the server saved it.
+  const handleCompleteTask = (task: Task) => setCompletingTask(task);
 
   const filteredTasks = nurseTasks
     .filter((task) => {
@@ -166,13 +155,8 @@ export default function NurseTasksPage() {
         task.description.toLowerCase().includes(q) ||
         task.patientName.toLowerCase().includes(q);
 
-      if (selectedTab === 'all') return matchesSearch;
-      if (selectedTab === 'high') return matchesSearch && task.priority === 'high';
-      if (selectedTab === 'medium') return matchesSearch && task.priority === 'medium';
-      if (selectedTab === 'low') return matchesSearch && task.priority === 'low';
-      if (selectedTab === 'completed') return matchesSearch && task.status === 'completed';
-      if (selectedTab === 'overdue') return matchesSearch && task.status === 'overdue';
-      return matchesSearch;
+      // Completion wins over priority/due date (utils/taskFilters).
+      return matchesSearch && matchesTaskFilter(task, selectedTab);
     })
     .sort((a, b) => {
       if (sortBy === 'newest') {
@@ -216,14 +200,7 @@ export default function NurseTasksPage() {
   const RISK_LABELS: Record<string, string> = { high: 'High risk', medium: 'Medium risk', low: 'Low risk' };
   const RISK_COLORS: Record<string, string> = { high: Colors.red600, medium: Colors.orange600, low: Colors.green600 };
 
-  const counts = {
-    all: nurseTasks.length,
-    high: nurseTasks.filter((t) => t.priority === 'high').length,
-    medium: nurseTasks.filter((t) => t.priority === 'medium').length,
-    low: nurseTasks.filter((t) => t.priority === 'low').length,
-    overdue: nurseTasks.filter((t) => t.status === 'overdue').length,
-    completed: nurseTasks.filter((t) => t.status === 'completed').length,
-  };
+  const counts = countTasksByFilter(nurseTasks);
 
   const filterTabs = [
     { id: 'all', label: 'All', count: counts.all, color: Colors.blue600 },
@@ -231,8 +208,13 @@ export default function NurseTasksPage() {
     { id: 'medium', label: 'Medium', count: counts.medium, color: Colors.orange600 },
     { id: 'low', label: 'Low', count: counts.low, color: Colors.green600 },
     { id: 'overdue', label: 'Overdue', count: counts.overdue, color: Colors.orange700 },
-    { id: 'completed', label: 'Done', count: counts.completed, color: Colors.green700 },
+    { id: 'completed', label: 'Completed', count: counts.completed, color: Colors.green700 },
   ];
+
+
+  // 10 per page; Next/Prev jumps back to the top.
+  const scrollRef = useRef<ScrollView>(null);
+  const paged = usePagination(filteredTasks, { scrollRef, resetKey: `${searchQuery}|${selectedTab}` });
 
   if (loading) {
     return (
@@ -245,6 +227,7 @@ export default function NurseTasksPage() {
   return (
     <View style={styles.root}>
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
@@ -341,7 +324,7 @@ export default function NurseTasksPage() {
               </CardContent>
             </Card>
           ) : (
-            filteredTasks.map((task) => (
+            paged.pageItems.map((task) => (
               <Card
                 key={task.id}
                 style={{
@@ -371,7 +354,7 @@ export default function NurseTasksPage() {
                       <Text style={[styles.metaText, isTaskOverdue(task) && { color: Colors.red600, fontWeight: '700' }]}>
                         {formatDueDate(task.dueDate)}
                         {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
-                        {task.dueTime}
+                        {formatTime12(task.dueTime)}
                       </Text>
                     </View>
                     {(() => {
@@ -411,6 +394,18 @@ export default function NurseTasksPage() {
                     </View>
                   ) : null}
 
+                  {task.status === 'completed' ? (
+                    <View style={styles.completedBox}>
+                      <Text style={styles.completedMeta}>
+                        Completed {formatDateTime12(task.completedAt) || '—'}
+                        {task.completedBy ? ` by ${task.completedBy}` : ''}
+                      </Text>
+                      <Text style={styles.completedRemarks}>
+                        {task.completionRemarks || 'No remarks were recorded (completed before remarks were required).'}
+                      </Text>
+                    </View>
+                  ) : null}
+
                   {task.checklist.length > 0 ? (
                     <Badge variant="secondary" style={{ alignSelf: 'flex-start', marginTop: 6 }}>
                       {`Checklist: ${task.checklist.filter((i) => i.done).length}/${task.checklist.length}`}
@@ -423,13 +418,9 @@ export default function NurseTasksPage() {
                         size="icon-sm"
                         variant="outline"
                         onPress={() => handleCompleteTask(task)}
-                        disabled={completeLoading === task.id}
+                        accessibilityLabel="Mark as done"
                       >
-                        {completeLoading === task.id ? (
-                          <ActivityIndicator size="small" color={Colors.green600} />
-                        ) : (
-                          <CheckCircle size={16} color={Colors.green600} />
-                        )}
+                        <CheckCircle size={16} color={Colors.green600} />
                       </Button>
                     ) : null}
                     <Button
@@ -460,6 +451,12 @@ export default function NurseTasksPage() {
               </Card>
             ))
           )}
+          <Pagination
+            page={paged.page}
+            totalPages={paged.totalPages}
+            onPageChange={paged.setPage}
+            total={paged.total}
+          />
         </View>
       </ScrollView>
 
@@ -469,6 +466,16 @@ export default function NurseTasksPage() {
         task={selectedTask}
         mode={taskModalMode}
         onSave={handleSaveTask}
+      />
+
+      <CompleteTaskDialog
+        task={completingTask}
+        onClose={() => setCompletingTask(null)}
+        onCompleted={(updated) => {
+          setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+          setCompletingTask(null);
+          toast.success('Task completed', { description: `"${updated.title}" was saved with the remarks.` });
+        }}
       />
 
       <DeleteConfirmDialog
@@ -542,4 +549,15 @@ const styles = StyleSheet.create({
   },
   orderText: { flex: 1, fontSize: 12, color: Colors.blue800 },
   actions: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  completedBox: {
+    marginTop: 8,
+    backgroundColor: Colors.green50,
+    borderWidth: 1,
+    borderColor: Colors.green200,
+    borderRadius: Radius.sm,
+    padding: 8,
+    gap: 2,
+  },
+  completedMeta: { fontSize: 12, fontWeight: '600', color: Colors.green700 },
+  completedRemarks: { fontSize: 13, color: Colors.gray800 },
 });

@@ -25,7 +25,6 @@ import { AssignPatientModal } from '../../components/AssignPatientModal';
 import { WorkloadSection } from '../../components/dashboard/WorkloadSection';
 import { AnalyticsSection } from '../../components/dashboard/AnalyticsSection';
 import { FilterBar } from '../../components/dashboard/FilterBar';
-import { SectionNav, type DashboardSection } from '../../components/dashboard/SectionNav';
 import {
   DEFAULT_FILTERS,
   filterPatients,
@@ -55,12 +54,6 @@ function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
     updatedAt: new Date(record.updatedAt),
   };
 }
-
-const ANALYTICS_SECTIONS: DashboardSection[] = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'workload', label: 'Workload' },
-  { key: 'charts', label: 'Charts' },
-];
 
 function pad(n: number) {
   return String(n).padStart(2, '0');
@@ -146,7 +139,6 @@ export default function AnalyticsPage() {
   const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [editingAssignment, setEditingAssignment] = useState<PatientAssignment | null>(null);
-  const [activeSection, setActiveSection] = useState<string>('overview');
   const sectionRefs = useRef<Record<string, View | null>>({});
   const scrollRef = useRef<ScrollView>(null);
 
@@ -221,8 +213,9 @@ export default function AnalyticsPage() {
     void loadPatientsAndTasks();
   });
 
+  // Deep links (?section=...) from notifications still jump to a section;
+  // the on-page tab bar was removed.
   const scrollToSection = useCallback((key: string) => {
-    setActiveSection(key);
     const node = sectionRefs.current[key];
     const scrollNode = findNodeHandle(scrollRef.current);
     if (!node || scrollNode === null) return;
@@ -342,7 +335,6 @@ export default function AnalyticsPage() {
 
   return (
     <View style={styles.root}>
-      <SectionNav sections={ANALYTICS_SECTIONS} activeKey={activeSection} onSelect={scrollToSection} />
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}

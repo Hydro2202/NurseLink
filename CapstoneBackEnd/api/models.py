@@ -8,6 +8,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
+from .encryption import EncryptedJSONField, EncryptedTextField
 from .names import full_name
 
 
@@ -188,15 +189,16 @@ class Patient(models.Model):
     middle_name = models.CharField(max_length=100, blank=True, default='')
     last_name = models.CharField(max_length=100, blank=True, default='')
     date_of_birth = models.DateField(null=True, blank=True)
-    contact_number = models.CharField(max_length=20, blank=True, default='')
-    address = models.CharField(max_length=255, blank=True, default='')
-    emergency_contact_name = models.CharField(max_length=200, blank=True, default='')
-    emergency_contact_number = models.CharField(max_length=20, blank=True, default='')
+    # Encrypted at rest (api/encryption.py).
+    contact_number = EncryptedTextField(blank=True, default='')
+    address = EncryptedTextField(blank=True, default='')
+    emergency_contact_name = EncryptedTextField(blank=True, default='')
+    emergency_contact_number = EncryptedTextField(blank=True, default='')
     bed_number = models.CharField(max_length=20, blank=True, default='')
     age = models.PositiveIntegerField(validators=[MaxValueValidator(150)])
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
     room = models.CharField(max_length=50, db_index=True)
-    diagnosis = models.CharField(max_length=255)
+    diagnosis = EncryptedTextField()
     admission_date = models.DateField()
     risk_level = models.CharField(max_length=10, choices=RISK_CHOICES, default='low', db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='admitted', db_index=True)
@@ -237,8 +239,8 @@ class Patient(models.Model):
     height_cm = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
     weight_kg = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
 
-    allergies = models.JSONField(default=list, blank=True)
-    medications = models.JSONField(default=list, blank=True)
+    allergies = EncryptedJSONField(default=list, blank=True)
+    medications = EncryptedJSONField(default=list, blank=True)
     alerts = models.JSONField(default=list, blank=True)
 
     assigned_nurse = models.ForeignKey(
@@ -467,6 +469,13 @@ class Task(models.Model):
             models.Index(fields=['status', 'priority']),
             models.Index(fields=['created_at']),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['patient', 'scheduled_for'],
+                condition=models.Q(scheduled_for__isnull=False),
+                name='unique_vitals_occurrence_per_patient',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.task_code} — {self.title}'
@@ -478,6 +487,46 @@ class Task(models.Model):
         blank=True,
         related_name='tasks',
     )
+
+    # Procedure = nursing care done for the patient (vital signs, wound care,
+    # assessment, medication). Referral = work that comes from a referral
+    # (see source_handover). Set explicitly; migration 0076 classified the
+    # existing rows from source_handover, never from the title.
+    TYPE_CHOICES = [
+        ('procedure', 'Procedure'),
+        ('referral', 'Referral'),
+    ]
+    task_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='procedure', db_index=True)
+    # What the nurse documented when pressing Done: care performed, findings,
+    # patient response. Clinical text, so encrypted at rest like charting.
+    completion_remarks = EncryptedTextField(blank=True, default='')
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tasks_completed',
+    )
+    completed_by_name = models.CharField(max_length=200, blank=True, default='')
+    # Set only on tasks generated from a patient's VitalSignsSchedule: the
+    # occurrence this check belongs to. Unique per patient (see Meta of the
+    # migration-added constraint) so the generator can never create the same
+    # check twice, however often it runs.
+    vitals_schedule = models.ForeignKey(
+        'VitalSignsSchedule',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tasks',
+    )
+    scheduled_for = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    @property
+    def vital_readings_required(self):
+        """A scheduled check (one occurrence of a VitalSignsSchedule) is a
+        single reading; a free-standing vital signs task keeps the original
+        rule of at least two check-ins."""
+        return 1 if self.vitals_schedule_id else 2
 
     #: The mandatory final checklist step on every 'vital_signs' category
     #: task — TaskSerializer.validate_checklist gates it behind at least 2
@@ -507,6 +556,111 @@ class Task(models.Model):
             already_done = bool(checklist) and bool(checklist[-1].get('done'))
             self.checklist = [{'text': self.VITAL_SIGNS_CHECKLIST_TEXT, 'done': already_done}]
         super().save(*args, **kwargs)
+
+
+class TaskEvent(models.Model):
+    """
+    Append-only history of one task: created, (re)assigned, status changes,
+    edits, completion with remarks, and remark corrections. Never edited or
+    deleted through the API, so a correction is always a new row next to the
+    original rather than an overwrite.
+    """
+
+    EVENT_CHOICES = [
+        ('created', 'Created'),
+        ('assigned', 'Assigned'),
+        ('unassigned', 'Unassigned'),
+        ('status_changed', 'Status changed'),
+        ('edited', 'Edited'),
+        ('completed', 'Completed'),
+        ('remarks_amended', 'Remarks corrected'),
+    ]
+
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='events')
+    event = models.CharField(max_length=30, choices=EVENT_CHOICES, db_index=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='task_events',
+    )
+    #: Kept as text so the history still reads correctly after the account is gone.
+    actor_name = models.CharField(max_length=200, blank=True, default='')
+    from_status = models.CharField(max_length=20, blank=True, default='')
+    to_status = models.CharField(max_length=20, blank=True, default='')
+    remarks = EncryptedTextField(blank=True, default='')
+    #: For remarks_amended: the version being replaced.
+    previous_remarks = EncryptedTextField(blank=True, default='')
+    #: Non-clinical extras, e.g. {"fields": ["due date"], "assignedTo": "Ana Cruz"}.
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['task', 'created_at'])]
+
+    def __str__(self):
+        return f'{self.task_id} {self.event} {self.created_at:%Y-%m-%d %H:%M}'
+
+
+class VitalSignsSchedule(models.Model):
+    """
+    How often a patient's vital signs must be taken, as ordered for that
+    patient (physician order / hospital protocol), set by an authorized
+    nurse. Never derived automatically from the risk level.
+
+    Append-only: changing the frequency ends the current row (ended_at) and
+    starts a new one, so every past schedule, who set it and why, stays on
+    record. At most one active row per patient (constraint below).
+    """
+
+    FREQUENCY_CHOICES = [
+        (1, 'Every 1 hour'),
+        (2, 'Every 2 hours'),
+        (4, 'Every 4 hours'),
+    ]
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='vitals_schedules')
+    frequency_hours = models.PositiveSmallIntegerField(choices=FREQUENCY_CHOICES)
+    #: The first check; later ones fall every frequency_hours after it.
+    start_at = models.DateTimeField()
+    #: The order or protocol this follows, e.g. "Dr. Reyes order 10/20".
+    basis = models.CharField(max_length=255, blank=True, default='')
+    set_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='vitals_schedules_set',
+    )
+    set_by_name = models.CharField(max_length=200, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    ended_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='vitals_schedules_ended',
+    )
+    ended_by_name = models.CharField(max_length=200, blank=True, default='')
+    end_reason = models.CharField(max_length=255, blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['patient'],
+                condition=models.Q(ended_at__isnull=True),
+                name='one_active_vitals_schedule_per_patient',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.patient_id} every {self.frequency_hours}h from {self.start_at:%Y-%m-%d %H:%M}'
+
+    @property
+    def interval(self):
+        return timedelta(hours=self.frequency_hours)
+
+    def occurrence_at_or_after(self, moment):
+        """The first scheduled check at or after `moment`."""
+        if moment <= self.start_at:
+            return self.start_at
+        steps = -(-(moment - self.start_at) // self.interval)  # ceiling division
+        return self.start_at + steps * self.interval
 
 
 class Department(models.Model):
@@ -690,10 +844,10 @@ class HandoverNote(models.Model):
     )
     nurse_from = models.CharField(max_length=200)
     nurse_to = models.CharField(max_length=200)
-    situation = models.TextField(blank=True, default='')
-    background = models.TextField(blank=True, default='')
-    assessment = models.TextField(blank=True, default='')
-    recommendation = models.TextField(blank=True, default='')
+    situation = EncryptedTextField(blank=True, default='')
+    background = EncryptedTextField(blank=True, default='')
+    assessment = EncryptedTextField(blank=True, default='')
+    recommendation = EncryptedTextField(blank=True, default='')
     unfinished_tasks = models.JSONField(default=list, blank=True)
     photos = models.JSONField(default=list, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='sent', db_index=True)
@@ -864,7 +1018,7 @@ class ChartingNote(models.Model):
     nurse_name = models.CharField(max_length=200, blank=True, default='')
     timestamp = models.DateTimeField()
     note_type = models.CharField(max_length=30, choices=TYPE_CHOICES, default='progress')
-    content = models.TextField()
+    content = EncryptedTextField()
     # Section-by-section structure rendered by the app (Auto Charting). Persisted so
     # View Full Note can rehydrate the exact approved chart without regex-parsing
     # free text (and without inventing clinical content that was never saved).
@@ -885,10 +1039,10 @@ class ChartingNote(models.Model):
     # narrative sections, each independently editable in the nurse-facing
     # UI. Legacy rows leave these blank; content/structured_data remain
     # their source of truth.
-    focus = models.TextField(blank=True, default='')
-    data = models.TextField(blank=True, default='')
-    action = models.TextField(blank=True, default='')
-    response = models.TextField(blank=True, default='')
+    focus = EncryptedTextField(blank=True, default='')
+    data = EncryptedTextField(blank=True, default='')
+    action = EncryptedTextField(blank=True, default='')
+    response = EncryptedTextField(blank=True, default='')
     ai_generated = models.BooleanField(default=False)
     edited = models.BooleanField(default=False)
     confirmed = models.BooleanField(default=False)
@@ -1464,9 +1618,9 @@ class KardexRecord(models.Model):
     bed_number = models.CharField(max_length=50, blank=True, default='')
     admission_date = models.CharField(max_length=50, blank=True, default='')
     attending_physician = models.CharField(max_length=200, blank=True, default='')
-    chief_complaint = models.TextField(blank=True, default='')
-    admitting_diagnosis = models.TextField(blank=True, default='')
-    final_diagnosis = models.TextField(blank=True, default='')
+    chief_complaint = EncryptedTextField(blank=True, default='')
+    admitting_diagnosis = EncryptedTextField(blank=True, default='')
+    final_diagnosis = EncryptedTextField(blank=True, default='')
     diet = models.CharField(max_length=200, blank=True, default='')
     ivf = models.CharField(max_length=200, blank=True, default='')
     temperature = models.CharField(max_length=20, blank=True, default='')
@@ -1474,8 +1628,8 @@ class KardexRecord(models.Model):
     respiratory_rate = models.CharField(max_length=20, blank=True, default='')
     blood_pressure = models.CharField(max_length=20, blank=True, default='')
     oxygen_saturation = models.CharField(max_length=20, blank=True, default='')
-    allergies = models.JSONField(default=list, blank=True)
-    special_endorsements = models.TextField(blank=True, default='')
+    allergies = EncryptedJSONField(default=list, blank=True)
+    special_endorsements = EncryptedTextField(blank=True, default='')
     saved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -2180,6 +2334,10 @@ class AuthSession(models.Model):
         related_name='auth_sessions',
     )
     created = models.DateTimeField(auto_now_add=True)
+    # Last authenticated request. The session times out after
+    # TOKEN_TTL_SECONDS without use, not a fixed time after login, so a nurse
+    # who is actively working is never signed out mid-shift.
+    last_used = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f'Session for {self.user_id} ({self.created:%Y-%m-%d %H:%M})'
@@ -2227,25 +2385,60 @@ class CorrectionRequest(models.Model):
 
 
 class AdminAuditLog(models.Model):
-    """One row per edit or delete an admin makes from the Admin panel."""
+    """
+    Administrator activity: one row per thing an admin did in the Admin
+    portal — viewed a record, changed or deleted one, approved or rejected a
+    registration, suspended an account, requested a print. Written by the
+    server (api/admin_audit.py) once the action has actually succeeded, never
+    from a frontend click, so a direct API call is recorded the same way and a
+    failed or unauthorized request is never logged as done. Append-only: the
+    API offers no way to edit or delete a row.
+    """
 
-    ACTION_CHOICES = [('update', 'Updated'), ('delete', 'Deleted')]
+    ACTION_CHOICES = [
+        ('view', 'Viewed'),
+        ('create', 'Created'),
+        ('update', 'Updated'),
+        ('delete', 'Deleted'),
+        ('approve', 'Approved'),
+        ('reject', 'Rejected'),
+        ('deactivate', 'Deactivated'),
+        ('reactivate', 'Reactivated'),
+        ('role_change', 'Changed role'),
+        ('password_reset', 'Reset password'),
+        ('unlock', 'Unlocked'),
+        ('print', 'Print requested'),
+    ]
+    #: How the Audit Log page groups actions.
+    CATEGORY_ACTIONS = {
+        'view': ('view',),
+        'change': ('create', 'update', 'delete', 'role_change', 'password_reset', 'unlock'),
+        'decision': ('approve', 'reject', 'deactivate', 'reactivate'),
+        'print': ('print',),
+    }
+    STATUS_CHOICES = [('success', 'Success'), ('failure', 'Failure'), ('requested', 'Requested')]
 
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='admin_audit_entries',
     )
     actor_name = models.CharField(max_length=200, blank=True, default='')
-    action = models.CharField(max_length=10, choices=ACTION_CHOICES)
-    record_type = models.CharField(max_length=40)
-    record_id = models.CharField(max_length=60)
+    #: Snapshot of the actor's role at the time (e.g. "Administrator").
+    actor_role = models.CharField(max_length=40, blank=True, default='')
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES, db_index=True)
+    record_type = models.CharField(max_length=40, db_index=True)
+    record_id = models.CharField(max_length=60, blank=True, default='', db_index=True)
     record_label = models.CharField(max_length=255, blank=True, default='')
-    # {field: [before, after]} for an edit; the record's last state for a delete.
+    summary = models.CharField(max_length=255, blank=True, default='')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='success')
+    # {field: [before, after]} for an edit; the record's last state for a
+    # delete; report scope for a print. Never passwords, OTPs or tokens.
     changes = models.JSONField(default=dict, blank=True)
+    request_id = models.CharField(max_length=64, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        ordering = ['-created_at']
+        ordering = ['-created_at', '-id']
 
     def __str__(self):
         return f'{self.actor_name} {self.action} {self.record_type} {self.record_id}'

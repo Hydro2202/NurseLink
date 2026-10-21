@@ -32,6 +32,10 @@ export interface Task {
   assignedDoctors?: TaskDoctorAssignment[];
   /** Write-only on create/update: the full set of doctor ids for this task. */
   doctorIds?: number[];
+  /** Readings needed before a vital_signs task's checklist step can be
+   * ticked — 1 for a task generated from the Kardex-interval schedule, 2
+   * for a free-standing one (see Task.vital_readings_required). */
+  vitalReadingsRequired?: number;
 }
 
 export interface TaskChecklistItem {

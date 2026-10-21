@@ -23,6 +23,11 @@ import type { VitalReading } from '../types/domain';
 interface TaskVitalSignsBarsProps {
   taskId: string;
   patientId: string;
+  /** How many logged readings unlock the gated checklist step — 1 for a
+   * task generated from the Kardex-interval schedule, 2 for a
+   * free-standing one (see Task.vital_readings_required on the backend).
+   * Defaults to 1 — the common case. */
+  readingsRequired?: number;
   onReadingsChange?: (count: number) => void;
 }
 
@@ -151,7 +156,12 @@ function VitalValueInput({
   );
 }
 
-export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: TaskVitalSignsBarsProps) {
+export function TaskVitalSignsBars({
+  taskId,
+  patientId,
+  readingsRequired = 1,
+  onReadingsChange,
+}: TaskVitalSignsBarsProps) {
   const [readings, setReadings] = useState<VitalReading[]>([]);
   const [loading, setLoading] = useState(true);
   const [recording, setRecording] = useState(false);
@@ -278,7 +288,14 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
     );
   }
 
-  const reading = readings.length > 0 ? readings[readings.length - 1] : null;
+  // Most tasks only ever need 1 (the common, Kardex-scheduled case); a
+  // free-standing vital signs task needs 2 (see readingsRequired above).
+  // Rendering every already-recorded reading as its own card, not just the
+  // latest, is what makes the rare 2-required case show progress instead
+  // of silently replacing the first reading's card with the second's.
+  const required = Math.max(readingsRequired, 1);
+  const isComplete = readings.length >= required;
+  const latestReading = readings.length > 0 ? readings[readings.length - 1] : null;
   const newestFirstReadings = [...readings].reverse();
 
   const badge = (tone: 'done' | 'none', text: string) => (
@@ -298,11 +315,17 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
         <div className="flex flex-wrap items-center gap-1.5">
           <HeartPulse className="w-4 h-4 text-red-600" />
           <span className="text-sm font-bold text-gray-800">Vital Signs Monitoring</span>
-          <span className="ml-auto">{reading ? badge('done', 'Recorded') : badge('none', 'Not Recorded')}</span>
+          <span className="ml-auto">
+            {isComplete
+              ? badge('done', 'Recorded')
+              : badge('none', required > 1 ? `${readings.length}/${required} Recorded` : 'Not Recorded')}
+          </span>
         </div>
-        {!reading ? (
+        {!isComplete ? (
           <p className="text-xs text-orange-700">
-            Record the vital signs reading before this task's checklist can be marked complete.
+            {required > 1
+              ? `Record ${required} vital sign readings (${readings.length} so far) before this task's checklist can be marked complete.`
+              : "Record the vital signs reading before this task's checklist can be marked complete."}
           </p>
         ) : (
           <p className="text-xs font-semibold text-green-700">
@@ -310,29 +333,30 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
           </p>
         )}
 
-        {reading ? (
-          <div className="rounded-md border border-green-200 bg-green-50 p-2.5 space-y-1">
+        {readings.map((r) => (
+          <div key={r.id} className="rounded-md border border-green-200 bg-green-50 p-2.5 space-y-1">
             <div className="flex flex-wrap items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 text-green-700" />
               <span className="text-xs font-bold text-green-700">
-                {formatDate(reading.recordedAt)} · {formatTime(reading.recordedAt)}
+                {formatDate(r.recordedAt)} · {formatTime(r.recordedAt)}
               </span>
               {badge('done', 'Recorded ✓')}
-              {reading.recordedByName ? (
-                <span className="ml-auto text-[11px] text-gray-500">by {reading.recordedByName}</span>
+              {r.recordedByName ? (
+                <span className="ml-auto text-[11px] text-gray-500">by {r.recordedByName}</span>
               ) : null}
             </div>
             <p className="text-xs text-gray-700">
-              {reading.temperature != null ? `${reading.temperature}°C` : '—'}
+              {r.temperature != null ? `${r.temperature}°C` : '—'}
               {' · '}
-              {reading.heartRate != null ? `${reading.heartRate}bpm` : '—'}
+              {r.heartRate != null ? `${r.heartRate}bpm` : '—'}
               {' · '}
-              {reading.bloodPressure || '—'}
+              {r.bloodPressure || '—'}
               {' · '}
-              {reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'}
+              {r.oxygenSaturation != null ? `${r.oxygenSaturation}%` : '—'}
             </p>
           </div>
-        ) : recording ? (
+        ))}
+        {isComplete ? null : recording ? (
           <div className="mt-2 rounded-md border border-border bg-white p-3 space-y-2.5 shadow-sm">
             <div className="flex flex-wrap justify-between border-b border-border pb-2">
               {STATUS_DOTS.map((dot) => {
@@ -491,18 +515,18 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
             <Activity className="w-3.5 h-3.5 text-blue-600" />
             <span className="text-xs font-bold text-gray-800">Latest Vital Signs</span>
           </div>
-          {reading ? (
+          {latestReading ? (
             <>
               <p className="text-[11px] text-gray-500">
-                {formatDate(reading.recordedAt)} · {formatTime(reading.recordedAt)}
+                {formatDate(latestReading.recordedAt)} · {formatTime(latestReading.recordedAt)}
               </p>
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  ['TEMP', reading.temperature != null ? `${reading.temperature}°C` : '—'],
-                  ['PULSE', reading.heartRate != null ? `${reading.heartRate}bpm` : '—'],
-                  ['RESP', reading.respiratoryRate != null ? `${reading.respiratoryRate}/min` : '—'],
-                  ['BP', reading.bloodPressure || '—'],
-                  ['O2 SAT', reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'],
+                  ['TEMP', latestReading.temperature != null ? `${latestReading.temperature}°C` : '—'],
+                  ['PULSE', latestReading.heartRate != null ? `${latestReading.heartRate}bpm` : '—'],
+                  ['RESP', latestReading.respiratoryRate != null ? `${latestReading.respiratoryRate}/min` : '—'],
+                  ['BP', latestReading.bloodPressure || '—'],
+                  ['O2 SAT', latestReading.oxygenSaturation != null ? `${latestReading.oxygenSaturation}%` : '—'],
                 ].map(([label, value]) => (
                   <div key={label} className="rounded border border-border bg-white px-2 py-1.5">
                     <p className="text-[9px] font-bold tracking-wide text-muted-foreground">{label}</p>

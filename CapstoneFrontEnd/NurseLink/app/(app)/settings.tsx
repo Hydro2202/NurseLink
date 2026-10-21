@@ -328,7 +328,6 @@ export default function SettingsScreen() {
             // Disabled until the account's real settings have arrived, so a
             // nurse cannot save defaults over what they already had.
             disabled={preferencesLoading || savingSection !== null}
-            style={{ backgroundColor: c.purple600 }}
           >
             <View style={styles.btnInner}>
               {savingSection === 'appearance' ? (
@@ -400,7 +399,6 @@ export default function SettingsScreen() {
             // Disabled until the account's real settings have arrived, so a
             // nurse cannot save defaults over what they already had.
             disabled={preferencesLoading || savingSection !== null}
-            style={{ backgroundColor: c.orange600 }}
           >
             <View style={styles.btnInner}>
               {savingSection === 'notifications' ? (

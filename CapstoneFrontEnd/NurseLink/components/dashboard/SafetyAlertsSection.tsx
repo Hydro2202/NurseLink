@@ -1,11 +1,11 @@
-import React, { useMemo } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { AlertTriangle, CheckCircle2 } from 'lucide-react-native';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../Card';
+import React, { useMemo, useState } from 'react';
+import { View, Text, StyleSheet, Modal, Pressable, ScrollView } from 'react-native';
+import { AlertTriangle, CheckCircle2, X } from 'lucide-react-native';
+import { Card, CardContent } from '../Card';
 import { Alert, AlertDescription, AlertTitle } from '../Alert';
 import { Button } from '../Button';
 import { Badge } from '../Badge';
-import { Colors, Radius } from '../../constants/colors';
+import { Colors, Radius, Shadows } from '../../constants/colors';
 import type { Patient, Task } from '../../types/domain';
 
 export interface SafetyAlert {
@@ -26,19 +26,21 @@ interface SafetyAlertsSectionProps {
 }
 
 /**
- * "Patient Safety Alerts" — moved to the top of the head nurse dashboard
- * (see dashboard.tsx) so an urgent alert is the first thing seen, not
- * something scrolled past everything else to find.
+ * "Patient Safety Alerts" at the top of the head nurse dashboard. The
+ * dashboard shows only the title and the live count; "View All Alerts"
+ * opens every active alert (with Respond Now / Notify Nurse) in a pop-up
+ * whose list scrolls under a fixed header, so the count and the list are
+ * always built from the same array.
  */
 export function SafetyAlertsSection({ patients, tasks, onRespond, onNotifyNurse }: SafetyAlertsSectionProps) {
+  const [open, setOpen] = useState(false);
   const alerts = useMemo<SafetyAlert[]>(() => {
     const list: SafetyAlert[] = [];
 
     patients
-      .filter((p) => p.riskLevel === 'high' || p.riskLevel === 'critical')
+      .filter((p) => (p.riskLevel === 'high' || p.riskLevel === 'critical') && p.status !== 'discharged')
       // Critical patients surface before merely high-risk ones.
       .sort((a, b) => (a.riskLevel === b.riskLevel ? 0 : a.riskLevel === 'critical' ? -1 : 1))
-      .slice(0, 5)
       .forEach((p) => {
         const vs = p.vitalSigns;
         const label = p.riskLevel === 'critical' ? 'Critical' : 'High Risk';
@@ -56,7 +58,6 @@ export function SafetyAlertsSection({ patients, tasks, onRespond, onNotifyNurse 
 
     tasks
       .filter((t) => t.status === 'overdue')
-      .slice(0, 5)
       .forEach((t) => {
         list.push({
           key: `task-${t.id}`,
@@ -83,43 +84,93 @@ export function SafetyAlertsSection({ patients, tasks, onRespond, onNotifyNurse 
     );
   }
 
+  const close = () => setOpen(false);
+
   return (
-    <Card>
-      <CardHeader>
-        <View style={styles.titleRow}>
-          <AlertTriangle size={20} color={Colors.destructive} />
-          <CardTitle>Patient Safety Alerts</CardTitle>
-          <Badge variant="destructive">{alerts.length}</Badge>
-        </View>
-        <CardDescription>High-priority alerts requiring immediate attention</CardDescription>
-      </CardHeader>
-      <CardContent style={styles.list}>
-        {alerts.map((alert) => (
-          <Alert key={alert.key} variant={alert.variant} style={styles.alert}>
-            <AlertTitle>{alert.title}</AlertTitle>
-            <AlertDescription>{alert.description}</AlertDescription>
-            <View style={styles.actions}>
-              {alert.variant === 'destructive' ? (
-                <Button size="sm" variant="destructive" onPress={() => onRespond(alert)}>
-                  Respond Now
-                </Button>
-              ) : null}
-              {alert.nurseName ? (
-                <Button size="sm" variant="outline" onPress={() => onNotifyNurse(alert)}>
-                  Notify Nurse
-                </Button>
-              ) : null}
+    <>
+      <Card>
+        <CardContent style={styles.summary}>
+          <View style={styles.titleRow}>
+            <AlertTriangle size={20} color={Colors.destructive} />
+            <Text style={styles.summaryTitle}>Patient Safety Alerts</Text>
+            <Badge variant="destructive">{alerts.length}</Badge>
+          </View>
+          <Button size="sm" variant="outline" onPress={() => setOpen(true)}>
+            View All Alerts
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* onRequestClose covers Escape on web and the back button on Android. */}
+      <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
+        <Pressable style={styles.backdrop} onPress={close}>
+          <Pressable style={[styles.dialog, Shadows.xl]} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.dialogHeader}>
+              <View style={styles.titleRow}>
+                <AlertTriangle size={20} color={Colors.destructive} />
+                <Text style={styles.dialogTitle}>Patient Safety Alerts</Text>
+                <Badge variant="destructive">{alerts.length}</Badge>
+              </View>
+              <Pressable onPress={close} hitSlop={8} accessibilityRole="button" accessibilityLabel="Close alerts">
+                <X size={20} color={Colors.mutedForeground} />
+              </Pressable>
             </View>
-          </Alert>
-        ))}
-      </CardContent>
-    </Card>
+            <Text style={styles.dialogSubtitle}>High-priority alerts requiring immediate attention</Text>
+            <ScrollView style={styles.scroll} contentContainerStyle={styles.list}>
+              {alerts.map((alert) => (
+                <Alert key={alert.key} variant={alert.variant} style={styles.alert}>
+                  <AlertTitle>{alert.title}</AlertTitle>
+                  <AlertDescription>{alert.description}</AlertDescription>
+                  {alert.patient && alert.nurseName ? <Text style={styles.nurse}>Assigned nurse: {alert.nurseName}</Text> : null}
+                  <View style={styles.actions}>
+                    {alert.variant === 'destructive' ? (
+                      // Respond Now opens the assign form, so get this pop-up out of its way.
+                      <Button size="sm" variant="destructive" onPress={() => { close(); onRespond(alert); }}>
+                        Respond Now
+                      </Button>
+                    ) : null}
+                    {alert.nurseName ? (
+                      <Button size="sm" variant="outline" onPress={() => onNotifyNurse(alert)}>
+                        Notify Nurse
+                      </Button>
+                    ) : null}
+                  </View>
+                </Alert>
+              ))}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  list: { gap: 14, paddingTop: 4 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 },
+  summary: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingTop: 16,
+  },
+  summaryTitle: { fontSize: 16, fontWeight: '700', color: Colors.foreground },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 16 },
+  dialog: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    padding: 20,
+    width: '100%',
+    maxWidth: 720,
+    maxHeight: '85%',
+  },
+  dialogHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  dialogTitle: { fontSize: 18, fontWeight: '700', color: Colors.foreground },
+  dialogSubtitle: { fontSize: 13, color: Colors.mutedForeground, marginTop: 2, marginBottom: 12 },
+  scroll: { flexGrow: 0, flexShrink: 1 },
+  list: { gap: 14, paddingBottom: 4 },
+  nurse: { fontSize: 12, color: Colors.mutedForeground, marginTop: 6 },
   alert: { padding: 16 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
   emptyBar: {

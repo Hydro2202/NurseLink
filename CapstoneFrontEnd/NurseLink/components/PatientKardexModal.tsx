@@ -41,6 +41,7 @@ import { assessRiskLevel } from '../utils/riskLevel';
 import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
 import { sanitizeName } from '../utils/textSanitize';
 import { KardexLabsAndMedications } from './KardexLabsAndMedications';
+import { VitalsScheduleCard } from './VitalsScheduleCard';
 import { RiskBadge } from './RiskBadge';
 
 export type PatientKardexForm = {
@@ -456,7 +457,8 @@ export function PatientKardexModal({
                   required
                   value={form.admissionDate}
                   onChange={(v) => setField('admissionDate', v)}
-                  maxDate={todayIso()}
+                  minDate={todayIso()}
+                  helperText="Today or later"
                 />
               </View>
               <View style={[styles.field, styles.colThird]}>
@@ -592,6 +594,8 @@ export function PatientKardexModal({
 
             {mode === 'edit' && patient ? (
               <>
+                <View style={styles.groupDivider} />
+                <VitalsScheduleCard patientId={patient.id} patientName={patient.name} />
                 <View style={styles.groupDivider} />
                 <KardexLabsAndMedications patientId={patient.id} />
               </>

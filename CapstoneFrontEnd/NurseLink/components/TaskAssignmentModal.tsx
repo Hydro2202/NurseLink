@@ -19,6 +19,7 @@ import { createTask, createAssignment, fetchNurses, ApiError } from '../services
 import type { Nurse, Patient } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 import { PRESENCE_DOT_EMOJI, sortByPresence } from '../utils/presence';
+import { formatTime12 } from '../utils/time';
 
 interface TaskAssignmentModalProps {
   open: boolean;
@@ -210,7 +211,7 @@ export function TaskAssignmentModal({
                   </View>
                   <View style={styles.reviewRow}>
                     <Text style={styles.reviewLabel}>Due Time</Text>
-                    <Text style={styles.reviewValue}>{dueTime}</Text>
+                    <Text style={styles.reviewValue}>{formatTime12(dueTime)}</Text>
                   </View>
                   <View style={styles.reviewDivider} />
                   <View style={styles.reviewRowHighlight}>
@@ -297,6 +298,8 @@ export function TaskAssignmentModal({
                   required
                   value={dueDate}
                   onChange={setDueDate}
+                  minDate={todayIso()}
+                  helperText="Today or later"
                 />
                 <TimePicker
                   style={{ flex: 1 }}

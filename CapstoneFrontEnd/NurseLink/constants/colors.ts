@@ -63,8 +63,18 @@ export const Colors = {
 
   info: '#06B6D4',
   infoLight: '#CFFAFE',
+  teal50: '#F0FDFA',
+  teal100: '#CCFBF1',
   teal600: '#0D9488',
   teal700: '#0F766E',
+  // Cool clinical accents (Quick Actions etc.): stay inside the light-blue
+  // brand family while letting each action read as distinct.
+  sky50: '#F0F9FF',
+  sky100: '#E0F2FE',
+  sky600: '#0284C7',
+  indigo50: '#EEF2FF',
+  indigo100: '#E0E7FF',
+  indigo600: '#4F46E5',
 
   muted: '#F1F5F9',
   mutedForeground: '#64748B',

@@ -30,6 +30,9 @@ import type {
   PatientVisit,
   Task,
   WorkloadData,
+  TaskHistoryEntry,
+  MyPatientFolder,
+  VitalsScheduleResponse,
 } from '../types/domain';
 
 /**
@@ -724,6 +727,18 @@ export async function deletePatient(patientCode: string): Promise<void> {
 
 /** Head-nurse-only. Notifies the patient's assigned nurse (resolved
  * server-side) via the real notification inbox — not a local-only toast. */
+/** "Respond Now": emergency popup + sound to the assigned nurse, everyone on
+ * duty in the patient's department, and the head nurses. */
+export async function sendEmergencyAlert(
+  patientCode: string,
+  message?: string
+): Promise<{ detail: string; notified: number; names: string[] }> {
+  return apiRequest(`/patients/${patientCode}/emergency/`, {
+    method: 'POST',
+    body: message ? { message } : {},
+  });
+}
+
 export async function notifyPatientNurse(patientCode: string, message?: string): Promise<{ detail: string }> {
   return apiRequest<{ detail: string }>(`/patients/${patientCode}/notify-nurse/`, {
     method: 'POST',
@@ -799,9 +814,11 @@ export async function fetchTasks(options?: {
   status?: string;
   patientId?: string;
   search?: string;
+  taskType?: string;
 }): Promise<Task[]> {
   const params = new URLSearchParams();
   if (options?.mine) params.set('mine', 'true');
+  if (options?.taskType) params.set('taskType', options.taskType);
   if (options?.assignedTo) params.set('assignedTo', options.assignedTo);
   if (options?.status) params.set('status', options.status);
   if (options?.patientId) params.set('patientId', options.patientId);
@@ -871,8 +888,59 @@ export async function updateDoctor(id: number | string, data: Partial<Doctor>): 
   return apiRequest<Doctor>(`/doctors/${id}/`, { method: 'PATCH', body: data });
 }
 
-export async function completeTask(taskId: string): Promise<Task> {
-  return apiRequest<Task>(`/tasks/${taskId}/complete/`, { method: 'POST' });
+/** Done: completes the task with the nurse's remarks (required). 409 if it
+ * was already completed — the server never completes a task twice. */
+export async function completeTask(taskId: string, remarks: string): Promise<Task> {
+  return apiRequest<Task>(`/tasks/${taskId}/complete/`, { method: 'POST', body: { remarks } });
+}
+
+/** Corrects a completed task's remarks; the old version stays in its history. */
+export async function amendTaskRemarks(taskId: string, remarks: string): Promise<Task> {
+  return apiRequest<Task>(`/tasks/${taskId}/amend-remarks/`, { method: 'POST', body: { remarks } });
+}
+
+export async function fetchTaskHistory(options?: {
+  patientId?: string;
+  taskType?: string;
+  status?: string;
+  event?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  q?: string;
+  mine?: boolean;
+}): Promise<TaskHistoryEntry[]> {
+  const params = new URLSearchParams();
+  Object.entries(options || {}).forEach(([key, value]) => {
+    if (value === true) params.set(key, 'true');
+    else if (typeof value === 'string' && value) params.set(key, value);
+  });
+  const query = params.toString() ? `?${params}` : '';
+  return apiRequest<TaskHistoryEntry[]>(`/tasks/history/${query}`);
+}
+
+export async function fetchMyPatientFolders(): Promise<MyPatientFolder[]> {
+  return apiRequest<MyPatientFolder[]>('/tasks/my-patients/');
+}
+
+export async function fetchVitalsSchedule(patientCode: string): Promise<VitalsScheduleResponse> {
+  return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`);
+}
+
+export async function saveVitalsSchedule(
+  patientCode: string,
+  data: { frequencyHours: number; startAt?: string; basis?: string; reason?: string }
+): Promise<VitalsScheduleResponse> {
+  return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`, {
+    method: 'POST',
+    body: data,
+  });
+}
+
+export async function stopVitalsSchedule(patientCode: string, reason?: string): Promise<VitalsScheduleResponse> {
+  return apiRequest<VitalsScheduleResponse>(`/patients/${patientCode}/vitals-schedule/`, {
+    method: 'DELETE',
+    body: reason ? { reason } : undefined,
+  });
 }
 
 export async function fetchHandovers(options?: { status?: string }): Promise<HandoverNote[]> {
@@ -1529,19 +1597,92 @@ export async function deleteAdminRecord(type: AdminRecordType, id: string | numb
   await apiRequest(`/admin/records/${type}/${encodeURIComponent(String(id))}/`, { method: 'DELETE' });
 }
 
+export type AdminAuditAction =
+  | 'view' | 'create' | 'update' | 'delete' | 'approve' | 'reject' | 'deactivate'
+  | 'reactivate' | 'role_change' | 'password_reset' | 'unlock' | 'print';
+
+export type AdminAuditCategory = 'view' | 'change' | 'decision' | 'print';
+
 export interface AdminAuditEntry {
   id: number;
+  actorId?: number | null;
   actorName: string;
-  action: 'update' | 'delete';
+  actorRole?: string;
+  action: AdminAuditAction;
+  actionLabel?: string;
+  category?: AdminAuditCategory;
   recordType: string;
   recordId: string;
   recordLabel: string;
-  changes: Record<string, unknown>;
+  summary?: string;
+  status?: 'success' | 'failure' | 'requested';
+  requestId?: string;
+  /** Only on the full entry (fetchAdminAuditEntry) and the dashboard list. */
+  changes?: Record<string, unknown>;
   createdAt: string;
 }
 
 export async function fetchAdminAuditLog(limit = 20): Promise<AdminAuditEntry[]> {
   return apiRequest<AdminAuditEntry[]>(`/admin/audit-log/?limit=${limit}`);
+}
+
+export interface AdminAuditQuery {
+  actor?: string;
+  action?: string;
+  category?: string;
+  recordType?: string;
+  recordId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  order?: 'newest' | 'oldest';
+  page?: number;
+  pageSize?: number;
+  /** Every match (up to 5000) — for printing the full filtered report. */
+  all?: boolean;
+}
+
+export interface AdminAuditPage {
+  count: number;
+  page: number;
+  pageSize: number;
+  results: AdminAuditEntry[];
+}
+
+export async function fetchAdminAuditPage(query: AdminAuditQuery): Promise<AdminAuditPage> {
+  const params = new URLSearchParams();
+  Object.entries(query).forEach(([key, value]) => {
+    if (value === undefined || value === '' || value === false) return;
+    params.set(key, String(value));
+  });
+  if (!params.has('page') && !params.has('all')) params.set('page', '1');
+  return apiRequest<AdminAuditPage>(`/admin/audit-log/?${params}`);
+}
+
+export async function fetchAdminAuditEntry(id: number): Promise<AdminAuditEntry> {
+  return apiRequest<AdminAuditEntry>(`/admin/audit-log/${id}/`);
+}
+
+/** Records that an admin asked to print a report (stored as "requested"). */
+export async function logAdminPrint(body: {
+  recordType: string;
+  title: string;
+  count: number;
+  scope: 'list' | 'detail';
+  recordId?: string;
+  label?: string;
+  filters?: Record<string, unknown>;
+}): Promise<void> {
+  await apiRequest('/admin/audit-log/print/', { method: 'POST', body });
+}
+
+/** One record through the admin endpoint — the server logs it as a VIEW. */
+export async function fetchAdminRecord<T = unknown>(type: AdminRecordType, id: string | number): Promise<T> {
+  return apiRequest<T>(`/admin/records/${type}/${encodeURIComponent(String(id))}/`);
+}
+
+/** One account's details — the server logs it as a VIEW. */
+export async function fetchAdminAccount(id: string): Promise<AdminAccount> {
+  return apiRequest<AdminAccount>(`/admin/users/${id}/`);
 }
 
 export async function updateAdminAccount(
@@ -1553,6 +1694,11 @@ export async function updateAdminAccount(
   }>
 ): Promise<AdminAccount> {
   return apiRequest<AdminAccount>(`/admin/users/${id}/`, { method: 'PATCH', body });
+}
+
+/** One registration's details — the server logs it as a VIEW. */
+export async function fetchAdminRegistrationSession(id: number): Promise<AdminRegistrationSession> {
+  return apiRequest<AdminRegistrationSession>(`/admin/registration-sessions/${id}/`);
 }
 
 export async function fetchAdminRegistrationSessions(options?: {

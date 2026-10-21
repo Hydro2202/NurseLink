@@ -10,7 +10,10 @@ loosening each of those, admins get this one endpoint:
                                              effect (names, risk recompute, duty
                                              -> profile sync, ...) still runs
     DELETE /api/admin/records/<type>/<id>/   delete with the normal cascades
-    GET    /api/admin/audit-log/             recent admin edits/deletes
+    GET    /api/admin/records/<type>/<id>/   one record (logged as a VIEW)
+    GET    /api/admin/audit-log/             administrator activity, filtered + paged
+    GET    /api/admin/audit-log/<id>/        one activity entry
+    POST   /api/admin/audit-log/print/       record a print request
 
 Changes land in the same tables every nurse and head nurse reads from, so they
 show up for every account; touching the related patient bumps the live-refresh
@@ -20,7 +23,7 @@ revision so open screens reload.
 import json
 
 from django.db import transaction
-from django.db.models import ProtectedError
+from django.db.models import ProtectedError, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status
@@ -40,6 +43,7 @@ from .models import (
     TaskHandover,
     VitalSigns,
 )
+from . import admin_audit
 from .names import full_name
 from .permissions import IsAdmin
 from .serializers import (
@@ -119,15 +123,19 @@ def _touch_patient(instance):
         Patient.objects.filter(pk=patient_id).update(updated_at=timezone.now())
 
 
-def _log(request, action, record_type, record_id, label, changes):
-    AdminAuditLog.objects.create(
-        actor=request.user,
-        actor_name=full_name(request.user),
-        action=action,
-        record_type=record_type,
-        record_id=str(record_id),
-        record_label=label,
-        changes=changes,
+SUMMARIES = {'update': 'Updated {noun}', 'delete': 'Deleted {noun}', 'view': 'Viewed {noun} details'}
+
+
+def _noun(record_type):
+    if record_type in RECORD_TYPES:
+        return RECORD_TYPES[record_type][3]
+    return {'accounts': 'account', 'registrations': 'registration'}.get(record_type, record_type)
+
+
+def _log(request, action, record_type, record_id, label, changes, summary=''):
+    admin_audit.record(
+        request, action, record_type, record_id, label, changes=changes,
+        summary=summary or SUMMARIES.get(action, action).format(noun=_noun(record_type)),
     )
 
 
@@ -145,7 +153,11 @@ class AdminRecordView(APIView):
         instance, serializer_class = self._get(record_type, record_id)
         if instance is None:
             return Response({'detail': 'Unknown record type.'}, status=status.HTTP_404_NOT_FOUND)
-        return Response(serializer_class(instance, context={'request': request}).data)
+        data = serializer_class(instance, context={'request': request}).data
+        # Logged only once the record was found and served; the details
+        # themselves are not copied into the log.
+        _log(request, 'view', record_type, record_id, _label(instance), {})
+        return Response(data)
 
     def patch(self, request, record_type, record_id):
         instance, serializer_class = self._get(record_type, record_id)
@@ -207,25 +219,135 @@ class AdminRecordView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def _audit_row(row, with_changes=True):
+    data = {
+        'id': row.pk,
+        'actorId': row.actor_id,
+        'actorName': row.actor_name,
+        'actorRole': row.actor_role,
+        'action': row.action,
+        'actionLabel': row.get_action_display(),
+        'category': next(
+            (cat for cat, actions in AdminAuditLog.CATEGORY_ACTIONS.items() if row.action in actions), 'change'
+        ),
+        'recordType': row.record_type,
+        'recordId': row.record_id,
+        'recordLabel': row.record_label,
+        'summary': row.summary,
+        'status': row.status,
+        'requestId': row.request_id,
+        'createdAt': row.created_at.isoformat(),
+    }
+    if with_changes:
+        data['changes'] = row.changes
+    return data
+
+
 class AdminAuditLogView(APIView):
+    """
+    Administrator activity, newest first. Filters: actor (name contains),
+    action, category (view | change | decision | print), recordType,
+    recordId, dateFrom/dateTo (YYYY-MM-DD, hospital time), order
+    (newest | oldest). Paged with page/pageSize (max 200); all=true returns
+    every match (up to 5000) for printing a full report. Admin-only, read-only.
+    """
+
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def get(self, request):
+        from datetime import datetime, time as dtime, timedelta
+        from zoneinfo import ZoneInfo
+
+        from django.conf import settings
+        from django.utils.dateparse import parse_date
+
+        params = request.query_params
+        rows = AdminAuditLog.objects.all()
+        actor = (params.get('actor') or '').strip()
+        if actor:
+            rows = rows.filter(actor_name__icontains=actor)
+        action = params.get('action')
+        if action:
+            rows = rows.filter(action=action)
+        category = params.get('category')
+        if category in AdminAuditLog.CATEGORY_ACTIONS:
+            rows = rows.filter(action__in=AdminAuditLog.CATEGORY_ACTIONS[category])
+        record_type = params.get('recordType')
+        if record_type:
+            rows = rows.filter(record_type=record_type)
+        record_id = (params.get('recordId') or '').strip()
+        if record_id:
+            rows = rows.filter(Q(record_id__iexact=record_id) | Q(record_label__icontains=record_id))
+        tz = ZoneInfo(settings.DUTY_LOCAL_TIMEZONE)
+        for key, lookup, shift in (('dateFrom', 'created_at__gte', 0), ('dateTo', 'created_at__lt', 1)):
+            try:
+                day = parse_date(params.get(key) or '')
+            except ValueError:
+                day = None
+            if params.get(key) and day is None:
+                return Response({key: 'Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+            if day:
+                rows = rows.filter(**{lookup: datetime.combine(day + timedelta(days=shift), dtime.min, tzinfo=tz)})
+        rows = rows.order_by('created_at', 'id') if params.get('order') == 'oldest' else rows.order_by('-created_at', '-id')
+
+        # Without page/pageSize/all this is the original endpoint: a plain list
+        # of the newest entries (?limit=, default 50), as the dashboard reads it.
+        if not ({'page', 'pageSize', 'all'} & set(params.keys())):
+            try:
+                limit = max(1, min(int(params.get('limit', 50)), 200))
+            except ValueError:
+                limit = 50
+            return Response([_audit_row(r) for r in rows[:limit]])
+
+        total = rows.count()
+        if params.get('all') in ('1', 'true', 'True'):
+            return Response({'count': total, 'page': 1, 'pageSize': total, 'results': [_audit_row(r) for r in rows[:5000]]})
         try:
-            limit = max(1, min(int(request.query_params.get('limit', 50)), 200))
+            page_size = max(1, min(int(params.get('pageSize', 25)), 200))
+            page = max(1, int(params.get('page', 1)))
         except ValueError:
-            limit = 50
-        rows = AdminAuditLog.objects.all()[:limit]
-        return Response([
-            {
-                'id': row.pk,
-                'actorName': row.actor_name,
-                'action': row.action,
-                'recordType': row.record_type,
-                'recordId': row.record_id,
-                'recordLabel': row.record_label,
-                'changes': row.changes,
-                'createdAt': row.created_at.isoformat(),
-            }
-            for row in rows
-        ])
+            return Response({'detail': 'page and pageSize must be numbers.'}, status=status.HTTP_400_BAD_REQUEST)
+        start = (page - 1) * page_size
+        return Response({
+            'count': total,
+            'page': page,
+            'pageSize': page_size,
+            'results': [_audit_row(r, with_changes=False) for r in rows[start:start + page_size]],
+        })
+
+
+class AdminAuditLogDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request, entry_id):
+        return Response(_audit_row(get_object_or_404(AdminAuditLog, pk=entry_id)))
+
+
+class AdminPrintLogView(APIView):
+    """
+    Records that an admin asked to print (or export) a report: what, how
+    many records, and the filters in force. The browser can't confirm that
+    paper actually came out, so the entry is stored as status "requested".
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        record_type = str(request.data.get('recordType') or '').strip()[:40]
+        if not record_type:
+            return Response({'recordType': 'Required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            count = max(0, int(request.data.get('count') or 0))
+        except (TypeError, ValueError):
+            count = 0
+        scope = str(request.data.get('scope') or 'list')[:20]
+        filters = request.data.get('filters') if isinstance(request.data.get('filters'), dict) else {}
+        title = str(request.data.get('title') or record_type)[:120]
+        entry = admin_audit.record(
+            request, 'print', record_type, str(request.data.get('recordId') or '')[:60],
+            str(request.data.get('label') or title)[:255],
+            changes={'scope': scope, 'count': count, 'filters': filters, 'title': title},
+            summary=f'Print requested: {title} ({count} record{"" if count == 1 else "s"})',
+            status='requested',
+        )
+        return Response({'id': entry.pk if entry else None}, status=status.HTTP_201_CREATED)

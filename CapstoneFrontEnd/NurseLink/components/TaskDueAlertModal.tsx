@@ -7,6 +7,7 @@ import { Button } from './Button';
 import { useNotifications } from '../contexts/NotificationsContext';
 import { fetchTask } from '../services/api';
 import type { AppNotification, Task } from '../types/domain';
+import { formatDueDateTime as formatDueDateTimeLabel } from '../utils/time';
 
 /**
  * The popup a nurse sees when one of their own tasks is due soon or due now
@@ -29,14 +30,7 @@ const RISK_COLORS: Record<string, string> = {
 };
 
 function formatDueDateTime(task: Task): string {
-  if (!task.dueDate) return task.dueTime || '';
-  const [y, m, d] = task.dueDate.split('-').map(Number);
-  if (!y || !m || !d) return task.dueTime || '';
-  const dateLabel = new Date(y, m - 1, d).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-  });
-  return task.dueTime ? `${dateLabel} · ${task.dueTime}` : dateLabel;
+  return formatDueDateTimeLabel(task.dueDate, task.dueTime);
 }
 
 export function TaskDueAlertModal() {
@@ -109,13 +103,17 @@ export function TaskDueAlertModal() {
     close();
   };
 
+  // A scheduled vital signs check (action path /tasks?openVitals=1) opens
+  // straight into that task's Vital Signs Check-ins.
+  const isVitalsCheck = (current.action?.path || '').includes('openVitals=1');
+
   const openTask = () => {
     const taskId = current.action?.highlightId;
     void markRead(current.id);
     close();
     router.push({
       pathname: '/(app)/tasks' as any,
-      params: taskId ? { highlightId: taskId } : undefined,
+      params: taskId ? { highlightId: taskId, ...(isVitalsCheck ? { openVitals: '1' } : {}) } : undefined,
     });
   };
 
@@ -130,7 +128,9 @@ export function TaskDueAlertModal() {
             <View style={[styles.bellCircle, { backgroundColor: isSoonEvent ? Colors.orange600 : Colors.red600 }]}>
               <Bell size={22} color={Colors.white} />
             </View>
-            <Text style={styles.title}>{isSoonEvent ? 'Task Due Soon' : 'Task Due Now'}</Text>
+            <Text style={styles.title}>
+              {isVitalsCheck ? current.title || 'Vital Signs Check Due' : isSoonEvent ? 'Task Due Soon' : 'Task Due Now'}
+            </Text>
           </View>
 
           <Text style={styles.lead}>{current.message || 'One of your tasks needs attention.'}</Text>
@@ -178,7 +178,7 @@ export function TaskDueAlertModal() {
             </Button>
             <Button onPress={openTask} style={styles.footerBtn}>
               <View style={styles.primaryInner}>
-                <Text style={styles.primaryText}>Open Task</Text>
+                <Text style={styles.primaryText}>{isVitalsCheck ? 'Record Vital Signs' : 'Open Task'}</Text>
                 <ArrowRight size={14} color={Colors.white} />
               </View>
             </Button>

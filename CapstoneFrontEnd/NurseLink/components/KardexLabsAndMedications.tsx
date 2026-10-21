@@ -42,6 +42,7 @@ import {
   ApiError,
 } from '../services/api';
 import type { LabEntry, MedicationOrder, MedicationIntakeEntry, DepartmentVisit, Department, Doctor } from '../types/domain';
+import { formatDateTime12 } from '../utils/time';
 
 interface Props {
   /** The Patient's patient_code — labs/medications are linked to the
@@ -127,7 +128,7 @@ function fmtDateTime(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  return formatDateTime12(d);
 }
 
 /** Combines a DatePicker (ISO date) + TimePicker (24h HH:MM) pair into one

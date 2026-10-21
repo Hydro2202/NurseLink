@@ -5,7 +5,6 @@ import {
   ScrollView,
   StyleSheet,
   useWindowDimensions,
-  Pressable,
   findNodeHandle,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -26,6 +25,7 @@ import {
   BarChart3,
   TrendingUp,
   ArrowRight,
+  BookOpen,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -39,6 +39,7 @@ import {
   fetchAssignments,
   createAssignment,
   notifyPatientNurse,
+  sendEmergencyAlert,
   notifyTaskNurse,
   ApiError,
 } from '../../services/api';
@@ -46,13 +47,14 @@ import { useLiveRefresh } from '../../contexts/LiveContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { RiskBadge } from '../../components/RiskBadge';
-import { Alert, AlertDescription, AlertTitle } from '../../components/Alert';
 import { Progress } from '../../components/Progress';
 import { Button } from '../../components/Button';
 import { AssignPatientModal, type AssignPatientPrefill } from '../../components/AssignPatientModal';
 import { SafetyAlertsSection, type SafetyAlert } from '../../components/dashboard/SafetyAlertsSection';
-import { SectionNav, type DashboardSection } from '../../components/dashboard/SectionNav';
-import { Colors, Shadows, Radius } from '../../constants/colors';
+import { OverdueBanner } from '../../components/dashboard/OverdueBanner';
+import { QuickActions } from '../../components/dashboard/QuickActions';
+import { Colors, Radius } from '../../constants/colors';
+import { formatTime12 } from '../../utils/time';
 
 function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
   return {
@@ -72,11 +74,6 @@ function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
   };
 }
 
-const DASHBOARD_SECTIONS: DashboardSection[] = [
-  { key: 'alerts', label: 'Alerts' },
-  { key: 'overview', label: 'Overview' },
-];
-
 // Same local-calendar-day helpers as my-duty.tsx — never toISOString(),
 // which converts to UTC and can shift the day.
 function pad(n: number) {
@@ -94,10 +91,7 @@ function addDays(iso: string, days: number) {
   return toIsoLocal(d);
 }
 function formatTime(hhmm: string) {
-  const [h, m] = hhmm.split(':').map(Number);
-  const period = h >= 12 ? 'PM' : 'AM';
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${pad(m)} ${period}`;
+  return formatTime12(hhmm);
 }
 function combine(dateIso: string, hhmm: string): Date {
   const [y, mo, da] = dateIso.split('-').map(Number);
@@ -179,7 +173,6 @@ export default function DashboardPage() {
   const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [assignPrefill, setAssignPrefill] = useState<AssignPatientPrefill | null>(null);
-  const [activeSection, setActiveSection] = useState<string>('alerts');
   const sectionRefs = useRef<Record<string, View | null>>({});
   const scrollRef = useRef<ScrollView>(null);
 
@@ -248,8 +241,9 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, [isStaffNurse]);
 
+  // Deep links (?section=...) from notifications still jump to a section;
+  // the on-page tab bar was removed.
   const scrollToSection = useCallback((key: string) => {
-    setActiveSection(key);
     const node = sectionRefs.current[key];
     const scrollNode = findNodeHandle(scrollRef.current);
     if (!node || scrollNode === null) return;
@@ -366,6 +360,15 @@ export default function DashboardPage() {
   const handleRespondToAlert = (alert: SafetyAlert) => {
     if (alert.variant === 'destructive' && alert.patient) {
       const p = alert.patient;
+      // Alert the responders right away (popup + sound on their devices),
+      // then open the assign form as before.
+      sendEmergencyAlert(p.id, alert.description)
+        .then((result) => toast.success('Emergency alert sent', { description: result.detail }))
+        .catch((error) =>
+          toast.error('Could not send the emergency alert', {
+            description: error instanceof ApiError ? error.message : 'Please try again.',
+          })
+        );
       setAssignPrefill({
         patientId: p.id,
         patientName: p.name,
@@ -432,11 +435,11 @@ export default function DashboardPage() {
     [workloadData]
   );
 
-  const timeString = currentTime.toLocaleTimeString([], {
+  const timeString = currentTime.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
   });
-  const fullTimeString = currentTime.toLocaleTimeString();
+  const fullTimeString = currentTime.toLocaleTimeString('en-US', { hour12: true });
 
   if (isStaffNurse) {
     return (
@@ -459,13 +462,11 @@ export default function DashboardPage() {
 
         <View style={styles.body}>
           {overdueTasks > 0 ? (
-            <Alert variant="destructive" style={styles.alert}>
-              <AlertTitle>Urgent Attention Required</AlertTitle>
-              <AlertDescription>
-                You have {overdueTasks} overdue task{overdueTasks > 1 ? 's' : ''} that need immediate
-                attention.
-              </AlertDescription>
-            </Alert>
+            <OverdueBanner
+              count={overdueTasks}
+              message={`You have ${overdueTasks} overdue task${overdueTasks > 1 ? 's' : ''} that need immediate attention.`}
+              onView={() => router.push({ pathname: '/(app)/tasks', params: { filter: 'overdue' } } as any)}
+            />
           ) : null}
 
           <View style={styles.statsGrid}>
@@ -547,36 +548,30 @@ export default function DashboardPage() {
           <View>
             <Text style={styles.sectionTitle}>Quick Actions</Text>
             <Text style={styles.sectionSub}>Common tasks and shortcuts</Text>
-            <View style={styles.quickGrid}>
-              <Pressable
-                style={[styles.quickBtn, { backgroundColor: Colors.green600 }]}
-                onPress={() => router.push('/(app)/tasks' as any)}
-              >
-                <ClipboardList size={20} color={Colors.white} />
-                <Text style={styles.quickBtnText}>Tasks</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.quickBtn, { backgroundColor: Colors.purple600 }]}
-                onPress={() => router.push('/(app)/handover' as any)}
-              >
-                <FileText size={20} color={Colors.white} />
-                <Text style={styles.quickBtnText}>Referral</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.quickBtn, { backgroundColor: Colors.orange600 }]}
-                onPress={() => router.push('/(app)/charting' as any)}
-              >
-                <Activity size={20} color={Colors.white} />
-                <Text style={styles.quickBtnText}>Charting</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.quickBtn, { backgroundColor: Colors.teal600 }]}
-                onPress={() => router.push('/(app)/kardex' as any)}
-              >
-                <ClipboardList size={20} color={Colors.white} />
-                <Text style={styles.quickBtnText}>Kardex</Text>
-              </Pressable>
-            </View>
+            <QuickActions
+              actions={[
+                {
+                  key: 'tasks', label: 'Tasks', description: 'Your assigned care tasks',
+                  icon: ClipboardList, tint: Colors.blue50, accent: Colors.blue600,
+                  onPress: () => router.push('/(app)/tasks' as any),
+                },
+                {
+                  key: 'referral', label: 'Referral', description: 'Send or review SBAR referrals',
+                  icon: FileText, tint: Colors.gray100, accent: Colors.gray600,
+                  onPress: () => router.push('/(app)/handover' as any),
+                },
+                {
+                  key: 'charting', label: 'Charting', description: 'Write a nursing note',
+                  icon: Activity, tint: Colors.green50, accent: Colors.green600,
+                  onPress: () => router.push('/(app)/charting' as any),
+                },
+                {
+                  key: 'kardex', label: 'Kardex', description: 'Admit or update a patient',
+                  icon: BookOpen, tint: Colors.yellow50, accent: Colors.yellow700,
+                  onPress: () => router.push('/(app)/kardex' as any),
+                },
+              ]}
+            />
           </View>
 
           <Card>
@@ -735,7 +730,7 @@ export default function DashboardPage() {
               <CardDescription>Next scheduled tasks in your shift</CardDescription>
             </CardHeader>
             <CardContent style={styles.gap12}>
-              {tasks.slice(0, 4).map((task) => (
+              {tasks.filter((t) => t.status !== 'completed').slice(0, 4).map((task) => (
                 <View
                   key={task.id}
                   style={[
@@ -758,7 +753,7 @@ export default function DashboardPage() {
                         </Badge>
                         <View style={styles.dueRow}>
                           <Clock size={12} color={Colors.mutedForeground} />
-                          <Text style={styles.dueText}>{task.dueTime}</Text>
+                          <Text style={styles.dueText}>{formatTime12(task.dueTime)}</Text>
                         </View>
                       </View>
                       <Text style={styles.taskTitle}>{task.title}</Text>
@@ -793,7 +788,6 @@ export default function DashboardPage() {
   // and nurse workload all live there now — see analytics.tsx).
   return (
     <View style={styles.hnRoot}>
-      <SectionNav sections={DASHBOARD_SECTIONS} activeKey={activeSection} onSelect={scrollToSection} />
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
@@ -1114,27 +1108,6 @@ const styles = StyleSheet.create({
     color: Colors.gray500,
     marginBottom: 12,
     marginTop: 2,
-  },
-  quickGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  quickBtn: {
-    width: '47%',
-    flexGrow: 1,
-    minWidth: 140,
-    height: 80,
-    borderRadius: Radius.xl,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    ...Shadows.sm,
-  },
-  quickBtnText: {
-    color: Colors.white,
-    fontSize: 12,
-    fontWeight: '600',
   },
   cardTitleRow: {
     flexDirection: 'row',

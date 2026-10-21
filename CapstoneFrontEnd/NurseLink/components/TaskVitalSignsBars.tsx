@@ -28,6 +28,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { fetchVitalReadings, createVitalSigns, updateVitalSigns, ApiError } from '../services/api';
 import type { AdminVitalReading } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
+import { formatClock } from '../utils/time';
 
 // Accepts "8:00 AM", "08:00 am", "12:30 PM" — the same light-touch,
 // free-text time convention Task.dueTime already uses elsewhere in this
@@ -39,6 +40,12 @@ const TIME_PATTERN = /^(0?[1-9]|1[0-2]):([0-5]\d)\s?([AaPp][Mm])$/;
 interface TaskVitalSignsBarsProps {
   taskId: string;
   patientId: string;
+  /** How many logged readings unlock the gated checklist step — 1 for a
+   * task generated from the Kardex-interval schedule, 2 for a
+   * free-standing one (see Task.vital_readings_required on the backend).
+   * Surfaced here too so the hint text and the gate agree on the same
+   * number. Defaults to 1 — the common case. */
+  readingsRequired?: number;
   onReadingsChange?: (count: number) => void;
 }
 
@@ -84,7 +91,7 @@ function isAbnormal(field: string, value: string): boolean {
 function formatTime(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return formatClock(d);
 }
 
 function formatDate(iso: string) {
@@ -202,7 +209,12 @@ const STATUS_DOTS: { key: string; label: string }[] = [
   { key: 'painScale', label: 'Pain' },
 ];
 
-export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: TaskVitalSignsBarsProps) {
+export function TaskVitalSignsBars({
+  taskId,
+  patientId,
+  readingsRequired = 1,
+  onReadingsChange,
+}: TaskVitalSignsBarsProps) {
   const toast = useToast();
   const [readings, setReadings] = useState<AdminVitalReading[]>([]);
   const [loading, setLoading] = useState(true);
@@ -444,7 +456,14 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
     );
   }
 
-  const reading = readings.length > 0 ? readings[readings.length - 1] : null;
+  // Most tasks only ever need 1 (the common, Kardex-scheduled case); a
+  // free-standing vital signs task needs 2 (see readingsRequired above).
+  // Rendering every already-recorded reading as its own card, not just the
+  // latest, is what makes the rare 2-required case show progress instead
+  // of silently replacing the first reading's card with the second's.
+  const required = Math.max(readingsRequired, 1);
+  const isComplete = readings.length >= required;
+  const latestReading = readings.length > 0 ? readings[readings.length - 1] : null;
   const newestFirstReadings = [...readings].reverse();
 
   return (
@@ -454,13 +473,15 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
         <View style={styles.headerRow}>
           <HeartPulse size={15} color={Colors.red600} />
           <Text style={styles.header}>Vital Signs Monitoring</Text>
-          <Text style={reading ? styles.statusBadgeDone : styles.statusBadgeNone}>
-            {reading ? 'Recorded' : 'Not Recorded'}
+          <Text style={isComplete ? styles.statusBadgeDone : styles.statusBadgeNone}>
+            {isComplete ? 'Recorded' : required > 1 ? `${readings.length}/${required} Recorded` : 'Not Recorded'}
           </Text>
         </View>
-        {!reading ? (
+        {!isComplete ? (
           <Text style={styles.gateHint}>
-            Record the vital signs reading before this task&apos;s checklist can be marked complete.
+            {required > 1
+              ? `Record ${required} vital sign readings (${readings.length} so far) before this task's checklist can be marked complete.`
+              : "Record the vital signs reading before this task's checklist can be marked complete."}
           </Text>
         ) : (
           <Text style={styles.gateHintMet}>
@@ -469,10 +490,10 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
         )}
 
       <View style={styles.bars}>
-        {reading ? (
-          <View style={styles.barFilled}>
+        {readings.map((r) => (
+          <View key={r.id} style={styles.barFilled}>
             <View style={styles.barFilledTopRow}>
-              <Pressable onPress={() => openEditReading(reading)} hitSlop={6} style={styles.editReadingBtn}>
+              <Pressable onPress={() => openEditReading(r)} hitSlop={6} style={styles.editReadingBtn}>
                 <Pencil size={12} color={Colors.gray500} />
                 <Text style={styles.editReadingBtnText}>Edit</Text>
               </Pressable>
@@ -480,25 +501,27 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
             <View style={styles.barFilledHeader}>
               <Clock size={13} color={Colors.green700} />
               <Text style={styles.barFilledTime}>
-                {formatDate(reading.recordedAt)} · {formatTime(reading.recordedAt)}
+                {formatDate(r.recordedAt)} · {formatTime(r.recordedAt)}
               </Text>
               <Text style={styles.statusBadgeDone}>Recorded ✓</Text>
-              {reading.recordedByName ? (
-                <Text style={styles.barFilledBy}>by {reading.recordedByName}</Text>
+              {r.recordedByName ? (
+                <Text style={styles.barFilledBy}>by {r.recordedByName}</Text>
               ) : null}
             </View>
             <Text style={styles.barFilledSummary}>
-              {reading.temperature != null ? `${reading.temperature}°C` : '—'}
+              {r.temperature != null ? `${r.temperature}°C` : '—'}
               {' · '}
-              {reading.heartRate != null ? `${reading.heartRate}bpm` : '—'}
+              {r.heartRate != null ? `${r.heartRate}bpm` : '—'}
               {' · '}
-              {reading.bloodPressure || '—'}
+              {r.bloodPressure || '—'}
               {' · '}
-              {reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'}
+              {r.oxygenSaturation != null ? `${r.oxygenSaturation}%` : '—'}
             </Text>
-            {reading.edited ? <Text style={styles.editedTag}>Edited</Text> : null}
+            {r.edited ? <Text style={styles.editedTag}>Edited</Text> : null}
           </View>
-        ) : recording ? (
+        ))}
+        {!isComplete ? (
+          recording ? (
           <View style={[styles.entryPanel, Shadows.sm]}>
             <View style={styles.statusDotsRow}>
               {STATUS_DOTS.map((dot) => {
@@ -657,12 +680,13 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
               </Button>
             </View>
           </View>
-        ) : (
-          <Pressable onPress={openVitalsForm} style={styles.barEmpty}>
-            <HeartPulse size={13} color={Colors.blue600} />
-            <Text style={styles.barEmptyText}>Tap to record vital signs</Text>
-          </Pressable>
-        )}
+          ) : (
+            <Pressable onPress={openVitalsForm} style={styles.barEmpty}>
+              <HeartPulse size={13} color={Colors.blue600} />
+              <Text style={styles.barEmptyText}>Tap to record vital signs</Text>
+            </Pressable>
+          )
+        ) : null}
         </View>
       </View>
 
@@ -672,38 +696,38 @@ export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: Task
             <Activity size={14} color={Colors.blue600} />
             <Text style={styles.header}>Latest Vital Signs</Text>
           </View>
-          {reading ? (
+          {latestReading ? (
             <>
               <Text style={styles.summaryTime}>
-                {formatDate(reading.recordedAt)} · {formatTime(reading.recordedAt)}
+                {formatDate(latestReading.recordedAt)} · {formatTime(latestReading.recordedAt)}
               </Text>
               <View style={styles.summaryGrid}>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>TEMP</Text>
                   <Text style={styles.summaryCellValue}>
-                    {reading.temperature != null ? `${reading.temperature}°C` : '—'}
+                    {latestReading.temperature != null ? `${latestReading.temperature}°C` : '—'}
                   </Text>
                 </View>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>PULSE</Text>
                   <Text style={styles.summaryCellValue}>
-                    {reading.heartRate != null ? `${reading.heartRate}bpm` : '—'}
+                    {latestReading.heartRate != null ? `${latestReading.heartRate}bpm` : '—'}
                   </Text>
                 </View>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>RESP</Text>
                   <Text style={styles.summaryCellValue}>
-                    {reading.respiratoryRate != null ? `${reading.respiratoryRate}/min` : '—'}
+                    {latestReading.respiratoryRate != null ? `${latestReading.respiratoryRate}/min` : '—'}
                   </Text>
                 </View>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>BP</Text>
-                  <Text style={styles.summaryCellValue}>{reading.bloodPressure || '—'}</Text>
+                  <Text style={styles.summaryCellValue}>{latestReading.bloodPressure || '—'}</Text>
                 </View>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>O2 SAT</Text>
                   <Text style={styles.summaryCellValue}>
-                    {reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'}
+                    {latestReading.oxygenSaturation != null ? `${latestReading.oxygenSaturation}%` : '—'}
                   </Text>
                 </View>
               </View>

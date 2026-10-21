@@ -8,9 +8,8 @@ import {
   ActivityIndicator,
   Modal,
 } from 'react-native';
-import { useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
 import {
-  CheckCircle,
   Clock,
   Edit,
   UserMinus,
@@ -26,6 +25,11 @@ import {
   Lock,
   HeartPulse,
   X,
+  Check,
+  ListChecks,
+  CheckCircle2,
+  History,
+  FolderOpen,
 } from 'lucide-react-native';
 import {
   fetchTasks,
@@ -33,10 +37,14 @@ import {
   createTask,
   updateTask,
   unassignTask,
-  completeTask,
+  fetchMyPatientFolders,
   ApiError,
 } from '../../services/api';
-import type { Task } from '../../types/domain';
+import type { MyPatientFolder, Task } from '../../types/domain';
+import { CompleteTaskDialog } from '../../components/tasks/CompleteTaskDialog';
+import { TaskHistoryView } from '../../components/tasks/TaskHistoryView';
+import { MyPatientsView } from '../../components/tasks/MyPatientsView';
+import { TaskStatusBadge, TaskTypeBadge, formatDateTime } from '../../components/tasks/taskLabels';
 import { Card, CardContent } from '../../components/Card';
 import { Badge } from '../../components/Badge';
 import { Button } from '../../components/Button';
@@ -49,12 +57,16 @@ import { useToast } from '../../contexts/ToastContext';
 import { useLiveRefresh } from '../../contexts/LiveContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { Colors, Shadows, Radius } from '../../constants/colors';
+import { Pagination, usePagination } from '../../components/Pagination';
+import { formatTime12 } from '../../utils/time';
+import { countTasksByFilter, isTaskPastDue, matchesTaskFilter } from '../../utils/taskFilters';
 
 type SortBy = 'newest' | 'oldest' | 'priority' | 'status';
 
-// One monitoring entry per Vital Signs Check task — recurring checks happen
-// via the next scheduled task, not by repeating entries inside this one.
-const VITALS_READINGS_REQUIRED = 1;
+/** Free-standing vital signs tasks need 2 check-ins; a scheduled check needs 1 (server decides). */
+const readingsRequired = (task: Task) => task.vitalReadingsRequired ?? 2;
+
+type TaskView = 'all' | 'completed' | 'history' | 'patients';
 
 const SORT_OPTIONS = [
   { label: 'Newest', value: 'newest' },
@@ -81,11 +93,7 @@ export function formatDueDate(iso?: string | null): string {
  * admin generic editor) is never flagged — there's nothing reliable to
  * compare against. */
 export function isTaskOverdue(task: Task): boolean {
-  if (task.status === 'completed' || !task.dueDate || !task.dueTime) return false;
-  const [y, m, d] = task.dueDate.split('-').map(Number);
-  const [h, min] = task.dueTime.split(':').map(Number);
-  if (!y || !m || !d || Number.isNaN(h) || Number.isNaN(min)) return false;
-  return new Date(y, m - 1, d, h, min).getTime() < Date.now();
+  return isTaskPastDue(task);
 }
 
 /** "Due in 12 min" (amber) / "Due now" (red) / "Overdue by 25 min" (red) /
@@ -118,7 +126,14 @@ export default function TasksPage() {
     highlightId?: string;
     patientId?: string;
     scrollToPatient?: string;
+    /** Opens on a filter tab, e.g. ?filter=overdue from the dashboard banner. */
+    filter?: string;
+    /** Opens a view: all | completed | history | patients. */
+    view?: string;
+    /** With highlightId: open that task's Vital Signs Check-ins (from a vitals reminder). */
+    openVitals?: string;
   }>();
+  const router = useRouter();
   const toast = useToast();
   const { user } = useAuth();
   const scrollRef = useRef<ScrollView>(null);
@@ -137,7 +152,6 @@ export default function TasksPage() {
   const [unassignDialogOpen, setUnassignDialogOpen] = useState(false);
   const [taskToUnassign, setTaskToUnassign] = useState<string | null>(null);
   const [unassignLoading, setUnassignLoading] = useState(false);
-  const [completeLoading, setCompleteLoading] = useState<string | null>(null);
   const [expandedChecklistId, setExpandedChecklistId] = useState<string | null>(null);
   const [checklistSaving, setChecklistSaving] = useState<string | null>(null);
   // Fetched for every vital_signs task right after the task list loads (see
@@ -146,13 +160,50 @@ export default function TasksPage() {
   const [vitalsReadingCounts, setVitalsReadingCounts] = useState<Record<string, number>>({});
   const [vitalsModalTaskId, setVitalsModalTaskId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [view, setView] = useState<TaskView>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'procedure' | 'referral'>('all');
+  const [folders, setFolders] = useState<MyPatientFolder[]>([]);
+  const [foldersLoading, setFoldersLoading] = useState(true);
+  const [openFolderId, setOpenFolderId] = useState<string | null>(null);
+  const [completingTask, setCompletingTask] = useState<Task | null>(null);
+  // Bumped after a completion so the History view refetches.
+  const [historyKey, setHistoryKey] = useState(0);
+  // "View Overdue Tasks" (and any other ?filter= / ?view= link) opens on that
+  // tab. A param, not initial state: this screen stays mounted between visits.
+  useEffect(() => {
+    const filter = typeof params.filter === 'string' ? params.filter : '';
+    const viewParam = typeof params.view === 'string' ? params.view : '';
+    (() => {
+      if (filter === 'completed' || viewParam === 'completed') {
+        setView('completed');
+        setSearchQuery('');
+      } else if (['all', 'high', 'medium', 'low', 'overdue'].includes(filter)) {
+        setView('all');
+        setSelectedTab(filter);
+        setSearchQuery('');
+      } else if (viewParam === 'history' || viewParam === 'patients' || viewParam === 'all') {
+        setView(viewParam);
+      }
+    })();
+  }, [params.filter, params.view]);
   // Default view order: High -> Medium -> Low risk, overdue first within
   // each, then soonest due date/time, completed last — see the 'priority'
   // branch of filteredTasks' sort below.
   const [sortBy, setSortBy] = useState<SortBy>('priority');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
 
+  const loadFolders = useCallback(async () => {
+    try {
+      setFolders(await fetchMyPatientFolders());
+    } catch {
+      // The task list itself still works; the folder view shows its empty state.
+    } finally {
+      setFoldersLoading(false);
+    }
+  }, []);
+
   const loadTasks = useCallback(async () => {
+    void loadFolders();
     try {
       const data = await fetchTasks({ mine: true });
       setTasks(data);
@@ -183,7 +234,7 @@ export default function TasksPage() {
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [toast, loadFolders]);
 
   // Refetch whenever the screen comes back into view, not just on mount.
   // expo-router keeps screens mounted, so a nurse who acknowledges a handover
@@ -212,13 +263,18 @@ export default function TasksPage() {
           : undefined;
     const patientId = typeof params.patientId === 'string' ? params.patientId : undefined;
     const scrollToPatient = params.scrollToPatient === 'true' || params.scrollToPatient === '1';
-    if (!taskId && !(scrollToPatient && patientId)) return;
+    const openVitals = params.openVitals === '1' || params.openVitals === 'true';
+    if (!taskId && !(scrollToPatient && patientId)) {
+      // No link pending (or it was consumed below): the same link may be followed again later.
+      handledDeepLinkRef.current = null;
+      return;
+    }
 
     // Handle each distinct deep link exactly once — this effect also reruns
     // on every unrelated live `tasks` refresh (see the deps list), which
     // would otherwise re-show the "not found" toast or re-highlight the
     // task repeatedly for as long as the nurse stays on this screen.
-    const linkKey = `${taskId ?? ''}|${scrollToPatient ? patientId ?? '' : ''}`;
+    const linkKey = `${taskId ?? ''}|${scrollToPatient ? patientId ?? '' : ''}|${openVitals ? 'vitals' : ''}`;
     if (loading || handledDeepLinkRef.current === linkKey) return;
 
     // A leftover search query or status tab from an earlier visit to this
@@ -227,6 +283,7 @@ export default function TasksPage() {
     // supposed to surface.
     setSearchQuery('');
     setSelectedTab('all');
+    setTypeFilter('all');
 
     const targetId = taskId || tasks.find((task) => task.patientId === patientId)?.id;
     // get_queryset() already scopes the fetched list to tasks this nurse can
@@ -242,8 +299,17 @@ export default function TasksPage() {
 
     handledDeepLinkRef.current = linkKey;
     (() => {
-      setHighlightedTaskId(targetId);
+      // A finished task lives under Completed, an open one under All Tasks.
+      setView(tasks.find((task) => task.id === targetId)?.status === 'completed' ? 'completed' : 'all');
+      if (!openVitals) setHighlightedTaskId(targetId);
     })();
+    if (openVitals) {
+      // A vital signs reminder: open that task's Check-ins straight away, then
+      // consume the link so tapping the same reminder again reopens it.
+      (() => setVitalsModalTaskId(targetId))();
+      router.setParams({ openVitals: undefined, highlightId: undefined, taskId: undefined });
+      return;
+    }
     let attempts = 0;
     const scrollTimer = setInterval(() => {
       attempts += 1;
@@ -263,7 +329,7 @@ export default function TasksPage() {
     // toast is stable (useToast's own context value); omitting it keeps this
     // from re-running on every unrelated render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.taskId, params.highlightId, params.patientId, params.scrollToPatient, tasks, loading]);
+  }, [params.taskId, params.highlightId, params.patientId, params.scrollToPatient, params.openVitals, tasks, loading]);
 
   const handleAddTask = () => {
     setSelectedTask(null);
@@ -286,6 +352,7 @@ export default function TasksPage() {
           title: taskData.title || '',
           description: taskData.description || '',
           priority: taskData.priority || 'medium',
+          taskType: taskData.taskType || 'procedure',
           dueDate: taskData.dueDate || '',
           dueTime: taskData.dueTime || '',
           status: 'pending',
@@ -343,35 +410,31 @@ export default function TasksPage() {
     }
   };
 
-  const handleCompleteTask = async (task: Task) => {
-    setCompleteLoading(task.id);
-    try {
-      const updated = await completeTask(task.id);
-      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
-      toast.success('Task completed!', {
-        description: `"${task.title}" has been marked as complete.`,
-      });
-    } catch (error) {
-      toast.error('Failed to complete task', {
-        description: error instanceof ApiError ? error.message : 'Please try again.',
-      });
-    } finally {
-      setCompleteLoading(null);
-    }
+  // Done opens the remarks dialog; the task only moves to Completed once the
+  // server has saved the completion (see CompleteTaskDialog).
+  const handleCompleteTask = (task: Task) => {
+    if (task.status === 'completed') return;
+    setCompletingTask(task);
+  };
+
+  const handleTaskCompleted = (updated: Task) => {
+    setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+    setCompletingTask(null);
+    setHistoryKey((k) => k + 1);
+    void loadFolders();
+    toast.success('Task completed', {
+      description: `"${updated.title}" was saved with your remarks and moved to Completed.`,
+    });
   };
 
   const handleToggleChecklistItem = async (task: Task, index: number) => {
     const isLastItem = index === task.checklist.length - 1;
     const isVitalsTask = task.category === 'vital_signs';
     const readingCount = vitalsReadingCounts[task.id] ?? 0;
-    if (
-      isVitalsTask &&
-      isLastItem &&
-      !task.checklist[index].done &&
-      readingCount < VITALS_READINGS_REQUIRED
-    ) {
+    const required = readingsRequired(task);
+    if (isVitalsTask && isLastItem && !task.checklist[index].done && readingCount < required) {
       toast.error('Vital signs not recorded yet', {
-        description: 'Record the vital signs reading below before completing this step.',
+        description: `Record at least ${required} vital sign reading${required > 1 ? 's' : ''} (heart icon) before completing this step.`,
       });
       return;
     }
@@ -399,23 +462,30 @@ export default function TasksPage() {
 
   const vitalsModalTask = tasks.find((t) => t.id === vitalsModalTaskId) || null;
 
-  const filteredTasks = tasks
+  const unfinishedTasks = tasks.filter((t) => t.status !== 'completed');
+  const completedTasks = tasks.filter((t) => t.status === 'completed');
+  const matchesType = (task: Task) => typeFilter === 'all' || (task.taskType || 'procedure') === typeFilter;
+
+  // All Tasks = unfinished only; Completed = finished only.
+  const filteredTasks = (view === 'completed' ? completedTasks : unfinishedTasks)
     .filter((task) => {
+      const q = searchQuery.toLowerCase();
       const matchesSearch =
         searchQuery === '' ||
-        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        task.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        task.patientName.toLowerCase().includes(searchQuery.toLowerCase());
+        task.title.toLowerCase().includes(q) ||
+        task.description.toLowerCase().includes(q) ||
+        task.patientName.toLowerCase().includes(q) ||
+        (task.completionRemarks || '').toLowerCase().includes(q);
+      if (!matchesSearch || !matchesType(task)) return false;
+      if (view === 'completed') return true;
 
-      if (selectedTab === 'all') return matchesSearch;
-      if (selectedTab === 'high') return matchesSearch && task.priority === 'high';
-      if (selectedTab === 'medium') return matchesSearch && task.priority === 'medium';
-      if (selectedTab === 'low') return matchesSearch && task.priority === 'low';
-      if (selectedTab === 'completed') return matchesSearch && task.status === 'completed';
-      if (selectedTab === 'overdue') return matchesSearch && task.status === 'overdue';
-      return matchesSearch;
+      return matchesTaskFilter(task, selectedTab);
     })
     .sort((a, b) => {
+      if (view === 'completed' && (sortBy === 'newest' || sortBy === 'priority')) {
+        // Most recently completed first.
+        return (b.completedAt || '').localeCompare(a.completedAt || '');
+      }
       if (sortBy === 'newest') {
         return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       }
@@ -482,14 +552,8 @@ export default function TasksPage() {
     }
   };
 
-  const counts = {
-    all: tasks.length,
-    high: tasks.filter((t) => t.priority === 'high').length,
-    medium: tasks.filter((t) => t.priority === 'medium').length,
-    low: tasks.filter((t) => t.priority === 'low').length,
-    overdue: tasks.filter((t) => t.status === 'overdue').length,
-    completed: tasks.filter((t) => t.status === 'completed').length,
-  };
+  const typedUnfinished = unfinishedTasks.filter(matchesType);
+  const counts = countTasksByFilter(typedUnfinished);
 
   const filterTabs = [
     { id: 'all', label: 'All', count: counts.all, color: Colors.blue600 },
@@ -497,9 +561,37 @@ export default function TasksPage() {
     { id: 'medium', label: 'Medium', count: counts.medium, color: Colors.orange600 },
     { id: 'low', label: 'Low', count: counts.low, color: Colors.green600 },
     { id: 'overdue', label: 'Overdue', count: counts.overdue, color: Colors.orange700 },
-    { id: 'completed', label: 'Done', count: counts.completed, color: Colors.green700 },
   ];
 
+  const viewCards: { id: TaskView; label: string; description: string; icon: typeof ListChecks }[] = [
+    { id: 'all', label: 'All Tasks', description: 'Unfinished tasks only', icon: ListChecks },
+    { id: 'completed', label: 'Completed', description: 'Finished tasks and remarks', icon: CheckCircle2 },
+    { id: 'history', label: 'History', description: 'All past tasks and notes', icon: History },
+    { id: 'patients', label: 'My Patients', description: 'Tasks organized by patient', icon: FolderOpen },
+  ];
+
+  const switchView = (next: TaskView) => {
+    setView(next);
+    setOpenFolderId(null);
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  };
+
+
+  // 10 per page; Next/Prev jumps back to the top.
+  const paged = usePagination(filteredTasks, {
+    scrollRef,
+    resetKey: `${view}|${typeFilter}|${searchQuery}|${selectedTab}|${sortBy}`,
+  });
+  // A task opened from a link may sit on a later page: show that page first
+  // (the deep-link effect above then scrolls to it).
+  const { setPage: goToTaskPage, pageSize: taskPageSize } = paged;
+  useEffect(() => {
+    if (!highlightedTaskId) return;
+    const index = filteredTasks.findIndex((task) => task.id === highlightedTaskId);
+    if (index >= 0) goToTaskPage(Math.floor(index / taskPageSize) + 1);
+    // Only when the highlighted task changes, not on every live refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightedTaskId]);
   return (
     <View style={styles.root}>
       {loading ? (
@@ -514,30 +606,120 @@ export default function TasksPage() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.header}>
-          <View style={styles.flex1}>
-            <Text style={styles.title}>My Tasks</Text>
-            <Text style={styles.subtitle}>
-              {filteredTasks.length} task{filteredTasks.length !== 1 ? 's' : ''}
-              {selectedTab !== 'all' ? ` in ${selectedTab}` : ''}
-            </Text>
-          </View>
-          <Button size="sm" onPress={handleAddTask} style={styles.addBtn}>
-            <Plus size={16} color={Colors.white} />
-            <Text style={styles.addBtnText}>Add Task</Text>
-          </Button>
-        </View>
+        <Card>
+          <CardContent style={styles.headerCard}>
+            <View style={styles.header}>
+              <View style={styles.headerIcon}>
+                <ClipboardList size={22} color={Colors.teal600} />
+              </View>
+              <View style={styles.flex1}>
+                <Text style={styles.title}>Tasks</Text>
+                <Text style={styles.subtitle}>Manage nursing procedures, referrals, and patient care activities.</Text>
+              </View>
+              <Button size="sm" onPress={handleAddTask} style={styles.addBtn} accessibilityLabel="Add task">
+                <Plus size={16} color={Colors.white} />
+                <Text style={styles.addBtnText}>Add Task</Text>
+              </Button>
+            </View>
+            <View style={styles.statsRow}>
+              <View style={styles.stat}>
+                <Text style={styles.statLabel}>Unfinished</Text>
+                <Text style={[styles.statValue, { color: Colors.orange600 }]}>{unfinishedTasks.length}</Text>
+                <Text style={styles.statHint}>Active tasks</Text>
+              </View>
+              <View style={styles.stat}>
+                <Text style={styles.statLabel}>Completed</Text>
+                <Text style={[styles.statValue, { color: Colors.green600 }]}>{completedTasks.length}</Text>
+                <Text style={styles.statHint}>Finished tasks</Text>
+              </View>
+              <View style={styles.stat}>
+                <Text style={styles.statLabel}>Patients</Text>
+                <Text style={styles.statValue}>{folders.length}</Text>
+                <Text style={styles.statHint}>Assigned to me</Text>
+              </View>
+            </View>
+
+            <Text style={styles.viewsLabel}>Task views</Text>
+            <View style={styles.viewGrid}>
+              {viewCards.map((card) => {
+                const active = view === card.id;
+                const Icon = card.icon;
+                return (
+                  <Pressable
+                    key={card.id}
+                    onPress={() => switchView(card.id)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    style={(state) => [
+                      styles.viewCard,
+                      active && styles.viewCardActive,
+                      !active && (state as { hovered?: boolean }).hovered && styles.viewCardHover,
+                    ]}
+                  >
+                    <View style={styles.viewCardTop}>
+                      <Icon size={16} color={active ? Colors.teal700 : Colors.gray600} />
+                      <Text style={[styles.viewCardLabel, active && styles.viewCardLabelActive]}>{card.label}</Text>
+                    </View>
+                    <Text style={styles.viewCardDesc}>{card.description}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </CardContent>
+        </Card>
+
+        {view === 'history' ? (
+          <TaskHistoryView
+            scrollRef={scrollRef}
+            patients={folders}
+            canViewAllNurses={user?.role === 'head_nurse'}
+            refreshKey={historyKey}
+          />
+        ) : view === 'patients' ? (
+          <MyPatientsView
+            folders={folders}
+            tasks={tasks}
+            loading={foldersLoading}
+            openPatientId={openFolderId}
+            onOpenPatient={(id) => {
+              setOpenFolderId(id);
+              scrollRef.current?.scrollTo({ y: 0, animated: true });
+            }}
+            onDone={handleCompleteTask}
+            scrollRef={scrollRef}
+          />
+        ) : (
+        <>
+        <Text style={styles.sectionTitle}>
+          {view === 'completed' ? 'Completed tasks' : 'Unfinished tasks'}
+          <Text style={styles.sectionCount}>
+            {'  '}
+            {filteredTasks.length} task{filteredTasks.length !== 1 ? 's' : ''}
+            {view === 'all' && selectedTab !== 'all' ? ` in ${selectedTab}` : ''}
+          </Text>
+        </Text>
 
         <View style={styles.searchRow}>
           <View style={styles.searchWrap}>
             <Input
-              placeholder="Search tasks..."
+              placeholder={view === 'completed' ? 'Search completed tasks or remarks...' : 'Search tasks...'}
               value={searchQuery}
               onChangeText={setSearchQuery}
               leftIcon={<Search size={18} color={Colors.gray500} />}
               inputWrapperStyle={styles.searchInput}
             />
           </View>
+          <Select
+            value={typeFilter}
+            onValueChange={(value) => setTypeFilter(value as 'all' | 'procedure' | 'referral')}
+            options={[
+              { label: 'All types', value: 'all' },
+              { label: 'Procedure', value: 'procedure' },
+              { label: 'Referral', value: 'referral' },
+            ]}
+            placeholder="Type"
+            style={styles.sortSelect}
+          />
           <Select
             value={sortBy}
             onValueChange={(value) => setSortBy(value as SortBy)}
@@ -547,6 +729,7 @@ export default function TasksPage() {
           />
         </View>
 
+        {view === 'all' ? (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -589,16 +772,23 @@ export default function TasksPage() {
             );
           })}
         </ScrollView>
+        ) : null}
 
         <View style={styles.list}>
           {filteredTasks.length === 0 ? (
             <Card>
               <CardContent style={styles.empty}>
-                <Text style={styles.emptyText}>No tasks found</Text>
+                <Text style={styles.emptyText}>
+                  {view === 'completed'
+                    ? 'No completed tasks yet.'
+                    : searchQuery || typeFilter !== 'all' || selectedTab !== 'all'
+                      ? 'No unfinished tasks match these filters.'
+                      : 'You have no unfinished tasks. Nice work!'}
+                </Text>
               </CardContent>
             </Card>
           ) : (
-            filteredTasks.map((task) => (
+            paged.pageItems.map((task) => (
               <View
                 key={task.id}
                 onLayout={(e) => {
@@ -628,6 +818,8 @@ export default function TasksPage() {
                           >
                             {RISK_LABELS[task.priority] || task.priority}
                           </Badge>
+                          <TaskTypeBadge type={task.taskType} />
+                          <TaskStatusBadge status={task.status} />
                         </View>
                         <Text style={styles.taskDescription}>{task.description}</Text>
 
@@ -638,7 +830,7 @@ export default function TasksPage() {
                               <Text style={[styles.dueText, isTaskOverdue(task) && styles.metaTextOverdue]}>
                                 {formatDueDate(task.dueDate)}
                                 {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
-                                {task.dueTime}
+                                {formatTime12(task.dueTime)}
                               </Text>
                             </View>
                             {(() => {
@@ -654,7 +846,23 @@ export default function TasksPage() {
                             <Text style={styles.metaText}>
                               Patient: {task.patientName} ({task.patientId})
                             </Text>
+                            {task.assignedTo ? (
+                              <Text style={styles.metaText}>Nurse: {task.assignedTo}</Text>
+                            ) : null}
                           </View>
+                          {task.status === 'completed' ? (
+                            <View style={styles.completedBox}>
+                              <Text style={styles.completedMeta}>
+                                Completed {formatDateTime(task.completedAt)}
+                                {task.completedBy ? ` by ${task.completedBy}` : ''}
+                              </Text>
+                              <Text style={styles.completedLabel}>Remarks</Text>
+                              <Text style={styles.completedRemarks}>
+                                {task.completionRemarks ||
+                                  'No remarks were recorded (completed before remarks were required).'}
+                              </Text>
+                            </View>
+                          ) : null}
 
                           {(task.attendingPhysician || task.patientRoom) && (
                             <View style={styles.metaRow}>
@@ -718,12 +926,12 @@ export default function TasksPage() {
                                       isVitalsTask &&
                                       isLastItem &&
                                       !item.done &&
-                                      readingCount < VITALS_READINGS_REQUIRED;
+                                      readingCount < readingsRequired(task);
                                     return (
                                       <Pressable
                                         key={index}
                                         style={styles.checklistItemRow}
-                                        disabled={checklistSaving === task.id}
+                                        disabled={checklistSaving === task.id || task.status === 'completed'}
                                         onPress={() => handleToggleChecklistItem(task, index)}
                                       >
                                         {item.done ? (
@@ -741,7 +949,9 @@ export default function TasksPage() {
                                           ]}
                                         >
                                           {item.text}
-                                          {isLocked ? ' (record vitals first)' : ''}
+                                          {isLocked
+                                            ? ` (record ${readingsRequired(task)} vital${readingsRequired(task) > 1 ? 's' : ''} first)`
+                                            : ''}
                                         </Text>
                                       </Pressable>
                                     );
@@ -755,44 +965,40 @@ export default function TasksPage() {
 
                       <View style={styles.actions}>
                         {task.status !== 'completed' ? (
-                          <Button
-                            size="icon-sm"
-                            variant="outline"
-                            onPress={() => handleCompleteTask(task)}
-                            disabled={completeLoading === task.id}
-                            style={styles.completeBtn}
-                          >
-                            {completeLoading === task.id ? (
-                              <ActivityIndicator size="small" color={Colors.green600} />
-                            ) : (
-                              <CheckCircle size={16} color={Colors.green600} />
-                            )}
-                          </Button>
+                          <>
+                            <Pressable
+                              onPress={() => handleCompleteTask(task)}
+                              style={styles.doneBtn}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Mark ${task.title} as done`}
+                            >
+                              <Check size={16} color={Colors.white} />
+                              <Text style={styles.doneBtnText}>Done</Text>
+                            </Pressable>
+                            <Button
+                              size="icon-sm"
+                              variant="outline"
+                              onPress={() => handleEditTask(task)}
+                              style={styles.editBtn}
+                              accessibilityLabel="Edit task"
+                            >
+                              <Edit size={16} color={Colors.blue600} />
+                            </Button>
+                            {/* Every task here already belongs to this nurse (fetchTasks({ mine: true })),
+                                or to no one in particular for a head nurse, who may record vitals for
+                                any patient. The backend's care-scope check still rejects a save if the
+                                patient was reassigned away from this nurse. */}
+                            <Button
+                              size="icon-sm"
+                              variant="outline"
+                              onPress={() => setVitalsModalTaskId(task.id)}
+                              style={styles.vitalsBtn}
+                              accessibilityLabel="Record vital signs"
+                            >
+                              <HeartPulse size={16} color={Colors.red600} />
+                            </Button>
+                          </>
                         ) : null}
-                        <Button
-                          size="icon-sm"
-                          variant="outline"
-                          onPress={() => handleEditTask(task)}
-                          style={styles.editBtn}
-                        >
-                          <Edit size={16} color={Colors.blue600} />
-                        </Button>
-                        {/* Every task here already belongs to this nurse (fetchTasks({ mine: true })),
-                            or to no one in particular for a head nurse, who may record vitals for
-                            any patient — so this no longer depends on a second, separately-loaded
-                            patient list. That list was the source of a visible flicker/disappearing
-                            button: it loaded asynchronously after the task list, so the button
-                            would show, vanish, and sometimes not come back depending on timing. The
-                            backend's own care-scope check (_check_patient_care_scope) still rejects
-                            an actual save if the patient was reassigned away from this nurse. */}
-                        <Button
-                          size="icon-sm"
-                          variant="outline"
-                          onPress={() => setVitalsModalTaskId(task.id)}
-                          style={styles.vitalsBtn}
-                        >
-                          <HeartPulse size={16} color={Colors.red600} />
-                        </Button>
                         {user?.role === 'head_nurse' && task.assignedTo ? (
                           <Button
                             size="icon-sm"
@@ -810,7 +1016,15 @@ export default function TasksPage() {
               </View>
             ))
           )}
+          <Pagination
+            page={paged.page}
+            totalPages={paged.totalPages}
+            onPageChange={paged.setPage}
+            total={paged.total}
+          />
         </View>
+        </>
+        )}
       </ScrollView>
       )}
 
@@ -822,6 +1036,12 @@ export default function TasksPage() {
         mode={taskModalMode}
         allTasks={tasks}
         patientScope="mine"
+      />
+
+      <CompleteTaskDialog
+        task={completingTask}
+        onClose={() => setCompletingTask(null)}
+        onCompleted={handleTaskCompleted}
       />
 
       <DeleteConfirmDialog
@@ -861,6 +1081,7 @@ export default function TasksPage() {
                 <TaskVitalSignsBars
                   taskId={vitalsModalTask.id}
                   patientId={vitalsModalTask.patientId}
+                  readingsRequired={readingsRequired(vitalsModalTask)}
                   onReadingsChange={(count) =>
                     setVitalsReadingCounts((prev) => ({ ...prev, [vitalsModalTask.id]: count }))
                   }
@@ -890,11 +1111,140 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
   },
+  headerCard: {
+    padding: 16,
+    gap: 16,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
+  },
+  headerIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.teal50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  stat: {
+    flex: 1,
+    minWidth: 0,
+  },
+  statLabel: {
+    fontSize: 12,
+    color: Colors.gray600,
+  },
+  statValue: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: Colors.gray900,
+    marginTop: 2,
+  },
+  statHint: {
+    fontSize: 12,
+    color: Colors.gray500,
+  },
+  viewsLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.gray900,
+    marginBottom: -6,
+  },
+  viewGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  viewCard: {
+    flexGrow: 1,
+    flexBasis: '45%',
+    minWidth: 140,
+    padding: 12,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.white,
+    gap: 4,
+  },
+  viewCardActive: {
+    borderColor: Colors.teal600,
+    backgroundColor: Colors.teal50,
+  },
+  viewCardHover: {
+    borderColor: Colors.teal100,
+  },
+  viewCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  viewCardLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.gray800,
+  },
+  viewCardLabelActive: {
+    color: Colors.teal700,
+  },
+  viewCardDesc: {
+    fontSize: 12,
+    color: Colors.gray500,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.gray900,
+  },
+  sectionCount: {
+    fontSize: 13,
+    fontWeight: '400',
+    color: Colors.gray500,
+  },
+  doneBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    backgroundColor: Colors.green600,
+    paddingHorizontal: 10,
+    height: 34,
+    borderRadius: Radius.md,
+  },
+  doneBtnText: {
+    color: Colors.white,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  completedBox: {
+    marginTop: 6,
+    backgroundColor: Colors.green50,
+    borderWidth: 1,
+    borderColor: Colors.green200,
+    borderRadius: Radius.sm,
+    padding: 8,
+    gap: 2,
+  },
+  completedMeta: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.green700,
+  },
+  completedLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.green800,
+    marginTop: 4,
+  },
+  completedRemarks: {
+    fontSize: 13,
+    color: Colors.gray800,
   },
   flex1: {
     flex: 1,
@@ -921,11 +1271,13 @@ const styles = StyleSheet.create({
   },
   searchRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 12,
     alignItems: 'flex-start',
   },
   searchWrap: {
     flex: 1,
+    minWidth: 220,
   },
   searchInput: {
     borderWidth: 2,
@@ -933,7 +1285,7 @@ const styles = StyleSheet.create({
     ...Shadows.md,
   },
   sortSelect: {
-    width: 150,
+    width: 140,
   },
   tabsRow: {
     flexDirection: 'row',

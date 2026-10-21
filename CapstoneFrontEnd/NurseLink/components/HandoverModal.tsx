@@ -355,6 +355,43 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     return new Date(y, m - 1, d, h, min);
   };
 
+  /** True when the chosen date + time is now or already past. */
+  const isPastSchedule = (date: string, time: string): boolean => {
+    if (!date || !time) return false;
+    const [y, m, d] = date.split('-').map(Number);
+    const [h, min] = time.split(':').map(Number);
+    if (!y || !m || !d || Number.isNaN(h) || Number.isNaN(min)) return false;
+    return new Date(y, m - 1, d, h, min).getTime() <= Date.now();
+  };
+
+  const PAST_SCHEDULE_MESSAGE = 'This time has already passed. Choose a later time today or a future date.';
+
+  // Date and time are validated together: moving the date back to today
+  // clears a time that is now in the past instead of leaving it invalid.
+  const handleDueDateChange = (date: string) => {
+    setDueDate(date);
+    if (dueTime && isPastSchedule(date, dueTime)) {
+      setDueTime('');
+      setErrors((prev) => ({ ...prev, dueDate: '', dueTime: PAST_SCHEDULE_MESSAGE }));
+    } else {
+      setErrors((prev) => ({ ...prev, dueDate: '', dueTime: '' }));
+    }
+  };
+
+  const handleDueTimeChange = (time: string) => {
+    setDueTime(time);
+    setErrors((prev) => ({ ...prev, dueTime: isPastSchedule(dueDate, time) ? PAST_SCHEDULE_MESSAGE : '' }));
+  };
+
+  // On today's date, times before now (rounded up to the picker's 5-minute
+  // step) can't be picked at all.
+  const minDueTime = (() => {
+    if (dueDate !== todayIso()) return undefined;
+    const now = new Date();
+    const minutes = Math.min(Math.ceil((now.getHours() * 60 + now.getMinutes() + 1) / 5) * 5, 23 * 60 + 55);
+    return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+  })();
+
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
     if (!selectedPatientId) newErrors.patient = 'Select a patient';
@@ -362,8 +399,11 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
     if (!dueDate) newErrors.dueDate = 'Due date is required';
     if (!dueTime) newErrors.dueTime = 'Due time is required';
     const due = dueAtDate();
+    if (dueDate && dueDate < todayIso()) {
+      newErrors.dueDate = 'Due date cannot be in the past';
+    }
     if (dueDate && dueTime && due && due.getTime() <= Date.now()) {
-      newErrors.dueTime = 'Due date and time must be in the future';
+      newErrors.dueTime = PAST_SCHEDULE_MESSAGE;
     }
     if (!formData.recommendation.trim()) newErrors.recommendation = 'Recommendation is required';
     setErrors(newErrors);
@@ -542,15 +582,18 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
                   style={{ flex: 1 }}
                   label="Due Date *"
                   value={dueDate}
-                  onChange={setDueDate}
+                  onChange={handleDueDateChange}
+                  minDate={todayIso()}
                   error={errors.dueDate}
                 />
                 <TimePicker
                   style={{ flex: 1 }}
                   label="Due Time *"
                   value={dueTime}
-                  onChange={setDueTime}
+                  onChange={handleDueTimeChange}
+                  minTime={minDueTime}
                   error={errors.dueTime}
+                  helperText="Now or later — past times can't be chosen"
                 />
               </View>
 
@@ -617,8 +660,8 @@ export function HandoverModal({ open, onOpenChange, onSave }: HandoverModalProps
 
                     <View style={styles.recommendationBox}>
                       <View style={styles.labelRow}>
-                        <View style={[styles.badge, { backgroundColor: Colors.purple100 }]}>
-                          <Text style={[styles.badgeText, { color: Colors.purple700 }]}>R</Text>
+                        <View style={[styles.badge, { backgroundColor: Colors.blue100 }]}>
+                          <Text style={[styles.badgeText, { color: Colors.blue700 }]}>R</Text>
                         </View>
                         <Text style={styles.label}>Recommendation *</Text>
                         <Text style={styles.recHint}>(Enter your recommendations)</Text>

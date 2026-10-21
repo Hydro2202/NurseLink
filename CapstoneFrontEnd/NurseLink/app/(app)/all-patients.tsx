@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -156,7 +156,7 @@ const VITAL_SEVERITY_STYLE: Record<
   normal: { bg: Colors.blue50, border: Colors.blue100, text: Colors.foreground },
 };
 
-const PATIENTS_PER_PAGE = 5;
+const PATIENTS_PER_PAGE = 10;
 
 type SortKey = 'name' | 'room' | 'nurse' | 'status';
 // 'active' (the default) means not-discharged — a discharged patient's
@@ -200,7 +200,13 @@ export default function AllPatientsPage() {
   const [labsMedsPatient, setLabsMedsPatient] = useState<Patient | null>(null);
   const [assignmentHistoryOpen, setAssignmentHistoryOpen] = useState(false);
   const [assignmentHistoryPatient, setAssignmentHistoryPatient] = useState<Patient | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPageState] = useState(1);
+  const scrollRef = useRef<ScrollView>(null);
+  // Changing page jumps back to the top so the nurse never scrolls up by hand.
+  const setCurrentPage = useCallback((next: number | ((p: number) => number)) => {
+    setCurrentPageState(next);
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  }, []);
 
   const loadPatients = useCallback(async () => {
     try {
@@ -289,7 +295,8 @@ export default function AllPatientsPage() {
   // narrower filter/search could strand the view on a now-nonexistent page.
   useEffect(() => {
     (() => {
-      setCurrentPage(1);
+      // Plain reset (no scroll): typing in search shouldn't jump the page.
+      setCurrentPageState(1);
     })();
   }, [searchQuery, roomFilter, riskFilter, deptFilter, nurseFilter, statusFilter, dischargeDateFrom, dischargeDateTo, sortBy, sortDesc]);
 
@@ -370,6 +377,7 @@ export default function AllPatientsPage() {
   return (
     <>
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}

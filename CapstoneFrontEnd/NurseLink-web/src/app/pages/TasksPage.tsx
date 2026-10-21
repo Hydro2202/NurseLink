@@ -56,9 +56,10 @@ import {
 } from '../components/ui/dialog';
 import { toast } from 'sonner';
 
-// One monitoring entry per Vital Signs Check task — recurring checks happen
-// via the next scheduled task, not by repeating entries inside this one.
-const VITALS_READINGS_REQUIRED = 1;
+// Free-standing vital signs tasks need 2 check-ins; a scheduled check needs
+// 1 (server decides) — recurring checks happen via the next scheduled task,
+// not by repeating entries inside this one.
+const readingsRequired = (task: Task) => task.vitalReadingsRequired ?? 2;
 
 /** "Mar 15" from an ISO "YYYY-MM-DD" — '' if blank (predates dueDate).
  * Exported for NurseTasksPage.tsx, which shows the same task cards in the
@@ -355,14 +356,10 @@ export default function TasksPage() {
     const isLastItem = index === task.checklist.length - 1;
     const isVitalsTask = task.category === 'vital_signs';
     const readingCount = vitalsReadingCounts[task.id] ?? 0;
-    if (
-      isVitalsTask &&
-      isLastItem &&
-      !task.checklist[index].done &&
-      readingCount < VITALS_READINGS_REQUIRED
-    ) {
+    const required = readingsRequired(task);
+    if (isVitalsTask && isLastItem && !task.checklist[index].done && readingCount < required) {
       toast.error('Vital signs not recorded yet', {
-        description: 'Record the vital signs reading below before completing this step.',
+        description: `Record at least ${required} vital sign reading${required > 1 ? 's' : ''} before completing this step.`,
       });
       return;
     }
@@ -668,7 +665,7 @@ export default function TasksPage() {
                                   task.category === 'vital_signs' &&
                                   index === task.checklist.length - 1 &&
                                   !item.done &&
-                                  (vitalsReadingCounts[task.id] ?? 0) < VITALS_READINGS_REQUIRED;
+                                  (vitalsReadingCounts[task.id] ?? 0) < readingsRequired(task);
                                 return (
                                   <button
                                     type="button"
@@ -694,7 +691,9 @@ export default function TasksPage() {
                                       }`}
                                     >
                                       {item.text}
-                                      {isLocked ? ' (record vitals first)' : ''}
+                                      {isLocked
+                                        ? ` (record ${readingsRequired(task)} vital${readingsRequired(task) > 1 ? 's' : ''} first)`
+                                        : ''}
                                     </span>
                                   </button>
                                 );
@@ -806,6 +805,7 @@ export default function TasksPage() {
               key={vitalsModalTask.id}
               taskId={vitalsModalTask.id}
               patientId={vitalsModalTask.patientId}
+              readingsRequired={readingsRequired(vitalsModalTask)}
               onReadingsChange={(count) =>
                 setVitalsReadingCounts((prev) => ({ ...prev, [vitalsModalTask.id]: count }))
               }

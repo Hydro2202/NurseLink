@@ -12,7 +12,9 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from rest_framework.test import APITestCase
 
-from .models import NurseProfile, Patient, Task, VitalSigns
+from django.utils import timezone
+
+from .models import NurseProfile, Patient, Task, VitalSigns, VitalSignsSchedule
 
 
 def make_nurse(email, first, last):
@@ -48,7 +50,7 @@ class TaskChecklistTests(APITestCase):
             task_code='T901', patient=self.patient, patient_name=self.patient.name,
             title='Check vitals', assigned_to='Ben Diaz', assigned_nurse=self.nurse,
         )
-        response = self.client.post('/api/tasks/T901/complete/')
+        response = self.client.post('/api/tasks/T901/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertEqual(len(response.data['unfinishedChecklistItems']), 6)
         task.refresh_from_db()
@@ -63,7 +65,7 @@ class TaskChecklistTests(APITestCase):
         patch = self.client.patch('/api/tasks/T902/', {'checklist': checked}, format='json')
         self.assertEqual(patch.status_code, 200)
 
-        response = self.client.post('/api/tasks/T902/complete/')
+        response = self.client.post('/api/tasks/T902/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['status'], 'completed')
 
@@ -73,7 +75,7 @@ class TaskChecklistTests(APITestCase):
             title='Check vitals', assigned_to='Ben Diaz', assigned_nurse=self.nurse,
             checklist=[],
         )
-        response = self.client.post('/api/tasks/T903/complete/')
+        response = self.client.post('/api/tasks/T903/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 200)
 
     def test_partially_checked_task_is_still_rejected(self):
@@ -85,7 +87,7 @@ class TaskChecklistTests(APITestCase):
         partial[0] = {**partial[0], 'done': True}
         self.client.patch('/api/tasks/T904/', {'checklist': partial}, format='json')
 
-        response = self.client.post('/api/tasks/T904/complete/')
+        response = self.client.post('/api/tasks/T904/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertEqual(len(response.data['unfinishedChecklistItems']), 5)
 
@@ -104,7 +106,7 @@ class TaskChecklistTests(APITestCase):
         self.assertEqual(len(task.checklist), 6)  # untouched
 
         # The real exploit path: swap it in, then try to complete.
-        response = self.client.post('/api/tasks/T905/complete/')
+        response = self.client.post('/api/tasks/T905/complete/', {'remarks': 'Done as ordered; patient comfortable.'}, format='json')
         self.assertEqual(response.status_code, 400)
 
     def test_removing_a_checklist_item_is_rejected(self):
@@ -130,9 +132,10 @@ class VitalSignsTaskChecklistTests(APITestCase):
     """
     A 'vital_signs' category task is the one exception to the generic 6-step
     checklist above: Task.save() always collapses it to a single "Vital
-    Signs Check" item, gated behind one recorded VitalSigns row (not the old
-    6-item/2-reading requirement) — see Task.save() and
-    TaskSerializer.validate_checklist.
+    Signs Check" item, gated behind Task.vital_readings_required logged
+    VitalSigns rows (not the old 6-item requirement) — see Task.save() and
+    TaskSerializer.validate_checklist. A task generated from a patient's
+    VitalSignsSchedule needs 1 reading; a free-standing one needs 2.
     """
 
     def setUp(self):
@@ -152,6 +155,16 @@ class VitalSignsTaskChecklistTests(APITestCase):
             category='vital_signs',
         )
 
+    def make_scheduled_vitals_task(self, code):
+        schedule = VitalSignsSchedule.objects.create(
+            patient=self.patient, frequency_hours=4, start_at=timezone.now(), set_by=self.nurse,
+        )
+        return Task.objects.create(
+            task_code=code, patient=self.patient, patient_name=self.patient.name,
+            title='Vital Signs Check', assigned_to='Ben Diaz', assigned_nurse=self.nurse,
+            category='vital_signs', vitals_schedule=schedule,
+        )
+
     def test_new_vital_signs_task_gets_exactly_one_checklist_item(self):
         task = self.make_vitals_task('T920')
         self.assertEqual(task.checklist, [{'text': 'Vital Signs Check', 'done': False}])
@@ -163,8 +176,8 @@ class VitalSignsTaskChecklistTests(APITestCase):
         )
         self.assertEqual(patch.status_code, 400)
 
-    def test_one_recorded_reading_is_enough_to_mark_done_and_complete(self):
-        task = self.make_vitals_task('T922')
+    def test_one_recorded_reading_is_enough_for_a_scheduled_task(self):
+        task = self.make_scheduled_vitals_task('T922')
         VitalSigns.objects.create(patient=self.patient, task=task, recorded_by=self.nurse, heart_rate=80)
 
         patch = self.client.patch(
@@ -172,7 +185,26 @@ class VitalSignsTaskChecklistTests(APITestCase):
         )
         self.assertEqual(patch.status_code, 200, patch.data)
 
-        response = self.client.post('/api/tasks/T922/complete/')
+        response = self.client.post('/api/tasks/T922/complete/', {'remarks': 'Vitals stable.'}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_free_standing_task_needs_two_readings(self):
+        task = self.make_vitals_task('T924')
+        VitalSigns.objects.create(patient=self.patient, task=task, recorded_by=self.nurse, heart_rate=80)
+
+        patch = self.client.patch(
+            '/api/tasks/T924/', {'checklist': [{'text': 'Vital Signs Check', 'done': True}]}, format='json'
+        )
+        self.assertEqual(patch.status_code, 400)
+
+        VitalSigns.objects.create(patient=self.patient, task=task, recorded_by=self.nurse, heart_rate=82)
+
+        patch = self.client.patch(
+            '/api/tasks/T924/', {'checklist': [{'text': 'Vital Signs Check', 'done': True}]}, format='json'
+        )
+        self.assertEqual(patch.status_code, 200, patch.data)
+
+        response = self.client.post('/api/tasks/T924/complete/', {'remarks': 'Vitals stable.'}, format='json')
         self.assertEqual(response.status_code, 200, response.data)
 
     def test_an_oversized_legacy_checklist_is_collapsed_on_save(self):

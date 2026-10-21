@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable, ActivityIndicator, Modal } from 'react-native';
 import { Search, Plus, X, Stethoscope, Trash2 } from 'lucide-react-native';
 import {
@@ -17,6 +17,10 @@ import { Select } from '../../../components/Select';
 import { ConfirmDialog } from '../../../components/ConfirmDialog';
 import { useToast } from '../../../contexts/ToastContext';
 import { Colors, Shadows, Radius } from '../../../constants/colors';
+import { Pagination, usePagination } from '../../../components/Pagination';
+import { PrintButton } from '../../../components/admin/PrintButton';
+import { printReport } from '../../../utils/print';
+import { useAuth } from '../../../contexts/AuthContext';
 
 interface DoctorForm {
   fullName: string;
@@ -30,6 +34,7 @@ const EMPTY_FORM: DoctorForm = { fullName: '', specialization: '', departmentId:
 
 export default function AdminDoctorsPage() {
   const toast = useToast();
+  const { user: currentUser } = useAuth();
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
@@ -93,6 +98,10 @@ export default function AdminDoctorsPage() {
     );
   }, [doctors, search]);
 
+  // 10 per page; Next/Prev jumps back to the top of the list.
+  const scrollRef = useRef<ScrollView>(null);
+  const paged = usePagination(filtered, { scrollRef, resetKey: search });
+
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY_FORM);
@@ -150,12 +159,43 @@ export default function AdminDoctorsPage() {
 
   return (
     <View style={styles.root}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.headerRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>Doctors</Text>
             <Text style={styles.subtitle}>The hospital doctor directory used by Kardex, Tasks, and Patients.</Text>
           </View>
+          <PrintButton
+            label="Print list"
+            disabled={loading}
+            onPrint={() =>
+              printReport(
+                {
+                  title: 'Doctors',
+                  subtitle: 'Hospital doctor directory',
+                  printedBy: currentUser?.name,
+                  scope: [
+                    search.trim() ? `Search: "${search.trim()}"` : 'Filters: none (all doctors)',
+                    `${filtered.length} of ${doctors.length} doctors`,
+                  ],
+                  columns: [
+                    { label: 'Name', value: (d: Doctor) => d.fullName, width: '28%' },
+                    { label: 'Specialization', value: (d: Doctor) => d.specialization || '—', width: '22%' },
+                    { label: 'Department', value: (d: Doctor) => d.departmentName || '—', width: '22%' },
+                    { label: 'License', value: (d: Doctor) => d.licenseNumber || '—' },
+                    { label: 'Status', value: (d: Doctor) => d.status, width: '10%' },
+                  ],
+                  rows: filtered,
+                },
+                { recordType: 'doctors', scope: 'list', filters: { search: search.trim() } }
+              )
+            }
+          />
           <Button onPress={openCreate} size="sm">
             <View style={styles.btnInner}>
               <Plus size={16} color={Colors.white} />
@@ -177,7 +217,7 @@ export default function AdminDoctorsPage() {
           <Text style={styles.empty}>No doctors match.</Text>
         ) : (
           <View style={styles.list}>
-            {filtered.map((doctor) => (
+            {paged.pageItems.map((doctor) => (
               <Pressable key={doctor.id} onPress={() => openEdit(doctor)}>
                 <View style={[styles.row, Shadows.sm]}>
                   <View style={styles.rowIconWrap}>
@@ -199,6 +239,12 @@ export default function AdminDoctorsPage() {
             ))}
           </View>
         )}
+        <Pagination
+          page={paged.page}
+          totalPages={paged.totalPages}
+          onPageChange={paged.setPage}
+          total={paged.total}
+        />
       </ScrollView>
 
       <Modal visible={formOpen} transparent animationType="fade" onRequestClose={() => setFormOpen(false)}>

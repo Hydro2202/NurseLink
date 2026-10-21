@@ -32,7 +32,7 @@ def collapse_backward(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('api', '0072_nurseprofile_last_seen_at'),
+        ('api', '0077_admin_audit_log_activity'),
     ]
 
     operations = [
