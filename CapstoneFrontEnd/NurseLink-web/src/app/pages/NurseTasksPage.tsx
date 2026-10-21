@@ -204,14 +204,10 @@ export default function NurseTasksPage() {
   const RISK_LABELS: Record<string, string> = { high: 'High risk', medium: 'Medium risk', low: 'Low risk' };
   const RISK_TEXT_COLORS: Record<string, string> = { high: '#DC2626', medium: '#EA580C', low: '#16A34A' };
 
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'high': return 'bg-red-50 border-red-200';
-      case 'medium': return 'bg-orange-50 border-orange-100';
-      case 'low': return 'bg-green-50 border-green-200';
-      default: return 'bg-gray-50 border-gray-200';
-    }
-  };
+  // Completion status is the card's primary color, not risk/priority — see
+  // the matching helper in TasksPage.tsx.
+  const getCardStatusColor = (status: string) =>
+    status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200';
 
   const getCategoryIcon = (category: string) => {
     switch (category) {
@@ -347,7 +343,7 @@ export default function NurseTasksPage() {
           filteredTasks.map(task => (
             <Card
               key={task.id}
-              className={`border-2 border-l-4 ${getPriorityColor(task.priority)} hover:shadow-md transition-all`}
+              className={`border-2 border-l-4 ${getCardStatusColor(task.status)} hover:shadow-md transition-all`}
               style={{ borderLeftColor: RISK_TEXT_COLORS[task.priority] || '#9CA3AF' }}
             >
               <CardContent className="p-4">

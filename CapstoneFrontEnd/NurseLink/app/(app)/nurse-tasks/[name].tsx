@@ -204,17 +204,13 @@ export default function NurseTasksPage() {
       return statusOrder[a.status] - statusOrder[b.status];
     });
 
-  const getPriorityStyle = (priority: string) => {
-    switch (priority) {
-      case 'high':
-        return { backgroundColor: Colors.red50, borderColor: Colors.red200 };
-      case 'medium':
-        return { backgroundColor: Colors.orange50, borderColor: Colors.orange100 };
-      case 'low':
-        return { backgroundColor: Colors.green50, borderColor: Colors.green200 };
-      default:
-        return { backgroundColor: Colors.gray50, borderColor: Colors.gray200 };
+  // Completion status is the card's primary color, not risk/priority — see
+  // the matching helper in tasks.tsx.
+  const getCardStatusStyle = (task: Task) => {
+    if (task.status === 'completed') {
+      return { backgroundColor: Colors.green50, borderColor: Colors.green200 };
     }
+    return { backgroundColor: Colors.white, borderColor: Colors.gray200 };
   };
 
   const RISK_LABELS: Record<string, string> = { high: 'High risk', medium: 'Medium risk', low: 'Low risk' };
@@ -350,7 +346,7 @@ export default function NurseTasksPage() {
                 key={task.id}
                 style={{
                   ...styles.taskCard,
-                  ...getPriorityStyle(task.priority),
+                  ...getCardStatusStyle(task),
                   borderLeftWidth: 4,
                   borderLeftColor: RISK_COLORS[task.priority] || Colors.gray400,
                 }}
@@ -362,7 +358,6 @@ export default function NurseTasksPage() {
                     </Text>
                     <Badge
                       variant="outline"
-                      style={getPriorityStyle(task.priority)}
                       textStyle={{ color: RISK_COLORS[task.priority] || Colors.gray600 }}
                     >
                       {RISK_LABELS[task.priority] || task.priority}

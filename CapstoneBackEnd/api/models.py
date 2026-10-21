@@ -493,12 +493,19 @@ class Task(models.Model):
         if self.patient and not self.attending_physician:
             self.attending_physician = self.patient.attending_physician
         if self.category == 'vital_signs':
+            # checklist's own field default (default_task_checklist, used by
+            # every other category) is 6 generic steps — without this, a
+            # brand-new vital_signs Task got that whole 6-item list with only
+            # its LAST item renamed to "Vital Signs Check", so a nurse had to
+            # tick 5 unrelated boxes plus record vitals before the card ever
+            # showed anything but "0/6 completed". A vital_signs task's
+            # checklist is always exactly this one item — collapse it on
+            # every save, carrying over whatever done-state was already set
+            # (e.g. the reading-count gate in TaskSerializer.validate_checklist
+            # ticking it) rather than resetting it.
             checklist = list(self.checklist or [])
-            if checklist and checklist[-1].get('text') != self.VITAL_SIGNS_CHECKLIST_TEXT:
-                checklist[-1] = {**checklist[-1], 'text': self.VITAL_SIGNS_CHECKLIST_TEXT}
-                self.checklist = checklist
-            elif not checklist:
-                self.checklist = [{'text': self.VITAL_SIGNS_CHECKLIST_TEXT, 'done': False}]
+            already_done = bool(checklist) and bool(checklist[-1].get('done'))
+            self.checklist = [{'text': self.VITAL_SIGNS_CHECKLIST_TEXT, 'done': already_done}]
         super().save(*args, **kwargs)
 
 

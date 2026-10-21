@@ -14,7 +14,6 @@ import {
 import {
   HeartPulse,
   Clock,
-  Plus,
   Check,
   X,
   Pencil,
@@ -30,18 +29,16 @@ import { fetchVitalReadings, createVitalSigns, updateVitalSigns, ApiError } from
 import type { AdminVitalReading } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 
-const BASE_SLOT_COUNT = 3;
 // Accepts "8:00 AM", "08:00 am", "12:30 PM" — the same light-touch,
 // free-text time convention Task.dueTime already uses elsewhere in this
 // app, rather than a native picker dependency this project doesn't have.
+// Only used by the edit-an-existing-reading flow below — a new reading
+// always records at the actual moment it's saved.
 const TIME_PATTERN = /^(0?[1-9]|1[0-2]):([0-5]\d)\s?([AaPp][Mm])$/;
 
 interface TaskVitalSignsBarsProps {
   taskId: string;
   patientId: string;
-  /** How many logged readings unlock the gated checklist step — surfaced
-   * here too so the hint text and the gate agree on the same number. */
-  readingsRequired?: number;
   onReadingsChange?: (count: number) => void;
 }
 
@@ -110,8 +107,9 @@ function isoToTimePickerValue(iso: string): string {
   return `${hours}:${String(minutes).padStart(2, '0')} ${isPm ? 'PM' : 'AM'}`;
 }
 
-/** "8:05 PM" -> today's date at that time, as an ISO string for
- * `recordedAt`. Returns null for anything that doesn't match TIME_PATTERN. */
+/** "8:05 PM" -> today's date at that time, as an ISO string. Returns null
+ * for anything that doesn't match TIME_PATTERN. Only used when editing an
+ * existing reading's recorded time. */
 function buildRecordedAtIso(timeText: string): string | null {
   const match = TIME_PATTERN.exec(timeText.trim());
   if (!match) return null;
@@ -132,8 +130,6 @@ function parseOptionalNumber(text: string): number | undefined | 'invalid' {
   const n = Number(text);
   return Number.isFinite(n) ? n : 'invalid';
 }
-
-type SlotStatus = 'not_recorded' | 'time_entered' | 'completed';
 
 /** One labeled value box: the field name (same uppercase/muted label style
  * as Kardex's VitalSignsGrid, not a separate "VITAL SIGN" header — a field
@@ -206,34 +202,18 @@ const STATUS_DOTS: { key: string; label: string }[] = [
   { key: 'painScale', label: 'Pain' },
 ];
 
-export function TaskVitalSignsBars({
-  taskId,
-  patientId,
-  readingsRequired = 2,
-  onReadingsChange,
-}: TaskVitalSignsBarsProps) {
+export function TaskVitalSignsBars({ taskId, patientId, onReadingsChange }: TaskVitalSignsBarsProps) {
   const toast = useToast();
   const [readings, setReadings] = useState<AdminVitalReading[]>([]);
   const [loading, setLoading] = useState(true);
-  // Only grows on an explicit "Add another reading" tap — visibleSlots
-  // itself is derived below, widening automatically once readings catch up
-  // to it, so this never needs syncing back from an effect.
-  const [manualSlotFloor, setManualSlotFloor] = useState(BASE_SLOT_COUNT);
-  // A slot's time is entered before its vitals are — and isn't a database
-  // row until the vitals are actually saved (VitalSigns is insert-only, see
-  // its model docstring), so it lives here as a draft keyed by slot index.
-  const [draftTimes, setDraftTimes] = useState<Record<number, string>>({});
-  const [timeInputIndex, setTimeInputIndex] = useState<number | null>(null);
-  const [timeInputValue, setTimeInputValue] = useState('');
-  const [vitalsFormIndex, setVitalsFormIndex] = useState<number | null>(null);
+  const [recording, setRecording] = useState(false);
   const [form, setForm] = useState(emptyReadingForm());
   const [saving, setSaving] = useState(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
-  // "Are you sure?" gate before a new reading is actually persisted — the
-  // slot index awaiting confirmation, or null when no confirm card is open.
-  const [confirmSaveIndex, setConfirmSaveIndex] = useState<number | null>(null);
-  // Editing a previously saved reading (any completed Monitoring N bar, or
-  // a Monitoring History row) — opens a modal pre-filled from that reading.
+  // "Are you sure?" gate before a new reading is actually persisted.
+  const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
+  // Editing a previously saved reading (the recorded entry, or a Monitoring
+  // History row) — opens a modal pre-filled from that reading.
   const [editingReading, setEditingReading] = useState<AdminVitalReading | null>(null);
   const [editForm, setEditForm] = useState(emptyReadingForm());
   const [editTimeValue, setEditTimeValue] = useState('');
@@ -262,34 +242,13 @@ export function TaskVitalSignsBars({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
 
-  const visibleSlots = Math.max(manualSlotFloor, readings.length);
-  const canAddSlot = readings.length >= visibleSlots;
-
-  const startTimeEntry = (index: number) => {
-    setTimeInputValue(draftTimes[index] || '');
-    setTimeInputIndex(index);
-    setVitalsFormIndex(null);
-  };
-
-  const confirmTime = (index: number) => {
-    // TimePicker only ever produces a well-formed 'h:mm AM/PM' value (no
-    // free typing anymore), so there's nothing left to validate here beyond
-    // "was something actually picked".
-    if (!TIME_PATTERN.test(timeInputValue.trim())) {
-      toast.error('Select a time', { description: 'Choose an hour and minute before continuing.' });
-      return;
-    }
-    setDraftTimes((prev) => ({ ...prev, [index]: timeInputValue.trim() }));
-    setTimeInputIndex(null);
-  };
-
-  const openVitalsForm = (index: number) => {
+  const openVitalsForm = () => {
     setForm(emptyReadingForm());
-    setVitalsFormIndex(index);
+    setRecording(true);
   };
 
   const closeVitalsForm = () => {
-    setVitalsFormIndex(null);
+    setRecording(false);
     setForm(emptyReadingForm());
   };
 
@@ -304,16 +263,7 @@ export function TaskVitalSignsBars({
     setForm((prev) => ({ ...prev, oxygenUse: prev.oxygenUse === value ? '' : value }));
   };
 
-  const handleSaveReading = async (index: number) => {
-    const timeText = draftTimes[index];
-    const recordedAt = timeText ? buildRecordedAtIso(timeText) : null;
-    if (!recordedAt) {
-      toast.error('Monitoring time is required', {
-        description: 'Enter the time this reading was taken before saving.',
-      });
-      return;
-    }
-
+  const handleSaveReading = async () => {
     // Every field is required except Pain Level — checked by name first so
     // the error is "fill these in", not the more cryptic "that's not a
     // number" a blank field would otherwise fall through to.
@@ -356,7 +306,9 @@ export function TaskVitalSignsBars({
       const created = await createVitalSigns({
         patientId,
         taskId,
-        recordedAt,
+        // The actual moment of recording — a single-entry task has no
+        // separate "which scheduled slot is this" time to pick in advance.
+        recordedAt: new Date().toISOString(),
         temperature: temperature as number,
         heartRate: heartRate as number,
         respiratoryRate: respiratoryRate as number,
@@ -368,11 +320,6 @@ export function TaskVitalSignsBars({
       const next = [...readings, created];
       setReadings(next);
       onReadingsChange?.(next.length);
-      setDraftTimes((prev) => {
-        const rest = { ...prev };
-        delete rest[index];
-        return rest;
-      });
       closeVitalsForm();
       toast.success('Vital signs recorded');
     } catch (error) {
@@ -492,13 +439,12 @@ export function TaskVitalSignsBars({
     return (
       <View style={styles.loadingRow}>
         <ActivityIndicator size="small" color={Colors.red600} />
-        <Text style={styles.loadingText}>Loading vital signs check-ins...</Text>
+        <Text style={styles.loadingText}>Loading vital signs check-in...</Text>
       </View>
     );
   }
 
-  const slots = Array.from({ length: visibleSlots }, (_, i) => i);
-  const latestReading = readings.length > 0 ? readings[readings.length - 1] : null;
+  const reading = readings.length > 0 ? readings[readings.length - 1] : null;
   const newestFirstReadings = [...readings].reverse();
 
   return (
@@ -508,300 +454,215 @@ export function TaskVitalSignsBars({
         <View style={styles.headerRow}>
           <HeartPulse size={15} color={Colors.red600} />
           <Text style={styles.header}>Vital Signs Monitoring</Text>
-          <Text style={styles.headerHint}>
-            {readings.length}/{readingsRequired} needed to complete
+          <Text style={reading ? styles.statusBadgeDone : styles.statusBadgeNone}>
+            {reading ? 'Recorded' : 'Not Recorded'}
           </Text>
         </View>
-        {readings.length < readingsRequired ? (
+        {!reading ? (
           <Text style={styles.gateHint}>
-            Record at least {readingsRequired} completed vital sign checks before this task&apos;s
-            checklist can be marked complete.
+            Record the vital signs reading before this task&apos;s checklist can be marked complete.
           </Text>
         ) : (
           <Text style={styles.gateHintMet}>
-            Minimum met — the checklist step can now be marked complete.
+            Recorded — the checklist step can now be marked complete.
           </Text>
         )}
 
       <View style={styles.bars}>
-        {slots.map((index) => {
-          const reading = readings[index];
-          const isNextSlot = !reading && index === readings.length;
-          const status: SlotStatus = reading
-            ? 'completed'
-            : draftTimes[index]
-              ? 'time_entered'
-              : 'not_recorded';
-          const isEnteringTime = timeInputIndex === index;
-          const isEnteringVitals = vitalsFormIndex === index;
-
-          if (status === 'completed' && reading) {
-            return (
-              <View key={index} style={styles.barFilled}>
-                <View style={styles.barFilledTopRow}>
-                  <Text style={styles.monitoringLabel}>Monitoring {index + 1}</Text>
-                  <Pressable onPress={() => openEditReading(reading)} hitSlop={6} style={styles.editReadingBtn}>
-                    <Pencil size={12} color={Colors.gray500} />
-                    <Text style={styles.editReadingBtnText}>Edit</Text>
-                  </Pressable>
-                </View>
-                <View style={styles.barFilledHeader}>
-                  <Clock size={13} color={Colors.green700} />
-                  <Text style={styles.barFilledTime}>{formatTime(reading.recordedAt)}</Text>
-                  <Text style={styles.statusBadgeDone}>Completed ✓</Text>
-                  {reading.recordedByName ? (
-                    <Text style={styles.barFilledBy}>by {reading.recordedByName}</Text>
-                  ) : null}
-                </View>
-                <Text style={styles.barFilledSummary}>
-                  {reading.temperature != null ? `${reading.temperature}°C` : '—'}
-                  {' · '}
-                  {reading.heartRate != null ? `${reading.heartRate}bpm` : '—'}
-                  {' · '}
-                  {reading.bloodPressure || '—'}
-                  {' · '}
-                  {reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'}
-                </Text>
-                {reading.edited ? <Text style={styles.editedTag}>Edited</Text> : null}
-              </View>
-            );
-          }
-
-          return (
-            <View key={index}>
-              <Text style={styles.monitoringLabel}>Monitoring {index + 1}</Text>
-              {status === 'not_recorded' ? (
-                <Pressable
-                  disabled={!isNextSlot}
-                  onPress={() => startTimeEntry(index)}
-                  style={[styles.barEmpty, !isNextSlot && styles.barEmptyDisabled]}
-                >
-                  <Clock size={13} color={isNextSlot ? Colors.blue600 : Colors.gray400} />
-                  <Text style={[styles.barEmptyText, !isNextSlot && styles.barEmptyTextDisabled]}>
-                    {isNextSlot ? 'Tap to enter monitoring time' : 'Waiting on earlier entries'}
-                  </Text>
-                  <Text style={styles.statusBadgeNone}>Not Recorded</Text>
-                </Pressable>
-              ) : (
-                <View style={styles.barTimeSet}>
-                  <Clock size={13} color={Colors.orange700} />
-                  <Text style={styles.barTimeSetText}>{draftTimes[index]}</Text>
-                  <Text style={styles.statusBadgePending}>Time entered</Text>
-                  <Pressable onPress={() => startTimeEntry(index)} hitSlop={6} style={styles.changeTimeBtn}>
-                    <Pencil size={12} color={Colors.gray500} />
-                  </Pressable>
-                </View>
-              )}
-
-              {isEnteringTime ? (
-                <View style={[styles.entryPanel, Shadows.sm]}>
-                  <TimePicker
-                    label="Monitoring Time"
-                    format="12h"
-                    value={timeInputValue}
-                    onChange={setTimeInputValue}
-                  />
-                  <View style={styles.entryActions}>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onPress={() => setTimeInputIndex(null)}
-                      style={{ flex: 1 }}
-                    >
-                      <Text>Cancel</Text>
-                    </Button>
-                    <Button
-                      size="sm"
-                      onPress={() => confirmTime(index)}
-                      style={{ flex: 1, backgroundColor: Colors.blue600 }}
-                    >
-                      <Text style={{ color: Colors.white, fontWeight: '600' }}>Set Time</Text>
-                    </Button>
-                  </View>
-                </View>
-              ) : null}
-
-              {status === 'time_entered' && !isEnteringTime ? (
-                isEnteringVitals ? (
-                  <View style={[styles.entryPanel, Shadows.sm]}>
-                    <View style={styles.statusDotsRow}>
-                      {STATUS_DOTS.map((dot) => {
-                        const value = form[dot.key as keyof typeof form] as string;
-                        const abnormal = isAbnormal(dot.key, value);
-                        return (
-                          <View key={dot.key} style={styles.statusDotItem}>
-                            <View
-                              style={[
-                                styles.statusDot,
-                                { backgroundColor: abnormal ? Colors.orange600 : Colors.green600 },
-                              ]}
-                            />
-                            <Text style={styles.statusDotLabel}>{dot.label}</Text>
-                          </View>
-                        );
-                      })}
-                    </View>
-
-                    <VitalSignRow
-                      label="Temperature"
-                      hint="Normal: 36.1-37.5°C"
-                      abnormal={isAbnormal('temperature', form.temperature)}
-                    >
-                      <VitalValueInput
-                        value={form.temperature}
-                        onChangeText={(v) => setField('temperature', v)}
-                        unit="°C"
-                        abnormal={isAbnormal('temperature', form.temperature)}
-                        placeholder="—"
-                      />
-                    </VitalSignRow>
-
-                    <VitalSignRow
-                      label="Blood Pressure"
-                      hint="Normal: 90-140 / 60-90 mmHg"
-                      abnormal={isAbnormal('systolic', form.systolic) || isAbnormal('diastolic', form.diastolic)}
-                    >
-                      <View style={styles.bpRow}>
-                        <View style={styles.bpBox}>
-                          <VitalValueInput
-                            value={form.systolic}
-                            onChangeText={(v) => setField('systolic', v)}
-                            abnormal={isAbnormal('systolic', form.systolic)}
-                            placeholder="—"
-                            center
-                          />
-                        </View>
-                        <Text style={styles.bpSlash}>/</Text>
-                        <View style={styles.bpBox}>
-                          <VitalValueInput
-                            value={form.diastolic}
-                            onChangeText={(v) => setField('diastolic', v)}
-                            abnormal={isAbnormal('diastolic', form.diastolic)}
-                            placeholder="—"
-                            center
-                          />
-                        </View>
-                      </View>
-                    </VitalSignRow>
-
-                    <VitalSignRow
-                      label="Heart Rate"
-                      hint="Normal: 60-100 bpm"
-                      abnormal={isAbnormal('pulseRate', form.pulseRate)}
-                    >
-                      <VitalValueInput
-                        value={form.pulseRate}
-                        onChangeText={(v) => setField('pulseRate', v)}
-                        unit="bpm"
-                        abnormal={isAbnormal('pulseRate', form.pulseRate)}
-                        placeholder="—"
-                      />
-                    </VitalSignRow>
-
-                    <VitalSignRow
-                      label="Resp Rate"
-                      hint="Normal: 12-20/min"
-                      abnormal={isAbnormal('respiratoryRate', form.respiratoryRate)}
-                    >
-                      <VitalValueInput
-                        value={form.respiratoryRate}
-                        onChangeText={(v) => setField('respiratoryRate', v)}
-                        unit="/min"
-                        abnormal={isAbnormal('respiratoryRate', form.respiratoryRate)}
-                        placeholder="—"
-                      />
-                    </VitalSignRow>
-
-                    <VitalSignRow
-                      label="SpO2"
-                      hint="Normal: 95-100%"
-                      abnormal={isAbnormal('oxygenSaturation', form.oxygenSaturation)}
-                    >
-                      <VitalValueInput
-                        value={form.oxygenSaturation}
-                        onChangeText={(v) => setField('oxygenSaturation', v)}
-                        unit="%"
-                        abnormal={isAbnormal('oxygenSaturation', form.oxygenSaturation)}
-                        placeholder="—"
-                      />
-                    </VitalSignRow>
-
-                    <VitalSignRow label="O2 Use" hint="On supplemental oxygen?" abnormal={false}>
-                      <View style={styles.yesNoRow}>
-                        <Pressable
-                          onPress={() => setOxygenUse('yes')}
-                          style={[styles.yesNoBtn, form.oxygenUse === 'yes' && styles.yesNoBtnActive]}
-                        >
-                          <Text
-                            style={[styles.yesNoBtnText, form.oxygenUse === 'yes' && styles.yesNoBtnTextActive]}
-                          >
-                            Yes
-                          </Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() => setOxygenUse('no')}
-                          style={[styles.yesNoBtn, form.oxygenUse === 'no' && styles.yesNoBtnActive]}
-                        >
-                          <Text
-                            style={[styles.yesNoBtnText, form.oxygenUse === 'no' && styles.yesNoBtnTextActive]}
-                          >
-                            No
-                          </Text>
-                        </Pressable>
-                      </View>
-                    </VitalSignRow>
-
-                    <VitalSignRow
-                      label="Pain Level"
-                      hint="Scale: 0-10"
-                      abnormal={isAbnormal('painScale', form.painScale)}
-                    >
-                      <VitalValueInput
-                        value={form.painScale}
-                        onChangeText={(v) => setField('painScale', v)}
-                        unit="/10"
-                        abnormal={isAbnormal('painScale', form.painScale)}
-                        placeholder="—"
-                      />
-                    </VitalSignRow>
-
-                    <View style={styles.entryActions}>
-                      <Button variant="outline" size="sm" onPress={closeVitalsForm} style={{ flex: 1 }}>
-                        <View style={styles.btnInner}>
-                          <X size={14} color={Colors.foreground} />
-                          <Text>Cancel</Text>
-                        </View>
-                      </Button>
-                      <Button
-                        size="sm"
-                        onPress={() => setConfirmSaveIndex(index)}
-                        loading={saving}
-                        style={{ flex: 1, backgroundColor: Colors.blue600 }}
-                      >
-                        <View style={styles.btnInner}>
-                          <Check size={14} color={Colors.white} />
-                          <Text style={{ color: Colors.white, fontWeight: '600', flexShrink: 1 }}>Save Reading</Text>
-                        </View>
-                      </Button>
-                    </View>
-                  </View>
-                ) : (
-                  <Pressable onPress={() => openVitalsForm(index)} style={styles.inputVitalsBtn}>
-                    <HeartPulse size={13} color={Colors.white} />
-                    <Text style={styles.inputVitalsText}>Input Vital Signs</Text>
-                  </Pressable>
-                )
+        {reading ? (
+          <View style={styles.barFilled}>
+            <View style={styles.barFilledTopRow}>
+              <Pressable onPress={() => openEditReading(reading)} hitSlop={6} style={styles.editReadingBtn}>
+                <Pencil size={12} color={Colors.gray500} />
+                <Text style={styles.editReadingBtnText}>Edit</Text>
+              </Pressable>
+            </View>
+            <View style={styles.barFilledHeader}>
+              <Clock size={13} color={Colors.green700} />
+              <Text style={styles.barFilledTime}>
+                {formatDate(reading.recordedAt)} · {formatTime(reading.recordedAt)}
+              </Text>
+              <Text style={styles.statusBadgeDone}>Recorded ✓</Text>
+              {reading.recordedByName ? (
+                <Text style={styles.barFilledBy}>by {reading.recordedByName}</Text>
               ) : null}
             </View>
-          );
-        })}
+            <Text style={styles.barFilledSummary}>
+              {reading.temperature != null ? `${reading.temperature}°C` : '—'}
+              {' · '}
+              {reading.heartRate != null ? `${reading.heartRate}bpm` : '—'}
+              {' · '}
+              {reading.bloodPressure || '—'}
+              {' · '}
+              {reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'}
+            </Text>
+            {reading.edited ? <Text style={styles.editedTag}>Edited</Text> : null}
+          </View>
+        ) : recording ? (
+          <View style={[styles.entryPanel, Shadows.sm]}>
+            <View style={styles.statusDotsRow}>
+              {STATUS_DOTS.map((dot) => {
+                const value = form[dot.key as keyof typeof form] as string;
+                const abnormal = isAbnormal(dot.key, value);
+                return (
+                  <View key={dot.key} style={styles.statusDotItem}>
+                    <View
+                      style={[
+                        styles.statusDot,
+                        { backgroundColor: abnormal ? Colors.orange600 : Colors.green600 },
+                      ]}
+                    />
+                    <Text style={styles.statusDotLabel}>{dot.label}</Text>
+                  </View>
+                );
+              })}
+            </View>
 
-        {canAddSlot ? (
-          <Pressable onPress={() => setManualSlotFloor((v) => v + 1)} style={styles.addSlotBtn}>
-            <Plus size={14} color={Colors.blue600} />
-            <Text style={styles.addSlotText}>+ Add Monitoring Time</Text>
+            <VitalSignRow
+              label="Temperature"
+              hint="Normal: 36.1-37.5°C"
+              abnormal={isAbnormal('temperature', form.temperature)}
+            >
+              <VitalValueInput
+                value={form.temperature}
+                onChangeText={(v) => setField('temperature', v)}
+                unit="°C"
+                abnormal={isAbnormal('temperature', form.temperature)}
+                placeholder="—"
+              />
+            </VitalSignRow>
+
+            <VitalSignRow
+              label="Blood Pressure"
+              hint="Normal: 90-140 / 60-90 mmHg"
+              abnormal={isAbnormal('systolic', form.systolic) || isAbnormal('diastolic', form.diastolic)}
+            >
+              <View style={styles.bpRow}>
+                <View style={styles.bpBox}>
+                  <VitalValueInput
+                    value={form.systolic}
+                    onChangeText={(v) => setField('systolic', v)}
+                    abnormal={isAbnormal('systolic', form.systolic)}
+                    placeholder="—"
+                    center
+                  />
+                </View>
+                <Text style={styles.bpSlash}>/</Text>
+                <View style={styles.bpBox}>
+                  <VitalValueInput
+                    value={form.diastolic}
+                    onChangeText={(v) => setField('diastolic', v)}
+                    abnormal={isAbnormal('diastolic', form.diastolic)}
+                    placeholder="—"
+                    center
+                  />
+                </View>
+              </View>
+            </VitalSignRow>
+
+            <VitalSignRow
+              label="Heart Rate"
+              hint="Normal: 60-100 bpm"
+              abnormal={isAbnormal('pulseRate', form.pulseRate)}
+            >
+              <VitalValueInput
+                value={form.pulseRate}
+                onChangeText={(v) => setField('pulseRate', v)}
+                unit="bpm"
+                abnormal={isAbnormal('pulseRate', form.pulseRate)}
+                placeholder="—"
+              />
+            </VitalSignRow>
+
+            <VitalSignRow
+              label="Resp Rate"
+              hint="Normal: 12-20/min"
+              abnormal={isAbnormal('respiratoryRate', form.respiratoryRate)}
+            >
+              <VitalValueInput
+                value={form.respiratoryRate}
+                onChangeText={(v) => setField('respiratoryRate', v)}
+                unit="/min"
+                abnormal={isAbnormal('respiratoryRate', form.respiratoryRate)}
+                placeholder="—"
+              />
+            </VitalSignRow>
+
+            <VitalSignRow
+              label="SpO2"
+              hint="Normal: 95-100%"
+              abnormal={isAbnormal('oxygenSaturation', form.oxygenSaturation)}
+            >
+              <VitalValueInput
+                value={form.oxygenSaturation}
+                onChangeText={(v) => setField('oxygenSaturation', v)}
+                unit="%"
+                abnormal={isAbnormal('oxygenSaturation', form.oxygenSaturation)}
+                placeholder="—"
+              />
+            </VitalSignRow>
+
+            <VitalSignRow label="O2 Use" hint="On supplemental oxygen?" abnormal={false}>
+              <View style={styles.yesNoRow}>
+                <Pressable
+                  onPress={() => setOxygenUse('yes')}
+                  style={[styles.yesNoBtn, form.oxygenUse === 'yes' && styles.yesNoBtnActive]}
+                >
+                  <Text style={[styles.yesNoBtnText, form.oxygenUse === 'yes' && styles.yesNoBtnTextActive]}>
+                    Yes
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setOxygenUse('no')}
+                  style={[styles.yesNoBtn, form.oxygenUse === 'no' && styles.yesNoBtnActive]}
+                >
+                  <Text style={[styles.yesNoBtnText, form.oxygenUse === 'no' && styles.yesNoBtnTextActive]}>
+                    No
+                  </Text>
+                </Pressable>
+              </View>
+            </VitalSignRow>
+
+            <VitalSignRow
+              label="Pain Level"
+              hint="Scale: 0-10"
+              abnormal={isAbnormal('painScale', form.painScale)}
+            >
+              <VitalValueInput
+                value={form.painScale}
+                onChangeText={(v) => setField('painScale', v)}
+                unit="/10"
+                abnormal={isAbnormal('painScale', form.painScale)}
+                placeholder="—"
+              />
+            </VitalSignRow>
+
+            <View style={styles.entryActions}>
+              <Button variant="outline" size="sm" onPress={closeVitalsForm} style={{ flex: 1 }}>
+                <View style={styles.btnInner}>
+                  <X size={14} color={Colors.foreground} />
+                  <Text>Cancel</Text>
+                </View>
+              </Button>
+              <Button
+                size="sm"
+                onPress={() => setConfirmSaveOpen(true)}
+                loading={saving}
+                style={{ flex: 1, backgroundColor: Colors.blue600 }}
+              >
+                <View style={styles.btnInner}>
+                  <Check size={14} color={Colors.white} />
+                  <Text style={{ color: Colors.white, fontWeight: '600', flexShrink: 1 }}>Save Reading</Text>
+                </View>
+              </Button>
+            </View>
+          </View>
+        ) : (
+          <Pressable onPress={openVitalsForm} style={styles.barEmpty}>
+            <HeartPulse size={13} color={Colors.blue600} />
+            <Text style={styles.barEmptyText}>Tap to record vital signs</Text>
           </Pressable>
-        ) : null}
+        )}
         </View>
       </View>
 
@@ -811,38 +672,38 @@ export function TaskVitalSignsBars({
             <Activity size={14} color={Colors.blue600} />
             <Text style={styles.header}>Latest Vital Signs</Text>
           </View>
-          {latestReading ? (
+          {reading ? (
             <>
               <Text style={styles.summaryTime}>
-                {formatDate(latestReading.recordedAt)} · {formatTime(latestReading.recordedAt)}
+                {formatDate(reading.recordedAt)} · {formatTime(reading.recordedAt)}
               </Text>
               <View style={styles.summaryGrid}>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>TEMP</Text>
                   <Text style={styles.summaryCellValue}>
-                    {latestReading.temperature != null ? `${latestReading.temperature}°C` : '—'}
+                    {reading.temperature != null ? `${reading.temperature}°C` : '—'}
                   </Text>
                 </View>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>PULSE</Text>
                   <Text style={styles.summaryCellValue}>
-                    {latestReading.heartRate != null ? `${latestReading.heartRate}bpm` : '—'}
+                    {reading.heartRate != null ? `${reading.heartRate}bpm` : '—'}
                   </Text>
                 </View>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>RESP</Text>
                   <Text style={styles.summaryCellValue}>
-                    {latestReading.respiratoryRate != null ? `${latestReading.respiratoryRate}/min` : '—'}
+                    {reading.respiratoryRate != null ? `${reading.respiratoryRate}/min` : '—'}
                   </Text>
                 </View>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>BP</Text>
-                  <Text style={styles.summaryCellValue}>{latestReading.bloodPressure || '—'}</Text>
+                  <Text style={styles.summaryCellValue}>{reading.bloodPressure || '—'}</Text>
                 </View>
                 <View style={styles.summaryCell}>
                   <Text style={styles.summaryCellLabel}>O2 SAT</Text>
                   <Text style={styles.summaryCellValue}>
-                    {latestReading.oxygenSaturation != null ? `${latestReading.oxygenSaturation}%` : '—'}
+                    {reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'}
                   </Text>
                 </View>
               </View>
@@ -866,24 +727,24 @@ export function TaskVitalSignsBars({
             // regions fight each other. History just flows as part of the
             // one outer scroll instead.
             <View style={styles.historyList}>
-              {newestFirstReadings.map((reading) => {
-                const isExpanded = expandedHistoryId === reading.id;
+              {newestFirstReadings.map((r) => {
+                const isExpanded = expandedHistoryId === r.id;
                 return (
-                  <View key={reading.id} style={styles.historyRow}>
+                  <View key={r.id} style={styles.historyRow}>
                     <Pressable
                       style={styles.historyRowHeader}
-                      onPress={() => setExpandedHistoryId(isExpanded ? null : reading.id)}
+                      onPress={() => setExpandedHistoryId(isExpanded ? null : r.id)}
                     >
                       <View style={{ flex: 1 }}>
                         <Text style={styles.historyRowTime}>
-                          {formatDate(reading.recordedAt)} · {formatTime(reading.recordedAt)}
+                          {formatDate(r.recordedAt)} · {formatTime(r.recordedAt)}
                         </Text>
                         <Text style={styles.historyRowMeta}>
-                          #{reading.id}
-                          {reading.recordedByName ? ` · by ${reading.recordedByName}` : ''}
+                          #{r.id}
+                          {r.recordedByName ? ` · by ${r.recordedByName}` : ''}
                         </Text>
                       </View>
-                      <Text style={styles.statusBadgeDone}>Completed ✓</Text>
+                      <Text style={styles.statusBadgeDone}>Recorded ✓</Text>
                       {isExpanded ? (
                         <ChevronUp size={14} color={Colors.gray500} />
                       ) : (
@@ -892,19 +753,19 @@ export function TaskVitalSignsBars({
                     </Pressable>
                     {isExpanded ? (
                       <Text style={styles.historyRowDetail}>
-                        Temp {reading.temperature != null ? `${reading.temperature}°C` : '—'} ·
-                        {' '}Pulse {reading.heartRate != null ? `${reading.heartRate}bpm` : '—'} ·
-                        {' '}Resp {reading.respiratoryRate != null ? `${reading.respiratoryRate}/min` : '—'} ·
-                        {' '}BP {reading.bloodPressure || '—'} ·
-                        {' '}O2 {reading.oxygenSaturation != null ? `${reading.oxygenSaturation}%` : '—'}
-                        {reading.oxygenUse != null ? ` · O2 Use ${reading.oxygenUse ? 'Yes' : 'No'}` : ''}
-                        {reading.painScale != null ? ` · Pain ${reading.painScale}/10` : ''}
-                        {reading.edited ? ' · (edited)' : ''}
+                        Temp {r.temperature != null ? `${r.temperature}°C` : '—'} ·
+                        {' '}Pulse {r.heartRate != null ? `${r.heartRate}bpm` : '—'} ·
+                        {' '}Resp {r.respiratoryRate != null ? `${r.respiratoryRate}/min` : '—'} ·
+                        {' '}BP {r.bloodPressure || '—'} ·
+                        {' '}O2 {r.oxygenSaturation != null ? `${r.oxygenSaturation}%` : '—'}
+                        {r.oxygenUse != null ? ` · O2 Use ${r.oxygenUse ? 'Yes' : 'No'}` : ''}
+                        {r.painScale != null ? ` · Pain ${r.painScale}/10` : ''}
+                        {r.edited ? ' · (edited)' : ''}
                       </Text>
                     ) : null}
                     {isExpanded ? (
                       <Pressable
-                        onPress={() => openEditReading(reading)}
+                        onPress={() => openEditReading(r)}
                         hitSlop={6}
                         style={styles.historyEditBtn}
                       >
@@ -922,17 +783,15 @@ export function TaskVitalSignsBars({
     </View>
 
     <ConfirmDialog
-      open={confirmSaveIndex !== null}
-      onOpenChange={(open) => !open && setConfirmSaveIndex(null)}
+      open={confirmSaveOpen}
+      onOpenChange={setConfirmSaveOpen}
       title="Save this vital signs reading?"
       description="Double-check the values above before saving — once recorded, this reading becomes part of the patient's monitoring history."
       confirmLabel="Save Reading"
       loading={saving}
       onConfirm={async () => {
-        if (confirmSaveIndex !== null) {
-          await handleSaveReading(confirmSaveIndex);
-        }
-        setConfirmSaveIndex(null);
+        await handleSaveReading();
+        setConfirmSaveOpen(false);
       }}
     />
 
@@ -1146,13 +1005,6 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 8,
   },
-  monitoringLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: Colors.gray500,
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
   gateHintMet: {
     fontSize: 11,
     color: Colors.green700,
@@ -1223,7 +1075,6 @@ const styles = StyleSheet.create({
   loadingText: { fontSize: 12, color: Colors.gray500 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   header: { fontSize: 12, fontWeight: '700', color: Colors.gray800 },
-  headerHint: { fontSize: 11, color: Colors.gray500, marginLeft: 'auto' },
   gateHint: { fontSize: 11, color: Colors.orange700, lineHeight: 15 },
   bars: { gap: 8 },
   barFilled: {
@@ -1234,7 +1085,7 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 4,
   },
-  barFilledTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  barFilledTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' },
   editReadingBtn: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   editReadingBtnText: { fontSize: 10, fontWeight: '700', color: Colors.gray500 },
   editedTag: { fontSize: 10, fontStyle: 'italic', color: Colors.gray500 },
@@ -1251,18 +1102,10 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 999,
   },
-  statusBadgePending: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: Colors.orange700,
-    backgroundColor: Colors.orange50,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 999,
-  },
   barEmpty: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 6,
     borderWidth: 1,
     borderStyle: 'dashed',
@@ -1270,38 +1113,9 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.blue50,
     borderRadius: Radius.md,
     paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingVertical: 12,
   },
-  barEmptyDisabled: {
-    borderColor: Colors.border,
-    backgroundColor: Colors.gray50,
-  },
-  barEmptyText: { fontSize: 12, fontWeight: '600', color: Colors.blue700 },
-  barEmptyTextDisabled: { color: Colors.gray400, fontWeight: '500' },
-  barTimeSet: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: Colors.orange100,
-    backgroundColor: Colors.orange50,
-    borderRadius: Radius.md,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-  },
-  barTimeSetText: { fontSize: 12, fontWeight: '700', color: Colors.orange700 },
-  changeTimeBtn: { marginLeft: 'auto', padding: 4 },
-  inputVitalsBtn: {
-    marginTop: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    borderRadius: Radius.md,
-    backgroundColor: Colors.red600,
-  },
-  inputVitalsText: { fontSize: 12, fontWeight: '700', color: Colors.white },
+  barEmptyText: { fontSize: 13, fontWeight: '600', color: Colors.blue700 },
   entryPanel: {
     marginTop: 8,
     borderWidth: 1,
@@ -1428,17 +1242,6 @@ const styles = StyleSheet.create({
   yesNoBtnTextActive: { color: Colors.blue700 },
   entryActions: { flexDirection: 'row', gap: 8 },
   btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 },
-  addSlotBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.blue200,
-  },
-  addSlotText: { fontSize: 12, fontWeight: '600', color: Colors.blue600 },
   editModalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',

@@ -12,7 +12,7 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from rest_framework.test import APITestCase
 
-from .models import NurseProfile, Patient, Task
+from .models import NurseProfile, Patient, Task, VitalSigns
 
 
 def make_nurse(email, first, last):
@@ -124,3 +124,70 @@ class TaskChecklistTests(APITestCase):
         reordered = list(reversed(task.checklist))
         patch = self.client.patch('/api/tasks/T907/', {'checklist': reordered}, format='json')
         self.assertEqual(patch.status_code, 400)
+
+
+class VitalSignsTaskChecklistTests(APITestCase):
+    """
+    A 'vital_signs' category task is the one exception to the generic 6-step
+    checklist above: Task.save() always collapses it to a single "Vital
+    Signs Check" item, gated behind one recorded VitalSigns row (not the old
+    6-item/2-reading requirement) — see Task.save() and
+    TaskSerializer.validate_checklist.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.nurse = make_nurse('nurse@hospital.com', 'Ben', 'Diaz')
+        self.patient = Patient.objects.create(
+            patient_code='P910', name='Ana Reyes', age=55, gender='Female',
+            room='110-A', diagnosis='Observation', admission_date=datetime.date(2026, 3, 2),
+            risk_level='medium',
+        )
+        self.client.force_authenticate(user=self.nurse)
+
+    def make_vitals_task(self, code):
+        return Task.objects.create(
+            task_code=code, patient=self.patient, patient_name=self.patient.name,
+            title='Vital Signs Check', assigned_to='Ben Diaz', assigned_nurse=self.nurse,
+            category='vital_signs',
+        )
+
+    def test_new_vital_signs_task_gets_exactly_one_checklist_item(self):
+        task = self.make_vitals_task('T920')
+        self.assertEqual(task.checklist, [{'text': 'Vital Signs Check', 'done': False}])
+
+    def test_cannot_mark_done_with_no_recorded_reading(self):
+        task = self.make_vitals_task('T921')
+        patch = self.client.patch(
+            '/api/tasks/T921/', {'checklist': [{'text': 'Vital Signs Check', 'done': True}]}, format='json'
+        )
+        self.assertEqual(patch.status_code, 400)
+
+    def test_one_recorded_reading_is_enough_to_mark_done_and_complete(self):
+        task = self.make_vitals_task('T922')
+        VitalSigns.objects.create(patient=self.patient, task=task, recorded_by=self.nurse, heart_rate=80)
+
+        patch = self.client.patch(
+            '/api/tasks/T922/', {'checklist': [{'text': 'Vital Signs Check', 'done': True}]}, format='json'
+        )
+        self.assertEqual(patch.status_code, 200, patch.data)
+
+        response = self.client.post('/api/tasks/T922/complete/')
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_an_oversized_legacy_checklist_is_collapsed_on_save(self):
+        # Simulates a row saved before Task.save() always collapsed this —
+        # the generic 6-item default with only the last item renamed.
+        task = self.make_vitals_task('T923')
+        Task.objects.filter(pk=task.pk).update(checklist=[
+            {'text': 'Verify patient identity', 'done': True},
+            {'text': 'Review task/instructions', 'done': True},
+            {'text': 'Check required patient information', 'done': False},
+            {'text': 'Perform assigned task', 'done': False},
+            {'text': 'Document result', 'done': False},
+            {'text': 'Vital Signs Check', 'done': False},
+        ])
+        task.refresh_from_db()
+        task.title = task.title  # trivial change to force a real save()
+        task.save()
+        self.assertEqual(task.checklist, [{'text': 'Vital Signs Check', 'done': False}])

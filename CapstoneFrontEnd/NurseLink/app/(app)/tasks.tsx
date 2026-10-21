@@ -52,7 +52,9 @@ import { Colors, Shadows, Radius } from '../../constants/colors';
 
 type SortBy = 'newest' | 'oldest' | 'priority' | 'status';
 
-const VITALS_READINGS_REQUIRED = 2;
+// One monitoring entry per Vital Signs Check task — recurring checks happen
+// via the next scheduled task, not by repeating entries inside this one.
+const VITALS_READINGS_REQUIRED = 1;
 
 const SORT_OPTIONS = [
   { label: 'Newest', value: 'newest' },
@@ -369,7 +371,7 @@ export default function TasksPage() {
       readingCount < VITALS_READINGS_REQUIRED
     ) {
       toast.error('Vital signs not recorded yet', {
-        description: `Record at least ${VITALS_READINGS_REQUIRED} vital sign readings below before completing this step.`,
+        description: 'Record the vital signs reading below before completing this step.',
       });
       return;
     }
@@ -449,17 +451,15 @@ export default function TasksPage() {
       return 0;
     });
 
-  const getPriorityStyle = (priority: string) => {
-    switch (priority) {
-      case 'high':
-        return { backgroundColor: Colors.red50, borderColor: Colors.red200 };
-      case 'medium':
-        return { backgroundColor: Colors.orange50, borderColor: Colors.orange100 };
-      case 'low':
-        return { backgroundColor: Colors.green50, borderColor: Colors.green200 };
-      default:
-        return { backgroundColor: Colors.gray50, borderColor: Colors.gray200 };
+  // Completion status is the card's primary color, not risk/priority — a
+  // card background should never make an unfinished task look done (or vice
+  // versa). Risk stays visible as the thin left-border accent stripe and
+  // the badge's text color only, never as a full background fill.
+  const getCardStatusStyle = (task: Task) => {
+    if (task.status === 'completed') {
+      return { backgroundColor: Colors.green50, borderColor: Colors.green200 };
     }
+    return { backgroundColor: Colors.white, borderColor: Colors.gray200 };
   };
 
   const RISK_LABELS: Record<string, string> = { high: 'High risk', medium: 'Medium risk', low: 'Low risk' };
@@ -608,7 +608,7 @@ export default function TasksPage() {
                 <Card
                   style={{
                     ...styles.taskCard,
-                    ...getPriorityStyle(task.priority),
+                    ...getCardStatusStyle(task),
                     borderLeftWidth: 4,
                     borderLeftColor: RISK_COLORS[task.priority] || Colors.gray400,
                     ...(highlightedTaskId === task.id ? styles.taskHighlighted : {}),
@@ -624,7 +624,6 @@ export default function TasksPage() {
                           </Text>
                           <Badge
                             variant="outline"
-                            style={getPriorityStyle(task.priority)}
                             textStyle={{ ...styles.badgeXs, color: RISK_COLORS[task.priority] || Colors.gray600 }}
                           >
                             {RISK_LABELS[task.priority] || task.priority}
@@ -742,9 +741,7 @@ export default function TasksPage() {
                                           ]}
                                         >
                                           {item.text}
-                                          {isLocked
-                                            ? ` (record ${VITALS_READINGS_REQUIRED} vitals first)`
-                                            : ''}
+                                          {isLocked ? ' (record vitals first)' : ''}
                                         </Text>
                                       </Pressable>
                                     );
@@ -856,11 +853,14 @@ export default function TasksPage() {
                 {vitalsModalTask.patientName} ({vitalsModalTask.patientId}) · Room{' '}
                 {vitalsModalTask.patientRoom || '—'}
               </Text>
+              <Text style={styles.vitalsModalSubtitle}>
+                Assigned nurse: {vitalsModalTask.assignedTo || '—'}
+                {vitalsModalTask.dueTime ? ` · Scheduled ${vitalsModalTask.dueTime}` : ''}
+              </Text>
               <ScrollView style={styles.vitalsModalScroll} keyboardShouldPersistTaps="handled">
                 <TaskVitalSignsBars
                   taskId={vitalsModalTask.id}
                   patientId={vitalsModalTask.patientId}
-                  readingsRequired={VITALS_READINGS_REQUIRED}
                   onReadingsChange={(count) =>
                     setVitalsReadingCounts((prev) => ({ ...prev, [vitalsModalTask.id]: count }))
                   }

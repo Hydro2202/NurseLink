@@ -1858,20 +1858,22 @@ class TaskSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     'Checklist steps cannot be added, removed, or reworded — only their done status can change.'
                 )
-        # Vital-signs tasks gate their final checklist step behind actually
-        # having recorded readings — see VitalSigns.task — so a nurse can't
-        # tick "done" without doing at least 2 real check-ins. Only fires on
-        # the transition to done, so an already-completed task re-saved
-        # (e.g. editing an earlier field) never gets newly blocked.
+        # Vital-signs tasks gate their one checklist step behind actually
+        # having recorded a reading — see VitalSigns.task — so a nurse can't
+        # tick "done" without doing the real check-in. One recorded reading
+        # per scheduled task (not the old 2-of-3 requirement); the recurring
+        # schedule is the next task, not more entries inside this one. Only
+        # fires on the transition to done, so an already-completed task
+        # re-saved (e.g. editing an earlier field) never gets newly blocked.
         instance = self.instance
         if instance is not None and instance.category == 'vital_signs' and value:
             was_done = bool(instance.checklist) and bool(instance.checklist[-1].get('done'))
             now_done = bool(value[-1].get('done'))
             if now_done and not was_done:
                 reading_count = VitalSigns.objects.filter(task=instance).count()
-                if reading_count < 2:
+                if reading_count < 1:
                     raise serializers.ValidationError(
-                        'Record at least 2 vital sign readings before completing this step.'
+                        'Record the vital signs reading before completing this step.'
                     )
         return value
 

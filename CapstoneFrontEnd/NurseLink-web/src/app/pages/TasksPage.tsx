@@ -56,7 +56,9 @@ import {
 } from '../components/ui/dialog';
 import { toast } from 'sonner';
 
-const VITALS_READINGS_REQUIRED = 2;
+// One monitoring entry per Vital Signs Check task — recurring checks happen
+// via the next scheduled task, not by repeating entries inside this one.
+const VITALS_READINGS_REQUIRED = 1;
 
 /** "Mar 15" from an ISO "YYYY-MM-DD" — '' if blank (predates dueDate).
  * Exported for NurseTasksPage.tsx, which shows the same task cards in the
@@ -360,7 +362,7 @@ export default function TasksPage() {
       readingCount < VITALS_READINGS_REQUIRED
     ) {
       toast.error('Vital signs not recorded yet', {
-        description: `Record at least ${VITALS_READINGS_REQUIRED} vital sign readings below before completing this step.`,
+        description: 'Record the vital signs reading below before completing this step.',
       });
       return;
     }
@@ -440,14 +442,12 @@ export default function TasksPage() {
   const RISK_LABELS: Record<string, string> = { high: 'High risk', medium: 'Medium risk', low: 'Low risk' };
   const RISK_TEXT_COLORS: Record<string, string> = { high: '#DC2626', medium: '#EA580C', low: '#16A34A' };
 
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'high': return 'bg-red-50 border-red-200';
-      case 'medium': return 'bg-orange-50 border-orange-100';
-      case 'low': return 'bg-green-50 border-green-200';
-      default: return 'bg-gray-50 border-gray-200';
-    }
-  };
+  // Completion status is the card's primary color, not risk/priority — a
+  // card background should never make an unfinished task look done (or vice
+  // versa). Risk stays visible as the thin left-border accent stripe and
+  // the badge's text color only, never as a full background fill.
+  const getCardStatusColor = (status: string) =>
+    status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200';
 
   const getCategoryIcon = (category: string) => {
     switch (category) {
@@ -566,7 +566,7 @@ export default function TasksPage() {
             <Card
               key={task.id}
               id={`task-${task.id}`}
-              className={`border-2 border-l-4 ${getPriorityColor(task.priority)} hover:shadow-md transition-all ${
+              className={`border-2 border-l-4 ${getCardStatusColor(task.status)} hover:shadow-md transition-all ${
                 highlightedTaskId === task.id ? 'ring-4 ring-blue-500 ring-opacity-50 shadow-lg scale-105' : ''
               }`}
               style={{ borderLeftColor: RISK_TEXT_COLORS[task.priority] || '#9CA3AF' }}
@@ -694,7 +694,7 @@ export default function TasksPage() {
                                       }`}
                                     >
                                       {item.text}
-                                      {isLocked ? ` (record ${VITALS_READINGS_REQUIRED} vitals first)` : ''}
+                                      {isLocked ? ' (record vitals first)' : ''}
                                     </span>
                                   </button>
                                 );
@@ -795,6 +795,8 @@ export default function TasksPage() {
               {vitalsModalTask
                 ? `${vitalsModalTask.patientName} (${vitalsModalTask.patientId}) · Room ${
                     vitalsModalTask.patientRoom || '—'
+                  } · Assigned nurse: ${vitalsModalTask.assignedTo || '—'}${
+                    vitalsModalTask.dueTime ? ` · Scheduled ${vitalsModalTask.dueTime}` : ''
                   }`
                 : ''}
             </DialogDescription>
@@ -804,7 +806,6 @@ export default function TasksPage() {
               key={vitalsModalTask.id}
               taskId={vitalsModalTask.id}
               patientId={vitalsModalTask.patientId}
-              readingsRequired={VITALS_READINGS_REQUIRED}
               onReadingsChange={(count) =>
                 setVitalsReadingCounts((prev) => ({ ...prev, [vitalsModalTask.id]: count }))
               }
