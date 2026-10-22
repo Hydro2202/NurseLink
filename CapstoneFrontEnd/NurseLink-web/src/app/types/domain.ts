@@ -672,7 +672,8 @@ export interface AnalyticsData {
   /** Tasks created per day — a real count with a real date label. */
   taskVolume: { date: string; label: string; value: number }[];
   delayData: { value: number; label: string }[];
-  taskTypes: { value: number; color: string; text: string; label?: string }[];
+  /** value = rounded percentage; count = the real task count behind it. */
+  taskTypes: { value: number; count?: number; color: string; text: string; label?: string }[];
   burnout: { value: number; label: string; frontColor?: string }[];
   kpis: {
     completionRate: number;

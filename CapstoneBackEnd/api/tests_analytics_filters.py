@@ -262,3 +262,16 @@ class AnalyticsFilterTests(TestCase):
         response = self.client.get('/api/analytics/')
         self.assertEqual(response.status_code, 200)
         self.assertNotIn('workloadTrend', response.json())
+
+    def test_task_types_carry_the_real_count_alongside_the_percentage(self):
+        # The Task Type donut's center total and legend counts read `count`
+        # directly instead of back-computing it from the rounded percentage.
+        for i, category in enumerate(['medication', 'medication', 'assessment']):
+            Task.objects.create(task_code=f'T95{i}', title='t', assigned_to='X', category=category)
+
+        response = self.client.get('/api/analytics/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        counts = {row['label']: row['count'] for row in data['taskTypes']}
+        self.assertEqual(counts, {'medication': 2, 'assessment': 1})
+        self.assertEqual(sum(counts.values()), data['kpis']['totalTasks'])

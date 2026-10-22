@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, Pressable, Modal, ScrollView, StyleSheet, useWindowDimensions } from 'react-native';
-import { SlidersHorizontal, X } from 'lucide-react-native';
+import { SlidersHorizontal, X, RotateCcw } from 'lucide-react-native';
 import { Select } from '../Select';
 import { DatePicker } from '../DatePicker';
 import { Input } from '../Input';
@@ -109,7 +109,7 @@ export function FilterBar({ filters, onChange, onReset, departments, nurses }: F
     <View style={styles.controlsGrid}>
       <View style={styles.field}>
         <Select
-          label="Date range"
+          label="Date Range"
           value={filters.datePreset}
           onValueChange={(value) => onChange({ ...filters, datePreset: value as DashboardFilters['datePreset'] })}
           options={DATE_OPTIONS}
@@ -161,7 +161,7 @@ export function FilterBar({ filters, onChange, onReset, departments, nurses }: F
       </View>
       <View style={styles.field}>
         <Select
-          label="Risk level"
+          label="Risk Level"
           value={filters.risk}
           onValueChange={(value) => onChange({ ...filters, risk: value })}
           options={RISK_OPTIONS}
@@ -206,19 +206,22 @@ export function FilterBar({ filters, onChange, onReset, departments, nurses }: F
     return (
       <View style={styles.desktopBar}>
         {controls}
-        {activeChips.length > 0 ? (
-          <View style={styles.chipsRow}>
-            {activeChips.map((chip) => (
-              <Pressable key={chip.key} style={styles.chip} onPress={chip.clear}>
-                <Text style={styles.chipText}>{chip.label}</Text>
-                <X size={12} color={Colors.blue700} />
-              </Pressable>
-            ))}
-            <Pressable style={styles.resetLink} onPress={onReset}>
-              <Text style={styles.resetText}>Reset filters</Text>
+        <View style={styles.chipsRow}>
+          {activeChips.map((chip) => (
+            <Pressable key={chip.key} style={styles.chip} onPress={chip.clear}>
+              <Text style={styles.chipText}>{chip.label}</Text>
+              <X size={12} color={Colors.blue700} />
             </Pressable>
-          </View>
-        ) : null}
+          ))}
+          <Pressable
+            style={[styles.clearLink, activeChips.length === 0 && styles.clearLinkIdle]}
+            onPress={onReset}
+            disabled={activeChips.length === 0}
+          >
+            <RotateCcw size={12} color={Colors.blue600} />
+            <Text style={styles.clearText}>Clear Filters</Text>
+          </Pressable>
+        </View>
         {nursePicker}
       </View>
     );
@@ -272,11 +275,17 @@ export function FilterBar({ filters, onChange, onReset, departments, nurses }: F
 const styles = StyleSheet.create({
   desktopBar: {
     backgroundColor: Colors.card,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    padding: 16,
-    gap: 10,
+    borderWidth: 1,
+    borderColor: '#D9E6FA',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 8,
+    gap: 6,
   },
+  clearLink: { flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto', paddingVertical: 4, paddingHorizontal: 4 },
+  clearLinkIdle: { opacity: 0.85 },
+  clearText: { fontSize: 12, fontWeight: '600', color: Colors.blue600 },
   mobileBar: {
     backgroundColor: Colors.card,
     borderBottomWidth: 1,

@@ -749,7 +749,11 @@ export default function AppLayout() {
               ) : null}
               <View>
                 <Text style={styles.pageTitle}>{currentPageName}</Text>
-                <Text style={styles.welcome}>Welcome back, {user.name}</Text>
+                <Text style={pathname.includes('analytics') ? styles.pageSubtitle : styles.welcome}>
+                  {pathname.includes('analytics')
+                    ? 'Operations overview, clinical activity, and nurse workload.'
+                    : `Welcome back, ${user.name}`}
+                </Text>
               </View>
             </View>
             <View style={styles.headerActions}>
@@ -760,6 +764,14 @@ export default function AppLayout() {
                 size={36}
                 onPress={() => setProfileMenuOpen(true)}
               />
+              {isDesktop ? (
+                <Pressable onPress={() => setProfileMenuOpen(true)} style={styles.headerIdentity}>
+                  <Text style={styles.headerIdentityName} numberOfLines={1}>{user.name}</Text>
+                  <Text style={styles.headerIdentityRole}>
+                    {user.role === 'head_nurse' ? 'Head Nurse' : user.role === 'admin' ? 'Administrator' : 'Staff Nurse'}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
 
@@ -1203,6 +1215,14 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     fontWeight: '700',
     color: c.blue600,
   },
+  pageSubtitle: {
+    fontSize: scale(12.5),
+    fontWeight: '500',
+    color: '#64748B',
+  },
+  headerIdentity: { marginLeft: space(2), maxWidth: 170 },
+  headerIdentityName: { fontSize: scale(13), fontWeight: '700', color: c.blue800 },
+  headerIdentityRole: { fontSize: scale(11), color: '#64748B' },
   desktopContent: {
     flex: 1,
     // Every page pads its own content by 16, so 8 here puts page content at

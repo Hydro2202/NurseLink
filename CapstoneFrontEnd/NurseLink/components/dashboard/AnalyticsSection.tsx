@@ -1,34 +1,75 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, LayoutChangeEvent, useWindowDimensions } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, LayoutChangeEvent, ViewStyle } from 'react-native';
+import {
+  BedDouble, Users, ListChecks, BarChart3, Clock, PieChart as PieChartIcon, AlertTriangle,
+} from 'lucide-react-native';
 import { BarChart, PieChart } from '../Charts';
-import { TrendingUp, ListChecks, Clock, PieChart as PieChartIcon, BedDouble, Users } from 'lucide-react-native';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../Card';
-import { Colors } from '../../constants/colors';
 import type { AnalyticsData } from '../../types/domain';
 
-// Card.tsx's own content inset (1px border + 24px padding, each side) —
-// the chart inside a card must subtract this or it overflows/clips.
-const CARD_INSET = (1 + 24) * 2;
-/** Below this measured card width, a chart stacks to one column even on an
- * otherwise-wide screen (matches the dashboard's own phone/desktop split). */
-const TWO_COLUMN_MIN_WIDTH = 640;
+/**
+ * Head Nurse Analytics charts, one exported card per chart so the page can
+ * lay them out in the reference grid (Patient Flow | Patients by Status,
+ * Task Performance | Task Volume, and Shift & Delay / Task Type stacked
+ * beside Nurse Workload). Every card reads straight from the /analytics/
+ * response — nothing here is computed from placeholder data.
+ */
+
+/** The dashboard's own palette (see the Analytics design spec). */
+export const AN = {
+  navy: '#102A63',
+  blue: '#2563EB',
+  blueSoft: '#EAF1FF',
+  pageBg: '#F0F5FF',
+  border: '#D9E6FA',
+  text: '#1E293B',
+  text2: '#64748B',
+  grid: '#E7EEFA',
+  green: '#16A765',
+  greenSoft: '#E7F7EF',
+  orange: '#F59E0B',
+  orangeSoft: '#FFF4E0',
+  red: '#EF4444',
+  redSoft: '#FDECEC',
+  purple: '#7C3AED',
+  purpleSoft: '#F1EAFE',
+};
+
+/** Same four status colors everywhere a task status is charted. */
+export const TASK_STATUS_COLORS = {
+  completed: AN.green,
+  inProgress: AN.blue,
+  pending: AN.orange,
+  overdue: AN.red,
+};
+
+const PATIENT_STATUS_COLORS: Record<string, string> = {
+  admitted: AN.blue,
+  observation: AN.orange,
+  discharged: AN.green,
+};
+
+const Y_LABEL_WIDTH = 30;
+const axisText = { fontSize: 10, color: AN.text2 };
 
 function humanizeCategory(label?: string): string {
   if (!label) return 'Other';
   return label.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
-function computeBarSizing(count: number, chartWidth: number) {
-  const usable = Math.max(chartWidth - 40, 120);
-  const slot = usable / Math.max(count, 1);
-  const spacing = Math.max(Math.min(slot * 0.5, 32), 10);
-  const barWidth = Math.max(Math.min(slot - spacing, 44), 16);
-  return { barWidth, spacing };
+function pct(part: number, total: number): string {
+  return total > 0 ? `${Math.round((part / total) * 100)}%` : '0%';
 }
 
-const axisLabelStyle = { fontSize: 10, color: Colors.mutedForeground, fontWeight: '500' as const };
-const yAxisTextStyle = { fontSize: 10, color: Colors.mutedForeground };
-const topLabelTextStyle = { fontSize: 10, color: Colors.gray700, fontWeight: '600' as const };
+/** Bar width is capped so wide cards don't get fat bars; whatever width
+ * the cap leaves over goes into spacing, so bars always span the plot. */
+function barSizing(slots: number, plotWidth: number, perSlot = 1) {
+  const n = Math.max(slots, 1);
+  const usable = Math.max(plotWidth - 12, 60);
+  const slot = usable / n;
+  const barWidth = Math.max(Math.min((slot * 0.62) / perSlot, 34), 6);
+  const spacing = Math.max((usable - barWidth * perSlot * n) / n, 6);
+  return { barWidth, spacing };
+}
 
 function useMeasuredWidth() {
   const [width, setWidth] = useState(0);
@@ -39,377 +80,530 @@ function useMeasuredWidth() {
   return [width, onLayout] as const;
 }
 
-interface ChartCardProps {
-  icon: React.ComponentType<{ size?: number; color?: string }>;
-  iconTint: string;
-  iconColor: string;
-  title: string;
-  description: string;
-  hasData: boolean;
-  children: (chartWidth: number) => React.ReactNode;
-  footnote?: string;
-  /** Grid placement (full-width on phone, half-width on desktop) — owned by
-   * the caller, not this card, since it depends on the whole grid's layout. */
-  itemStyle: object;
-}
-
-/** One chart's card: measures its own rendered width (so the same chart
- * looks right whether the grid below put it at full width on phone or half
- * width on desktop) and swaps in a "no data" message instead of an empty
- * chart canvas. */
-function ChartCard({ icon: Icon, iconTint, iconColor, title, description, hasData, children, footnote, itemStyle }: ChartCardProps) {
-  const [measuredWidth, onLayout] = useMeasuredWidth();
-  const chartWidth = Math.min(Math.max(measuredWidth - CARD_INSET, 220), 560);
-
+function Tooltip({ lines }: { lines: string[] }) {
   return (
-    <View style={itemStyle} onLayout={onLayout}>
-      <Card>
-        <CardHeader style={styles.chartHeader}>
-          <View style={styles.chartHeaderRow}>
-            <View style={[styles.chartIconWrap, { backgroundColor: iconTint }]}>
-              <Icon size={16} color={iconColor} />
-            </View>
-            <View style={styles.flex1}>
-              <CardTitle>{title}</CardTitle>
-              <CardDescription>{description}</CardDescription>
-            </View>
-          </View>
-        </CardHeader>
-        <CardContent>
-          {!hasData ? (
-            <Text style={styles.noData}>No data for these filters.</Text>
-          ) : chartWidth > 0 ? (
-            children(chartWidth)
-          ) : null}
-          {hasData && footnote ? <Text style={styles.chartFootnote}>{footnote}</Text> : null}
-        </CardContent>
-      </Card>
+    <View style={styles.tooltip}>
+      {lines.map((l) => (
+        <Text key={l} style={styles.tooltipText}>{l}</Text>
+      ))}
     </View>
   );
 }
 
-interface AnalyticsSectionProps {
+export function LegendInline({ items }: { items: { color: string; label: string }[] }) {
+  return (
+    <View style={styles.legendInline}>
+      {items.map((i) => (
+        <View key={i.label} style={styles.legendInlineItem}>
+          <View style={[styles.dot, { backgroundColor: i.color }]} />
+          <Text style={styles.legendInlineText}>{i.label}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+interface AnalyticsCardProps {
+  icon: React.ComponentType<{ size?: number; color?: string }>;
+  title: string;
+  subtitle: string;
+  right?: React.ReactNode;
+  loading?: boolean;
+  hasData: boolean;
+  style?: ViewStyle;
+  /** Receives the card's inner (padding-excluded) width. */
+  children: (innerWidth: number) => React.ReactNode;
+  footer?: React.ReactNode;
+}
+
+/** The one card shell every Analytics card shares — same border, radius,
+ * padding, header spacing and empty state. */
+export function AnalyticsCard({ icon: Icon, title, subtitle, right, loading, hasData, style, children, footer }: AnalyticsCardProps) {
+  const [width, onLayout] = useMeasuredWidth();
+  const inner = Math.max(width - CARD_PAD * 2, 0);
+  return (
+    <View style={[styles.card, style]} onLayout={onLayout}>
+      <View style={styles.cardHeader}>
+        <View style={styles.cardIcon}>
+          <Icon size={15} color={AN.blue} />
+        </View>
+        <View style={styles.flex1}>
+          <Text style={styles.cardTitle} numberOfLines={1}>{title}</Text>
+          <Text style={styles.cardSubtitle} numberOfLines={1}>{subtitle}</Text>
+        </View>
+        {right}
+      </View>
+      {loading ? (
+        <Text style={styles.empty}>Loading…</Text>
+      ) : !hasData ? (
+        <Text style={styles.empty}>No data for these filters.</Text>
+      ) : inner > 0 ? (
+        <>
+          {children(inner)}
+          {footer}
+        </>
+      ) : null}
+    </View>
+  );
+}
+
+interface ChartProps {
   data: AnalyticsData | null;
   loading: boolean;
-  /** e.g. "Last 7 days · Medical Ward" — appended to every chart's
-   * description so it's clear what period/filter each one reflects. */
   filterSummary: string;
+  style?: ViewStyle;
 }
 
-/**
- * The Analytics charts (Patient Flow, Patients by Status, Task Completion,
- * Task Volume, Delay by Shift, Task Types) as an always-visible grid — 2
- * columns on desktop, 1 on phone — folded into the head nurse dashboard
- * from what used to be the separate Analytics page (see
- * app/(app)/analytics.tsx, now a redirect). Not behind tabs: the spec for
- * this section is that every chart is visible without an extra tap.
- */
-export function AnalyticsSection({ data, loading, filterSummary }: AnalyticsSectionProps) {
-  const { width } = useWindowDimensions();
-  const twoColumn = width >= TWO_COLUMN_MIN_WIDTH;
-  const itemStyle = twoColumn ? styles.gridItemHalf : styles.gridItemFull;
-
-  if (loading) {
-    return (
-      <View style={styles.loadingBox}>
-        <Text style={styles.muted}>Loading analytics…</Text>
-      </View>
-    );
-  }
-
-  // Completed-tasks-per-day, same single-series bar this chart has always
-  // shown — now sourced from taskPerformance (grouped by due_date, broken
-  // down by status) instead of the old completed-only taskCompletion field,
-  // taking just the "completed" count per day.
-  const taskCompletion = (data?.taskPerformance || []).map((row) => ({
-    value: row.completed, label: row.label, frontColor: Colors.green600,
-  }));
-  const delayData = (data?.delayData || []).map((d) => ({ ...d, frontColor: Colors.warning }));
-  // Real per-day labels from the backend now (e.g. "Oct 16"), not an
-  // invented "Wk N" — taskVolume already carries its own label/date.
-  const taskVolume = (data?.taskVolume || []).map((item) => ({
-    ...item, frontColor: Colors.blue500,
-  }));
-  const taskTypes = data?.taskTypes || [];
-  const taskTypeLegend = taskTypes.map((t) => ({ color: t.color, label: humanizeCategory(t.label), value: t.text }));
-  const totalTasks = data?.kpis.totalTasks ?? 0;
-
-  // Patient flow: admissions (blue) and discharges (green) side by side per day.
-  const patientFlow = data?.patientFlow || [];
-  const flowBars = patientFlow.flatMap((d) => [
-    { value: d.admissions, label: d.label, spacing: 2, frontColor: Colors.blue600, labelWidth: 44 },
-    { value: d.discharges, frontColor: Colors.green600 },
-  ]);
-  const totalAdmissions = patientFlow.reduce((sum, d) => sum + d.admissions, 0);
-  const totalDischarges = patientFlow.reduce((sum, d) => sum + d.discharges, 0);
-  const STATUS_COLORS: Record<string, string> = {
-    admitted: Colors.blue600,
-    observation: Colors.warning,
-    discharged: Colors.green600,
-  };
-  const patientStatus = (data?.patientStatus || []).map((s) => ({
-    ...s,
-    color: STATUS_COLORS[s.status] || Colors.gray400,
-  }));
-  const totalPatients = patientStatus.reduce((sum, s) => sum + s.value, 0);
+/** Patient Flow — admissions vs discharges per day, grouped bars. */
+export function PatientFlowCard({ data, loading, filterSummary, style }: ChartProps) {
+  const flow = data?.patientFlow || [];
+  const totalAdmissions = flow.reduce((s, d) => s + d.admissions, 0);
+  const totalDischarges = flow.reduce((s, d) => s + d.discharges, 0);
 
   return (
-    <View style={styles.grid}>
-      <ChartCard
-        itemStyle={itemStyle}
-        icon={BedDouble}
-        iconTint={Colors.blue50}
-        iconColor={Colors.blue600}
-        title="Patient Flow"
-        description={`Admissions vs discharges · ${filterSummary}`}
-        hasData={totalAdmissions + totalDischarges > 0}
-        footnote={
-          `${totalAdmissions} admitted · ${totalDischarges} discharged` +
-          (data?.avgLengthOfStayDays != null ? ` · average stay ${data.avgLengthOfStayDays} day(s)` : '')
-        }
-      >
-        {(chartWidth) => {
-          const sizing = computeBarSizing(patientFlow.length, chartWidth);
-          return (
+    <AnalyticsCard
+      style={style}
+      icon={BedDouble}
+      title="Patient Flow"
+      subtitle={`Admissions vs Discharges · ${filterSummary}`}
+      right={<LegendInline items={[{ color: AN.blue, label: 'Admissions' }, { color: AN.green, label: 'Discharges' }]} />}
+      loading={loading}
+      hasData={totalAdmissions + totalDischarges > 0}
+      footer={
+        <View style={styles.flowFooter}>
+          <View style={styles.flowStat}>
+            <View style={[styles.flowStatIcon, { backgroundColor: AN.blueSoft }]}>
+              <Users size={13} color={AN.blue} />
+            </View>
             <View>
-              <View style={styles.flowLegend}>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendSwatch, { backgroundColor: Colors.blue600 }]} />
-                  <Text style={styles.legendLabel}>Admissions</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendSwatch, { backgroundColor: Colors.green600 }]} />
-                  <Text style={styles.legendLabel}>Discharges</Text>
+              <Text style={styles.flowStatLabel}>Total Admissions</Text>
+              <Text style={styles.flowStatValue}>{totalAdmissions}</Text>
+            </View>
+          </View>
+          <View style={styles.flowDivider} />
+          <View style={styles.flowStat}>
+            <View style={[styles.flowStatIcon, { backgroundColor: AN.greenSoft }]}>
+              <Users size={13} color={AN.green} />
+            </View>
+            <View>
+              <Text style={styles.flowStatLabel}>Total Discharges</Text>
+              <Text style={styles.flowStatValue}>{totalDischarges}</Text>
+            </View>
+          </View>
+          {data?.avgLengthOfStayDays != null ? (
+            <>
+              <View style={styles.flowDivider} />
+              <View style={styles.flowStat}>
+                <View>
+                  <Text style={styles.flowStatLabel}>Avg Length of Stay</Text>
+                  <Text style={styles.flowStatValue}>{data.avgLengthOfStayDays} d</Text>
                 </View>
               </View>
-              <BarChart
-                data={flowBars}
-                width={chartWidth}
-                height={200}
-                barWidth={Math.max(sizing.barWidth / 2, 8)}
-                spacing={sizing.spacing}
-                roundedTop
-                noOfSections={4}
-                yAxisThickness={0}
-                xAxisThickness={1}
-                xAxisColor={Colors.border}
-                rulesColor={Colors.border}
-                rulesType="dashed"
-                yAxisTextStyle={yAxisTextStyle}
-                xAxisLabelTextStyle={axisLabelStyle}
-              />
-            </View>
-          );
-        }}
-      </ChartCard>
-
-      <ChartCard
-        itemStyle={itemStyle}
-        icon={Users}
-        iconTint={Colors.blue50}
-        iconColor={Colors.blue600}
-        title="Patients by Status"
-        description="Current admitted, under observation and discharged patients"
-        hasData={totalPatients > 0}
-      >
-        {() => (
-          <View style={styles.pieWrap}>
-            <PieChart
-              data={patientStatus.filter((s) => s.value > 0)}
-              donut
-              radius={92}
-              innerRadius={58}
-              centerLabelComponent={() => (
-                <View style={styles.pieCenter}>
-                  <Text style={styles.pieCenterValue}>{totalPatients}</Text>
-                  <Text style={styles.pieCenterLabel}>Patients</Text>
-                </View>
-              )}
-            />
-            <View style={styles.legendGrid}>
-              {patientStatus.map((s) => (
-                <View key={s.status} style={styles.legendItem}>
-                  <View style={[styles.legendSwatch, { backgroundColor: s.color }]} />
-                  <Text style={styles.legendLabel}>
-                    {s.label} <Text style={styles.legendValue}>{s.value}</Text>
-                  </Text>
-                </View>
-              ))}
-            </View>
-          </View>
-        )}
-      </ChartCard>
-      <ChartCard
-        itemStyle={itemStyle}
-        icon={TrendingUp}
-        iconTint={Colors.green50}
-        iconColor={Colors.green600}
-        title="Task Completion"
-        description={`Completed tasks · ${filterSummary}`}
-        hasData={taskCompletion.some((d) => d.value > 0)}
-        footnote="Value shown above each bar is the number of tasks completed that day."
-      >
-        {(chartWidth) => {
-          const sizing = computeBarSizing(taskCompletion.length, chartWidth);
-          return (
-            <BarChart
-              data={taskCompletion}
-              width={chartWidth}
-              height={200}
-              barWidth={sizing.barWidth}
-              spacing={sizing.spacing}
-              initialSpacing={sizing.spacing / 2}
-              endSpacing={sizing.spacing / 2}
-              roundedTop
-              frontColor={Colors.green600}
-              rulesColor={Colors.border}
-              rulesThickness={1}
-              xAxisThickness={0}
-              yAxisThickness={0}
-              yAxisTextStyle={yAxisTextStyle}
-              xAxisLabelTextStyle={axisLabelStyle}
-              noOfSections={4}
-              showValuesAsTopLabel
-              topLabelTextStyle={topLabelTextStyle}
-            />
-          );
-        }}
-      </ChartCard>
-
-      <ChartCard
-        itemStyle={itemStyle}
-        icon={ListChecks}
-        iconTint={Colors.blue50}
-        iconColor={Colors.blue600}
-        title="Task Volume"
-        description={`Tasks created · ${filterSummary}`}
-        hasData={taskVolume.some((d) => d.value > 0)}
-      >
-        {(chartWidth) => {
-          const sizing = computeBarSizing(taskVolume.length, chartWidth);
-          return (
-            <BarChart
-              data={taskVolume}
-              width={chartWidth}
-              height={180}
-              barWidth={sizing.barWidth}
-              spacing={sizing.spacing}
-              initialSpacing={sizing.spacing / 2}
-              endSpacing={sizing.spacing / 2}
-              roundedTop
-              rulesColor={Colors.border}
-              rulesThickness={1}
-              xAxisThickness={0}
-              yAxisThickness={0}
-              yAxisTextStyle={yAxisTextStyle}
-              xAxisLabelTextStyle={axisLabelStyle}
-              noOfSections={4}
-              showValuesAsTopLabel
-              topLabelTextStyle={topLabelTextStyle}
-            />
-          );
-        }}
-      </ChartCard>
-
-      <ChartCard
-        itemStyle={itemStyle}
-        icon={Clock}
-        iconTint={Colors.warningLight}
-        iconColor={Colors.warningHover}
-        title="Delay by Shift"
-        description={`Overdue tasks per shift · ${filterSummary}`}
-        hasData={delayData.some((d) => d.value > 0)}
-      >
-        {(chartWidth) => {
-          const sizing = computeBarSizing(delayData.length, chartWidth);
-          return (
-            <BarChart
-              data={delayData}
-              width={chartWidth}
-              height={180}
-              barWidth={sizing.barWidth}
-              spacing={sizing.spacing}
-              initialSpacing={sizing.spacing / 2}
-              endSpacing={sizing.spacing / 2}
-              roundedTop
-              rulesColor={Colors.border}
-              rulesThickness={1}
-              xAxisThickness={0}
-              yAxisThickness={0}
-              yAxisTextStyle={yAxisTextStyle}
-              xAxisLabelTextStyle={axisLabelStyle}
-              xAxisTextNumberOfLines={2}
-              noOfSections={4}
-              showValuesAsTopLabel
-              topLabelTextStyle={topLabelTextStyle}
-            />
-          );
-        }}
-      </ChartCard>
-
-      <ChartCard
-        itemStyle={itemStyle}
-        icon={PieChartIcon}
-        iconTint={Colors.purple50}
-        iconColor={Colors.purple600}
-        title="Task Types"
-        description={`Distribution of task categories · ${filterSummary}`}
-        hasData={taskTypes.length > 0}
-      >
-        {() => (
-          <View style={styles.pieWrap}>
-            <PieChart
-              data={taskTypes}
-              donut
-              radius={92}
-              innerRadius={58}
-              centerLabelComponent={() => (
-                <View style={styles.pieCenter}>
-                  <Text style={styles.pieCenterValue}>{totalTasks}</Text>
-                  <Text style={styles.pieCenterLabel}>Tasks</Text>
-                </View>
-              )}
-            />
-            <View style={styles.legendGrid}>
-              {taskTypeLegend.map((item) => (
-                <View key={item.label} style={styles.legendItem}>
-                  <View style={[styles.legendSwatch, { backgroundColor: item.color }]} />
-                  <Text style={styles.legendLabel}>
-                    {item.label} <Text style={styles.legendValue}>{item.value}</Text>
-                  </Text>
-                </View>
-              ))}
-            </View>
-          </View>
-        )}
-      </ChartCard>
-    </View>
+            </>
+          ) : null}
+        </View>
+      }
+    >
+      {(inner) => {
+        // Size bars against the plot minus each pair's 3px inner gap, which
+        // barSizing doesn't know about, so the pairs fit inside `plot`.
+        const plot = inner - Y_LABEL_WIDTH - 8;
+        const { barWidth, spacing } = barSizing(flow.length, plot - 3 * flow.length, 2);
+        const bars = flow.flatMap((d, i) => {
+          // The last pair gets no trailing gap, otherwise it runs past the
+          // plot's right edge. Its label keeps full width so it isn't truncated.
+          const gap = i === flow.length - 1 ? 0 : spacing;
+          return [
+            { value: d.admissions, label: d.label, spacing: 3, frontColor: AN.blue, labelWidth: barWidth * 2 + 3 + spacing,
+              labelTextStyle: axisText, tip: [`${d.label}`, `Admissions: ${d.admissions}`, `Discharges: ${d.discharges}`] },
+            { value: d.discharges, frontColor: AN.green, spacing: gap,
+              tip: [`${d.label}`, `Admissions: ${d.admissions}`, `Discharges: ${d.discharges}`] },
+          ];
+        });
+        return (
+          <BarChart
+            data={bars}
+            width={plot}
+            height={130}
+            barWidth={barWidth}
+            initialSpacing={spacing / 2}
+            endSpacing={spacing / 2}
+            roundedTop
+            barBorderTopLeftRadius={3}
+            barBorderTopRightRadius={3}
+            noOfSections={4}
+            yAxisLabelWidth={Y_LABEL_WIDTH}
+            yAxisThickness={0}
+            xAxisThickness={1}
+            xAxisColor={AN.border}
+            rulesColor={AN.grid}
+            rulesType="solid"
+            yAxisTextStyle={axisText}
+            xAxisLabelTextStyle={axisText}
+            renderTooltip={(item: { tip?: string[] }) => (item.tip ? <Tooltip lines={item.tip} /> : null)}
+          />
+        );
+      }}
+    </AnalyticsCard>
   );
 }
 
+/** Patients by Status — current census donut with a side legend. */
+export function PatientStatusCard({ data, loading, style }: ChartProps) {
+  const rows = (data?.patientStatus || []).map((s) => ({ ...s, color: PATIENT_STATUS_COLORS[s.status] || '#94A3B8' }));
+  const total = rows.reduce((s, r) => s + r.value, 0);
+
+  return (
+    <AnalyticsCard
+      style={style}
+      icon={Users}
+      title="Patients by Status"
+      subtitle="Current patient distribution"
+      loading={loading}
+      hasData={total > 0}
+    >
+      {(inner) => {
+        const radius = Math.max(Math.min(inner * 0.2, 74), 52);
+        return (
+          <View style={styles.donutRow}>
+            <PieChart
+              data={rows.filter((r) => r.value > 0).map((r) => ({ value: r.value, color: r.color }))}
+              donut
+              radius={radius}
+              innerRadius={radius * 0.68}
+              innerCircleColor="#FFFFFF"
+              centerLabelComponent={() => (
+                <View style={styles.donutCenter}>
+                  <Text style={styles.donutValue}>{total}</Text>
+                  <Text style={styles.donutLabel}>Total Patients</Text>
+                </View>
+              )}
+            />
+            <View style={styles.sideLegend}>
+              {rows.map((r) => (
+                <View key={r.status} style={styles.sideLegendRow}>
+                  <View style={[styles.legendBullet, { backgroundColor: r.color }]} />
+                  <Text style={styles.sideLegendName} numberOfLines={1}>{r.label}</Text>
+                  <Text style={styles.sideLegendCount}>{r.value}</Text>
+                  <Text style={styles.sideLegendPct}>{pct(r.value, total)}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        );
+      }}
+    </AnalyticsCard>
+  );
+}
+
+/** Task Performance — per day, tasks due that day stacked by current status. */
+export function TaskPerformanceCard({ data, loading, filterSummary, style }: ChartProps) {
+  const rows = data?.taskPerformance || [];
+  const hasData = rows.some((r) => r.completed + r.inProgress + r.pending + r.overdue > 0);
+
+  return (
+    <AnalyticsCard
+      style={style}
+      icon={ListChecks}
+      title="Task Performance"
+      subtitle={`Task status comparison · ${filterSummary}`}
+      right={
+        <LegendInline
+          items={[
+            { color: TASK_STATUS_COLORS.completed, label: 'Completed' },
+            { color: TASK_STATUS_COLORS.inProgress, label: 'In Progress' },
+            { color: TASK_STATUS_COLORS.pending, label: 'Pending' },
+            { color: TASK_STATUS_COLORS.overdue, label: 'Overdue' },
+          ]}
+        />
+      }
+      loading={loading}
+      hasData={hasData}
+    >
+      {(inner) => {
+        const plot = inner - Y_LABEL_WIDTH;
+        const { barWidth, spacing } = barSizing(rows.length, plot);
+        const stackData = rows.map((r) => ({
+          label: r.label,
+          labelTextStyle: axisText,
+          tip: [r.label, `Completed: ${r.completed}`, `In Progress: ${r.inProgress}`, `Pending: ${r.pending}`, `Overdue: ${r.overdue}`],
+          stacks: [
+            { value: r.completed, color: TASK_STATUS_COLORS.completed },
+            { value: r.inProgress, color: TASK_STATUS_COLORS.inProgress },
+            { value: r.pending, color: TASK_STATUS_COLORS.pending },
+            { value: r.overdue, color: TASK_STATUS_COLORS.overdue, borderTopLeftRadius: 3, borderTopRightRadius: 3 },
+          ],
+        }));
+        return (
+          <BarChart
+            stackData={stackData}
+            width={plot}
+            height={110}
+            barWidth={barWidth}
+            spacing={spacing}
+            initialSpacing={spacing / 2}
+            endSpacing={spacing / 2}
+            noOfSections={4}
+            yAxisLabelWidth={Y_LABEL_WIDTH}
+            yAxisThickness={0}
+            xAxisThickness={1}
+            xAxisColor={AN.border}
+            rulesColor={AN.grid}
+            rulesType="solid"
+            yAxisTextStyle={axisText}
+            xAxisLabelTextStyle={axisText}
+            renderTooltip={(item: { tip?: string[] }) => (item.tip ? <Tooltip lines={item.tip} /> : null)}
+          />
+        );
+      }}
+    </AnalyticsCard>
+  );
+}
+
+/** Task Volume — tasks created per day (creation date, not completion). */
+export function TaskVolumeCard({ data, loading, filterSummary, style }: ChartProps) {
+  const rows = data?.taskVolume || [];
+  return (
+    <AnalyticsCard
+      style={style}
+      icon={BarChart3}
+      title="Task Volume"
+      subtitle={`Tasks created · ${filterSummary}`}
+      loading={loading}
+      hasData={rows.some((r) => r.value > 0)}
+    >
+      {(inner) => {
+        const plot = inner - Y_LABEL_WIDTH;
+        const { barWidth, spacing } = barSizing(rows.length, plot);
+        return (
+          <BarChart
+            data={rows.map((r) => ({ value: r.value, label: r.label, labelTextStyle: axisText, tip: [r.label, `Tasks created: ${r.value}`] }))}
+            width={plot}
+            height={110}
+            barWidth={barWidth}
+            spacing={spacing}
+            initialSpacing={spacing / 2}
+            endSpacing={spacing / 2}
+            frontColor={AN.blue}
+            roundedTop
+            barBorderTopLeftRadius={3}
+            barBorderTopRightRadius={3}
+            noOfSections={4}
+            yAxisLabelWidth={Y_LABEL_WIDTH}
+            yAxisThickness={0}
+            xAxisThickness={1}
+            xAxisColor={AN.border}
+            rulesColor={AN.grid}
+            rulesType="solid"
+            yAxisTextStyle={axisText}
+            xAxisLabelTextStyle={axisText}
+            showValuesAsTopLabel
+            topLabelTextStyle={{ fontSize: 10, color: AN.text, fontWeight: '600' }}
+            renderTooltip={(item: { tip?: string[] }) => (item.tip ? <Tooltip lines={item.tip} /> : null)}
+          />
+        );
+      }}
+    </AnalyticsCard>
+  );
+}
+
+/** "Afternoon shift has the highest number of overdue tasks." — only when
+ * the data actually supports it: null when every shift is at zero, and a
+ * tie is named as a tie rather than arbitrarily picking one shift. */
+export function shiftInsight(rows: { label: string; value: number }[]): string | null {
+  if (!rows.length) return null;
+  const max = Math.max(...rows.map((r) => r.value));
+  if (max <= 0) return null;
+  const top = rows.filter((r) => r.value === max);
+  if (top.length === 1) return `${top[0].label} shift has the highest number of overdue tasks.`;
+  return `${top.map((r) => r.label).join(' and ')} shifts are tied for the most overdue tasks.`;
+}
+
+/** Shift & Delay Analysis — overdue tasks per real duty shift. */
+export function ShiftDelayCard({ data, loading, filterSummary, style }: ChartProps) {
+  const rows = useMemo(() => data?.delayData || [], [data]);
+  const insight = useMemo(() => shiftInsight(rows), [rows]);
+
+  return (
+    <AnalyticsCard
+      style={style}
+      icon={Clock}
+      title="Shift & Delay Analysis"
+      subtitle={`Overdue tasks by shift · ${filterSummary}`}
+      loading={loading}
+      hasData={rows.length > 0}
+    >
+      {(inner) => {
+        const sideBySide = inner >= 380;
+        // The chart's box is fixed and clipped so the library's own extra
+        // axis width can never push the insight panel off the card.
+        const boxWidth = sideBySide ? Math.floor(inner * 0.6) : inner;
+        const chartWidth = boxWidth - Y_LABEL_WIDTH - 20;
+        const { barWidth, spacing } = barSizing(rows.length, chartWidth);
+        return (
+          <View style={sideBySide ? styles.shiftRow : styles.gap10}>
+            <View style={{ width: boxWidth, overflow: 'hidden' }}>
+            <BarChart
+              data={rows.map((r) => ({ value: r.value, label: r.label, labelTextStyle: axisText, tip: [`${r.label} shift`, `Overdue tasks: ${r.value}`] }))}
+              width={chartWidth}
+              height={92}
+              barWidth={Math.min(barWidth, 30)}
+              spacing={spacing}
+              initialSpacing={spacing / 2}
+              endSpacing={spacing / 2}
+              frontColor={AN.orange}
+              roundedTop
+              barBorderTopLeftRadius={3}
+              barBorderTopRightRadius={3}
+              noOfSections={4}
+              yAxisLabelWidth={Y_LABEL_WIDTH}
+              yAxisThickness={0}
+              xAxisThickness={1}
+              xAxisColor={AN.border}
+              rulesColor={AN.grid}
+              rulesType="solid"
+              yAxisTextStyle={axisText}
+              xAxisLabelTextStyle={axisText}
+              showValuesAsTopLabel
+              topLabelTextStyle={{ fontSize: 10, color: AN.text, fontWeight: '600' }}
+              renderTooltip={(item: { tip?: string[] }) => (item.tip ? <Tooltip lines={item.tip} /> : null)}
+            />
+            </View>
+            <View style={[styles.insight, sideBySide && styles.flex1]}>
+              <View style={styles.insightIcon}>
+                <AlertTriangle size={13} color={AN.orange} />
+              </View>
+              <Text style={styles.insightText}>{insight || 'No overdue tasks in this period.'}</Text>
+            </View>
+          </View>
+        );
+      }}
+    </AnalyticsCard>
+  );
+}
+
+/** Task Type Distribution — task categories, real counts behind each slice. */
+export function TaskTypeCard({ data, loading, filterSummary, style }: ChartProps) {
+  const totalTasks = data?.kpis.totalTasks ?? 0;
+  const rows = (data?.taskTypes || []).map((t) => ({
+    name: humanizeCategory(t.label),
+    color: t.color,
+    // count is the real number; an older backend without it falls back to
+    // deriving one from the rounded percentage.
+    count: t.count ?? Math.round((t.value / 100) * totalTasks),
+    text: t.text,
+  }));
+  const total = rows.reduce((s, r) => s + r.count, 0);
+
+  return (
+    <AnalyticsCard
+      style={style}
+      icon={PieChartIcon}
+      title="Task Type Distribution"
+      subtitle={`Distribution of task categories · ${filterSummary}`}
+      loading={loading}
+      hasData={total > 0}
+    >
+      {(inner) => {
+        const radius = Math.max(Math.min(inner * 0.16, 58), 44);
+        return (
+          <View style={styles.donutRow}>
+            <PieChart
+              data={rows.filter((r) => r.count > 0).map((r) => ({ value: r.count, color: r.color }))}
+              donut
+              radius={radius}
+              innerRadius={radius * 0.68}
+              innerCircleColor="#FFFFFF"
+              centerLabelComponent={() => (
+                <View style={styles.donutCenter}>
+                  <Text style={styles.donutValueSm}>{total}</Text>
+                  <Text style={styles.donutLabel}>Total Tasks</Text>
+                </View>
+              )}
+            />
+            <View style={styles.sideLegend}>
+              {rows.map((r) => (
+                <View key={r.name} style={styles.sideLegendRowSm}>
+                  <View style={[styles.legendBullet, { backgroundColor: r.color }]} />
+                  <Text style={styles.sideLegendNameSm} numberOfLines={1}>{r.name}</Text>
+                  <Text style={styles.sideLegendCountSm}>{r.count}</Text>
+                  <Text style={styles.sideLegendPct}>{pct(r.count, total)}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        );
+      }}
+    </AnalyticsCard>
+  );
+}
+
+const CARD_PAD = 16;
+
 const styles = StyleSheet.create({
-  loadingBox: { paddingVertical: 32, alignItems: 'center' },
-  muted: { color: Colors.mutedForeground },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
-  gridItemFull: { flexGrow: 1, flexBasis: '100%', minWidth: 280 },
-  gridItemHalf: { flexGrow: 1, flexBasis: '47%', minWidth: 320 },
   flex1: { flex: 1, minWidth: 0 },
-  chartHeader: { paddingBottom: 12 },
-  chartHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  chartIconWrap: { width: 32, height: 32, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
-  chartFootnote: { fontSize: 11, color: Colors.mutedForeground, marginTop: 8 },
-  noData: { fontSize: 13, color: Colors.mutedForeground, textAlign: 'center', paddingVertical: 32 },
-  pieWrap: { alignItems: 'center' },
-  flowLegend: { flexDirection: 'row', gap: 16, marginBottom: 8 },
-  legendGrid: {
-    flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 16, paddingTop: 14,
-    borderTopWidth: 1, borderTopColor: Colors.border, width: '100%', justifyContent: 'center',
+  gap10: { gap: 10 },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: AN.border,
+    padding: CARD_PAD,
+    shadowColor: '#2563EB',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 1,
+    minWidth: 0,
   },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  legendSwatch: { width: 10, height: 10, borderRadius: 3 },
-  legendLabel: { fontSize: 12, color: Colors.gray700, fontWeight: '500' },
-  legendValue: { color: Colors.mutedForeground, fontWeight: '400' },
-  pieCenter: { alignItems: 'center', justifyContent: 'center' },
-  pieCenterValue: { fontSize: 20, fontWeight: '700', color: Colors.gray900 },
-  pieCenterLabel: { fontSize: 11, color: Colors.mutedForeground },
+  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 12 },
+  cardIcon: {
+    width: 28, height: 28, borderRadius: 8, backgroundColor: AN.blueSoft,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  cardTitle: { fontSize: 15, fontWeight: '700', color: AN.navy },
+  cardSubtitle: { fontSize: 11.5, color: AN.text2, marginTop: 1 },
+  empty: { fontSize: 12.5, color: AN.text2, textAlign: 'center', paddingVertical: 36 },
+  legendInline: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 10, maxWidth: '55%' },
+  legendInlineItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  legendInlineText: { fontSize: 10.5, color: AN.text2, fontWeight: '500' },
+  dot: { width: 8, height: 8, borderRadius: 4 },
+  tooltip: {
+    backgroundColor: AN.navy, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 5,
+    marginBottom: 6, marginLeft: -20, minWidth: 96,
+  },
+  tooltipText: { color: '#FFFFFF', fontSize: 10.5, lineHeight: 14 },
+  flowFooter: {
+    flexDirection: 'row', alignItems: 'center', marginTop: 10, paddingVertical: 8, paddingHorizontal: 10,
+    backgroundColor: '#F7FAFF', borderRadius: 10, gap: 12,
+  },
+  flowStat: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
+  flowStatIcon: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  flowStatLabel: { fontSize: 10.5, color: AN.text2 },
+  flowStatValue: { fontSize: 14, fontWeight: '700', color: AN.navy },
+  flowDivider: { width: 1, alignSelf: 'stretch', backgroundColor: AN.border },
+  donutRow: { flexDirection: 'row', alignItems: 'center', gap: 20, paddingVertical: 4 },
+  donutCenter: { alignItems: 'center', justifyContent: 'center' },
+  donutValue: { fontSize: 22, fontWeight: '800', color: AN.navy },
+  donutValueSm: { fontSize: 17, fontWeight: '800', color: AN.navy },
+  donutLabel: { fontSize: 9.5, color: AN.text2 },
+  sideLegend: { flex: 1, minWidth: 0, gap: 4 },
+  sideLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
+  sideLegendRowSm: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
+  legendBullet: { width: 11, height: 11, borderRadius: 6 },
+  sideLegendName: { flex: 1, fontSize: 13, color: AN.text, fontWeight: '500' },
+  sideLegendNameSm: { flex: 1, fontSize: 11.5, color: AN.text, fontWeight: '500' },
+  sideLegendCount: { fontSize: 14, fontWeight: '700', color: AN.navy, minWidth: 30, textAlign: 'right' },
+  sideLegendCountSm: { fontSize: 11.5, fontWeight: '700', color: AN.navy, minWidth: 26, textAlign: 'right' },
+  sideLegendPct: { fontSize: 11, color: AN.text2, minWidth: 34, textAlign: 'right' },
+  shiftRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  insight: {
+    flexDirection: 'row', gap: 8, alignItems: 'flex-start',
+    backgroundColor: AN.orangeSoft, borderRadius: 10, borderWidth: 1, borderColor: '#FCE3B6', padding: 10,
+  },
+  insightIcon: {
+    width: 22, height: 22, borderRadius: 11, backgroundColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  insightText: { flex: 1, fontSize: 11.5, color: '#B45309', lineHeight: 16, fontWeight: '500' },
 });

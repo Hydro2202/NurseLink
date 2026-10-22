@@ -6883,6 +6883,9 @@ class AnalyticsView(APIView):
             task_types.append(
                 {
                     'value': pct,
+                    # The real count behind the rounded percentage, so a
+                    # legend can show counts that sum exactly to the total.
+                    'count': row['count'],
                     'color': colors.get(row['category'], '#64748B'),
                     'text': f'{pct}%',
                     'label': row['category'],
