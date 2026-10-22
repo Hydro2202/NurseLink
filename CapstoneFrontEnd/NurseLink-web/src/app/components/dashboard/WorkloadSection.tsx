@@ -41,6 +41,14 @@ interface WorkloadSectionProps {
   onRefresh: () => void | Promise<void>;
 }
 
+/** "Ana Cruz" -> "AC" — no profile photos exist for nurses, so a small
+ * initials circle stands in for an avatar in the workload table. */
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
 function formatDate(date: Date): string {
   return new Intl.DateTimeFormat('en-US', {
     month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -217,14 +225,21 @@ export function WorkloadSection({
                         return (
                           <TableRow key={nurse.nurseId}>
                             <TableCell>
-                              <div className="flex items-center gap-1.5">
-                                <PresenceDot presence={nurse.presence} lastSeenAt={nurse.lastSeenAt} />
-                                <span className="font-medium text-gray-900">{nurse.nurseName}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="flex-shrink-0 w-7 h-7 rounded-full bg-blue-100 text-blue-700 text-xs font-semibold flex items-center justify-center">
+                                  {initials(nurse.nurseName)}
+                                </span>
+                                <div>
+                                  <div className="flex items-center gap-1.5">
+                                    <PresenceDot presence={nurse.presence} lastSeenAt={nurse.lastSeenAt} />
+                                    <span className="font-medium text-gray-900">{nurse.nurseName}</span>
+                                  </div>
+                                  {/* Several nurses share a display name —
+                                      without the email there's no way to tell
+                                      which account "Assign" is about to change. */}
+                                  <p className="text-xs text-gray-500">{nurse.nurseEmail}</p>
+                                </div>
                               </div>
-                              {/* Several nurses share a display name — without
-                                  the email there's no way to tell which
-                                  account "Assign" is about to change. */}
-                              <p className="text-xs text-gray-500">{nurse.nurseEmail}</p>
                             </TableCell>
                             <TableCell className="text-gray-600">{nurse.department || '—'}</TableCell>
                             <TableCell>

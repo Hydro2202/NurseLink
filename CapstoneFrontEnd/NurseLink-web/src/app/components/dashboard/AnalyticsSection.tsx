@@ -279,33 +279,33 @@ export function ShiftDelaySection({ data, loading, filterSummary }: SectionProps
         <h2 className="text-lg font-semibold text-gray-900">Shift & Delay Analysis</h2>
         <p className="text-sm text-gray-500">Overdue tasks by shift · {filterSummary}</p>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
-          <ChartCard
-            icon={Clock}
-            iconBg="bg-orange-100"
-            iconColor="text-orange-600"
-            title="Overdue Tasks by Shift"
-            description={filterSummary}
-            hasData={delayData.some((d) => d.value > 0)}
-          >
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={delayData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                <XAxis dataKey="label" style={{ fontSize: '12px' }} />
-                <YAxis style={{ fontSize: '12px' }} allowDecimals={false} />
-                <Tooltip />
-                <Bar dataKey="value" fill="#F97316" name="Overdue tasks" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </ChartCard>
-        </div>
-        <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 flex items-start gap-3">
-          <AlertTriangle className="w-5 h-5 text-orange-600 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-orange-800">
-            {insight || 'No overdue tasks in this period.'}
-          </p>
-        </div>
+      {/* Stacked, not side-by-side — this section now lives in the
+          Operational Workload area's narrower (~40%) right column, so a
+          viewport-breakpoint-triggered 2/3+1/3 split would be cramped
+          regardless of how wide the screen itself is. */}
+      <ChartCard
+        icon={Clock}
+        iconBg="bg-orange-100"
+        iconColor="text-orange-600"
+        title="Overdue Tasks by Shift"
+        description={filterSummary}
+        hasData={delayData.some((d) => d.value > 0)}
+      >
+        <ResponsiveContainer width="100%" height={200}>
+          <BarChart data={delayData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+            <XAxis dataKey="label" style={{ fontSize: '12px' }} />
+            <YAxis style={{ fontSize: '12px' }} allowDecimals={false} />
+            <Tooltip />
+            <Bar dataKey="value" fill="#F97316" name="Overdue tasks" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartCard>
+      <div className="mt-3 rounded-lg border border-orange-200 bg-orange-50 p-4 flex items-start gap-3">
+        <AlertTriangle className="w-5 h-5 text-orange-600 flex-shrink-0 mt-0.5" />
+        <p className="text-sm text-orange-800">
+          {insight || 'No overdue tasks in this period.'}
+        </p>
       </div>
     </div>
   );

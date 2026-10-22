@@ -380,22 +380,27 @@ export default function AnalyticsPage() {
 
         <TaskPerformanceSection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
 
-        <div id="nurse-workload">
-          <h2 className="text-lg font-semibold text-gray-900">Nurse Workload</h2>
-          <p className="text-sm text-gray-500 mb-3">Compare patient assignments, task completion, and workload across nurses.</p>
-          <WorkloadSection
-            workloadData={workloadData}
-            assignments={assignments}
-            loading={analyticsLoading}
-            onAssignPatientClick={handleAssignPatientClick}
-            onEditAssignment={handleEditAssignment}
-            onRefresh={loadWorkloadAndAnalytics}
-          />
+        {/* Operational Workload: Nurse Workload ~60% left, Shift & Delay
+            Analysis + Task Type Distribution stacked ~40% right. */}
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-start">
+          <div id="nurse-workload" className="lg:col-span-3">
+            <h2 className="text-lg font-semibold text-gray-900">Nurse Workload</h2>
+            <p className="text-sm text-gray-500 mb-3">Compare patient assignments, task completion, and workload across nurses.</p>
+            <WorkloadSection
+              workloadData={workloadData}
+              assignments={assignments}
+              loading={analyticsLoading}
+              onAssignPatientClick={handleAssignPatientClick}
+              onEditAssignment={handleEditAssignment}
+              onRefresh={loadWorkloadAndAnalytics}
+            />
+          </div>
+
+          <div className="lg:col-span-2 space-y-4">
+            <ShiftDelaySection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
+            <TaskTypeSection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
+          </div>
         </div>
-
-        <ShiftDelaySection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
-
-        <TaskTypeSection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
       </div>
 
       <AssignPatientModal
