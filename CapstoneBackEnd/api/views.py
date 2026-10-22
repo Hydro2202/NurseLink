@@ -6712,6 +6712,7 @@ class WorkloadView(APIView):
 
         task_totals = {}
         task_completed = {}
+        task_overdue = {}
         for task in relevant_tasks:
             matched_ids = set()
             if task.assigned_nurse_id in names_by_id:
@@ -6721,6 +6722,8 @@ class WorkloadView(APIView):
                 task_totals[nid] = task_totals.get(nid, 0) + 1
                 if task.status == 'completed':
                     task_completed[nid] = task_completed.get(nid, 0) + 1
+                elif task.status == 'overdue':
+                    task_overdue[nid] = task_overdue.get(nid, 0) + 1
 
         # Team groups by the department the head nurse put the nurse on: the
         # current/next duty on the Duty Roster first, else the department
@@ -6755,6 +6758,7 @@ class WorkloadView(APIView):
                     'patientCount': patient_counts.get(nurse.pk, 0),
                     'taskCount': task_totals.get(nurse.pk, 0),
                     'completedTasks': task_completed.get(nurse.pk, 0),
+                    'overdueTasks': task_overdue.get(nurse.pk, 0),
                     'overtimeHours': overtime_hours,
                     'presence': presence,
                     'lastSeenAt': last_seen_at,
@@ -6829,17 +6833,24 @@ class AnalyticsView(APIView):
         if risk_param:
             tasks = tasks.filter(patient__risk_level=risk_param)
 
-        # Daily completion for the resolved range.
-        task_completion = []
+        # Task Performance: for every day in the range, how the tasks due
+        # that day ended up — completed/in-progress/pending/overdue, by
+        # their current status. Grouped by due_date (not completed_at) so a
+        # day's bar is a complete, real breakdown of everything due then,
+        # not just a completed-only count.
+        task_performance = []
         num_days = (end_date - start_date).days + 1
         for i in range(num_days):
             day = start_date + timedelta(days=i)
-            count = tasks.filter(status='completed', completed_at__date=day).count()
-            task_completion.append(
+            day_tasks = tasks.filter(due_date=day)
+            task_performance.append(
                 {
-                    'value': count,
+                    'date': day.isoformat(),
                     'label': day.strftime('%a'),
-                    'frontColor': '#16A34A',
+                    'completed': day_tasks.filter(status='completed').count(),
+                    'inProgress': day_tasks.filter(status='in_progress').count(),
+                    'pending': day_tasks.filter(status='pending').count(),
+                    'overdue': day_tasks.filter(status='overdue').count(),
                 }
             )
 
@@ -6918,25 +6929,20 @@ class AnalyticsView(APIView):
         patient_total = patient_qs.count()
         avg_patients = round(patient_total / nurse_count, 1)
 
-        # Workload trend — average patients per nurse by week bucket (simple)
-        workload_trend = []
-        for i in range(4):
-            workload_trend.append(
+        # Task Volume: tasks CREATED on each day in the resolved range — a
+        # real per-day count with a real date label, never a synthetic
+        # "Wk N" bucket and never a fabricated fallback when a day
+        # genuinely had zero.
+        task_volume = []
+        for i in range(num_days):
+            day = start_date + timedelta(days=i)
+            task_volume.append(
                 {
-                    'value': round(avg_patients + (i % 3) * 0.2, 1),
-                    'label': f'W{i + 1}',
+                    'date': day.isoformat(),
+                    'label': day.strftime('%b %d'),
+                    'value': tasks.filter(created_at__date=day).count(),
                 }
             )
-
-        # Same 2-day-bucket shape as before; week_start only moves off "7
-        # days before now" when a date filter was actually given.
-        week_start = start_date if filtered else (timezone.now() - timedelta(days=7)).date()
-        avg_tasks_series = []
-        for i in range(4):
-            bucket_start = week_start + timedelta(days=i * 2)
-            bucket_end = bucket_start + timedelta(days=2)
-            cnt = tasks.filter(created_at__date__gte=bucket_start, created_at__date__lt=bucket_end).count()
-            avg_tasks_series.append({'value': cnt or completed_tasks // 4 or 0})
 
         # Delay by Shift — real DutyAssignment shifts, not the stale
         # NurseProfile.shift default this used to read.
@@ -7004,9 +7010,8 @@ class AnalyticsView(APIView):
                 'patientFlow': patient_flow,
                 'patientStatus': patient_status,
                 'avgLengthOfStayDays': round(sum(stays) / len(stays), 1) if stays else None,
-                'taskCompletion': task_completion,
-                'workloadTrend': workload_trend,
-                'avgTasks': avg_tasks_series,
+                'taskPerformance': task_performance,
+                'taskVolume': task_volume,
                 'delayData': delay_data,
                 'taskTypes': task_types,
                 'kpis': {

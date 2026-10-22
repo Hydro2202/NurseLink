@@ -419,6 +419,7 @@ export interface WorkloadData {
   patientCount: number;
   taskCount: number;
   completedTasks: number;
+  overdueTasks: number;
   overtimeHours: number;
   burnoutRisk: 'low' | 'medium' | 'high';
   presence?: NursePresence;
@@ -654,9 +655,22 @@ export interface DutyAssignment {
 }
 
 export interface AnalyticsData {
-  taskCompletion: { value: number; label: string; frontColor?: string }[];
-  workloadTrend: { value: number; label: string }[];
-  avgTasks: { value: number }[];
+  /** Admissions vs discharges per day over the resolved date range. */
+  patientFlow: { date: string; label: string; admissions: number; discharges: number }[];
+  /** Current patient census by status — see Patient.STATUS_CHOICES. */
+  patientStatus: { status: string; label: string; value: number }[];
+  /** null when no visit in the range has both an admission and a discharge
+   * date to compute a stay length from. */
+  avgLengthOfStayDays: number | null;
+  /** Per day: tasks due that day, broken down by their current status —
+   * grouped by due_date, not completed_at, so every day's bar is a
+   * complete breakdown of everything due then. */
+  taskPerformance: {
+    date: string; label: string;
+    completed: number; inProgress: number; pending: number; overdue: number;
+  }[];
+  /** Tasks created per day — a real count with a real date label. */
+  taskVolume: { date: string; label: string; value: number }[];
   delayData: { value: number; label: string }[];
   taskTypes: { value: number; color: string; text: string; label?: string }[];
   burnout: { value: number; label: string; frontColor?: string }[];

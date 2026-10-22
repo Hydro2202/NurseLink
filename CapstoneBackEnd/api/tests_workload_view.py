@@ -101,6 +101,25 @@ class WorkloadViewTests(TestCase):
         self.assertEqual(row['taskCount'], 2)
         self.assertEqual(row['completedTasks'], 1)
 
+    def test_overdue_task_count_matches_the_nurses_overdue_tasks(self):
+        nurse = make_nurse('ben@hospital.com', 'Ben', 'Diaz')
+        Task.objects.create(
+            task_code='T900', title='Overdue 1', assigned_to='Ben Diaz', assigned_nurse=nurse,
+            status='overdue',
+        )
+        Task.objects.create(
+            task_code='T901', title='Overdue 2', assigned_to='Ben Diaz', assigned_nurse=nurse,
+            status='overdue',
+        )
+        Task.objects.create(
+            task_code='T902', title='Not overdue', assigned_to='Ben Diaz', assigned_nurse=nurse,
+            status='pending',
+        )
+
+        response = self.client.get('/api/workload/')
+        row = next(r for r in response.data if r['nurseEmail'] == 'ben@hospital.com')
+        self.assertEqual(row['overdueTasks'], 2)
+
     def test_a_name_only_task_counts_for_every_same_named_nurse_independently(self):
         # Pins the existing (not newly introduced) behaviour: with no FK, a
         # free-text-assigned task matches by name alone, so two accounts
@@ -122,6 +141,7 @@ class WorkloadViewTests(TestCase):
         self.assertEqual(row['patientCount'], 0)
         self.assertEqual(row['taskCount'], 0)
         self.assertEqual(row['completedTasks'], 0)
+        self.assertEqual(row['overdueTasks'], 0)
 
     def test_nurse_never_manually_assigned_falls_back_to_todays_duty_roster(self):
         # The exact bug report this guards against: a nurse who's actually

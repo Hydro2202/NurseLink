@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Navigate, useSearchParams } from 'react-router';
 import type { AnalyticsData, Department, PatientAssignmentRecord, Patient, Task, WorkloadData } from '../types/domain';
@@ -19,9 +19,13 @@ import { Heart, AlertTriangle, CheckCircle, Clock, Users, LogOut } from 'lucide-
 import { Card, CardContent } from '../components/ui/card';
 import { AssignPatientModal, type PatientAssignment } from '../components/AssignPatientModal';
 import { WorkloadSection } from '../components/dashboard/WorkloadSection';
-import { AnalyticsSection } from '../components/dashboard/AnalyticsSection';
+import {
+  PatientFlowAndStatusSection,
+  TaskPerformanceSection,
+  ShiftDelaySection,
+  TaskTypeSection,
+} from '../components/dashboard/AnalyticsSection';
 import { FilterBar } from '../components/dashboard/FilterBar';
-import { SectionNav, type DashboardSection } from '../components/dashboard/SectionNav';
 import {
   DEFAULT_FILTERS,
   filterPatients,
@@ -51,11 +55,14 @@ function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
   };
 }
 
-const ANALYTICS_SECTIONS: DashboardSection[] = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'workload', label: 'Workload' },
-  { key: 'charts', label: 'Charts' },
-];
+/** Old deep-links (?section=workload etc., from the pre-redesign tabbed
+ * nav) still land somewhere sensible — the page is one continuous scroll
+ * now, so this just maps the old keys onto the new section anchors. */
+const SECTION_ANCHORS: Record<string, string> = {
+  overview: 'kpis',
+  workload: 'nurse-workload',
+  charts: 'patient-flow',
+};
 
 function pad(n: number) {
   return String(n).padStart(2, '0');
@@ -94,15 +101,15 @@ function StatCard({ title, value, subtitle, icon: Icon, iconBg, iconColor }: {
 }) {
   return (
     <Card className="overflow-hidden">
-      <CardContent className="p-3">
-        <div className="flex items-center gap-2 mb-1.5">
+      <CardContent className="p-5">
+        <div className="flex items-center gap-2 mb-2">
           <div className={`p-1.5 ${iconBg} rounded-lg flex items-center justify-center flex-shrink-0`}>
             <Icon className={`w-3.5 h-3.5 ${iconColor}`} />
           </div>
           <p className={`text-[10px] font-medium ${iconColor} uppercase tracking-wide`}>{title}</p>
         </div>
         <h3 className="text-xl font-bold">{value}</h3>
-        {subtitle ? <p className="text-[10px] text-muted-foreground mt-0.5">{subtitle}</p> : null}
+        {subtitle ? <p className="text-[10px] text-muted-foreground mt-2">{subtitle}</p> : null}
       </CardContent>
     </Card>
   );
@@ -132,8 +139,6 @@ export default function AnalyticsPage() {
   const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [editingAssignment, setEditingAssignment] = useState<PatientAssignment | null>(null);
-  const [activeSection, setActiveSection] = useState('overview');
-  const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const loadPatientsAndTasks = React.useCallback(async () => {
     if (isStaffNurse) return;
@@ -195,18 +200,16 @@ export default function AnalyticsPage() {
     void loadWorkloadAndAnalytics();
   }, [loadWorkloadAndAnalytics]);
 
-  const scrollToSection = React.useCallback((key: string) => {
-    setActiveSection(key);
-    sectionRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, []);
-
   // An old Workload Monitor link, or a link typed by hand, lands on
   // /analytics?section=workload — jump straight to that section once it
   // has actually rendered rather than at the top.
   useEffect(() => {
     const section = searchParams.get('section');
-    if (!section) return;
-    const id = setTimeout(() => scrollToSection(section), 50);
+    const anchor = section ? SECTION_ANCHORS[section] : null;
+    if (!anchor) return;
+    const id = setTimeout(() => {
+      document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -293,12 +296,10 @@ export default function AnalyticsPage() {
 
   return (
     <div className="pb-8">
-      <SectionNav sections={ANALYTICS_SECTIONS} activeKey={activeSection} onSelect={scrollToSection} />
-
       <div className="bg-card border-b border-border py-6">
-        <div className="max-w-7xl mx-auto px-4">
+        <div className="max-w-7xl mx-auto px-6">
           <h1 className="text-2xl font-bold text-foreground">Analytics</h1>
-          <p className="text-sm text-muted-foreground mt-1">Operations overview, charts and nurse workload</p>
+          <p className="text-sm text-muted-foreground mt-1">Operations overview, clinical activity, and nurse workload.</p>
         </div>
       </div>
 
@@ -310,67 +311,78 @@ export default function AnalyticsPage() {
         nurses={availableNurses}
       />
 
-      <div className="max-w-7xl mx-auto px-4 space-y-6 mt-6">
-        <div ref={(el) => { sectionRefs.current.overview = el; }} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard
-            title="Patients"
-            value={String(filteredPatients.length)}
-            subtitle="Match current filters"
-            icon={Heart}
-            iconBg="bg-purple-100"
-            iconColor="text-purple-600"
-          />
-          <StatCard
-            title="High Risk"
-            value={String(highRiskPatients)}
-            subtitle="High/critical risk patients"
-            icon={AlertTriangle}
-            iconBg="bg-red-100"
-            iconColor="text-red-600"
-          />
-          <StatCard
-            title="Tasks Pending"
-            value={String(pendingCount + inProgressCount)}
-            subtitle="Pending + in progress"
-            icon={Clock}
-            iconBg="bg-blue-100"
-            iconColor="text-blue-600"
-          />
-          <StatCard
-            title="Tasks Overdue"
-            value={String(overdueTasks)}
-            subtitle="Needs attention"
-            icon={AlertTriangle}
-            iconBg="bg-orange-100"
-            iconColor="text-orange-600"
-          />
-          <StatCard
-            title="Tasks Completed"
-            value={String(completedTasks)}
-            subtitle={filterSummary}
-            icon={CheckCircle}
-            iconBg="bg-green-100"
-            iconColor="text-green-600"
-          />
-          <StatCard
-            title="Nurses on Duty"
-            value={String(workloadData.length)}
-            subtitle="Match current filters"
-            icon={Users}
-            iconBg="bg-blue-100"
-            iconColor="text-blue-600"
-          />
-          <StatCard
-            title="Discharged"
-            value={String(dischargedInPeriod)}
-            subtitle={filterSummary}
-            icon={LogOut}
-            iconBg="bg-gray-100"
-            iconColor="text-gray-600"
-          />
+      <div className="max-w-7xl mx-auto px-6 space-y-6 mt-6">
+        <div id="kpis">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Key Performance Indicators</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard
+              title="Total Patients"
+              value={String(filteredPatients.length)}
+              subtitle="Matches current filters"
+              icon={Heart}
+              iconBg="bg-purple-100"
+              iconColor="text-purple-600"
+            />
+            <StatCard
+              title="High-Risk Patients"
+              value={String(highRiskPatients)}
+              subtitle="High/critical risk patients"
+              icon={AlertTriangle}
+              iconBg="bg-red-100"
+              iconColor="text-red-600"
+            />
+            <StatCard
+              title="Tasks Pending"
+              value={String(pendingCount + inProgressCount)}
+              subtitle="Pending + in progress"
+              icon={Clock}
+              iconBg="bg-blue-100"
+              iconColor="text-blue-600"
+            />
+            <StatCard
+              title="Tasks Overdue"
+              value={String(overdueTasks)}
+              subtitle="Needs attention"
+              icon={AlertTriangle}
+              iconBg="bg-orange-100"
+              iconColor="text-orange-600"
+            />
+            <StatCard
+              title="Tasks Completed"
+              value={String(completedTasks)}
+              subtitle={filterSummary}
+              icon={CheckCircle}
+              iconBg="bg-green-100"
+              iconColor="text-green-600"
+            />
+            <StatCard
+              title="Nurses on Duty"
+              value={String(workloadData.length)}
+              subtitle="Matches current filters"
+              icon={Users}
+              iconBg="bg-blue-100"
+              iconColor="text-blue-600"
+            />
+            <StatCard
+              title="Patients Discharged"
+              value={String(dischargedInPeriod)}
+              subtitle={filterSummary}
+              icon={LogOut}
+              iconBg="bg-gray-100"
+              iconColor="text-gray-600"
+            />
+          </div>
         </div>
 
-        <div ref={(el) => { sectionRefs.current.workload = el; }}>
+        <div id="patient-flow">
+          <PatientFlowAndStatusSection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
+        </div>
+
+        <TaskPerformanceSection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
+
+        <div id="nurse-workload">
+          <h2 className="text-lg font-semibold text-gray-900">Nurse Workload</h2>
+          <p className="text-sm text-gray-500 mb-3">Compare patient assignments, task completion, and workload across nurses.</p>
           <WorkloadSection
             workloadData={workloadData}
             assignments={assignments}
@@ -381,13 +393,9 @@ export default function AnalyticsPage() {
           />
         </div>
 
-        <div ref={(el) => { sectionRefs.current.charts = el; }}>
-          <div className="mb-3">
-            <h2 className="text-lg font-semibold text-gray-900">Charts</h2>
-            <p className="text-sm text-gray-500">{filterSummary}</p>
-          </div>
-          <AnalyticsSection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
-        </div>
+        <ShiftDelaySection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
+
+        <TaskTypeSection data={analyticsData} loading={analyticsLoading} filterSummary={filterSummary} />
       </div>
 
       <AssignPatientModal

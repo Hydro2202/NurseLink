@@ -600,6 +600,7 @@ export interface WorkloadData {
   patientCount: number;
   taskCount: number;
   completedTasks: number;
+  overdueTasks: number;
   overtimeHours: number;
   presence?: NursePresence;
   lastSeenAt?: string | null;
@@ -956,9 +957,14 @@ export interface AnalyticsData {
   /** Current patients by status (admitted / observation / discharged). */
   patientStatus?: { status: string; label: string; value: number }[];
   avgLengthOfStayDays?: number | null;
-  taskCompletion: { value: number; label: string; frontColor?: string }[];
-  workloadTrend: { value: number; label: string }[];
-  avgTasks: { value: number }[];
+  /** Per day: tasks due that day, broken down by their current status —
+   * grouped by due_date, not completed_at. */
+  taskPerformance: {
+    date: string; label: string;
+    completed: number; inProgress: number; pending: number; overdue: number;
+  }[];
+  /** Tasks created per day — a real count with a real date label. */
+  taskVolume: { date: string; label: string; value: number }[];
   delayData: { value: number; label: string }[];
   taskTypes: { value: number; color: string; text: string; label?: string }[];
   kpis: {

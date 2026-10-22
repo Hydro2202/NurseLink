@@ -207,5 +207,58 @@ class AnalyticsFilterTests(TestCase):
             '/api/analytics/', {'start_date': '2026-01-01', 'end_date': '2026-06-01'}
         )
         self.assertEqual(response.status_code, 200)
-        # 31 days of per-day completion bars, not the full ~150-day span.
-        self.assertEqual(len(response.json()['taskCompletion']), 31)
+        # 31 days of per-day bars, not the full ~150-day span.
+        self.assertEqual(len(response.json()['taskPerformance']), 31)
+        self.assertEqual(len(response.json()['taskVolume']), 31)
+
+    def test_task_performance_breaks_down_by_due_date_and_real_status(self):
+        nurse = make_nurse('ben@hospital.com', 'Ben', 'Diaz')
+        Task.objects.create(
+            task_code='T900', title='Done on time', assigned_to='Ben Diaz', assigned_nurse=nurse,
+            status='completed', due_date=datetime.date(2026, 3, 5),
+        )
+        Task.objects.create(
+            task_code='T901', title='Still overdue', assigned_to='Ben Diaz', assigned_nurse=nurse,
+            status='overdue', due_date=datetime.date(2026, 3, 5),
+        )
+        Task.objects.create(
+            task_code='T902', title='Different day', assigned_to='Ben Diaz', assigned_nurse=nurse,
+            status='pending', due_date=datetime.date(2026, 3, 6),
+        )
+
+        response = self.client.get(
+            '/api/analytics/', {'start_date': '2026-03-05', 'end_date': '2026-03-06'}
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = {row['date']: row for row in response.json()['taskPerformance']}
+        self.assertEqual(rows['2026-03-05']['completed'], 1)
+        self.assertEqual(rows['2026-03-05']['overdue'], 1)
+        self.assertEqual(rows['2026-03-05']['pending'], 0)
+        self.assertEqual(rows['2026-03-06']['pending'], 1)
+        self.assertEqual(rows['2026-03-06']['completed'], 0)
+
+    def test_task_volume_is_the_real_per_day_count_including_genuine_zeros(self):
+        nurse = make_nurse('ben@hospital.com', 'Ben', 'Diaz')
+        task = Task.objects.create(
+            task_code='T900', title='Created on the 5th', assigned_to='Ben Diaz', assigned_nurse=nurse,
+        )
+        task.created_at = datetime.datetime(2026, 3, 5, 9, 0, tzinfo=datetime.timezone.utc)
+        task.save(update_fields=['created_at'])
+
+        response = self.client.get(
+            '/api/analytics/', {'start_date': '2026-03-05', 'end_date': '2026-03-07'}
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = {row['date']: row['value'] for row in response.json()['taskVolume']}
+        self.assertEqual(rows['2026-03-05'], 1)
+        # A genuinely empty day must read as a real 0, never a fabricated
+        # stand-in value borrowed from completedTasks or anywhere else.
+        self.assertEqual(rows['2026-03-06'], 0)
+        self.assertEqual(rows['2026-03-07'], 0)
+
+    def test_no_workload_trend_field_remains(self):
+        # Removed entirely — it was never real historical data, just the
+        # current average with an invented per-bucket wiggle.
+        response = self.client.get('/api/analytics/')
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('workloadTrend', response.json())

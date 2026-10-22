@@ -41,6 +41,14 @@ import {
 import { AssignPatientModal, type AssignPatientPrefill, type PatientAssignment } from '../components/AssignPatientModal';
 import { SafetyAlertsSection, type SafetyAlert } from '../components/dashboard/SafetyAlertsSection';
 import { SectionNav, type DashboardSection } from '../components/dashboard/SectionNav';
+import {
+  DASHBOARD_HEADER_CLASS,
+  DASHBOARD_CONTAINER_CLASS,
+  DASHBOARD_CONTENT_CLASS,
+  DASHBOARD_CARD_GRID_GAP,
+  DASHBOARD_CHART_GRID_GAP,
+  DASHBOARD_KPI_CARD_PADDING,
+} from '../utils/dashboardLayout';
 
 function toLocalAssignment(record: PatientAssignmentRecord): PatientAssignment {
   return {
@@ -323,10 +331,10 @@ export default function DashboardPage() {
 
   const StatCard = ({ title, value, subtitle, icon: Icon, trend, trendLabel, iconBg, iconColor }: any) => (
     <Card className="overflow-hidden">
-      <CardContent className="p-3">
+      <CardContent className={DASHBOARD_KPI_CARD_PADDING}>
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1.5">
+            <div className="flex items-center gap-2 mb-2">
               <div className={`p-1.5 ${iconBg || 'bg-gray-100'} rounded-lg flex items-center justify-center flex-shrink-0`}>
                 <Icon className={`w-3.5 h-3.5 ${iconColor || 'text-gray-600'}`} />
               </div>
@@ -350,10 +358,10 @@ export default function DashboardPage() {
 
   if (isStaffNurse) {
     return (
-      <div className="space-y-4 pb-20 prevent-overflow">
+      <div className="pb-20 prevent-overflow">
         {/* Header */}
-        <div className="bg-card border-b border-border py-3 px-3 sm:px-4 sm:py-4">
-          <div className="w-full max-w-7xl mx-auto">
+        <div className={DASHBOARD_HEADER_CLASS}>
+          <div className={DASHBOARD_CONTAINER_CLASS}>
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
                 <h1 className="text-base sm:text-lg font-bold truncate">Good Morning, {user?.name}</h1>
@@ -366,7 +374,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="w-full max-w-7xl mx-auto px-3 sm:px-4 space-y-4">
+        <div className={DASHBOARD_CONTENT_CLASS}>
           {/* Critical Alert */}
           {overdueTasks > 0 && (
             <Alert variant="destructive" className="border-l-4 border-destructive">
@@ -379,7 +387,7 @@ export default function DashboardPage() {
           )}
 
           {/* Quick Stats */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className={`grid grid-cols-2 ${DASHBOARD_CARD_GRID_GAP}`}>
             <StatCard
               title="Urgent"
               value={urgentTasks}
@@ -449,7 +457,7 @@ export default function DashboardPage() {
               <h2 className="text-base font-semibold text-gray-900">Quick Actions</h2>
               <p className="text-xs text-gray-500">Common tasks and shortcuts</p>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className={`grid grid-cols-2 sm:grid-cols-4 ${DASHBOARD_CARD_GRID_GAP}`}>
               <Button
                 className="h-20 flex flex-col gap-2 bg-green-600 hover:bg-green-700 text-white border-0 shadow-sm hover:shadow-md transition-all rounded-xl"
                 onClick={() => navigate('/tasks')}
@@ -481,7 +489,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className={`grid grid-cols-1 lg:grid-cols-2 ${DASHBOARD_CHART_GRID_GAP}`}>
             {/* Task Timeline */}
             <Card className="border border-border shadow-sm">
               <CardHeader className="pb-4">
@@ -685,8 +693,8 @@ export default function DashboardPage() {
       <SectionNav sections={DASHBOARD_SECTIONS} activeKey={activeSection} onSelect={scrollToSection} />
 
       {/* Header */}
-      <div className="bg-card border-b border-border py-6">
-        <div className="max-w-7xl mx-auto px-4">
+      <div className={DASHBOARD_HEADER_CLASS}>
+        <div className={DASHBOARD_CONTAINER_CLASS}>
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-foreground">Welcome, {user?.name}</h1>
@@ -707,7 +715,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 space-y-6 mt-6">
+      <div className={DASHBOARD_CONTENT_CLASS}>
         <div ref={(el) => { sectionRefs.current.alerts = el; }}>
           <SafetyAlertsSection
             patients={patients}
@@ -717,7 +725,10 @@ export default function DashboardPage() {
           />
         </div>
 
-        <div ref={(el) => { sectionRefs.current.overview = el; }} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div
+          ref={(el) => { sectionRefs.current.overview = el; }}
+          className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 ${DASHBOARD_CARD_GRID_GAP}`}
+        >
           <StatCard
             title="Patients"
             value={String(patients.length)}

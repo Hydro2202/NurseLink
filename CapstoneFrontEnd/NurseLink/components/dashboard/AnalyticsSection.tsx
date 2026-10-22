@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, LayoutChangeEvent, useWindowDimensions } from 'react-native';
-import { BarChart, LineChart, PieChart } from '../Charts';
-import { TrendingUp, Activity, ListChecks, Clock, PieChart as PieChartIcon, BedDouble, Users } from 'lucide-react-native';
+import { BarChart, PieChart } from '../Charts';
+import { TrendingUp, ListChecks, Clock, PieChart as PieChartIcon, BedDouble, Users } from 'lucide-react-native';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../Card';
 import { Colors } from '../../constants/colors';
 import type { AnalyticsData } from '../../types/domain';
@@ -97,12 +97,12 @@ interface AnalyticsSectionProps {
 }
 
 /**
- * The 5 Analytics charts (Task Completion, Workload Trend, Task Volume,
- * Delay by Shift, Task Types) as an always-visible grid — 2 columns on
- * desktop, 1 on phone — folded into the head nurse dashboard from what
- * used to be the separate Analytics page (see app/(app)/analytics.tsx, now
- * a redirect). Not behind tabs: the spec for this section is that every
- * chart is visible without an extra tap.
+ * The Analytics charts (Patient Flow, Patients by Status, Task Completion,
+ * Task Volume, Delay by Shift, Task Types) as an always-visible grid — 2
+ * columns on desktop, 1 on phone — folded into the head nurse dashboard
+ * from what used to be the separate Analytics page (see
+ * app/(app)/analytics.tsx, now a redirect). Not behind tabs: the spec for
+ * this section is that every chart is visible without an extra tap.
  */
 export function AnalyticsSection({ data, loading, filterSummary }: AnalyticsSectionProps) {
   const { width } = useWindowDimensions();
@@ -117,11 +117,18 @@ export function AnalyticsSection({ data, loading, filterSummary }: AnalyticsSect
     );
   }
 
-  const taskCompletion = data?.taskCompletion || [];
-  const workloadTrend = data?.workloadTrend || [];
+  // Completed-tasks-per-day, same single-series bar this chart has always
+  // shown — now sourced from taskPerformance (grouped by due_date, broken
+  // down by status) instead of the old completed-only taskCompletion field,
+  // taking just the "completed" count per day.
+  const taskCompletion = (data?.taskPerformance || []).map((row) => ({
+    value: row.completed, label: row.label, frontColor: Colors.green600,
+  }));
   const delayData = (data?.delayData || []).map((d) => ({ ...d, frontColor: Colors.warning }));
-  const taskVolume = (data?.avgTasks || []).map((item, i) => ({
-    ...item, label: `Wk ${i + 1}`, frontColor: Colors.blue500,
+  // Real per-day labels from the backend now (e.g. "Oct 16"), not an
+  // invented "Wk N" — taskVolume already carries its own label/date.
+  const taskVolume = (data?.taskVolume || []).map((item) => ({
+    ...item, frontColor: Colors.blue500,
   }));
   const taskTypes = data?.taskTypes || [];
   const taskTypeLegend = taskTypes.map((t) => ({ color: t.color, label: humanizeCategory(t.label), value: t.text }));
@@ -267,44 +274,6 @@ export function AnalyticsSection({ data, loading, filterSummary }: AnalyticsSect
             />
           );
         }}
-      </ChartCard>
-
-      <ChartCard
-        itemStyle={itemStyle}
-        icon={Activity}
-        iconTint={Colors.blue50}
-        iconColor={Colors.blue600}
-        title="Workload Trend"
-        description={`Average patients per nurse · ${filterSummary}`}
-        hasData={workloadTrend.length > 0}
-      >
-        {(chartWidth) => (
-          <LineChart
-            data={workloadTrend}
-            width={chartWidth}
-            height={190}
-            curved
-            color={Colors.blue600}
-            thickness={2.5}
-            areaChart
-            startFillColor={Colors.blue500}
-            endFillColor={Colors.blue500}
-            startOpacity={0.22}
-            endOpacity={0.02}
-            dataPointsColor={Colors.blue600}
-            dataPointsRadius={4}
-            rulesColor={Colors.border}
-            rulesThickness={1}
-            xAxisThickness={0}
-            yAxisThickness={0}
-            yAxisTextStyle={yAxisTextStyle}
-            xAxisLabelTextStyle={axisLabelStyle}
-            formatYLabel={(v: string) => Number(v).toFixed(1)}
-            noOfSections={4}
-            initialSpacing={20}
-            endSpacing={20}
-          />
-        )}
       </ChartCard>
 
       <ChartCard
