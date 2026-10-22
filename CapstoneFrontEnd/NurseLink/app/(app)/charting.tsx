@@ -26,6 +26,7 @@ import {
   CheckCircle2,
   ClipboardList,
   ChevronLeft,
+  Printer,
 } from 'lucide-react-native';
 import {
   fetchPatients,
@@ -53,6 +54,8 @@ import { Switch } from '../../components/Switch';
 import { Alert, AlertDescription } from '../../components/Alert';
 import { StructuredNursingNote } from '../../components/StructuredNursingNote';
 import { FDARNursingNote } from '../../components/FDARNursingNote';
+import { canPrint } from '../../utils/print';
+import { printNursingNote } from '../../utils/printNursingNote';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { usePreferences } from '../../contexts/PreferencesContext';
@@ -742,6 +745,25 @@ export default function ChartingScreen() {
     }
   };
 
+  const [printingNoteId, setPrintingNoteId] = useState<string | null>(null);
+
+  const handlePrintNote = async (note: ChartingNote) => {
+    if (!canPrint()) {
+      toast.error('Printing is available in the NurseLink web app.');
+      return;
+    }
+    setPrintingNoteId(note.id);
+    try {
+      await printNursingNote(note);
+    } catch (error) {
+      toast.error('Unable to print this note', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      });
+    } finally {
+      setPrintingNoteId(null);
+    }
+  };
+
   const scrollRef = useRef<ScrollView>(null);
   // Set when a note is generated; the preview card scrolls into view once
   // it has been laid out (see its onLayout).
@@ -1405,7 +1427,7 @@ export default function ChartingScreen() {
               <View style={styles.modalFooter}>
                 <Button
                   variant="outline"
-                  style={{ flex: 1 }}
+                  style={styles.modalFooterBtn}
                   onPress={() =>
                     handleCopyNote(
                       (selectedNote.content || '').trim() ||
@@ -1419,7 +1441,19 @@ export default function ChartingScreen() {
                 </Button>
                 <Button
                   variant="outline"
-                  style={{ flex: 1 }}
+                  style={styles.modalFooterBtn}
+                  disabled={!canPrint()}
+                  loading={printingNoteId === selectedNote.id}
+                  onPress={() => handlePrintNote(selectedNote)}
+                >
+                  <View style={styles.btnInner}>
+                    <Printer size={16} color={Colors.foreground} />
+                    <Text style={styles.printBtnText}>Print</Text>
+                  </View>
+                </Button>
+                <Button
+                  variant="outline"
+                  style={styles.modalFooterBtn}
                   onPress={() => setViewNoteDialog(false)}
                 >
                   Close
@@ -2182,10 +2216,15 @@ const styles = StyleSheet.create({
   },
   modalFooter: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     padding: 16,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
     backgroundColor: Colors.white,
   },
+  // flexBasis (not just flex: 1) so three buttons wrap onto two rows on a
+  // narrow phone instead of squeezing down to an unreadable width.
+  modalFooterBtn: { flex: 1, flexBasis: 90 },
+  printBtnText: { fontSize: 15, fontWeight: '600', color: Colors.foreground },
 });

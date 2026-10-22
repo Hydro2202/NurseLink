@@ -133,6 +133,47 @@ export function buildReportHtml<T>(report: PrintReport<T>): string {
 }
 
 /**
+ * Opens the browser's print dialog for a standalone HTML document via a
+ * hidden iframe, so whatever is printed is exactly `html` — never the live
+ * app page, its chrome, or (for a scrollable panel) just whatever happens
+ * to be scrolled into view. Shared by every caller that needs to print
+ * something: `printReport` below (admin reports, with its own audit log),
+ * and any other print feature that builds its own document and doesn't
+ * need that admin-specific logging.
+ */
+export async function printHtml(html: string): Promise<void> {
+  if (!canPrint()) {
+    throw new Error('Printing is available in the NurseLink web app.');
+  }
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  document.body.appendChild(iframe);
+  const doc = iframe.contentWindow?.document;
+  if (!doc || !iframe.contentWindow) {
+    iframe.remove();
+    throw new Error('Could not open the print view.');
+  }
+  doc.open();
+  doc.write(html);
+  doc.close();
+  const win = iframe.contentWindow;
+  const cleanup = () => setTimeout(() => iframe.remove(), 1000);
+  win.addEventListener('afterprint', cleanup, { once: true });
+  setTimeout(() => {
+    win.focus();
+    win.print();
+    // Some browsers never fire afterprint; don't leave the frame behind.
+    setTimeout(() => iframe.remove(), 60000);
+  }, 250);
+}
+
+/**
  * Logs the print request, then opens the print dialog for `report`.
  * Throws if printing isn't available here or the request couldn't be logged.
  */
@@ -149,31 +190,5 @@ export async function printReport<T>(report: PrintReport<T>, audit: PrintAudit):
     label: audit.label,
     filters: audit.filters,
   });
-
-  const iframe = document.createElement('iframe');
-  iframe.setAttribute('aria-hidden', 'true');
-  iframe.style.position = 'fixed';
-  iframe.style.right = '0';
-  iframe.style.bottom = '0';
-  iframe.style.width = '0';
-  iframe.style.height = '0';
-  iframe.style.border = '0';
-  document.body.appendChild(iframe);
-  const doc = iframe.contentWindow?.document;
-  if (!doc || !iframe.contentWindow) {
-    iframe.remove();
-    throw new Error('Could not open the print view.');
-  }
-  doc.open();
-  doc.write(buildReportHtml(report));
-  doc.close();
-  const win = iframe.contentWindow;
-  const cleanup = () => setTimeout(() => iframe.remove(), 1000);
-  win.addEventListener('afterprint', cleanup, { once: true });
-  setTimeout(() => {
-    win.focus();
-    win.print();
-    // Some browsers never fire afterprint; don't leave the frame behind.
-    setTimeout(() => iframe.remove(), 60000);
-  }, 250);
+  await printHtml(buildReportHtml(report));
 }

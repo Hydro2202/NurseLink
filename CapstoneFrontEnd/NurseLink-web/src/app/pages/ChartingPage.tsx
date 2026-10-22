@@ -35,6 +35,7 @@ import {
   ClipboardList,
   ChevronLeft,
   Loader2,
+  Printer,
 } from 'lucide-react';
 import {
   Dialog,
@@ -69,6 +70,7 @@ import {
   resolveNoteForDisplay,
   structuredHasClinicalContent,
 } from '../utils/chartingStructured';
+import { printNursingNote } from '../utils/printNursingNote';
 
 type PreviewStructured = Required<
   Pick<
@@ -565,6 +567,21 @@ export default function ChartingPage() {
     }
   };
 
+  const [printingNoteId, setPrintingNoteId] = useState<string | null>(null);
+
+  const handlePrintNote = async (note: ChartingNote) => {
+    setPrintingNoteId(note.id);
+    try {
+      await printNursingNote(note);
+    } catch (error) {
+      toast.error('Unable to print this note', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      });
+    } finally {
+      setPrintingNoteId(null);
+    }
+  };
+
   const filteredNotes = notes.filter(
     (note) =>
       note.patientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -981,10 +998,10 @@ export default function ChartingPage() {
               })()}
 
               {/* Action Buttons */}
-              <div className="flex gap-2 pt-2 sticky bottom-0 bg-white py-3 border-t">
+              <div className="flex flex-wrap gap-2 pt-2 sticky bottom-0 bg-white py-3 border-t">
                 <Button
                   variant="outline"
-                  className="flex-1"
+                  className="flex-1 min-w-[7rem]"
                   onClick={() =>
                     handleCopyNote(
                       (selectedNote.content || '').trim() ||
@@ -994,7 +1011,24 @@ export default function ChartingPage() {
                 >
                   Copy Note
                 </Button>
-                <Button variant="outline" className="flex-1" onClick={() => setViewNoteDialog(false)}>
+                <Button
+                  variant="outline"
+                  className="flex-1 min-w-[7rem]"
+                  onClick={() => handlePrintNote(selectedNote)}
+                  disabled={printingNoteId === selectedNote.id}
+                >
+                  {printingNoteId === selectedNote.id ? (
+                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                  ) : (
+                    <Printer className="w-4 h-4 mr-1" />
+                  )}
+                  Print
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex-1 min-w-[7rem]"
+                  onClick={() => setViewNoteDialog(false)}
+                >
                   Close
                 </Button>
               </div>
