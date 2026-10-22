@@ -64,16 +64,16 @@ export const VITAL_SEVERITY_CLASSES: Record<VitalSeverity, { box: string; text: 
   normal: { box: 'bg-blue-50 border-blue-100', text: 'text-gray-900' },
 };
 
-/** "Every 2 hours" / "As needed (PRN)" / "Not specified" — the display text
+/** "Every 2 hours" / "As needed (PRN)" / "Not set yet" — the display text
  * for Patient.vitalsMonitoringOrder, shared by the patient detail view,
  * Kardex's vitals-schedule card, and task cards so the 5 enum values never
  * get a second, slightly different label somewhere else. */
 export const VITALS_MONITORING_ORDER_LABELS: Record<VitalsMonitoringOrder, string> = {
+  not_specified: 'Not set yet',
   every_1h: 'Every 1 hour',
   every_2h: 'Every 2 hours',
   every_4h: 'Every 4 hours',
   prn: 'As needed (PRN)',
-  not_specified: 'Not specified',
 };
 
 export function vitalsMonitoringOrderLabel(order: VitalsMonitoringOrder | null | undefined): string {

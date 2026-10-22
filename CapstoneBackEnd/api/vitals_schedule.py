@@ -62,6 +62,14 @@ def current_monitoring_order(patient):
     return 'not_specified'  # defensive: an unrecognized frequency_hours value
 
 
+def current_monitoring_basis(patient):
+    """The order/protocol reference (e.g. "Dr. Reyes order") for a patient's
+    active VitalSignsSchedule row, or '' if there is none — the free-text
+    counterpart to current_monitoring_order() above."""
+    active = patient.vitals_schedules.filter(ended_at__isnull=True).first()
+    return active.basis if active is not None else ''
+
+
 def set_monitoring_order(patient, order_value, user, basis=''):
     """Set, change or clear a patient's Vital Signs Monitoring (as ordered).
 
@@ -85,7 +93,14 @@ def set_monitoring_order(patient, order_value, user, basis=''):
     mode = 'prn' if order_value == 'prn' else 'scheduled'
     frequency = ORDER_VALUE_TO_FREQUENCY.get(order_value)
     if active is not None and active.mode == mode and active.frequency_hours == frequency:
-        return active  # no real change — leave history alone
+        # Same order, but the order/protocol reference text may have been
+        # corrected (e.g. a typo in "Dr. Reyes order") — update it in place
+        # rather than treating a reference-only edit as a real order change
+        # that would end this row and start a new one.
+        if active.basis != basis:
+            active.basis = basis
+            active.save(update_fields=['basis'])
+        return active
 
     if active is not None:
         label = 'as needed (PRN)' if mode == 'prn' else f'every {frequency} hour{"s" if frequency != 1 else ""}'

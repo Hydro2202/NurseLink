@@ -25,7 +25,7 @@ import {
   updatePatient,
   ApiError,
 } from '../api/nurselink';
-import type { Patient } from '../types/domain';
+import type { Patient, VitalsMonitoringOrder } from '../types/domain';
 
 export type PatientKardexForm = {
   lastName: string;
@@ -42,6 +42,14 @@ export type PatientKardexForm = {
   admittingDiagnosis: string;
   finalDiagnosis: string;
   diet: string;
+  // Simple order/reference pair shown in both modes — not the richer
+  // VitalsScheduleCard. In 'add' mode the patient doesn't exist yet when
+  // this form is open, so handleSave PATCHes the just-created patient right
+  // after create, same as patientCode is already meant to be used for. In
+  // 'edit' mode they go straight into the same updatePatient(...) PATCH as
+  // the rest of the clinical fields.
+  vitalsMonitoringOrder: VitalsMonitoringOrder;
+  vitalsMonitoringBasis: string;
   temperature: string;
   pulseRate: string;
   respiratoryRate: string;
@@ -71,6 +79,8 @@ const emptyForm = (): PatientKardexForm => ({
   bloodPressure: '',
   oxygenSaturation: '',
   specialEndorsements: '',
+  vitalsMonitoringOrder: 'not_specified',
+  vitalsMonitoringBasis: '',
 });
 
 function patientToForm(patient: Patient): PatientKardexForm {
@@ -99,6 +109,8 @@ function patientToForm(patient: Patient): PatientKardexForm {
       patient.vitalSigns?.oxygenSaturation != null
         ? String(patient.vitalSigns.oxygenSaturation)
         : '',
+    vitalsMonitoringOrder: patient.vitalsMonitoringOrder || 'not_specified',
+    vitalsMonitoringBasis: patient.vitalsMonitoringBasis || '',
   };
 }
 
@@ -153,7 +165,21 @@ export function PatientKardexModal({
     setSaving(true);
     try {
       if (mode === 'add') {
-        await createKardexRecord({ ...form });
+        const created = await createKardexRecord({ ...form });
+        // The monitoring order/reference live on Patient, not KardexHistory
+        // — createKardexRecord has already created the patient by the time
+        // it returns (patientCode is populated for exactly this reason), so
+        // a quick follow-up PATCH is how they actually get saved. Skipped
+        // entirely if the nurse left both at their defaults.
+        if (
+          created.patientCode &&
+          (form.vitalsMonitoringOrder !== 'not_specified' || form.vitalsMonitoringBasis.trim())
+        ) {
+          await updatePatient(created.patientCode, {
+            vitalsMonitoringOrder: form.vitalsMonitoringOrder,
+            vitalsMonitoringBasis: form.vitalsMonitoringBasis.trim(),
+          });
+        }
         toast.success('Patient added', {
           description: 'Patient created from Kardex and added to the patient list.',
         });
@@ -167,6 +193,8 @@ export function PatientKardexModal({
           diagnosis: form.admittingDiagnosis || form.chiefComplaint || patient.diagnosis,
           admissionDate: form.admissionDate,
           attendingPhysician: form.attendingPhysician,
+          vitalsMonitoringOrder: form.vitalsMonitoringOrder,
+          vitalsMonitoringBasis: form.vitalsMonitoringBasis.trim(),
           vitalSigns: {
             heartRate: Number(form.pulseRate) || 0,
             bloodPressure: form.bloodPressure || '',
@@ -287,6 +315,40 @@ export function PatientKardexModal({
               <Label>Diet</Label>
               <Input value={form.diet} onChange={(e) => setField('diet', e.target.value)} />
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Vital Signs Monitoring (as ordered)</Label>
+                <Select
+                  value={form.vitalsMonitoringOrder}
+                  onValueChange={(v) => setField('vitalsMonitoringOrder', v as VitalsMonitoringOrder)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="not_specified">Not set yet</SelectItem>
+                    <SelectItem value="every_1h">Every 1 hour</SelectItem>
+                    <SelectItem value="every_2h">Every 2 hours</SelectItem>
+                    <SelectItem value="every_4h">Every 4 hours</SelectItem>
+                    <SelectItem value="prn">As needed (PRN)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>Order / protocol reference</Label>
+                <Input
+                  value={form.vitalsMonitoringBasis}
+                  onChange={(e) => setField('vitalsMonitoringBasis', e.target.value)}
+                  placeholder="e.g., Dr. Reyes order"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              A newly set schedule&apos;s first check is at the next full hour — change the exact
+              timing any time from the patient&apos;s Vital Signs Schedule on Kardex. Leave the order
+              as &quot;Not set yet&quot; and the Kardex will show monitoring as unspecified rather
+              than assuming an interval.
+            </p>
           </div>
 
           <p className="text-sm font-semibold text-blue-700 pt-2">Vital Signs</p>

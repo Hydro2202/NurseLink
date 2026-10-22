@@ -285,6 +285,13 @@ class Patient(models.Model):
         from .vitals_schedule import current_monitoring_order
         return current_monitoring_order(self)
 
+    @property
+    def vitals_monitoring_basis(self):
+        """The order/protocol reference (e.g. "Dr. Reyes order") behind
+        vitals_monitoring_order above, or '' if there is none."""
+        from .vitals_schedule import current_monitoring_basis
+        return current_monitoring_basis(self)
+
 
 class PatientVisit(models.Model):
     """

@@ -37,6 +37,7 @@ type FormState = {
   diagnosis: string;
   riskLevel: Patient['riskLevel'];
   vitalsMonitoringOrder: VitalsMonitoringOrder;
+  vitalsMonitoringBasis: string;
   attendingPhysician: string;
   departmentId: string;
   admissionDate: string;
@@ -58,6 +59,7 @@ function formFromPatient(patient: Patient): FormState {
     diagnosis: patient.diagnosis || '',
     riskLevel: patient.riskLevel || 'low',
     vitalsMonitoringOrder: patient.vitalsMonitoringOrder || 'not_specified',
+    vitalsMonitoringBasis: patient.vitalsMonitoringBasis || '',
     attendingPhysician: patient.attendingPhysician || '',
     departmentId: patient.departmentId != null ? String(patient.departmentId) : '',
     admissionDate: patient.admissionDate || '',
@@ -123,6 +125,7 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
         diagnosis: form.diagnosis.trim(),
         riskLevel: form.riskLevel,
         vitalsMonitoringOrder: form.vitalsMonitoringOrder,
+        vitalsMonitoringBasis: form.vitalsMonitoringBasis.trim(),
         attendingPhysician: form.attendingPhysician.trim(),
         departmentId: form.departmentId ? Number(form.departmentId) : null,
         admissionDate: form.admissionDate,
@@ -229,24 +232,41 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
               </div>
             </div>
 
-            <div className="space-y-1">
-              <Label>Vital Signs Monitoring (as ordered)</Label>
-              <Select
-                value={form.vitalsMonitoringOrder}
-                onValueChange={(v) => setField('vitalsMonitoringOrder', v as VitalsMonitoringOrder)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="every_1h">Every 1 hour</SelectItem>
-                  <SelectItem value="every_2h">Every 2 hours</SelectItem>
-                  <SelectItem value="every_4h">Every 4 hours</SelectItem>
-                  <SelectItem value="prn">As needed (PRN)</SelectItem>
-                  <SelectItem value="not_specified">Not specified</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Vital Signs Monitoring (as ordered)</Label>
+                <Select
+                  value={form.vitalsMonitoringOrder}
+                  onValueChange={(v) => setField('vitalsMonitoringOrder', v as VitalsMonitoringOrder)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="not_specified">Not set yet</SelectItem>
+                    <SelectItem value="every_1h">Every 1 hour</SelectItem>
+                    <SelectItem value="every_2h">Every 2 hours</SelectItem>
+                    <SelectItem value="every_4h">Every 4 hours</SelectItem>
+                    <SelectItem value="prn">As needed (PRN)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="edit-vitals-basis">Order / protocol reference</Label>
+                <Input
+                  id="edit-vitals-basis"
+                  value={form.vitalsMonitoringBasis}
+                  onChange={(e) => setField('vitalsMonitoringBasis', e.target.value)}
+                  placeholder="e.g., Dr. Reyes order"
+                />
+              </div>
             </div>
+            <p className="text-xs text-muted-foreground">
+              A newly set schedule's first check is at the next full hour — change the exact timing
+              any time from the patient's Vital Signs Schedule on Kardex. Leave the order as &quot;Not
+              set yet&quot; and the Kardex will show monitoring as unspecified rather than assuming an
+              interval.
+            </p>
 
             <div className="space-y-1">
               <Label htmlFor="edit-diagnosis">{isDischarged ? 'Last Diagnosis *' : 'Diagnosis *'}</Label>

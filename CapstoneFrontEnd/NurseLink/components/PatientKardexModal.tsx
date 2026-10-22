@@ -35,7 +35,7 @@ import {
   setPatientAssignedDoctors,
   ApiError,
 } from '../services/api';
-import type { Doctor, DuplicatePatientMatch, Patient } from '../types/domain';
+import type { Doctor, DuplicatePatientMatch, Patient, VitalsMonitoringOrder } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 import { assessRiskLevel } from '../utils/riskLevel';
 import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
@@ -43,6 +43,7 @@ import { sanitizeName } from '../utils/textSanitize';
 import { KardexLabsAndMedications } from './KardexLabsAndMedications';
 import { VitalsScheduleCard } from './VitalsScheduleCard';
 import { RiskBadge } from './RiskBadge';
+import { VITALS_MONITORING_ORDER_OPTIONS } from './tasks/taskLabels';
 
 export type PatientKardexForm = {
   lastName: string;
@@ -70,6 +71,11 @@ export type PatientKardexForm = {
   bloodPressure: string;
   oxygenSaturation: string;
   specialEndorsements: string;
+  /** Add-mode only — edit mode sets these via VitalsScheduleCard below once
+   * the patient (and its id) actually exist. Applied with a follow-up
+   * updatePatient() call after createKardexRecord() succeeds. */
+  vitalsMonitoringOrder: VitalsMonitoringOrder;
+  vitalsMonitoringBasis: string;
 };
 
 const emptyForm = (): PatientKardexForm => ({
@@ -98,6 +104,8 @@ const emptyForm = (): PatientKardexForm => ({
   bloodPressure: '',
   oxygenSaturation: '',
   specialEndorsements: '',
+  vitalsMonitoringOrder: 'not_specified',
+  vitalsMonitoringBasis: '',
 });
 
 
@@ -256,6 +264,16 @@ export function PatientKardexModal({
         const created = await createKardexRecord({ ...form, confirmDuplicate });
         if (created.patientCode && doctorIds.length > 0) {
           await setPatientAssignedDoctors(created.patientCode, doctorIds);
+        }
+        // createKardexRecord() creates the Patient but has no field for its
+        // monitoring order — applied as a follow-up update, the same way
+        // the care-team assignment above is, once the patient (and its
+        // code) actually exist.
+        if (created.patientCode && form.vitalsMonitoringOrder !== 'not_specified') {
+          await updatePatient(created.patientCode, {
+            vitalsMonitoringOrder: form.vitalsMonitoringOrder,
+            vitalsMonitoringBasis: form.vitalsMonitoringBasis.trim(),
+          });
         }
         setDuplicateWarning(null);
         toast.success('Patient added', {
@@ -479,6 +497,34 @@ export function PatientKardexModal({
               onChangeText={(v) => setField('attendingPhysician', v)}
               placeholder="Physician name"
             />
+            {mode === 'add' ? (
+              <>
+                <View style={styles.rowWrap}>
+                  <View style={[styles.field, styles.colHalf]}>
+                    <Select
+                      label="Vital Signs Monitoring (as ordered)"
+                      value={form.vitalsMonitoringOrder}
+                      onValueChange={(v) => setField('vitalsMonitoringOrder', v as VitalsMonitoringOrder)}
+                      options={VITALS_MONITORING_ORDER_OPTIONS}
+                    />
+                  </View>
+                  <View style={[styles.field, styles.colHalf]}>
+                    <Input
+                      label="Order / protocol reference"
+                      value={form.vitalsMonitoringBasis}
+                      onChangeText={(v) => setField('vitalsMonitoringBasis', v)}
+                      placeholder="e.g., Dr. Reyes order"
+                    />
+                  </View>
+                </View>
+                <Text style={styles.hint}>
+                  A newly set schedule&apos;s first check is at the next full hour — change the
+                  exact timing any time from the patient&apos;s Vital Signs Schedule on Kardex.
+                  Leave the order as &quot;Not set yet&quot; and the Kardex will show monitoring
+                  as unspecified rather than assuming an interval.
+                </Text>
+              </>
+            ) : null}
             <Text style={styles.label}>Chief Complaint</Text>
             <TextInput
               style={styles.textarea}

@@ -324,6 +324,10 @@ export interface Patient {
    * it in an updatePatient() call to change it; omitting it leaves the
    * current order untouched. See PatientSerializer.vitalsMonitoringOrder. */
   vitalsMonitoringOrder?: VitalsMonitoringOrder;
+  /** Order/protocol reference behind vitalsMonitoringOrder above (e.g. "Dr.
+   * Reyes order") — same independent include-to-change, omit-to-leave-alone
+   * convention. See PatientSerializer.vitalsMonitoringBasis. */
+  vitalsMonitoringBasis?: string;
 }
 
 /**

@@ -403,6 +403,29 @@ class VitalsMonitoringOrderOnPatientEditTests(Base):
         res = self.client.get(f'/api/tasks/{task.task_code}/')
         self.assertEqual(res.data['vitalsMonitoringOrder'], 'every_1h')
 
+    def test_order_protocol_reference_saves_and_a_correction_does_not_start_new_history(self):
+        res = self.edit_patient(
+            self.nurse, vitalsMonitoringOrder='every_2h', vitalsMonitoringBasis='Dr. Reyes order'
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data['vitalsMonitoringBasis'], 'Dr. Reyes order')
+
+        # Correcting just the reference text, same order, must not end this
+        # row and start a new one — it's the same order, just a typo fix.
+        res = self.edit_patient(self.nurse, vitalsMonitoringBasis='Dr. Reyes order 10/21')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data['vitalsMonitoringOrder'], 'every_2h')
+        self.assertEqual(res.data['vitalsMonitoringBasis'], 'Dr. Reyes order 10/21')
+        self.assertEqual(
+            VitalSignsSchedule.objects.filter(patient=self.patient).count(), 1,
+        )
+
+    def test_reference_is_empty_while_the_order_is_not_specified(self):
+        self.patient.refresh_from_db()
+        self.assertEqual(self.patient.vitals_monitoring_basis, '')
+        res = self.edit_patient(self.nurse, diagnosis='Unrelated edit')
+        self.assertEqual(res.data['vitalsMonitoringBasis'], '')
+
 
 class VitalsReminderTests(Base):
     def test_assigned_nurse_is_reminded_five_minutes_before_with_the_time(self):

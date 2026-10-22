@@ -1220,6 +1220,11 @@ class PatientSerializer(serializers.ModelSerializer):
     vitalsMonitoringOrder = serializers.ChoiceField(
         choices=list(MONITORING_ORDER_VALUES), source='vitals_monitoring_order', required=False,
     )
+    # The order/protocol reference (e.g. "Dr. Reyes order") behind the order
+    # above — same not-a-real-model-field handling as vitalsMonitoringOrder.
+    vitalsMonitoringBasis = serializers.CharField(
+        source='vitals_monitoring_basis', required=False, allow_blank=True,
+    )
 
     class Meta:
         model = Patient
@@ -1270,6 +1275,7 @@ class PatientSerializer(serializers.ModelSerializer):
             'lastEditedByName',
             'confirmDuplicate',
             'vitalsMonitoringOrder',
+            'vitalsMonitoringBasis',
         ]
 
     def get_lastEditedAt(self, obj):
@@ -1463,6 +1469,7 @@ class PatientSerializer(serializers.ModelSerializer):
 
         self._apply_vitals(validated_data)
         monitoring_order = validated_data.pop('vitals_monitoring_order', None)
+        monitoring_basis = validated_data.pop('vitals_monitoring_basis', None)
         code = validated_data.pop('patient_code', None) or next_code(Patient, 'patient_code', 'P')
         validated_data['patient_code'] = code
         request = self.context.get('request')
@@ -1470,13 +1477,16 @@ class PatientSerializer(serializers.ModelSerializer):
             validated_data['assigned_nurse'] = request.user
         patient = Patient.objects.create(**validated_data)
         open_patient_visit(patient)
-        if monitoring_order:
-            set_monitoring_order(patient, monitoring_order, request.user if request else None)
+        if monitoring_order is not None or monitoring_basis is not None:
+            order = monitoring_order if monitoring_order is not None else 'not_specified'
+            basis = monitoring_basis if monitoring_basis is not None else ''
+            set_monitoring_order(patient, order, request.user if request else None, basis=basis)
         return patient
 
     def update(self, instance, validated_data):
         validated_data.pop('patient_code', None)
         monitoring_order = validated_data.pop('vitals_monitoring_order', None)
+        monitoring_basis = validated_data.pop('vitals_monitoring_basis', None)
         self._apply_vitals(validated_data)
 
         changed_labels = []
@@ -1505,9 +1515,11 @@ class PatientSerializer(serializers.ModelSerializer):
 
         instance.save()
 
-        if monitoring_order is not None:
+        if monitoring_order is not None or monitoring_basis is not None:
             request = self.context.get('request')
-            set_monitoring_order(instance, monitoring_order, request.user if request else None)
+            order = monitoring_order if monitoring_order is not None else instance.vitals_monitoring_order
+            basis = monitoring_basis if monitoring_basis is not None else instance.vitals_monitoring_basis
+            set_monitoring_order(instance, order, request.user if request else None, basis=basis)
 
         # A discharged patient's current fields are what the card shows as
         # "Last Diagnosis"/"Last Room"/etc. — correcting them (e.g. a

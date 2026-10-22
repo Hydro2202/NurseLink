@@ -11,6 +11,7 @@ import { updatePatient, fetchDepartments, ApiError } from '../services/api';
 import type { Department, Patient, VitalsMonitoringOrder } from '../types/domain';
 import { useToast } from '../contexts/ToastContext';
 import { computeBmi, bmiCategory, validateHeightCm, validateWeightKg } from '../utils/bmi';
+import { VITALS_MONITORING_ORDER_OPTIONS } from './tasks/taskLabels';
 
 /** "120/80" -> ['120', '80'] (missing half is '') — same split-and-combine
  * convention VitalSignsGrid's BloodPressureBlock uses, so the stored
@@ -35,6 +36,7 @@ type FormState = {
   diagnosis: string;
   riskLevel: string;
   vitalsMonitoringOrder: VitalsMonitoringOrder;
+  vitalsMonitoringBasis: string;
   attendingPhysician: string;
   departmentId: string;
   admissionDate: string;
@@ -55,6 +57,7 @@ function formFromPatient(patient: Patient): FormState {
     diagnosis: patient.diagnosis || '',
     riskLevel: patient.riskLevel || 'low',
     vitalsMonitoringOrder: patient.vitalsMonitoringOrder || 'not_specified',
+    vitalsMonitoringBasis: patient.vitalsMonitoringBasis || '',
     attendingPhysician: patient.attendingPhysician || '',
     departmentId: patient.departmentId != null ? String(patient.departmentId) : '',
     admissionDate: patient.admissionDate || '',
@@ -119,6 +122,7 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
         diagnosis: form.diagnosis.trim(),
         riskLevel: form.riskLevel as Patient['riskLevel'],
         vitalsMonitoringOrder: form.vitalsMonitoringOrder,
+        vitalsMonitoringBasis: form.vitalsMonitoringBasis.trim(),
         attendingPhysician: form.attendingPhysician.trim(),
         departmentId: form.departmentId ? Number(form.departmentId) : null,
         admissionDate: form.admissionDate,
@@ -217,18 +221,28 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
                   />
                 </View>
 
-                <Select
-                  label="Vital Signs Monitoring (as ordered)"
-                  value={form.vitalsMonitoringOrder}
-                  onValueChange={(v) => setField('vitalsMonitoringOrder', v as VitalsMonitoringOrder)}
-                  options={[
-                    { label: 'Every 1 hour', value: 'every_1h' },
-                    { label: 'Every 2 hours', value: 'every_2h' },
-                    { label: 'Every 4 hours', value: 'every_4h' },
-                    { label: 'As needed (PRN)', value: 'prn' },
-                    { label: 'Not specified', value: 'not_specified' },
-                  ]}
-                />
+                <View style={styles.row}>
+                  <Select
+                    label="Vital Signs Monitoring (as ordered)"
+                    value={form.vitalsMonitoringOrder}
+                    onValueChange={(v) => setField('vitalsMonitoringOrder', v as VitalsMonitoringOrder)}
+                    options={VITALS_MONITORING_ORDER_OPTIONS}
+                    style={styles.field}
+                  />
+                  <Input
+                    label="Order / protocol reference"
+                    value={form.vitalsMonitoringBasis}
+                    onChangeText={(v) => setField('vitalsMonitoringBasis', v)}
+                    placeholder="e.g., Dr. Reyes order"
+                    containerStyle={styles.field}
+                  />
+                </View>
+                <Text style={styles.fieldHint}>
+                  A newly set schedule&apos;s first check is at the next full hour — change the
+                  exact timing any time from the patient&apos;s Vital Signs Schedule on Kardex.
+                  Leave the order as &quot;Not set yet&quot; and the Kardex will show monitoring
+                  as unspecified rather than assuming an interval.
+                </Text>
 
                 <Input
                   label={isDischarged ? 'Last Diagnosis *' : 'Diagnosis *'}
@@ -408,6 +422,7 @@ const styles = StyleSheet.create({
   bpInput: { flex: 1, minWidth: 0, marginBottom: 0 },
   bpSlash: { fontSize: 18, fontWeight: '700', color: Colors.gray400 },
   fieldWide: { flex: 1 },
+  fieldHint: { fontSize: 11, color: Colors.gray400, marginTop: -6, lineHeight: 15 },
   sectionLabel: {
     fontSize: 11,
     fontWeight: '700',

@@ -164,6 +164,10 @@ export interface Patient {
    * api/vitals_schedule.py's current_monitoring_order()/set_monitoring_order().
    * Read on every Patient GET; settable via a PATCH that includes it. */
   vitalsMonitoringOrder?: VitalsMonitoringOrder;
+  /** The order/protocol reference behind vitalsMonitoringOrder above (e.g.
+   * "Dr. Reyes order") — same read/write PATCH, independent of the order
+   * itself (either can be sent alone). '' means no reference saved. */
+  vitalsMonitoringBasis?: string;
 }
 
 /** One row of a patient's vitals-monitoring history — see

@@ -54,14 +54,20 @@ export function formatDateTime(iso?: string | null): string {
 }
 
 export const VITALS_MONITORING_ORDER_LABELS: Record<VitalsMonitoringOrder, string> = {
+  not_specified: 'Not set yet',
   every_1h: 'Every 1 hour',
   every_2h: 'Every 2 hours',
   every_4h: 'Every 4 hours',
   prn: 'As needed (PRN)',
-  not_specified: 'Not specified',
 };
 
-/** "Every 2 hours" / "As needed (PRN)" / "Not specified" for a Vital Signs
+/** Dropdown option order for every Vital Signs Monitoring (as ordered)
+ * select — "Not set yet" first, then the fixed intervals, then PRN. */
+export const VITALS_MONITORING_ORDER_OPTIONS = (
+  Object.keys(VITALS_MONITORING_ORDER_LABELS) as VitalsMonitoringOrder[]
+).map((value) => ({ label: VITALS_MONITORING_ORDER_LABELS[value], value }));
+
+/** "Every 2 hours" / "As needed (PRN)" / "Not set yet" for a Vital Signs
  * Check task card or modal — see Task.vitalsMonitoringOrder. */
 export function vitalsMonitoringOrderLabel(order?: VitalsMonitoringOrder | null): string {
   return VITALS_MONITORING_ORDER_LABELS[order || 'not_specified'];
