@@ -26,6 +26,7 @@ CAPTURE_ERROR = FaceVerificationOutcome(False, 0.0, 'NO_FACE', 'No face found.',
 
 
 @override_settings(N8N_FACE_VERIFY_ENABLED=False)
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class FaceLockoutTests(TestCase):
     def setUp(self):
         cache.clear()

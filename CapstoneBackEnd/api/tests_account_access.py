@@ -1,3 +1,4 @@
+from django.test import override_settings
 """
 Blocked accounts (pending, rejected, deactivated) must not keep working tokens.
 Enforced once, in api/access.py, and applied by the token auth class, the
@@ -44,6 +45,7 @@ def make_session():
     )
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class PendingApplicantTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -83,6 +85,7 @@ class PendingApplicantTests(APITestCase):
         self.assertEqual(NurseProfile.objects.get(user=user).license_number, '')
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class DeactivatedAccountTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -144,6 +147,7 @@ class DeactivatedAccountTests(APITestCase):
         self.assertEqual(res.data['code'], 'account_deactivated')
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class SocketClosedOnBlockTests(APITransactionTestCase):
     def test_blocking_an_account_sends_the_socket_close_to_its_group(self):
         from .consumers import user_group
@@ -179,6 +183,7 @@ class SocketClosedOnBlockTests(APITransactionTestCase):
         self.assertIsNone(code)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class ApprovedAndAllowlistTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -205,6 +210,7 @@ class ApprovedAndAllowlistTests(APITestCase):
         self.assertNotEqual(res.status_code, 403, res.content)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class RevokeInactiveTokensCommandTests(APITestCase):
     def test_dry_run_deletes_nothing_and_real_run_deletes_blocked_tokens_only(self):
         approved = make_nurse('keep@hospital.com')

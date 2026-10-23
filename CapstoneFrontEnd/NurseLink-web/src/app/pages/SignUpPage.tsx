@@ -1,31 +1,18 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import IdCameraCaptureModal from '../components/IdCameraCaptureModal';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import {
-  AlertCircle,
-  AlertTriangle,
-  Camera,
   CheckCircle,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Clock,
   Eye,
-  FileText,
-  IdCard,
-  KeyRound,
+  EyeOff,
   Loader2,
   Lock,
   Mail,
-  RefreshCw,
-  Send,
   ShieldCheck,
-  Upload,
-  UserPlus,
+  User2,
   Users,
-  Video,
-  X,
-  XCircle,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -34,100 +21,122 @@ import { Card, CardContent } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '../components/ui/input-otp';
 import { useAuth } from '../contexts/AuthContext';
+import type { UserRole } from '../contexts/AuthContext';
 import { ApiError } from '../api/client';
 import {
-  faceVerificationRequest,
-  faceVerificationStatusRequest,
-  resendRegistrationOtpRequest,
-  sendRegistrationOtpRequest,
-  verifyIdRequest,
-  verifyRegistrationOtpRequest,
+  checkSignupV2NameRequest,
+  registerSignupV2Request,
+  resendSignupV2OtpRequest,
+  sendSignupV2OtpRequest,
+  startSignupV2Request,
+  verifySignupV2OtpRequest,
 } from '../api/nurselink';
 import nurseLinkLogo from 'figma:asset/3d9b7c179afc2d98d9124ffe39a7807d2ffa64d9.png';
 
-const FACE_SESSION_KEY = 'nurselink.faceVerificationSession';
-const MAX_FACE_ATTEMPTS = 3;
+/**
+ * 4-step signup wizard (Personal Info -> Role -> Email+Phone OTP ->
+ * Credentials) on the signup-v2 endpoints — the same flow as the mobile
+ * app's app/signup.tsx. PRC ID scanning and face verification are retired
+ * (settings.SIGNUP_ID_FACE_VERIFICATION), so nothing here needs a camera or
+ * an ID upload. All fields live in one state object so Back never loses
+ * what was already typed.
+ */
 
-function persistFaceSession(id: string, attempts: number, locked: boolean) {
-  try {
-    localStorage.setItem(
-      FACE_SESSION_KEY,
-      JSON.stringify({ id, attempts: Math.min(MAX_FACE_ATTEMPTS, Math.max(0, attempts)), locked })
-    );
-  } catch {
-    // ignore storage failures
-  }
+type StepNumber = 1 | 2 | 3 | 4;
+
+type WizardData = {
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  role: UserRole | '';
+  personalEmail: string;
+  phone: string;
+  registrationSessionId: string | null;
+  otpVerified: boolean;
+  password: string;
+  confirmPassword: string;
+};
+
+const INITIAL_DATA: WizardData = {
+  lastName: '',
+  firstName: '',
+  middleName: '',
+  role: '',
+  personalEmail: '',
+  phone: '',
+  registrationSessionId: null,
+  otpVerified: false,
+  password: '',
+  confirmPassword: '',
+};
+
+const STEP_LABELS = ['Personal Info', 'Role', 'Verify Email', 'Credentials'];
+const STEP_ICONS = [User2, Users, Mail, Lock];
+const STEP_TITLES = ['Personal Information', 'Requested Role', 'Verify Your Email', 'Account Credentials'];
+const STEP_DESCRIPTIONS = [
+  'Tell us your name, exactly as it appears on your ID.',
+  'Choose the role you are requesting. You start as a staff nurse; a head nurse request needs admin approval.',
+  'Verify your personal email and phone number with a one-time code.',
+  'Set your password to finish creating your account.',
+];
+
+const ROLE_OPTIONS: Array<{ value: UserRole; title: string; detail: string; emoji: string }> = [
+  {
+    value: 'staff_nurse',
+    title: 'Nurse',
+    emoji: '👩‍⚕️',
+    detail: 'Staff Nurse or Registered Nurse responsible for direct patient care and clinical documentation.',
+  },
+  {
+    value: 'head_nurse',
+    title: 'Head Nurse (requested, needs admin approval)',
+    emoji: '👨‍💼',
+    detail: 'Requested only. Head nurse access is granted by an administrator after review, never at signup.',
+  },
+];
+
+/** Letters, spaces, hyphens, apostrophes and full stops — matches the server
+ *  (api/serializers.py SignupV2RegisterSerializer._validate_name_part). */
+const NAME_REGEX = /^[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ '\-.]{0,99}$/;
+/** 09XXXXXXXXX or +639XXXXXXXXX — matches the server's PH_PHONE_REGEX. */
+const PH_PHONE_REGEX = /^(?:0\d{10}|\+63\d{10})$/;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function isValidNamePart(value: string, required: boolean): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return !required;
+  return NAME_REGEX.test(trimmed);
 }
 
-function clearPersistedFaceSession() {
-  try {
-    localStorage.removeItem(FACE_SESSION_KEY);
-  } catch {
-    // ignore
-  }
+/** Mirrors SignupV2RegisterSerializer.validate_password. */
+function passwordChecks(password: string) {
+  return {
+    length: password.length >= 8,
+    upper: /[A-Z]/.test(password),
+    lower: /[a-z]/.test(password),
+    digit: /\d/.test(password),
+    special: /[^A-Za-z0-9]/.test(password),
+  };
 }
 
-function readPersistedFaceSession(): { id?: string; attempts?: number; locked?: boolean } | null {
-  try {
-    const raw = localStorage.getItem(FACE_SESSION_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as { id?: string; attempts?: number; locked?: boolean };
-  } catch {
-    return null;
-  }
-}
-
-function resolveMaxAttempts(res: { maxAttempts?: number }): number {
-  return typeof res.maxAttempts === 'number' && res.maxAttempts > 0 ? res.maxAttempts : MAX_FACE_ATTEMPTS;
-}
-
-function maskEmail(email: string): string {
-  const at = email.indexOf('@');
-  if (at <= 0) return email;
-  const local = email.slice(0, at);
-  const domain = email.slice(at);
-  const visible = local.slice(0, Math.min(4, local.length));
-  return `${visible}${'*'.repeat(8)}${domain}`;
-}
-
-function resolveAttemptsUsed(res: { attemptsUsed?: number; attemptsRemaining?: number }): number {
-  if (typeof res.attemptsUsed === 'number') return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, res.attemptsUsed));
-  if (typeof res.attemptsRemaining === 'number') {
-    return Math.min(MAX_FACE_ATTEMPTS, Math.max(0, MAX_FACE_ATTEMPTS - res.attemptsRemaining));
-  }
-  return 0;
-}
-
-function buildDirectoryEmail(fullName: string, hospitalName: string): string {
-  const parts = fullName.toLowerCase().split(/\s+/).filter(Boolean);
-  const first = parts[0] ?? 'employee';
-  const last = parts[parts.length - 1] ?? '';
-  const domain = hospitalName.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 24) || 'hospital';
-  return `${first}${last ? `.${last}` : ''}@${domain}.com`;
-}
-
-// The backend sends registrationDate/validUntil as ISO (YYYY-MM-DD) — that's
-// the right format to store and compare, but "May 21, 2005" reads better on
-// Step 2's review screen. Display-only: ocrData itself stays ISO.
-function formatDisplayDate(iso: string): string {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
-  const [year, month, day] = iso.split('-');
-  return `${month}/${day}/${year}`;
-}
+const PASSWORD_RULES: Array<[keyof ReturnType<typeof passwordChecks>, string]> = [
+  ['length', 'At least 8 characters'],
+  ['upper', 'An uppercase letter'],
+  ['lower', 'A lowercase letter'],
+  ['digit', 'A number'],
+  ['special', 'A special character'],
+];
 
 function extractErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
     const data = err.data as
-      | { message?: string; detail?: string; email?: string | string[]; non_field_errors?: string | string[] }
+      | { message?: string; detail?: string; non_field_errors?: string | string[]; [key: string]: unknown }
       | string
       | undefined;
     if (typeof data === 'string' && data.trim()) return data;
     if (data && typeof data === 'object') {
-      if (data.message) return data.message;
-      if (typeof data.detail === 'string') return data.detail;
-      const emailErr = data.email;
-      if (Array.isArray(emailErr) && emailErr[0]) return String(emailErr[0]);
-      if (typeof emailErr === 'string') return emailErr;
+      if (typeof data.message === 'string' && data.message) return data.message;
+      if (typeof data.detail === 'string' && data.detail) return data.detail;
       const nonField = data.non_field_errors;
       if (Array.isArray(nonField) && nonField[0]) return String(nonField[0]);
       const firstField = Object.values(data).find((v) => Array.isArray(v) && v[0]) as string[] | undefined;
@@ -141,273 +150,536 @@ function extractErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-// 5 steps, matching mobile's signup.tsx: the PRC license number is read
-// directly from the Step 1 ID scan's OCR response (ocrData.registrationNumber)
-// instead of a separate upload/verification step, and there is no separate
-// role cross-check step — selecting a role on Step 4 is enough.
-const STEP_LABELS = ['PRC ID', 'ID Review', 'Face Check', 'Role', 'Credentials'];
-
-type StepNumber = 1 | 2 | 3 | 4 | 5;
-type SelectedRole = 'nurse' | 'head_nurse' | null;
-
-type OcrData = {
-  fullName: string;
-  lastName: string;
-  firstName: string;
-  middleName: string;
-  registrationNumber: string;
-  registrationDate: string;
-  validUntil: string;
-  // Kept for backward compatibility — email still backs the OTP fallback,
-  // position still feeds the Step 6 role cross-check, even though Step 2
-  // no longer displays these.
-  employeeId: string;
-  hospitalName: string;
-  department: string;
-  position: string;
-  email: string;
-};
-
-const roleOptions: Array<{ value: SelectedRole; title: string; detail: string; emoji: string }> = [
-  {
-    value: 'nurse',
-    title: 'Nurse',
-    emoji: '👩‍⚕️',
-    detail: 'Staff Nurse or Registered Nurse responsible for direct patient care and clinical documentation.',
-  },
-  {
-    value: 'head_nurse',
-    title: 'Head Nurse (requested, needs admin approval)',
-    emoji: '👨‍⚕️',
-    detail: 'Requested only. Head nurse access is granted by an administrator after review, never at signup.',
-  },
-];
-
-const STEP_ICONS = [IdCard, FileText, Camera, Users, Lock];
+const PRIMARY_BTN =
+  'h-12 rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white shadow-md shadow-blue-200 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-blue-300 disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-none disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none';
+const BACK_BTN =
+  'h-12 flex-1 rounded-xl border-gray-200 bg-white text-gray-700 transition hover:border-gray-300 hover:bg-gray-50';
 
 function StepStepper({ current }: { current: StepNumber }) {
   return (
-    <div className="w-full overflow-x-auto pb-2">
-      <div className="mx-auto flex min-w-[640px] max-w-[900px] items-start justify-between px-2">
-        {STEP_LABELS.map((label, index) => {
-          const step = (index + 1) as StepNumber;
-          const active = step === current;
-          const complete = step < current;
-          const isLast = index === STEP_LABELS.length - 1;
-
-          return (
-            <div key={label} className="flex flex-1 items-start">
-              <div className="flex flex-col items-center">
-                <div
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold transition-all duration-300 ${
-                    complete
-                      ? 'bg-[#16A34A] text-white shadow-md shadow-green-200'
-                      : active
-                        ? 'scale-110 bg-[#2563EB] text-white shadow-lg shadow-blue-200 ring-4 ring-blue-100'
-                        : 'border-2 border-gray-200 bg-white text-gray-400'
-                  }`}
-                  aria-current={active ? 'step' : undefined}
-                >
-                  {complete ? <CheckCircle className="h-5 w-5" aria-hidden /> : step}
-                </div>
-                <span
-                  className={`mt-2 max-w-[76px] text-center text-[11px] font-semibold leading-tight transition-colors ${
-                    complete ? 'text-[#16A34A]' : active ? 'text-[#2563EB]' : 'text-gray-400'
-                  }`}
-                >
-                  {label}
-                </span>
+    <div className="mx-auto flex w-full max-w-[560px] items-start justify-between px-2">
+      {STEP_LABELS.map((label, index) => {
+        const step = (index + 1) as StepNumber;
+        const active = step === current;
+        const complete = step < current;
+        const isLast = index === STEP_LABELS.length - 1;
+        return (
+          <div key={label} className={`flex items-start ${isLast ? '' : 'flex-1'}`}>
+            <div className="flex flex-col items-center">
+              <div
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold transition-all duration-300 ${
+                  complete
+                    ? 'bg-[#16A34A] text-white shadow-md shadow-green-200'
+                    : active
+                      ? 'scale-110 bg-[#2563EB] text-white shadow-lg shadow-blue-200 ring-4 ring-blue-100'
+                      : 'border-2 border-gray-200 bg-white text-gray-400'
+                }`}
+                aria-current={active ? 'step' : undefined}
+              >
+                {complete ? <CheckCircle className="h-5 w-5" aria-hidden /> : step}
               </div>
-              {!isLast && (
-                <div
-                  className={`mx-1.5 mt-[19px] h-1 flex-1 overflow-hidden rounded-full transition-colors duration-500 ${
-                    complete ? 'bg-[#16A34A]' : active ? 'bg-blue-300' : 'bg-gray-200'
-                  }`}
-                  aria-hidden
-                />
-              )}
+              <span
+                className={`mt-2 max-w-[76px] text-center text-[11px] font-semibold leading-tight ${
+                  complete ? 'text-[#16A34A]' : active ? 'text-[#2563EB]' : 'text-gray-400'
+                }`}
+              >
+                {label}
+              </span>
             </div>
+            {!isLast && (
+              <div
+                className={`mx-1.5 mt-[19px] h-1 flex-1 rounded-full transition-colors duration-500 ${
+                  complete ? 'bg-[#16A34A]' : active ? 'bg-blue-300' : 'bg-gray-200'
+                }`}
+                aria-hidden
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function FieldError({ message }: { message?: string }) {
+  return message ? <p className="text-xs text-red-600">{message}</p> : null;
+}
+
+function ErrorAlert({ message }: { message: string }) {
+  return message ? (
+    <Alert variant="destructive">
+      <AlertDescription>{message}</AlertDescription>
+    </Alert>
+  ) : null;
+}
+
+type StepProps = {
+  data: WizardData;
+  onChange: (patch: Partial<WizardData>) => void;
+};
+
+function PersonalInfoStep({ data, onChange, onNext }: StepProps & { onNext: () => void }) {
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [checking, setChecking] = useState(false);
+  const [nameError, setNameError] = useState('');
+
+  const valid = {
+    lastName: isValidNamePart(data.lastName, true),
+    firstName: isValidNamePart(data.firstName, true),
+    middleName: isValidNamePart(data.middleName, false),
+  };
+  const allValid = valid.lastName && valid.firstName && valid.middleName;
+
+  const errorFor = (field: 'lastName' | 'firstName' | 'middleName', label: string) => {
+    if (!touched[field] || valid[field]) return undefined;
+    if (!data[field].trim()) return `${label} is required`;
+    return `${label} may only contain letters, spaces, hyphens, periods, and apostrophes`;
+  };
+
+  const handleContinue = async () => {
+    setTouched({ lastName: true, firstName: true, middleName: true });
+    if (!allValid) return;
+    setNameError('');
+    setChecking(true);
+    try {
+      const result = await checkSignupV2NameRequest(
+        data.lastName.trim(),
+        data.firstName.trim(),
+        data.middleName.trim()
+      );
+      if (!result.available) {
+        setNameError(result.message || 'An account with this name already exists. Contact an administrator.');
+        return;
+      }
+      onNext();
+    } catch (err) {
+      setNameError(extractErrorMessage(err, 'Could not check this name right now. Please try again.'));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const field = (key: 'lastName' | 'firstName' | 'middleName', label: string, placeholder: string, required: boolean) => (
+    <div className="space-y-1.5">
+      <Label htmlFor={key}>
+        {label}
+        {required ? ' *' : ''}
+      </Label>
+      <Input
+        id={key}
+        placeholder={placeholder}
+        value={data[key]}
+        autoCapitalize="words"
+        onChange={(e) => {
+          onChange({ [key]: e.target.value });
+          setNameError('');
+        }}
+        onBlur={() => setTouched((t) => ({ ...t, [key]: true }))}
+        aria-invalid={Boolean(errorFor(key, label))}
+      />
+      <FieldError message={errorFor(key, label)} />
+    </div>
+  );
+
+  return (
+    <div className="space-y-5">
+      {field('lastName', 'Last Name', 'Dela Cruz', true)}
+      {field('firstName', 'First Name', 'Juan', true)}
+      {field('middleName', 'Middle Name', 'Optional', false)}
+      <ErrorAlert message={nameError} />
+      <Button
+        type="button"
+        onClick={handleContinue}
+        disabled={!allValid || checking}
+        className={`w-full ${PRIMARY_BTN}`}
+      >
+        {checking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
+        Continue <ChevronRight className="ml-1 h-4 w-4" aria-hidden />
+      </Button>
+      <p className="text-center text-sm text-gray-500">
+        Already have an account?{' '}
+        <Link to="/login" className="font-semibold text-[#2563EB] hover:underline">
+          Log in
+        </Link>
+      </p>
+    </div>
+  );
+}
+
+function RoleStep({ data, onChange, onNext, onBack }: StepProps & { onNext: () => void; onBack: () => void }) {
+  return (
+    <div className="space-y-4">
+      <div role="radiogroup" aria-label="Requested role" className="space-y-3">
+        {ROLE_OPTIONS.map((opt) => {
+          const selected = data.role === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => onChange({ role: opt.value })}
+              className={`flex w-full items-center gap-4 rounded-xl border-2 p-4 text-left transition ${
+                selected ? 'border-[#2563EB] bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'
+              }`}
+            >
+              <span className="text-2xl" aria-hidden>
+                {opt.emoji}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className={`block text-sm font-semibold ${selected ? 'text-[#2563EB]' : 'text-gray-900'}`}>
+                  {opt.title}
+                </span>
+                <span className="mt-0.5 block text-xs leading-relaxed text-gray-500">{opt.detail}</span>
+              </span>
+              {selected ? <CheckCircle2 className="h-5 w-5 shrink-0 text-[#2563EB]" aria-hidden /> : null}
+            </button>
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function StepCardHeader({
-  step,
-  title,
-  description,
-}: {
-  step: StepNumber;
-  title: string;
-  description: string;
-}) {
-  const Icon = STEP_ICONS[step - 1];
-  return (
-    <div className="bg-gradient-to-r from-[#2563EB] to-blue-600 px-6 py-5 text-white">
-      <div className="flex items-start gap-4">
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/20">
-          <Icon className="h-5 w-5" aria-hidden />
-        </div>
-        <div>
-          <h2 className="text-lg font-bold leading-snug sm:text-xl">
-            Step {step} of {STEP_LABELS.length} — {title}
-          </h2>
-          <p className="mt-1 text-sm text-blue-100">{description}</p>
-        </div>
+      <div className="flex gap-3">
+        <Button type="button" variant="outline" onClick={onBack} className={BACK_BTN}>
+          <ChevronLeft className="mr-1 h-4 w-4" aria-hidden /> Back
+        </Button>
+        <Button type="button" onClick={onNext} disabled={!data.role} className={`flex-[1.5] ${PRIMARY_BTN}`}>
+          Continue <ChevronRight className="ml-1 h-4 w-4" aria-hidden />
+        </Button>
       </div>
     </div>
   );
 }
 
-function NavButtons({
-  onBack,
-  onContinue,
-  continueDisabled,
-  continueLabel = 'Continue',
-  showBack = true,
-}: {
-  onBack?: () => void;
-  onContinue?: () => void;
-  continueDisabled?: boolean;
-  continueLabel?: string;
-  showBack?: boolean;
-}) {
-  const primaryClass =
-    'h-12 rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white shadow-md shadow-blue-200 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-blue-300 disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-none disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none';
+type OtpPhase = 'form' | 'sending' | 'awaiting' | 'verifying' | 'verified';
 
-  if (!showBack) {
+function VerificationStep({
+  data,
+  onChange,
+  onVerified,
+  onBack,
+}: StepProps & { onVerified: () => void; onBack: () => void }) {
+  const [phase, setPhase] = useState<OtpPhase>(data.otpVerified ? 'verified' : 'form');
+  const [otpCode, setOtpCode] = useState('');
+  const [error, setError] = useState('');
+  const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null);
+  const [resendAvailableAt, setResendAvailableAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const sendInFlight = useRef(false);
+  const verifyInFlight = useRef(false);
+
+  useEffect(() => {
+    if (phase !== 'awaiting') return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [phase]);
+
+  const emailValid = EMAIL_REGEX.test(data.personalEmail.trim());
+  const phoneValid = PH_PHONE_REGEX.test(data.phone.trim());
+  const resendSecondsLeft = resendAvailableAt ? Math.max(0, Math.ceil((resendAvailableAt - nowTick) / 1000)) : 0;
+  const otpExpired = otpExpiresAt ? nowTick > otpExpiresAt : false;
+
+  const applyRetryAfter = (err: unknown) => {
+    if (err instanceof ApiError && err.status === 429) {
+      const retryAfter = (err.data as { retryAfter?: number } | undefined)?.retryAfter;
+      if (typeof retryAfter === 'number' && retryAfter > 0) {
+        setResendAvailableAt(Date.now() + retryAfter * 1000);
+      }
+    }
+  };
+
+  const startTimers = (res: { expiresIn?: number; resendCooldown?: number }) => {
+    setPhase('awaiting');
+    setOtpCode('');
+    setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
+    setResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
+  };
+
+  const handleSendOtp = async () => {
+    if (sendInFlight.current || !emailValid || !phoneValid) return;
+    sendInFlight.current = true;
+    setPhase('sending');
+    setError('');
+    try {
+      const started = await startSignupV2Request(data.personalEmail.trim().toLowerCase(), data.phone.trim());
+      onChange({ registrationSessionId: started.registrationSessionId });
+      startTimers(await sendSignupV2OtpRequest(started.registrationSessionId));
+    } catch (err) {
+      setPhase('form');
+      applyRetryAfter(err);
+      setError(extractErrorMessage(err, 'Could not send the verification code. Please try again.'));
+    } finally {
+      sendInFlight.current = false;
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (sendInFlight.current || !data.registrationSessionId || resendSecondsLeft > 0) return;
+    sendInFlight.current = true;
+    setPhase('sending');
+    setError('');
+    try {
+      startTimers(await resendSignupV2OtpRequest(data.registrationSessionId));
+    } catch (err) {
+      setPhase('awaiting');
+      applyRetryAfter(err);
+      setError(extractErrorMessage(err, 'Failed to resend verification code. Please try again.'));
+    } finally {
+      sendInFlight.current = false;
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    if (verifyInFlight.current || !data.registrationSessionId || otpCode.length !== 6) return;
+    verifyInFlight.current = true;
+    setPhase('verifying');
+    setError('');
+    try {
+      const res = await verifySignupV2OtpRequest(otpCode, data.registrationSessionId);
+      if (res.verified) {
+        setPhase('verified');
+        onChange({ otpVerified: true });
+        onVerified();
+      } else {
+        setPhase('awaiting');
+        setError(res.message || 'Invalid or expired verification code.');
+      }
+    } catch (err) {
+      setPhase('awaiting');
+      setError(extractErrorMessage(err, 'Invalid or expired verification code.'));
+    } finally {
+      verifyInFlight.current = false;
+    }
+  };
+
+  if (phase === 'verified') {
     return (
-      <Button type="button" onClick={onContinue} disabled={continueDisabled} className={`w-full ${primaryClass}`}>
-        {continueLabel} <ChevronRight className="ml-1 h-4 w-4" aria-hidden />
-      </Button>
+      <div className="space-y-5">
+        <div className="flex items-center gap-3 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
+          <ShieldCheck className="h-5 w-5 shrink-0 text-green-600" aria-hidden />
+          Email verified. You&apos;re all set for the last step.
+        </div>
+        <div className="flex gap-3">
+          <Button type="button" variant="outline" onClick={onBack} className={BACK_BTN}>
+            <ChevronLeft className="mr-1 h-4 w-4" aria-hidden /> Back
+          </Button>
+          <Button type="button" onClick={onVerified} className={`flex-[1.5] ${PRIMARY_BTN}`}>
+            Continue <ChevronRight className="ml-1 h-4 w-4" aria-hidden />
+          </Button>
+        </div>
+      </div>
     );
   }
 
+  const locked = phase !== 'form';
   return (
-    <div className="flex gap-3">
-      <Button
-        type="button"
-        variant="outline"
-        onClick={onBack}
-        className="h-12 flex-1 rounded-xl border-gray-200 bg-white text-gray-700 transition hover:border-gray-300 hover:bg-gray-50"
-      >
-        <ChevronLeft className="mr-1 h-4 w-4" aria-hidden /> Back
-      </Button>
-      <Button type="button" onClick={onContinue} disabled={continueDisabled} className={`flex-[1.5] ${primaryClass}`}>
-        {continueLabel} <ChevronRight className="ml-1 h-4 w-4" aria-hidden />
-      </Button>
-    </div>
-  );
-}
-
-function RegistrationSubmitted({
-  onLogin,
-  verificationMethod,
-}: {
-  onLogin: () => void;
-  verificationMethod: 'FACE' | 'EMAIL_OTP' | null;
-}) {
-  const completedSteps = [
-    'Identity Verification Completed',
-    'PRC ID Successfully Verified',
-    verificationMethod === 'EMAIL_OTP' ? 'Email OTP Verification Completed' : 'Face Verification Completed',
-    'Registration Information Submitted',
-  ];
-  const pendingSteps = ['PRC License Verification Pending', 'Account Approval Pending'];
-
-  return (
-    <Card className="overflow-hidden rounded-2xl border border-amber-200/80 bg-white shadow-xl shadow-amber-100/40">
-      <div className="bg-gradient-to-br from-amber-500 via-orange-500 to-amber-600 px-6 py-10 text-center text-white">
-        <div className="relative mx-auto mb-5 flex h-20 w-20 items-center justify-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/20 ring-4 ring-white/25 backdrop-blur-sm">
-            <ShieldCheck className="h-9 w-9" aria-hidden />
-          </div>
-          <div className="absolute -bottom-0.5 -right-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-amber-200 shadow-md ring-2 ring-white/40">
-            <Clock className="h-4 w-4 text-amber-800" aria-hidden />
-          </div>
-        </div>
-        <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">Registration Submitted</h2>
-        <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-amber-50 sm:text-base">
-          Your registration has been received and is awaiting administrator verification.
-        </p>
+    <div className="space-y-5">
+      <ErrorAlert message={error} />
+      <div className="space-y-1.5">
+        <Label htmlFor="personalEmail">Personal Email *</Label>
+        <Input
+          id="personalEmail"
+          type="email"
+          placeholder="you@example.com"
+          value={data.personalEmail}
+          onChange={(e) => onChange({ personalEmail: e.target.value })}
+          disabled={locked}
+          autoComplete="email"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="phone">Phone Number *</Label>
+        <Input
+          id="phone"
+          type="tel"
+          placeholder="09123456789"
+          value={data.phone}
+          onChange={(e) => onChange({ phone: e.target.value })}
+          disabled={locked}
+          autoComplete="tel"
+        />
+        <FieldError
+          message={data.phone.trim() && !phoneValid ? 'Use 09XXXXXXXXX or +639XXXXXXXXX' : undefined}
+        />
       </div>
 
-      <CardContent className="space-y-5 p-6 sm:p-8">
-        <div className="flex justify-center">
-          <span className="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-amber-50 px-5 py-2.5 text-sm font-semibold text-amber-800 shadow-sm">
-            <Clock className="h-4 w-4 text-amber-600" aria-hidden />
-            Status: Pending Administrator Approval
-          </span>
+      {phase === 'form' && (
+        <Button
+          type="button"
+          onClick={handleSendOtp}
+          disabled={!emailValid || !phoneValid}
+          className={`w-full ${PRIMARY_BTN}`}
+        >
+          Send OTP
+        </Button>
+      )}
+
+      {phase === 'sending' && (
+        <div className="flex items-center justify-center gap-2 text-sm text-gray-600">
+          <Loader2 className="h-4 w-4 animate-spin text-[#2563EB]" aria-hidden /> Sending verification code...
         </div>
+      )}
 
-        <ul className="space-y-2.5" aria-label="Verification progress">
-          {completedSteps.map((label) => (
-            <li
-              key={label}
-              className="flex items-center gap-3 rounded-full border border-green-200 bg-green-50 px-4 py-3.5"
-            >
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#16A34A] text-white shadow-sm">
-                <CheckCircle className="h-4 w-4" aria-hidden />
-              </span>
-              <span className="text-sm font-semibold text-green-800">{label}</span>
-            </li>
-          ))}
-          {pendingSteps.map((label) => (
-            <li
-              key={label}
-              className="flex items-center justify-between gap-3 rounded-full border border-amber-200 bg-amber-50 px-4 py-3.5"
-            >
-              <div className="flex min-w-0 items-center gap-3">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F59E0B] text-white shadow-sm">
-                  <Clock className="h-4 w-4" aria-hidden />
-                </span>
-                <span className="truncate text-sm font-semibold text-amber-900">{label}</span>
-              </div>
-              <span className="shrink-0 rounded-full bg-amber-200/80 px-3 py-1 text-xs font-bold text-amber-800">
-                Pending
-              </span>
-            </li>
-          ))}
-        </ul>
-
-        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5 text-sm text-blue-800">
-          <div className="flex items-start gap-2.5 font-bold text-blue-900">
-            <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#2563EB]" aria-hidden />
-            Your account is currently under review.
-          </div>
-          <p className="mt-3 leading-relaxed text-blue-700">
-            An administrator will verify your PRC License Number and confirm your employment details before
-            activating your account. You will receive a notification once your account has been{' '}
-            <strong className="text-blue-900">approved</strong> or{' '}
-            <strong className="text-blue-900">rejected</strong>.
+      {(phase === 'awaiting' || phase === 'verifying') && (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Enter the 6-digit code sent to <span className="font-medium">{data.personalEmail.trim()}</span>
+            {otpExpired ? ' (expired — request a new one)' : ''}
           </p>
-          <div className="mt-4 flex items-center gap-2 border-t border-blue-200 pt-3.5 text-blue-800">
-            <Clock className="h-4 w-4 shrink-0 text-[#2563EB]" aria-hidden />
-            <span>
-              Estimated verification time: <strong className="text-blue-900">Within 24–48 hours</strong>
-            </span>
-          </div>
-        </div>
-
-        <div className="space-y-3 pt-1">
+          <InputOTP maxLength={6} value={otpCode} onChange={setOtpCode} disabled={phase === 'verifying'}>
+            <InputOTPGroup>
+              {[0, 1, 2, 3, 4, 5].map((i) => (
+                <InputOTPSlot key={i} index={i} />
+              ))}
+            </InputOTPGroup>
+          </InputOTP>
           <Button
             type="button"
-            onClick={onLogin}
-            className="h-12 w-full rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white shadow-md shadow-blue-200 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-blue-300"
+            onClick={handleVerifyOtp}
+            disabled={otpCode.length !== 6 || phase === 'verifying'}
+            className={`w-full ${PRIMARY_BTN}`}
           >
-            <ChevronLeft className="mr-1 h-4 w-4" aria-hidden /> Return to Login
+            {phase === 'verifying' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
+            Verify
           </Button>
           <Button
             type="button"
             variant="outline"
-            onClick={onLogin}
-            className="h-12 w-full rounded-xl border-2 border-amber-300 bg-white text-amber-800 transition hover:border-amber-400 hover:bg-amber-50"
+            onClick={handleResendOtp}
+            disabled={resendSecondsLeft > 0}
+            className="h-11 w-full rounded-xl"
           >
-            <Eye className="mr-2 h-4 w-4" aria-hidden /> View Registration Status
+            {resendSecondsLeft > 0 ? `Resend OTP (${resendSecondsLeft}s)` : 'Resend OTP'}
           </Button>
         </div>
+      )}
+
+      <Button type="button" variant="outline" onClick={onBack} className={`w-full ${BACK_BTN}`}>
+        <ChevronLeft className="mr-1 h-4 w-4" aria-hidden /> Back
+      </Button>
+    </div>
+  );
+}
+
+function CredentialsStep({
+  data,
+  onChange,
+  onBack,
+  onSubmitted,
+}: StepProps & { onBack: () => void; onSubmitted: () => void }) {
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const checks = passwordChecks(data.password);
+  const passwordValid = Object.values(checks).every(Boolean);
+  const confirmValid = data.confirmPassword.length > 0 && data.confirmPassword === data.password;
+  const canSubmit = passwordValid && confirmValid && !submitting;
+
+  const handleSubmit = async () => {
+    if (!canSubmit || !data.registrationSessionId || !data.role) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await registerSignupV2Request({
+        lastName: data.lastName,
+        firstName: data.firstName,
+        middleName: data.middleName,
+        role: data.role,
+        personalEmail: data.personalEmail.trim().toLowerCase(),
+        phone: data.phone.trim(),
+        password: data.password,
+        confirmPassword: data.confirmPassword,
+        registrationSessionId: data.registrationSessionId,
+      });
+      onSubmitted();
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Unable to create account. Please try again.'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const passwordField = (
+    key: 'password' | 'confirmPassword',
+    label: string,
+    shown: boolean,
+    toggle: () => void
+  ) => (
+    <div className="space-y-1.5">
+      <Label htmlFor={key}>{label} *</Label>
+      <div className="relative">
+        <Input
+          id={key}
+          type={shown ? 'text' : 'password'}
+          value={data[key]}
+          onChange={(e) => onChange({ [key]: e.target.value })}
+          autoComplete="new-password"
+          className="pr-10"
+        />
+        <button
+          type="button"
+          onClick={toggle}
+          className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-gray-500 hover:text-gray-700"
+          aria-label={shown ? 'Hide password' : 'Show password'}
+        >
+          {shown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-5">
+      <ErrorAlert message={error} />
+      <div className="space-y-1.5">
+        <Label>Email (used to log in)</Label>
+        <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800">
+          {data.personalEmail}
+        </div>
+        <p className="text-xs text-gray-500">This is the email you verified in the previous step.</p>
+      </div>
+      {passwordField('password', 'Password', showPassword, () => setShowPassword((s) => !s))}
+      {data.password ? (
+        <ul className="grid grid-cols-1 gap-1 text-xs sm:grid-cols-2">
+          {PASSWORD_RULES.map(([key, label]) => (
+            <li key={key} className={`flex items-center gap-1.5 ${checks[key] ? 'text-green-700' : 'text-gray-500'}`}>
+              <CheckCircle2 className={`h-3.5 w-3.5 ${checks[key] ? 'text-green-600' : 'text-gray-300'}`} aria-hidden />
+              {label}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {passwordField('confirmPassword', 'Confirm Password', showConfirm, () => setShowConfirm((s) => !s))}
+      <FieldError
+        message={data.confirmPassword && !confirmValid ? 'Passwords do not match' : undefined}
+      />
+      <div className="flex gap-3">
+        <Button type="button" variant="outline" onClick={onBack} className={BACK_BTN}>
+          <ChevronLeft className="mr-1 h-4 w-4" aria-hidden /> Back
+        </Button>
+        <Button type="button" onClick={handleSubmit} disabled={!canSubmit} className={`flex-[1.5] ${PRIMARY_BTN}`}>
+          {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
+          Create Account
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function RegistrationSubmitted({ onLogin }: { onLogin: () => void }) {
+  return (
+    <Card className="overflow-hidden rounded-2xl border border-gray-200 shadow-lg shadow-gray-200/60">
+      <CardContent className="flex flex-col items-center gap-4 p-8 text-center">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
+          <CheckCircle2 className="h-8 w-8 text-green-600" aria-hidden />
+        </div>
+        <h2 className="text-2xl font-bold text-gray-900">Registration submitted!</h2>
+        <p className="max-w-sm text-sm text-gray-600">
+          Your account is pending admin approval. You&apos;ll be able to log in once approved.
+        </p>
+        <Button type="button" onClick={onLogin} className={`w-full max-w-xs ${PRIMARY_BTN}`}>
+          Go to Login
+        </Button>
       </CardContent>
     </Card>
   );
@@ -415,1592 +687,74 @@ function RegistrationSubmitted({
 
 export default function SignUpPage() {
   const navigate = useNavigate();
-  const { signup, logout } = useAuth();
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
-
-  // Which ID-capture camera modal is open, if any. A hidden file input with
-  // capture="environment" cannot open a camera in a desktop browser, so the
-  // web flow uses a real getUserMedia preview with an alignment guide.
-  const [idCameraFor, setIdCameraFor] = useState<null | 'hospital'>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const cameraRequestInFlight = useRef(false);
-  const faceVerificationInFlight = useRef(false);
-  const otpSendInFlight = useRef(false);
-  const otpVerifyInFlight = useRef(false);
-  const faceAutoOpenDone = useRef(false);
-
+  const { logout } = useAuth();
   const [step, setStep] = useState<StepNumber>(1);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [data, setData] = useState<WizardData>(INITIAL_DATA);
   const [submitted, setSubmitted] = useState(false);
-  const [globalError, setGlobalError] = useState('');
-  const [dragOver, setDragOver] = useState(false);
 
-  const [hospitalIdPreview, setHospitalIdPreview] = useState<string | null>(null);
-  const [hospitalIdError, setHospitalIdError] = useState('');
-  const [ocrStatus, setOcrStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
-  const [ocrData, setOcrData] = useState<OcrData | null>(null);
-
-  const [cameraState, setCameraState] = useState<'idle' | 'requesting' | 'active' | 'denied' | 'not-supported'>('idle');
-  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
-  const [selfiePreview, setSelfiePreview] = useState<string | null>(null);
-  // True while a captured frame is on screen awaiting the nurse's decision.
-  // Capture and verification used to be one action, so the shutter fired the
-  // moment the camera opened and a badly framed shot immediately burned one
-  // of the three attempts. Holding the frame here separates "took a photo"
-  // from "submitted a photo" — only the latter can fail.
-  const [awaitingSelfieConfirm, setAwaitingSelfieConfirm] = useState(false);
-  const [faceStatus, setFaceStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
-  const [faceError, setFaceError] = useState('');
-
-  const [registrationSessionId, setRegistrationSessionId] = useState<string | null>(null);
-  const [faceAttemptsUsed, setFaceAttemptsUsed] = useState(0);
-  const [faceMaxAttempts, setFaceMaxAttempts] = useState(MAX_FACE_ATTEMPTS);
-  const [faceLocked, setFaceLocked] = useState(false);
-  // False once the lifetime face-attempt budget is spent: only Email OTP is left.
-  const [faceRetryAvailable, setFaceRetryAvailable] = useState(true);
-  // When a timed face lockout ends (ms since epoch). Null when not locked by time.
-  const [faceLockedUntil, setFaceLockedUntil] = useState<number | null>(null);
-  // The lock timer clears faceLockedUntil when the lock ends, so non-null means still locked.
-  const faceLockActive = faceLockedUntil !== null;
-  const [faceResuming, setFaceResuming] = useState(true);
-  const [showOtpPanel, setShowOtpPanel] = useState(false);
-  const [otpEmailInput, setOtpEmailInput] = useState('');
-  const [otpCode, setOtpCode] = useState('');
-  const [otpStatus, setOtpStatus] = useState<'idle' | 'email_entry' | 'sending' | 'awaiting' | 'verifying' | 'verified'>('idle');
-  // Resending while already 'awaiting' is tracked separately rather than by
-  // dropping otpStatus to 'sending': that value also gates which panel is
-  // shown (see the JSX below), and a resend must not hide the code entry
-  // panel and its own Resend button while the request is in flight.
-  const [otpResending, setOtpResending] = useState(false);
-  const [otpError, setOtpError] = useState('');
-  const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null);
-  const [otpResendAvailableAt, setOtpResendAvailableAt] = useState<number | null>(null);
-  const [nowTick, setNowTick] = useState(Date.now());
-
-  const [selectedRole, setSelectedRole] = useState<SelectedRole>(null);
-  const [roleSelectError, setRoleSelectError] = useState('');
-
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [credErrors, setCredErrors] = useState<Record<string, string>>({});
-
-  const stepTitles = [
-    'PRC Identity Verification',
-    'Extracted ID Information',
-    'Mandatory Face Verification',
-    'Requested Role',
-    'Account Credentials',
-  ];
-
-  const stepDescriptions = [
-    'Scan your PRC ID to automatically extract your information.',
-    'Review your extracted information. These fields are read-only.',
-    'Capture a live selfie to confirm your identity.',
-    'Choose the role you are requesting. You start as a nurse; a head nurse request needs admin approval.',
-    'Set your login credentials to complete registration.',
-  ];
-
-  const acceptedFormats = ['image/jpeg', 'image/png', 'application/pdf'];
-
-  const clearMedia = useCallback(() => {
-    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    mediaStreamRef.current = null;
-    setMediaStream(null);
-    setCameraState('idle');
-  }, []);
-
-  // Attach the live stream to the <video> element once both exist. The
-  // element only mounts after cameraState flips to 'active', one render
-  // after openCamera sets it, so this can't be done inline in openCamera.
-  useEffect(() => {
-    if (cameraState === 'active' && videoRef.current && mediaStream) {
-      videoRef.current.srcObject = mediaStream;
-      videoRef.current.play().catch(() => {});
-    }
-  }, [cameraState, mediaStream]);
-
-  useEffect(() => {
-    return () => {
-      clearMedia();
-    };
-  }, [clearMedia]);
-
-  // Resume face/OTP verification state from the backend on mount, so a page
-  // refresh cannot silently reset the 3-attempt counter or an active
-  // lockout — RegistrationSession on the server is the sole source of truth.
-  // Only a persisted session id that the backend confirms is gone (expired,
-  // already used, never existed) falls back to a clean cycle.
-  useEffect(() => {
-    const persisted = readPersistedFaceSession();
-    if (!persisted?.id) {
-      setFaceResuming(false);
-      return;
-    }
-    let cancelled = false;
-    faceVerificationStatusRequest({ registrationSessionId: persisted.id })
-      .then((res) => {
-        if (cancelled) return;
-        setRegistrationSessionId(res.registrationSessionId ?? persisted.id ?? null);
-        setFaceMaxAttempts(resolveMaxAttempts(res));
-        setFaceAttemptsUsed(resolveAttemptsUsed(res));
-        setFaceLocked(Boolean(res.locked));
-        if (res.faceVerified) {
-          setFaceStatus('success');
-        } else if (res.otpVerified) {
-          setOtpStatus('verified');
-        }
-      })
-      .catch(() => {
-        clearPersistedFaceSession();
-        setRegistrationSessionId(null);
-        setFaceAttemptsUsed(0);
-        setFaceLocked(false);
-        setFaceStatus('idle');
-      })
-      .finally(() => {
-        if (!cancelled) setFaceResuming(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (step !== 3) {
-      clearMedia();
-      faceAutoOpenDone.current = false;
-    }
-  }, [step, clearMedia]);
-
-  const resetFaceCycleLocal = useCallback(() => {
-    clearPersistedFaceSession();
-    setRegistrationSessionId(null);
-    setFaceAttemptsUsed(0);
-    setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
-    setFaceLocked(false);
-    setFaceLockedUntil(null);
-    setFaceRetryAvailable(true);
-    setFaceStatus('idle');
-    setFaceError('');
-    setSelfiePreview(null);
-    setShowOtpPanel(false);
-    setOtpCode('');
-    setOtpEmailInput('');
-    setOtpError('');
-    setOtpStatus('idle');
-    setOtpExpiresAt(null);
-    setOtpResendAvailableAt(null);
-    faceAutoOpenDone.current = false;
-    faceVerificationInFlight.current = false;
-  }, []);
-
-  // Posts the ID photo to the n8n identity-verify workflow (VerifyIdView,
-  // action: 'ocr') and maps its response onto the fields Step 2 displays.
-  const runIdVerification = useCallback(
-    async (imageDataUrl: string) => {
-      setOcrStatus('processing');
-      setHospitalIdError('');
-      try {
-        const res = await verifyIdRequest(imageDataUrl, { registrationSessionId });
-        setRegistrationSessionId(res.registrationSessionId);
-
-        // Every non-'verified' status is a hard block now — the backend's
-        // strict field validation (last/first name, registration no., both
-        // dates) decides this, not just "did something come back".
-        // 'validation_error' means fields WERE extracted but at least one
-        // failed structural validation (e.g. a mis-parsed label ended up in
-        // a name field) — accuracy matters more than filling every box, so
-        // this is never silently accepted for review.
-        if (!res.verified) {
-          setOcrStatus('error');
-          const detail = res.errors ? Object.values(res.errors)[0] : undefined;
-          setHospitalIdError(
-            detail || res.message || 'Unable to extract information from the PRC ID. Please capture a clearer image.'
-          );
-          return;
-        }
-
-        setOcrData({
-          fullName: res.fullName,
-          lastName: res.lastName,
-          firstName: res.firstName,
-          middleName: res.middleName,
-          registrationNumber: res.registrationNumber,
-          registrationDate: res.registrationDate,
-          validUntil: res.validUntil,
-          employeeId: res.employeeId,
-          hospitalName: res.hospitalName,
-          department: res.department,
-          position: res.position,
-          email: res.email,
-        });
-        setOcrStatus('success');
-      } catch (err) {
-        setOcrStatus('error');
-        setHospitalIdError(extractErrorMessage(err, 'ID verification is unavailable right now. Please try again.'));
-      }
-    },
-    [registrationSessionId]
-  );
-
-  const handleHospitalFile = (file: File) => {
-    setHospitalIdError('');
-    setOcrStatus('idle');
-    setOcrData(null);
-    resetFaceCycleLocal();
-
-    if (!acceptedFormats.includes(file.type)) {
-      setHospitalIdError('Unsupported file format. Please upload JPG, PNG, or PDF.');
-      return;
-    }
-
-    if (file.size > 5 * 1024 * 1024) {
-      setHospitalIdError('File too large. Maximum size is 5 MB.');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      setHospitalIdPreview(dataUrl);
-      void runIdVerification(dataUrl);
-    };
-    reader.readAsDataURL(file);
+  const patch = (p: Partial<WizardData>) => setData((d) => ({ ...d, ...p }));
+  // Signs out any session already in this browser before /login, so the
+  // login page doesn't bounce straight back into someone else's account.
+  const goToLogin = () => {
+    logout();
+    navigate('/login');
   };
 
-  const handleDrop = (event: React.DragEvent) => {
-    event.preventDefault();
-    setDragOver(false);
-    const file = event.dataTransfer.files?.[0];
-    if (file) handleHospitalFile(file);
-  };
-
-  const openCamera = async () => {
-    if (cameraRequestInFlight.current) return;
-    cameraRequestInFlight.current = true;
-    setFaceError('');
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraState('not-supported');
-      cameraRequestInFlight.current = false;
-      return;
-    }
-
-    setCameraState('requesting');
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-      });
-      mediaStreamRef.current = stream;
-      setMediaStream(stream);
-      setCameraState('active');
-    } catch (error) {
-      const message = error instanceof DOMException ? error.name : 'Camera access failed.';
-      if (message === 'NotAllowedError' || message === 'PermissionDeniedError') {
-        setCameraState('denied');
-        setFaceError('Camera access denied. Please allow camera permission and try again.');
-      } else {
-        setCameraState('idle');
-        setFaceError('Unable to access the camera. Please try again or use a different device.');
-      }
-    } finally {
-      cameraRequestInFlight.current = false;
-    }
-  };
-
-  useEffect(() => {
-    if (step !== 3) {
-      faceAutoOpenDone.current = false;
-      return;
-    }
-    if (
-      faceAutoOpenDone.current ||
-      faceResuming ||
-      faceLocked ||
-      showOtpPanel ||
-      faceStatus === 'success' ||
-      faceStatus === 'processing' ||
-      faceStatus === 'error' ||
-      selfiePreview
-    ) {
-      return;
-    }
-    faceAutoOpenDone.current = true;
-    void openCamera();
-  }, [step, faceResuming, faceLocked, showOtpPanel, faceStatus, selfiePreview]);
-
-  /**
-   * Grab one frame and stop the camera. Nothing is sent anywhere.
-   *
-   * Deliberately does NOT set faceVerificationInFlight — that guard belongs
-   * to the network call. Taking a photo is free and repeatable.
-   */
-  const capturePhoto = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-    if (faceStatus === 'processing') return;
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    setSelfiePreview(canvas.toDataURL('image/jpeg', 0.9));
-    setAwaitingSelfieConfirm(true);
-    setFaceError('');
-    // Release the camera while the nurse decides; retake reopens it.
-    clearMedia();
-  };
-
-  /** Discard the frame and go back to a live preview. Costs no attempt. */
-  const retakePhoto = () => {
-    setSelfiePreview(null);
-    setAwaitingSelfieConfirm(false);
-    setFaceError('');
-    setFaceStatus('idle');
-    void openCamera();
-  };
-
-  /**
-   * Send the confirmed photo for verification. This is the only path that
-   * can consume one of the three attempts.
-   */
-  const confirmSelfie = () => {
-    if (faceVerificationInFlight.current) return;
-    if (!selfiePreview || !hospitalIdPreview) return;
-    if (faceStatus === 'processing') return;
-
-    faceVerificationInFlight.current = true;
-    const image = selfiePreview;
-    setAwaitingSelfieConfirm(false);
-    setFaceStatus('processing');
-    setFaceError('');
-
-    faceVerificationRequest(image, hospitalIdPreview, registrationSessionId, ocrData?.email)
-      .then((res) => {
-        setRegistrationSessionId(res.registrationSessionId);
-        const attempts = resolveAttemptsUsed(res);
-        const maxAttempts = resolveMaxAttempts(res);
-        // Only trust backend attempt counts from THIS validate response.
-        setFaceAttemptsUsed(attempts);
-        setFaceMaxAttempts(maxAttempts);
-        persistFaceSession(res.registrationSessionId, attempts, Boolean(res.locked));
-        if (res.matched || res.faceVerified) {
-          setFaceStatus('success');
-          setFaceLocked(false);
-          setFaceLockedUntil(null);
-          clearPersistedFaceSession();
-          return;
-        }
-        setFaceStatus('error');
-        setFaceError(res.message || 'Face verification failed. Please try again.');
-        // Fallback UI only after backend confirms all attempts are used.
-        setFaceLocked(Boolean(res.locked) && attempts >= maxAttempts);
-      })
-      .catch((err) => {
-        setFaceStatus('error');
-        // 423 = locked (timed, or budget spent); 403 = budget spent on a new session.
-        if (err instanceof ApiError && (err.status === 423 || err.status === 403)) {
-          const data = err.data as {
-            registrationSessionId?: string;
-            message?: string;
-            attemptsUsed?: number;
-            attemptsRemaining?: number;
-            maxAttempts?: number;
-            locked?: boolean;
-            retryAvailable?: boolean;
-            retryAfterSeconds?: number;
-          } | undefined;
-          if (data?.registrationSessionId) setRegistrationSessionId(data.registrationSessionId);
-          const attempts = resolveAttemptsUsed(data ?? {});
-          const maxAttempts = resolveMaxAttempts(data ?? {});
-          setFaceAttemptsUsed(Math.min(maxAttempts, Math.max(0, attempts)));
-          setFaceMaxAttempts(maxAttempts);
-          setFaceRetryAvailable(data?.retryAvailable !== false);
-          const waitMs = (data?.retryAfterSeconds ?? 0) * 1000;
-          if (err.status === 423 && waitMs > 0) {
-            const until = Date.now() + waitMs;
-            setFaceLockedUntil(until);
-            setTimeout(() => setFaceLockedUntil((current) => (current === until ? null : current)), waitMs);
-          }
-          const locked = Boolean(data?.locked) && attempts >= maxAttempts;
-          setFaceLocked(locked);
-          if (data?.registrationSessionId) {
-            persistFaceSession(data.registrationSessionId, attempts, locked);
-          }
-          setFaceError(
-            locked
-              ? data?.message ||
-                  `You've used all ${maxAttempts} face verification attempts. Choose Retry Face Verification or Verify Using Email OTP.`
-              : data?.message || 'Face verification failed. Please try again.'
-          );
-        } else if (err instanceof ApiError && err.status === 503) {
-          setFaceError(extractErrorMessage(err, 'Face verification is temporarily unavailable. Please try again.'));
-        } else {
-          // Network/UI errors do not count as face attempts.
-          setFaceError(extractErrorMessage(err, 'Something went wrong. Please try again.'));
-        }
-      })
-      .finally(() => {
-        faceVerificationInFlight.current = false;
-      });
-  };
-
-  const resetOtpState = () => {
-    setOtpCode('');
-    setOtpEmailInput('');
-    setOtpError('');
-    setOtpStatus('idle');
-    setOtpExpiresAt(null);
-    setOtpResendAvailableAt(null);
-    setShowOtpPanel(false);
-  };
-
-  // Retry does not reset anything on the server — the server refuses that now.
-  // A timed lockout simply ends; the next scan is checked by the server, which
-  // clears the lock itself once its time has run out.
-  const handleModalRetake = async () => {
-    if (faceLockedUntil && Date.now() < faceLockedUntil) {
-      const time = new Date(faceLockedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      setFaceError(`Face verification is locked. You can try again after ${time}.`);
-      return;
-    }
-    setFaceLockedUntil(null);
-    setFaceLocked(false);
-    setFaceAttemptsUsed(0);
-    setFaceMaxAttempts(MAX_FACE_ATTEMPTS);
-    setFaceStatus('idle');
-    setFaceError('');
-    setSelfiePreview(null);
-    setCameraState('idle');
-    resetOtpState();
-    if (registrationSessionId) persistFaceSession(registrationSessionId, 0, false);
-    faceAutoOpenDone.current = false;
-    await openCamera();
-  };
-
-  const handleOpenOtp = () => {
-    setShowOtpPanel(true);
-    setOtpStatus('email_entry');
-    setOtpError('');
-    setOtpCode('');
-    // Display-only — pre-filled from the registered email already on file
-    // (Step 2). The OTP always goes to the backend's stored session email
-    // regardless of this value; it is never editable or sent as the
-    // destination.
-    setOtpEmailInput(ocrData?.email || '');
-  };
-
-  // A 429 (cooldown / resend limit) response carries the server's authoritative
-  // wait time in `retryAfter` — resync the resend countdown to it instead of
-  // leaving the button keyed off a possibly-stale local timestamp.
-  const applyOtpRetryAfter = (err: unknown) => {
-    if (err instanceof ApiError && err.status === 429) {
-      const retryAfter = (err.data as { retryAfter?: number } | undefined)?.retryAfter;
-      if (typeof retryAfter === 'number' && retryAfter > 0) {
-        setOtpResendAvailableAt(Date.now() + retryAfter * 1000);
-      }
-    }
-  };
-
-  const handleSendOtp = async () => {
-    if (otpSendInFlight.current) return;
-    if (!registrationSessionId) return;
-    otpSendInFlight.current = true;
-    setOtpStatus('sending');
-    setOtpError('');
-    try {
-      const res = await sendRegistrationOtpRequest(registrationSessionId);
-      setOtpStatus('awaiting');
-      setOtpCode('');
-      setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
-      setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
-    } catch (err) {
-      setOtpStatus('email_entry');
-      applyOtpRetryAfter(err);
-      setOtpError(extractErrorMessage(err, 'Email Not Found. This email is not associated with your registration.'));
-    } finally {
-      otpSendInFlight.current = false;
-    }
-  };
-
-  const handleResendOtp = async () => {
-    if (otpSendInFlight.current) return;
-    if (!registrationSessionId) return;
-    otpSendInFlight.current = true;
-    setOtpResending(true);
-    setOtpError('');
-    try {
-      const res = await resendRegistrationOtpRequest(registrationSessionId);
-      setOtpCode('');
-      setOtpExpiresAt(Date.now() + (res.expiresIn ?? 300) * 1000);
-      setOtpResendAvailableAt(Date.now() + (res.resendCooldown ?? 60) * 1000);
-    } catch (err) {
-      applyOtpRetryAfter(err);
-      setOtpError(extractErrorMessage(err, 'Failed to resend verification code. Please try again.'));
-    } finally {
-      otpSendInFlight.current = false;
-      setOtpResending(false);
-    }
-  };
-
-  const handleVerifyOtp = async () => {
-    if (otpVerifyInFlight.current) return;
-    if (!registrationSessionId || otpCode.length !== 6) return;
-    otpVerifyInFlight.current = true;
-    setOtpStatus('verifying');
-    setOtpError('');
-    try {
-      const res = await verifyRegistrationOtpRequest(otpCode, registrationSessionId);
-      if (res.verified) {
-        setOtpStatus('verified');
-        clearPersistedFaceSession();
-      } else {
-        setOtpStatus('awaiting');
-        setOtpError(res.message || 'Invalid or expired verification code.');
-      }
-    } catch (err) {
-      setOtpStatus('awaiting');
-      setOtpError(extractErrorMessage(err, 'Invalid or expired verification code.'));
-    } finally {
-      otpVerifyInFlight.current = false;
-    }
-  };
-
-  const handleBackToFaceFromOtp = async () => {
-    setShowOtpPanel(false);
-    await handleModalRetake();
-  };
-
-  useEffect(() => {
-    if (!showOtpPanel) return;
-    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [showOtpPanel]);
-
-  const otpResendSecondsLeft = otpResendAvailableAt
-    ? Math.max(0, Math.ceil((otpResendAvailableAt - nowTick) / 1000))
-    : 0;
-  const otpExpired = otpExpiresAt ? nowTick > otpExpiresAt && otpStatus !== 'verified' : false;
-
-  const validateCredentials = () => {
-    const errors: Record<string, string> = {};
-    if (!email.trim()) errors.email = 'Email is required';
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Enter a valid email address';
-    if (!password) errors.password = 'Password is required';
-    else if (password.length < 8) errors.password = 'Password must be at least 8 characters';
-    if (!confirmPassword) errors.confirmPassword = 'Please confirm your password';
-    else if (password !== confirmPassword) errors.confirmPassword = 'Passwords do not match';
-    setCredErrors(errors);
-    return Object.keys(errors).length === 0;
-  };
-
-  const handleCreateAccount = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!validateCredentials()) return;
-
-    if (!registrationSessionId) {
-      setGlobalError('Identity verification session was lost. Please redo Face or Email OTP verification.');
-      return;
-    }
-
-    setIsSubmitting(true);
-    setGlobalError('');
-
-    try {
-      const fullName = ocrData?.fullName ?? `${email.split('@')[0]}`;
-      // Prefer the discrete name parts Step 2 now collects directly; fall
-      // back to splitting fullName only for a workflow that still returns
-      // just a combined name.
-      const firstName = ocrData?.firstName || ocrData?.fullName.split(' ')[0] || '';
-      const lastName = ocrData?.lastName || ocrData?.fullName.split(' ').slice(-1).join(' ') || '';
-      const middleName = ocrData?.middleName || ocrData?.fullName.split(' ').slice(1, -1).join(' ') || '';
-      await signup({
-        name: fullName,
-        firstName,
-        middleName,
-        lastName,
-        email,
-        password,
-        role: selectedRole === 'head_nurse' ? 'head_nurse' : 'staff_nurse',
-        department: ocrData?.department ?? '',
-        // Read from the PRC ID scan in Step 1; there is no separate PRC
-        // license upload step (mirrors mobile's signup.tsx).
-        licenseNumber: (ocrData?.registrationNumber || '').trim(),
-        registrationSessionId,
-      });
-      // Keep the user on the pending-approval screen; do not leave them logged in.
-      logout();
-      setSubmitted(true);
-    } catch (err) {
-      setGlobalError(extractErrorMessage(err, 'Unable to create account. Please try again.'));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const idUploaded = !!hospitalIdPreview && !hospitalIdError;
-  const ocrDone = ocrStatus === 'success';
-  const faceDone = faceStatus === 'success';
-  const identityVerified = faceDone || otpStatus === 'verified';
-  const verificationMethod: 'FACE' | 'EMAIL_OTP' | null = faceDone ? 'FACE' : otpStatus === 'verified' ? 'EMAIL_OTP' : null;
-  const roleSelected = !!selectedRole;
-  const credsDone = email.trim() !== '' && password.length >= 8 && password === confirmPassword;
-  const canSubmitCredentials = identityVerified && ocrDone && idUploaded && roleSelected;
+  const Icon = STEP_ICONS[step - 1];
 
   return (
-    <>
-      <IdCameraCaptureModal
-        open={idCameraFor !== null}
-        onClose={() => setIdCameraFor(null)}
-        title="Scan your Hospital ID"
-        onCapture={(dataUrl) => {
-          // Same path the file picker uses, so OCR and validation are unchanged.
-          setHospitalIdPreview(dataUrl);
-          void runIdVerification(dataUrl);
-        }}
-      />
-    <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
-      <div className="mx-auto flex w-full max-w-[900px] flex-col gap-6">
+    <div className="min-h-screen bg-gray-50 px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mx-auto flex w-full max-w-[560px] flex-col gap-6">
         <div className="flex flex-col items-center gap-2 text-center">
           <img src={nurseLinkLogo} alt="NurseLink" className="h-24 w-auto object-contain" />
-          {!submitted && (
-            <p className="text-sm text-gray-500">Secure healthcare professional registration</p>
-          )}
+          {!submitted && <p className="text-sm text-gray-500">Create your NurseLink account</p>}
         </div>
 
         {submitted ? (
-          <RegistrationSubmitted onLogin={() => navigate('/login')} verificationMethod={verificationMethod} />
+          <RegistrationSubmitted onLogin={goToLogin} />
         ) : (
           <>
             <StepStepper current={step} />
-
             <Card className="overflow-hidden rounded-2xl border border-gray-200 shadow-lg shadow-gray-200/60">
-              <StepCardHeader step={step} title={stepTitles[step - 1]} description={stepDescriptions[step - 1]} />
-              <CardContent className="space-y-5 p-6 sm:p-8">
-                {step === 1 && (
-                  <div className="space-y-5">
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        setDragOver(true);
-                      }}
-                      onDragLeave={() => setDragOver(false)}
-                      onDrop={handleDrop}
-                      onClick={() => !hospitalIdPreview && fileInputRef.current?.click()}
-                      onKeyDown={(e) => e.key === 'Enter' && fileInputRef.current?.click()}
-                      className={`rounded-2xl border-2 border-dashed px-4 py-8 text-center transition ${
-                        hospitalIdPreview && ocrStatus === 'success'
-                          ? 'border-green-300 bg-green-50/30'
-                          : dragOver
-                            ? 'border-blue-400 bg-blue-100'
-                            : 'border-blue-200 bg-blue-50/50 hover:border-blue-300 hover:bg-blue-50'
-                      }`}
-                    >
-                      {hospitalIdPreview ? (
-                        <div className="relative mx-auto max-w-lg">
-                          {hospitalIdPreview.startsWith('data:image') ? (
-                            <img
-                              src={hospitalIdPreview}
-                              alt="PRC ID"
-                              className="mx-auto max-h-52 w-full rounded-xl object-contain"
-                            />
-                          ) : (
-                            <div className="mx-auto flex h-48 w-full items-center justify-center rounded-xl bg-white text-blue-700 shadow-sm">
-                              <FileText className="h-16 w-16" />
-                            </div>
-                          )}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setHospitalIdPreview(null);
-                              setOcrStatus('idle');
-                              setOcrData(null);
-                              setHospitalIdError('');
-                            }}
-                            className="absolute -right-2 -top-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-600 shadow-md hover:bg-slate-100"
-                          >
-                            <X className="h-4 w-4" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="mx-auto flex max-w-md flex-col items-center gap-3 py-4">
-                          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-100 text-blue-600">
-                            <IdCard className="h-8 w-8" />
-                          </div>
-                          <p className="text-sm font-semibold text-blue-700">
-                            Drag & drop or click to upload your PRC ID
-                          </p>
-                          <p className="text-xs text-slate-500">Accepted formats: JPG, PNG, PDF · Max 5 MB</p>
-                        </div>
-                      )}
-                    </div>
-
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/jpeg,image/png,application/pdf"
-                      className="sr-only"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0];
-                        if (file) handleHospitalFile(file);
-                      }}
-                    />
-                    <input
-                      ref={cameraInputRef}
-                      type="file"
-                      accept="image/jpeg,image/png"
-                      capture="environment"
-                      className="sr-only"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0];
-                        if (file) handleHospitalFile(file);
-                      }}
-                    />
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        onClick={() => setIdCameraFor('hospital')}
-                        className="flex h-12 items-center justify-center gap-2 rounded-full border-2 border-blue-200 bg-white text-sm font-semibold text-blue-700 transition hover:border-blue-300 hover:bg-blue-50"
-                      >
-                        <Camera className="h-5 w-5" /> Camera Scan
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="flex h-12 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-                      >
-                        <Upload className="h-5 w-5" /> Upload File
-                      </button>
-                    </div>
-
-                    {hospitalIdError && (
-                      <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                        <AlertCircle className="h-4 w-4 shrink-0" />
-                        {hospitalIdError}
-                      </div>
-                    )}
-
-                    {ocrStatus === 'processing' && (
-                      <div className="flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Scanning and extracting information...
-                      </div>
-                    )}
-
-                    {ocrStatus === 'success' && (
-                      <div className="flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
-                        <CheckCircle className="mt-0.5 h-5 w-5 shrink-0 text-green-600" />
-                        <div>
-                          <p className="text-sm font-semibold text-green-800">PRC ID information extracted successfully</p>
-                          <p className="text-sm text-green-700">Review your information on the next step.</p>
-                        </div>
-                      </div>
-                    )}
-
-                    <NavButtons
-                      showBack={false}
-                      onContinue={() => setStep(2)}
-                      continueDisabled={ocrStatus !== 'success'}
-                    />
+              <div className="bg-gradient-to-r from-[#2563EB] to-blue-600 px-6 py-5 text-white">
+                <div className="flex items-start gap-4">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/20">
+                    <Icon className="h-5 w-5" aria-hidden />
                   </div>
-                )}
-
-                {step === 2 && ocrData && (
-                  <div className="space-y-5">
-                    <div className="flex items-center gap-3 rounded-2xl border border-green-200 bg-green-50 px-4 py-3.5 text-sm font-semibold text-green-800">
-                      <CheckCircle className="h-5 w-5 shrink-0 text-[#16A34A]" aria-hidden />
-                      ✓ Information extracted successfully
-                    </div>
-
-                    <p className="text-sm text-gray-500">
-                      These details were read directly from your scanned PRC ID and cannot be edited. If
-                      information appears incorrect, go back and re-upload a clearer image.
-                    </p>
-
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {[
-                        { label: 'Last Name', value: ocrData.lastName },
-                        { label: 'First Name', value: ocrData.firstName },
-                        { label: 'Middle Name', value: ocrData.middleName },
-                        { label: 'Registration No.', value: ocrData.registrationNumber },
-                        { label: 'Registration Date', value: formatDisplayDate(ocrData.registrationDate) },
-                        { label: 'Valid Until', value: formatDisplayDate(ocrData.validUntil) },
-                      ].map((field) => (
-                        <div key={field.label} className="space-y-1.5">
-                          <Label className="text-xs font-medium text-gray-500">{field.label}</Label>
-                          <div className="relative">
-                            <Input
-                              readOnly
-                              value={field.value}
-                              aria-label={field.label}
-                              className="h-12 cursor-not-allowed rounded-xl border-gray-200 bg-gray-100 pr-10 font-medium text-gray-900"
-                            />
-                            <Lock
-                              className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
-                              aria-hidden
-                            />
-                          </div>
-                        </div>
-                      ))}
-                      <div className="space-y-1.5 sm:col-span-2">
-                        <Label className="text-xs font-medium text-gray-500">Registered Email Address</Label>
-                        <div className="relative">
-                          <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                          <Input
-                            type="email"
-                            value={ocrData.email}
-                            onChange={(e) => setOcrData({ ...ocrData, email: e.target.value.trim() })}
-                            placeholder="Enter the email associated with this registration"
-                            aria-label="Registered email address"
-                            className="h-12 rounded-xl border-gray-200 bg-white pl-10 font-medium text-gray-900"
-                          />
-                        </div>
-                        <p className="text-xs text-gray-500">
-                          This email is stored with your registration and used for Email OTP if face verification fails.
-                          Use a real inbox you can access.
-                        </p>
-                      </div>
-                    </div>
-
-                    <NavButtons
-                      onBack={() => setStep(1)}
-                      onContinue={() => {
-                        if (!ocrData.email || !ocrData.email.includes('@')) {
-                          setGlobalError('Please enter the registered email address before continuing.');
-                          return;
-                        }
-                        setGlobalError('');
-                        resetFaceCycleLocal();
-                        setStep(3);
-                      }}
-                    />
+                  <div>
+                    <h2 className="text-lg font-bold leading-snug text-white sm:text-xl">
+                      Step {step} of {STEP_LABELS.length} — {STEP_TITLES[step - 1]}
+                    </h2>
+                    <p className="mt-1 text-sm text-blue-100">{STEP_DESCRIPTIONS[step - 1]}</p>
                   </div>
+                </div>
+              </div>
+              <CardContent className="p-6 sm:p-8">
+                {step === 1 && <PersonalInfoStep data={data} onChange={patch} onNext={() => setStep(2)} />}
+                {step === 2 && (
+                  <RoleStep data={data} onChange={patch} onNext={() => setStep(3)} onBack={() => setStep(1)} />
                 )}
-
                 {step === 3 && (
-                  <div className="space-y-5">
-                    <div className="flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
-                      <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" />
-                      <div>
-                        <p>
-                          <strong className="font-bold">Face Verification</strong> is required. Use your device camera
-                          for a live face scan — gallery uploads are not permitted.
-                        </p>
-                        <ul className="mt-2 list-disc space-y-1 pl-4 text-blue-700">
-                          <li>Position your face inside the frame.</li>
-                          <li>Make sure your face is clearly visible.</li>
-                          <li>Keep your face centered.</li>
-                        </ul>
-                        <p className="mt-2 text-blue-700">
-                          After 3 failed attempts you can retry face verification or verify using Email OTP.
-                        </p>
-                      </div>
-                    </div>
-
-                    <canvas ref={canvasRef} className="hidden" />
-
-                    {faceResuming ? (
-                      <div className="flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-4 py-6 text-sm text-gray-500">
-                        <Loader2 className="h-4 w-4 animate-spin" /> Restoring your verification progress...
-                      </div>
-                    ) : (
-                      <>
-                    {!showOtpPanel && (
-                      <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5">
-                        <span className="text-sm font-medium text-gray-600">
-                          Attempts remaining:{' '}
-                          <span
-                            className={`font-bold ${faceAttemptsUsed > 0 ? 'text-red-600' : 'text-gray-700'}`}
-                          >
-                            {Math.max(0, faceMaxAttempts - faceAttemptsUsed)}
-                          </span>
-                        </span>
-                        <div className="flex gap-1">
-                          {Array.from({ length: faceMaxAttempts }).map((_, i) => (
-                            <span
-                              key={i}
-                              className={`h-2 w-2 rounded-full ${
-                                i < faceAttemptsUsed ? 'bg-red-500' : 'bg-gray-300'
-                              }`}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {!showOtpPanel && (
-                      <>
-                        {faceStatus === 'success' ? (
-                          <div className="space-y-4 rounded-2xl border border-green-200 bg-green-50 p-6 text-center">
-                            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-white shadow">
-                              <CheckCircle className="h-8 w-8 text-green-600" />
-                            </div>
-                            <div>
-                              <p className="text-lg font-bold text-green-900">Face Verified Successfully</p>
-                              <p className="mt-1 text-sm text-green-700">Your identity has been verified.</p>
-                            </div>
-                          </div>
-                        ) : selfiePreview && !faceLocked ? (
-                          <div className="space-y-4">
-                            <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-950">
-                              <img src={selfiePreview} alt="Captured selfie" className="h-72 w-full object-cover" />
-                              {faceStatus === 'processing' && (
-                                <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
-                                  <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Verifying your face...
-                                </div>
-                              )}
-                              {faceStatus === 'error' && !faceLocked && (
-                                <div className="absolute inset-0 flex items-center justify-center bg-red-500/20">
-                                  <div className="rounded-full bg-white p-4 shadow-lg">
-                                    <XCircle className="h-8 w-8 text-red-600" />
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                            {awaitingSelfieConfirm && (
-                              <>
-                                <p className="text-center text-sm text-gray-600">
-                                  Is your face clearly visible? Use this photo, or retake it.
-                                </p>
-                                <div className="grid gap-3 sm:grid-cols-2">
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    onClick={retakePhoto}
-                                    className="h-12 rounded-full"
-                                  >
-                                    <Camera className="mr-2 h-4 w-4" /> Retake
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    onClick={confirmSelfie}
-                                    className="h-12 rounded-full bg-blue-600 text-white hover:bg-blue-700"
-                                  >
-                                    <CheckCircle2 className="mr-2 h-4 w-4" /> Use This Photo
-                                  </Button>
-                                </div>
-                              </>
-                            )}
-                            {faceStatus === 'error' && !faceLocked && (
-                              <div className="space-y-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                                <p className="font-bold">Face Verification Failed</p>
-                                <p>We couldn&apos;t verify your face.</p>
-                                <p className="font-semibold">
-                                  Attempts remaining: {Math.max(0, faceMaxAttempts - faceAttemptsUsed)}
-                                </p>
-                                <p>
-                                  {faceAttemptsUsed === 1
-                                    ? 'Please make sure your face is clearly visible and positioned inside the frame.'
-                                    : 'Please try again.'}
-                                </p>
-                                {faceError ? <p className="text-xs opacity-90">{faceError}</p> : null}
-                              </div>
-                            )}
-                            {/* Hidden while a fresh capture is awaiting confirmation — Retake
-                                already covers that case, and two buttons doing the same thing
-                                invites the nurse to guess which one is safe. */}
-                            {!faceLocked && faceStatus !== 'processing' && !awaitingSelfieConfirm && (
-                              <Button
-                                type="button"
-                                onClick={() => {
-                                  // Manual progression only — do not call the API / increment attempts here.
-                                  setSelfiePreview(null);
-                                  setAwaitingSelfieConfirm(false);
-                                  setFaceStatus('idle');
-                                  setFaceError('');
-                                  faceAutoOpenDone.current = false;
-                                  void openCamera();
-                                }}
-                                className="h-11 w-full rounded-full bg-blue-600 text-white hover:bg-blue-700"
-                              >
-                                <RefreshCw className="mr-2 h-4 w-4" /> Try Again
-                              </Button>
-                            )}
-                          </div>
-                        ) : faceLocked ? null : cameraState === 'active' ? (
-                          <div className="space-y-4">
-                            <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-black">
-                              <video ref={videoRef} className="h-72 w-full object-cover" playsInline muted autoPlay />
-                              <div className="absolute inset-0 flex items-center justify-center">
-                                <div className="h-40 w-32 rounded-3xl border-4 border-white/60" />
-                              </div>
-                            </div>
-                            <p className="text-center text-sm text-gray-600">
-                              Position your face inside the frame. Make sure it is clearly visible
-                              and centred, then take the photo when you are ready.
-                            </p>
-                            {faceAttemptsUsed === faceMaxAttempts - 1 && (
-                              <p className="text-center text-sm font-semibold text-amber-700">
-                                This is your final face verification attempt.
-                              </p>
-                            )}
-                            <div className="grid gap-3 sm:grid-cols-2">
-                              <Button
-                                type="button"
-                                onClick={capturePhoto}
-                                className="h-12 rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-70"
-                              >
-                                <Camera className="mr-2 h-4 w-4" /> Capture Photo
-                              </Button>
-                              <Button type="button" variant="outline" onClick={clearMedia} className="h-12 rounded-full">
-                                <X className="mr-2 h-4 w-4" /> Cancel
-                              </Button>
-                            </div>
-                          </div>
-                        ) : cameraState === 'denied' ? (
-                          <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center">
-                            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-white shadow">
-                              <Video className="h-7 w-7 text-amber-600" />
-                            </div>
-                            <div>
-                              <p className="font-bold text-amber-900">Camera Access Denied</p>
-                              <p className="mt-1 text-sm text-amber-700">
-                                NurseLink needs camera access to verify your identity. Click the camera icon in your
-                                browser&apos;s address bar (or open your browser&apos;s Site Settings) and allow
-                                Camera for this site, then try again.
-                              </p>
-                            </div>
-                            <Button
-                              type="button"
-                              onClick={openCamera}
-                              className="h-11 w-full rounded-full bg-amber-600 text-white hover:bg-amber-700"
-                            >
-                              <RefreshCw className="mr-2 h-4 w-4" /> Try Again
-                            </Button>
-                          </div>
-                        ) : cameraState === 'not-supported' ? (
-                          <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center">
-                            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-white shadow">
-                              <AlertTriangle className="h-7 w-7 text-amber-600" />
-                            </div>
-                            <div>
-                              <p className="font-bold text-amber-900">Camera Not Available</p>
-                              <p className="mt-1 text-sm text-amber-700">
-                                This browser or device doesn&apos;t support live camera capture. Please try again from
-                                a recent version of Chrome, Edge, Firefox, or Safari, or switch to a device with a
-                                camera.
-                              </p>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="space-y-4">
-                            <button
-                              type="button"
-                              onClick={openCamera}
-                              disabled={cameraState === 'requesting'}
-                              className="flex h-44 w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-blue-200 bg-blue-50/50 transition hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-70"
-                            >
-                              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-100">
-                                {cameraState === 'requesting' ? (
-                                  <Loader2 className="h-7 w-7 animate-spin text-blue-600" />
-                                ) : (
-                                  <Video className="h-7 w-7 text-blue-600" />
-                                )}
-                              </div>
-                              <span className="text-sm font-semibold text-blue-700">
-                                {cameraState === 'requesting' ? 'Requesting camera access...' : 'Open Live Camera'}
-                              </span>
-                              <span className="text-xs text-slate-500">
-                                Live face scan only — image uploads are not allowed
-                              </span>
-                            </button>
-                          </div>
-                        )}
-
-                        {faceError &&
-                          !faceLocked &&
-                          faceStatus !== 'error' &&
-                          cameraState !== 'denied' &&
-                          cameraState !== 'not-supported' && (
-                            <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                              <XCircle className="h-4 w-4 shrink-0" />
-                              {faceError}
-                            </div>
-                          )}
-
-                        {faceLocked && faceAttemptsUsed >= faceMaxAttempts && (
-                          <div className="space-y-4 rounded-2xl border border-amber-200 bg-white p-5 sm:p-6">
-                            <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
-                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-100">
-                                <AlertTriangle className="h-5 w-5 text-amber-600" />
-                              </div>
-                              <div>
-                                <p className="font-bold text-amber-900">Face Verification Failed</p>
-                                <p className="text-sm text-amber-700">
-                                  {faceError || `You've used all ${faceMaxAttempts} face verification attempts.`}
-                                </p>
-                              </div>
-                            </div>
-
-                            <p className="text-sm text-gray-600">Please choose another option.</p>
-
-                            {otpError && (
-                              <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                                <AlertCircle className="h-4 w-4 shrink-0" />
-                                {otpError}
-                              </div>
-                            )}
-
-                            <div className="space-y-3">
-                              {faceRetryAvailable && (
-                                <>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    onClick={handleModalRetake}
-                                    disabled={faceLockActive || otpStatus === 'sending'}
-                                    className="h-12 w-full rounded-full"
-                                  >
-                                    <RefreshCw className="mr-2 h-4 w-4" />
-                                    {faceLockActive && faceLockedUntil
-                                      ? `Available after ${new Date(faceLockedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                                      : 'Retry Face Verification'}
-                                  </Button>
-                                  <div className="relative flex items-center py-1">
-                                    <div className="h-px flex-1 bg-gray-200" />
-                                    <span className="px-3 text-xs text-gray-400">or</span>
-                                    <div className="h-px flex-1 bg-gray-200" />
-                                  </div>
-                                </>
-                              )}
-                              <Button
-                                type="button"
-                                onClick={handleOpenOtp}
-                                disabled={otpStatus === 'sending'}
-                                className="h-12 w-full rounded-full bg-gradient-to-r from-[#2563EB] to-blue-600 text-white"
-                              >
-                                <Send className="mr-2 h-4 w-4" /> Verify Using Email OTP
-                              </Button>
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    )}
-
-                    {showOtpPanel && (
-                      <div className="space-y-5 rounded-2xl border border-blue-200 bg-white p-5 sm:p-6">
-                        <div className="flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50 p-4">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100">
-                            <Mail className="h-5 w-5 text-blue-600" />
-                          </div>
-                          <div>
-                            <p className="font-bold text-blue-900">Email Verification</p>
-                            <p className="text-sm text-blue-700">
-                              We&apos;ll send a verification code to your registered email address.
-                            </p>
-                          </div>
-                        </div>
-
-                        {(otpStatus === 'email_entry' || otpStatus === 'sending') && (
-                          <div className="space-y-3">
-                            <div className="space-y-1.5">
-                              <Label className="text-xs font-medium text-gray-500">Registered Email</Label>
-                              <div className="relative">
-                                <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                                <Input
-                                  type="text"
-                                  value={otpEmailInput ? maskEmail(otpEmailInput) : ''}
-                                  placeholder="Registered email on file"
-                                  disabled
-                                  readOnly
-                                  className="h-12 rounded-xl border-gray-200 pl-10 font-medium text-gray-900"
-                                />
-                              </div>
-                            </div>
-                            {otpError && (
-                              <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                                <AlertCircle className="h-4 w-4 shrink-0" />
-                                {otpError}
-                              </div>
-                            )}
-                            <Button
-                              type="button"
-                              onClick={handleSendOtp}
-                              disabled={otpStatus === 'sending'}
-                              className="h-12 w-full rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white"
-                            >
-                              {otpStatus === 'sending' ? (
-                                <>
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending verification code...
-                                </>
-                              ) : (
-                                <>
-                                  <Send className="mr-2 h-4 w-4" /> Send Verification Code
-                                </>
-                              )}
-                            </Button>
-                          </div>
-                        )}
-
-                        {(otpStatus === 'awaiting' || otpStatus === 'verifying' || otpStatus === 'verified') && (
-                          <>
-                            <div>
-                              <p className="font-bold text-gray-900">Verify Your Email</p>
-                              <p className="mt-1 text-sm text-gray-600">
-                                We&apos;ve sent a 6-digit verification code to your registered email.
-                              </p>
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label className="text-xs font-medium text-gray-500">Enter Verification Code</Label>
-                              <InputOTP
-                                maxLength={6}
-                                value={otpCode}
-                                onChange={(value) => {
-                                  setOtpCode(value);
-                                  setOtpError('');
-                                }}
-                                disabled={otpStatus === 'verifying' || otpStatus === 'verified'}
-                              >
-                                <InputOTPGroup>
-                                  {[0, 1, 2, 3, 4, 5].map((i) => (
-                                    <InputOTPSlot key={i} index={i} className="h-12 w-12 rounded-xl text-lg" />
-                                  ))}
-                                </InputOTPGroup>
-                              </InputOTP>
-                            </div>
-
-                            {otpExpired && otpStatus !== 'verified' && (
-                              <div className="space-y-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                                <p className="font-bold">Verification Code Expired</p>
-                                <p>Your verification code has expired.</p>
-                                <Button
-                                  type="button"
-                                  onClick={handleResendOtp}
-                                  disabled={otpResending}
-                                  className="h-10 w-full rounded-full bg-blue-600 text-white hover:bg-blue-700"
-                                >
-                                  {otpResending ? (
-                                    <>
-                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending new code...
-                                    </>
-                                  ) : (
-                                    'Send New Code'
-                                  )}
-                                </Button>
-                              </div>
-                            )}
-
-                            {otpError && !otpExpired && (
-                              <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                                <AlertCircle className="h-4 w-4 shrink-0" />
-                                {otpError}
-                              </div>
-                            )}
-
-                            {otpStatus === 'verified' && (
-                              <div className="space-y-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                                <p className="font-bold">Email Verified Successfully</p>
-                                <p>Your identity has been verified.</p>
-                              </div>
-                            )}
-
-                            <div className="flex items-center justify-between text-sm">
-                              <span className="text-gray-500">
-                                {otpStatus === 'verified' ? (
-                                  'Verification complete'
-                                ) : otpResendSecondsLeft > 0 ? (
-                                  <>
-                                    Resend available in{' '}
-                                    <span className="font-semibold text-blue-600">{otpResendSecondsLeft}s</span>
-                                  </>
-                                ) : (
-                                  "Didn't receive the code?"
-                                )}
-                              </span>
-                              <button
-                                type="button"
-                                disabled={otpResendSecondsLeft > 0 || otpResending || otpStatus === 'verified'}
-                                onClick={handleResendOtp}
-                                className="inline-flex items-center gap-1 font-semibold text-blue-600 disabled:cursor-not-allowed disabled:text-gray-400"
-                              >
-                                <RefreshCw className="h-3.5 w-3.5" /> Resend OTP
-                              </button>
-                            </div>
-
-                            <Button
-                              type="button"
-                              onClick={handleVerifyOtp}
-                              disabled={
-                                otpCode.length !== 6 ||
-                                otpStatus === 'verifying' ||
-                                otpStatus === 'verified' ||
-                                otpExpired
-                              }
-                              className="h-12 w-full rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white shadow-md shadow-blue-200 disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-none disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none"
-                            >
-                              {otpStatus === 'verifying' ? (
-                                <>
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying code...
-                                </>
-                              ) : (
-                                <>
-                                  <KeyRound className="mr-2 h-4 w-4" /> Verify OTP
-                                </>
-                              )}
-                            </Button>
-                          </>
-                        )}
-
-                        <div className="relative flex items-center py-1">
-                          <div className="h-px flex-1 bg-gray-200" />
-                          <span className="px-3 text-xs text-gray-400">or</span>
-                          <div className="h-px flex-1 bg-gray-200" />
-                        </div>
-
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={handleBackToFaceFromOtp}
-                          disabled={otpStatus === 'verified'}
-                          className="h-11 w-full rounded-full"
-                        >
-                          <RefreshCw className="mr-2 h-4 w-4" /> Retry Face Verification
-                        </Button>
-                      </div>
-                    )}
-                      </>
-                    )}
-
-                    <NavButtons
-                      onBack={() => setStep(2)}
-                      onContinue={() => setStep(4)}
-                      continueDisabled={!identityVerified}
-                      continueLabel={identityVerified ? 'Continue' : 'Continue'}
-                    />
-                  </div>
+                  <VerificationStep
+                    data={data}
+                    onChange={patch}
+                    onVerified={() => setStep(4)}
+                    onBack={() => setStep(2)}
+                  />
                 )}
-
                 {step === 4 && (
-                  <div className="space-y-5">
-                    <p className="text-sm text-gray-600">
-                      Choose the role you are requesting. You start as a nurse; a head nurse request is sent for
-                      administrator approval and grants no access until an administrator approves it.
-                    </p>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {roleOptions.map((option) => {
-                        const selected = selectedRole === option.value;
-                        return (
-                          <button
-                            type="button"
-                            key={option.value}
-                            role="radio"
-                            aria-checked={selected}
-                            onClick={() => {
-                              setSelectedRole(option.value);
-                              setRoleSelectError('');
-                            }}
-                            className={`group flex w-full flex-col items-center gap-3 rounded-2xl border-2 p-6 text-center transition hover:-translate-y-0.5 hover:shadow-md ${
-                              selected
-                                ? 'border-[#2563EB] bg-blue-50 shadow-md shadow-blue-100 ring-2 ring-blue-100'
-                                : 'border-gray-200 bg-white hover:border-blue-200'
-                            }`}
-                          >
-                            <span className="text-5xl transition group-hover:scale-105" aria-hidden>
-                              {option.emoji}
-                            </span>
-                            <div>
-                              <p className="text-lg font-bold text-gray-900">{option.title}</p>
-                              <p className="mt-1 text-xs leading-relaxed text-gray-500">{option.detail}</p>
-                            </div>
-                            <div
-                              className={`mt-1 flex h-5 w-5 items-center justify-center rounded-full border-2 ${
-                                selected ? 'border-[#2563EB]' : 'border-gray-300'
-                              }`}
-                              aria-hidden
-                            >
-                              {selected && <div className="h-2.5 w-2.5 rounded-full bg-[#2563EB]" />}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {roleSelectError && (
-                      <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                        {roleSelectError}
-                      </div>
-                    )}
-                    <NavButtons
-                      onBack={() => setStep(3)}
-                      onContinue={() => {
-                        if (!selectedRole) setRoleSelectError('Please select a role before continuing.');
-                        else setStep(5);
-                      }}
-                    />
-                  </div>
-                )}
-
-                {step === 5 && (
-                  <form onSubmit={handleCreateAccount} className="space-y-5">
-                    {globalError && (
-                      <Alert variant="destructive">
-                        <AlertDescription>{globalError}</AlertDescription>
-                      </Alert>
-                    )}
-
-                    <div className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                      <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
-                      <p>
-                        All identity verifications have passed. Set your login credentials below to complete
-                        registration.
-                      </p>
-                    </div>
-
-                    <div className="space-y-4">
-                      <div>
-                        <Label htmlFor="email" className="mb-1.5 flex items-center gap-2 text-sm font-medium text-slate-700">
-                          <Mail className="h-4 w-4 text-slate-400" />
-                          Email Address <span className="text-red-500">*</span>
-                        </Label>
-                        <Input
-                          id="email"
-                          type="email"
-                          placeholder="you@example.com"
-                          value={email}
-                          onChange={(e) => setEmail(e.target.value)}
-                          className={`h-11 rounded-xl ${credErrors.email ? 'border-red-500' : ''}`}
-                        />
-                        {credErrors.email && <p className="mt-1.5 text-sm text-red-600">{credErrors.email}</p>}
-                      </div>
-                      <div className="grid gap-4 sm:grid-cols-2">
-                        <div>
-                          <Label
-                            htmlFor="password"
-                            className="mb-1.5 flex items-center gap-2 text-sm font-medium text-slate-700"
-                          >
-                            <Lock className="h-4 w-4 text-slate-400" />
-                            Password <span className="text-red-500">*</span>
-                          </Label>
-                          <Input
-                            id="password"
-                            type="password"
-                            placeholder="At least 8 characters"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            className={`h-11 rounded-xl ${credErrors.password ? 'border-red-500' : ''}`}
-                          />
-                          {credErrors.password && <p className="mt-1.5 text-sm text-red-600">{credErrors.password}</p>}
-                        </div>
-                        <div>
-                          <Label
-                            htmlFor="confirmPassword"
-                            className="mb-1.5 flex items-center gap-2 text-sm font-medium text-slate-700"
-                          >
-                            <Lock className="h-4 w-4 text-slate-400" />
-                            Confirm Password <span className="text-red-500">*</span>
-                          </Label>
-                          <Input
-                            id="confirmPassword"
-                            type="password"
-                            placeholder="Re-enter password"
-                            value={confirmPassword}
-                            onChange={(e) => setConfirmPassword(e.target.value)}
-                            className={`h-11 rounded-xl ${credErrors.confirmPassword ? 'border-red-500' : ''}`}
-                          />
-                          {credErrors.confirmPassword && (
-                            <p className="mt-1.5 text-sm text-red-600">{credErrors.confirmPassword}</p>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-green-200 bg-green-50 p-5">
-                      <div className="mb-4 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2 font-semibold text-green-800">
-                          <ShieldCheck className="h-5 w-5 text-[#16A34A]" aria-hidden />
-                          Identity Verification Complete
-                        </div>
-                        <span className="inline-flex items-center gap-1 rounded-full bg-[#16A34A] px-3 py-1 text-xs font-semibold text-white">
-                          <CheckCircle className="h-3 w-3" aria-hidden /> Complete
-                        </span>
-                      </div>
-                      <div className="space-y-2">
-                        {[
-                          { label: 'PRC ID Uploaded', done: idUploaded },
-                          { label: 'OCR Completed', done: ocrDone },
-                          {
-                            label: verificationMethod === 'EMAIL_OTP' ? 'Email OTP Verified' : 'Face Verified',
-                            done: identityVerified,
-                          },
-                          { label: 'Role Selected', done: roleSelected },
-                          { label: 'Credentials Completed', done: credsDone },
-                        ].map((item) => (
-                          <div
-                            key={item.label}
-                            className={`flex items-center gap-3 rounded-full px-3 py-2 text-sm ${
-                              item.done ? 'bg-white/80 text-green-800' : 'text-gray-500'
-                            }`}
-                          >
-                            <span
-                              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
-                                item.done ? 'bg-[#16A34A] text-white' : 'bg-green-200 text-green-600'
-                              }`}
-                            >
-                              {item.done ? <CheckCircle className="h-3.5 w-3.5" aria-hidden /> : '·'}
-                            </span>
-                            <span className={item.done ? 'font-medium' : ''}>{item.label}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex gap-3">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => setStep(4)}
-                        className="h-12 flex-1 rounded-xl border-gray-200"
-                      >
-                        <ChevronLeft className="mr-1 h-4 w-4" aria-hidden /> Back
-                      </Button>
-                      <Button
-                        type="submit"
-                        disabled={!canSubmitCredentials || isSubmitting}
-                        className="h-12 flex-[1.5] rounded-xl bg-gradient-to-r from-[#2563EB] to-blue-600 text-white shadow-md shadow-blue-200 transition hover:-translate-y-0.5 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-none disabled:bg-gray-200 disabled:text-gray-400 disabled:shadow-none"
-                      >
-                        {isSubmitting ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> Creating Account...
-                          </>
-                        ) : (
-                          <>
-                            <UserPlus className="mr-2 h-4 w-4" aria-hidden /> Create Account
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  </form>
+                  <CredentialsStep
+                    data={data}
+                    onChange={patch}
+                    onBack={() => setStep(3)}
+                    onSubmitted={() => setSubmitted(true)}
+                  />
                 )}
               </CardContent>
             </Card>
           </>
         )}
-
-        {!submitted && (
-          <div className="space-y-2 text-center">
-            <p className="text-sm text-slate-500">
-              Already have an account?{' '}
-              <Link to="/login" className="font-semibold text-blue-600 hover:underline">
-                Log In
-              </Link>
-            </p>
-            <p className="text-xs text-slate-400">
-              By creating an account, you agree to our Terms of Service and Privacy Policy
-            </p>
-          </div>
-        )}
       </div>
     </div>
-    </>
   );
 }

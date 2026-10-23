@@ -23,6 +23,7 @@ from api.tests_prc_ocr import CLEAN_PRC_TEXT, PRC_MIDWIFE_TEXT, REJECTION_MESSAG
 
 
 @override_settings(N8N_FACE_VERIFY_ENABLED=False)
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class PrcFaceMatchTests(TestCase):
     def setUp(self):
         # DRF keeps throttle history in the shared cache — real traffic to the
@@ -155,6 +156,7 @@ class PrcFaceMatchTests(TestCase):
 
 
 @override_settings(N8N_FACE_VERIFY_ENABLED=False)
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class SignupRequiresPrcVerificationTests(TestCase):
     def setUp(self):
         cache.clear()

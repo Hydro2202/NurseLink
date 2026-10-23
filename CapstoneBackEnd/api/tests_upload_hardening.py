@@ -1,3 +1,4 @@
+from django.test import override_settings
 """
 Issue 15 — the anonymous sign-up ID/face upload endpoints must not accept
 unbounded uploads: real content is checked (not just extension/Content-Type),
@@ -43,6 +44,7 @@ def make_nurse(email='nurse@hospital.com'):
     return user
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class MultipartUploadValidationTests(APITestCase):
     """POST /api/auth/verify-id/ with a real multipart file (the preferred path)."""
 
@@ -100,6 +102,7 @@ class MultipartUploadValidationTests(APITestCase):
         self.assertIn('unsupported file format', res.data['message'].lower())
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class ImageDimensionLimitTests(APITestCase):
     """The new pixel-dimension ceiling, exercised through the shared decode path."""
 
@@ -130,6 +133,7 @@ class ImageDimensionLimitTests(APITestCase):
         self.assertEqual(res.status_code, 200, res.content)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class AnonymousThrottleTests(APITestCase):
     """Per-IP throttling on the anonymous identity-verification endpoints."""
 

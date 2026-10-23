@@ -68,6 +68,7 @@ def _fake_yunet(boxes):
     return _Stub()
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class NoPortraitRejectionTests(TestCase):
     """The attack this closes: an ID with the photo removed."""
 
@@ -99,6 +100,7 @@ class NoPortraitRejectionTests(TestCase):
         )
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class DetectionFilteringTests(TestCase):
     """Size filtering, driven through a stubbed detector for determinism."""
 
@@ -143,6 +145,7 @@ class DetectionFilteringTests(TestCase):
         self.assertAlmostEqual(result.confidence, 0.93, places=2)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class ImageHandlingTests(TestCase):
     def test_rejects_undecodable_upload(self):
         with self.assertRaises(InvalidImageError):
@@ -159,6 +162,7 @@ class ImageHandlingTests(TestCase):
         self.assertFalse(result.has_photo)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class VerifyIdPortraitGateTests(TestCase):
     """POST /api/auth/verify-id/ — the gate runs before any OCR call."""
 

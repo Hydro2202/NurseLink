@@ -36,6 +36,7 @@ def make_admin():
                                     password='pw-admin-1234', is_staff=True)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class LockedFieldTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -81,6 +82,7 @@ class LockedFieldTests(APITestCase):
 
 @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
                    ALLOW_CONSOLE_OTP=False, EMAIL_HOST='smtp.test', DEFAULT_FROM_EMAIL='no-reply@test')
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class EmailChangeTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -163,6 +165,7 @@ class EmailChangeTests(APITestCase):
         self.assertEqual(res.data['code'], 'too_many_attempts')
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class CorrectionRequestTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -229,6 +232,7 @@ class CorrectionRequestTests(APITestCase):
                          {'RN', 'LPN', 'Charge Nurse', 'Clinical Nurse Specialist'})
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class SignupNameTests(APITestCase):
     def test_signup_with_a_blocked_word_in_the_verified_name_is_rejected(self):
         import datetime

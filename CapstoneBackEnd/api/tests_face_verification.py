@@ -24,6 +24,7 @@ from api.otp_service import issue_otp, verify_otp
     # The n8n path has its own suite in tests_n8n_integration.py.
     N8N_FACE_VERIFY_ENABLED=False,
 )
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class FaceVerificationFlowTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -251,6 +252,7 @@ class FaceVerificationFlowTests(TestCase):
 
 
 @override_settings(N8N_FACE_VERIFY_ENABLED=False)
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class FaceVerificationRequiresIdVerificationTests(TestCase):
     """
     Face verification compares the selfie against the Step-1 ID photo — that

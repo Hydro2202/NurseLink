@@ -1,7 +1,7 @@
 """
 Prove each n8n workflow is really reachable from this backend.
 
-    python manage.py check_n8n              # ping all three
+    python manage.py check_n8n              # ping every workflow in use
     python manage.py check_n8n face_verify  # just one
     python manage.py check_n8n --prefix webhook   # test the production URLs
 
@@ -58,7 +58,7 @@ class Command(BaseCommand):
             'workflow',
             nargs='?',
             choices=sorted(PROBES),
-            help='Only check this workflow. Default: all of them.',
+            help='Only check this workflow. Default: every workflow in use.',
         )
         parser.add_argument(
             '--prefix',
@@ -74,7 +74,14 @@ class Command(BaseCommand):
         if options.get('prefix'):
             settings.N8N_WEBHOOK_PREFIX = options['prefix'].strip('/')
 
-        targets = [options['workflow']] if options.get('workflow') else sorted(PROBES)
+        if options.get('workflow'):
+            targets = [options['workflow']]
+        elif settings.SIGNUP_ID_FACE_VERIFICATION:
+            targets = sorted(PROBES)
+        else:
+            # Signup ID/face verification is retired, so its identity-verify
+            # workflow is not configured. Only autocharting is live.
+            targets = ['structure_chart']
 
         self.stdout.write('')
         self.stdout.write(f'n8n base     : {settings.N8N_BASE_URL}')

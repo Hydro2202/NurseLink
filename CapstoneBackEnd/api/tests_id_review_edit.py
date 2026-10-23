@@ -1,3 +1,4 @@
+from django.test import override_settings
 """
 Correcting what the scanner read.
 
@@ -39,6 +40,7 @@ def make_session(**extra):
     return RegistrationSession.objects.create(**fields)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class ReviewedIdFieldTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -183,6 +185,7 @@ class ReviewedIdFieldTests(APITestCase):
         self.assertEqual(response.status_code, 404)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class CorrectedFieldsReachTheAccountTests(APITestCase):
     """The whole point: the created account carries the corrected values."""
 

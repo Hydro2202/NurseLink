@@ -6,6 +6,7 @@ Well-formed dates still work (200), and an empty value means "no filter".
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 from .models import NurseProfile
@@ -22,6 +23,7 @@ def make_user(email, *, role='head_nurse'):
     return user
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class DateParamValidationTests(TestCase):
     def setUp(self):
         # raise_request_exception=False: a server error comes back as a 500
@@ -81,6 +83,7 @@ class DateParamValidationTests(TestCase):
                 self.assertEqual(res.status_code, 400, f'{url}?shift=day&date={bad} -> {res.status_code}')
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class IdReviewDateTests(TestCase):
     """Step 2 (ID review) takes dates from the applicant; bad ones are 400, never 500."""
 

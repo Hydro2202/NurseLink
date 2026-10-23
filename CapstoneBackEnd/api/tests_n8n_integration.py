@@ -23,6 +23,7 @@ from api.n8n_client import (
 )
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class WebhookUrlTests(TestCase):
     """URL assembly is what decides test-mode vs production. Worth pinning down."""
 
@@ -87,6 +88,7 @@ class WebhookUrlTests(TestCase):
         )
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class VerifyIdEndpointTests(TestCase):
     """POST /api/auth/verify-id/ — Persona steps 1 & 2."""
 
@@ -410,6 +412,7 @@ class VerifyIdEndpointTests(TestCase):
         self.assertEqual(res.data['message'], 'PRC ID image is required.')
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class VerifyIdMultipartUploadTests(TestCase):
     """
     POST /api/auth/verify-id/ with a real multipart file (field name
@@ -508,6 +511,7 @@ class VerifyIdMultipartUploadTests(TestCase):
 
 
 @override_settings(N8N_FACE_VERIFY_ENABLED=True, N8N_FACE_VERIFY_FALLBACK_LOCAL=False)
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class FaceVerifyWorkflowTests(TestCase):
     """The face matcher routes through n8n, but the session rules stay server-side."""
 
@@ -713,6 +717,7 @@ class FaceVerifyWorkflowTests(TestCase):
         self.assertTrue(self.session.face_locked)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class StructureChartEndpointTests(TestCase):
     """POST /api/charting/structure/ — autocharting."""
 

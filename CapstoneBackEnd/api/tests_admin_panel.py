@@ -1,3 +1,4 @@
+from django.test import override_settings
 """
 The in-app Admin panel's data-access surface: a real is_staff account gets
 read-only oversight across hospital records it previously got a flat 403 on
@@ -64,6 +65,7 @@ def make_nurse(email, first, last, *, role='staff_nurse', department='ICU'):
     return user
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class AdminReadOnlyOversightTests(APITestCase):
     """Admin gets list access on hospital-record endpoints it previously
     couldn't reach at all, and never gets write access through them."""
@@ -128,6 +130,7 @@ class AdminReadOnlyOversightTests(APITestCase):
         self.assertEqual(create.status_code, 201, create.content)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class DoctorAdminWriteTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -160,6 +163,7 @@ class DoctorAdminWriteTests(APITestCase):
         self.assertEqual(create.status_code, 403)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class RegistrationSessionAdminTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -283,6 +287,7 @@ class RegistrationSessionAdminTests(APITestCase):
         self.assertEqual(response.status_code, 403)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class AdminEditingOwnProfileTests(APITestCase):
     """
     An admin reaching Settings (new: the Admin UI's nav links there too) and
@@ -313,6 +318,7 @@ class AdminEditingOwnProfileTests(APITestCase):
         self.assertNotIn(self.admin.email, emails)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class NewRegistrationNotifiesAdminsTests(APITestCase):
     """
     A fresh signup must immediately tell every admin account it's waiting

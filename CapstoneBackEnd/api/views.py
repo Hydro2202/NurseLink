@@ -29,7 +29,7 @@ from rest_framework import permissions, serializers, status, viewsets
 from .auth_sessions import issue_session, revoke_all_sessions, revoke_session
 from .ws_tickets import issue_ticket as issue_ws_ticket
 from rest_framework.decorators import action
-from rest_framework.exceptions import MethodNotAllowed, PermissionDenied
+from rest_framework.exceptions import APIException, MethodNotAllowed, PermissionDenied
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -282,7 +282,31 @@ def _authenticate_credentials(email: str, password: str):
     return user
 
 
-class SignupView(APIView):
+class SignupStepRetired(APIException):
+    status_code = status.HTTP_410_GONE
+    default_detail = (
+        'PRC ID and face verification are no longer part of signup. '
+        'Sign up with the email and phone OTP flow instead.'
+    )
+    default_code = 'signup_step_retired'
+
+
+class RetiredSignupFlowMixin:
+    """
+    The original signup flow (PRC ID scan + face match, with registration
+    OTP as its fallback) is switched off by settings.SIGNUP_ID_FACE_VERIFICATION.
+    Signup now runs entirely through the signup-v2 views. The code stays so
+    the flow can be turned back on, but while it is off every one of its
+    endpoints answers 410 before throttling or any n8n call happens.
+    """
+
+    def initial(self, request, *args, **kwargs):
+        if not settings.SIGNUP_ID_FACE_VERIFICATION:
+            raise SignupStepRetired()
+        super().initial(request, *args, **kwargs)
+
+
+class SignupView(RetiredSignupFlowMixin, APIView):
     permission_classes = [permissions.AllowAny]
     # Anonymous by design (registration/login). A stale token from a blocked
     # account must not be able to refuse these, so no authentication runs here.
@@ -797,7 +821,7 @@ def _run_face_match(
         raise
 
 
-class FaceVerificationStatusView(APIView):
+class FaceVerificationStatusView(RetiredSignupFlowMixin, APIView):
     """Return the server-side face/OTP verification state for session resume."""
 
     permission_classes = [permissions.AllowAny]
@@ -868,7 +892,7 @@ def _card_fields_not_matching_scan(session, cleaned, reg_date, valid_until):
     return mismatched
 
 
-class RegistrationEmailView(APIView):
+class RegistrationEmailView(RetiredSignupFlowMixin, APIView):
     """
     Persists the registered email collected on Step 2 (ID Review) to
     RegistrationSession.email — the single source SendRegistrationOtpView and
@@ -975,7 +999,7 @@ class RegistrationEmailView(APIView):
         return Response({'success': True, 'registrationSessionId': str(session.session_id)})
 
 
-class FaceVerificationView(APIView):
+class FaceVerificationView(RetiredSignupFlowMixin, APIView):
     """
     Real endpoint backing Step 3 of registration. Attempt counting and the
     3-strike lockout are enforced server-side against RegistrationSession —
@@ -1367,7 +1391,7 @@ def _finish_id_scan_attempt(
     return attempt
 
 
-class VerifyIdView(APIView):
+class VerifyIdView(RetiredSignupFlowMixin, APIView):
     """
     Persona steps 1 & 2 — read a Hospital ID photo through the n8n verify-id
     workflow and return the identity fields the signup wizard pre-fills.
@@ -1877,7 +1901,7 @@ class VerifyIdView(APIView):
         return Response(response_body)
 
 
-class VerifyPrcLicenseView(APIView):
+class VerifyPrcLicenseView(RetiredSignupFlowMixin, APIView):
     """
     Scan a PRC nursing licence and return the fields the wizard pre-fills.
 
@@ -2029,7 +2053,7 @@ class VerifyPrcLicenseView(APIView):
         return Response(payload)
 
 
-class SendRegistrationOtpView(APIView):
+class SendRegistrationOtpView(RetiredSignupFlowMixin, APIView):
     permission_classes = [permissions.AllowAny]
     # Anonymous by design (registration/login). A stale token from a blocked
     # account must not be able to refuse these, so no authentication runs here.
@@ -2092,7 +2116,7 @@ class SendRegistrationOtpView(APIView):
         )
 
 
-class ResendRegistrationOtpView(APIView):
+class ResendRegistrationOtpView(RetiredSignupFlowMixin, APIView):
     permission_classes = [permissions.AllowAny]
     # Anonymous by design (registration/login). A stale token from a blocked
     # account must not be able to refuse these, so no authentication runs here.
@@ -2157,7 +2181,7 @@ class ResendRegistrationOtpView(APIView):
         )
 
 
-class VerifyRegistrationOtpView(APIView):
+class VerifyRegistrationOtpView(RetiredSignupFlowMixin, APIView):
     permission_classes = [permissions.AllowAny]
     # Anonymous by design (registration/login). A stale token from a blocked
     # account must not be able to refuse these, so no authentication runs here.

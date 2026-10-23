@@ -28,6 +28,7 @@ SETS = BUDGET // MAX_FACE_ATTEMPTS
 
 
 @override_settings(N8N_FACE_VERIFY_ENABLED=False)
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class FaceRetryBudgetTests(TestCase):
     def setUp(self):
         cache.clear()

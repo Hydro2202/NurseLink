@@ -42,170 +42,6 @@ export async function loginRequest(
   return data;
 }
 
-export async function signupRequest(
-  userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
-): Promise<AuthResponse> {
-  // The server never grants a role at signup — the picked role is only a
-  // request for an admin to review, sent under requestedRole.
-  const { role, ...rest } = userData;
-  const data = await apiRequest<AuthResponse>('/auth/signup/', {
-    method: 'POST',
-    body: { ...rest, requestedRole: role },
-    auth: false,
-  });
-  setToken(data.token);
-  return data;
-}
-
-/**
- * Persona steps 1 & 2 — the backend forwards the ID photo to the n8n
- * identity-verify workflow (action: 'ocr') and returns the fields it read.
- */
-export type VerifyIdResponse = {
-  success: boolean;
-  verified: boolean;
-  verificationStatus?: 'verified' | 'validation_error' | 'invalid_id' | 'unavailable';
-  /** Present only when verificationStatus is 'validation_error' — one message per bad field. */
-  errors?: Record<string, string>;
-  fullName: string;
-  lastName: string;
-  firstName: string;
-  middleName: string;
-  registrationNumber: string;
-  registrationDate: string;
-  validUntil: string;
-  employeeId: string;
-  department: string;
-  position: string;
-  hospitalName: string;
-  email: string;
-  roleMatch?: boolean | null;
-  confidence?: number | null;
-  message?: string;
-  registrationSessionId: string;
-};
-
-export async function verifyIdRequest(
-  idImage: string,
-  options?: { registrationSessionId?: string | null; expectedRole?: 'staff_nurse' | 'head_nurse' | '' }
-): Promise<VerifyIdResponse> {
-  return apiRequest<VerifyIdResponse>('/auth/verify-id/', {
-    method: 'POST',
-    body: {
-      idImage,
-      documentType: 'prc_license',
-      ...(options?.registrationSessionId ? { registrationSessionId: options.registrationSessionId } : {}),
-      ...(options?.expectedRole ? { expectedRole: options.expectedRole } : {}),
-    },
-    auth: false,
-  });
-}
-
-export type FaceVerificationResponse = {
-  matched: boolean;
-  confidence: number;
-  registrationSessionId: string;
-  attemptsUsed?: number;
-  attemptsRemaining: number;
-  maxAttempts?: number;
-  locked: boolean;
-  faceVerified?: boolean;
-  otpVerified?: boolean;
-  verificationMethod?: string | null;
-  status?: string;
-  registeredEmail?: string | null;
-  reason?: string | null;
-  message?: string;
-  countable?: boolean;
-  /** False once the lifetime face-attempt budget is spent; only Email OTP remains. */
-  retryAvailable?: boolean;
-  /** Set on a 423 (locked): seconds until the timed lockout ends. */
-  retryAfterSeconds?: number;
-};
-
-export type FaceVerificationStatusResponse = {
-  success?: boolean;
-  message?: string;
-  registrationSessionId?: string;
-  attemptsUsed: number;
-  attemptsRemaining: number;
-  maxAttempts: number;
-  locked: boolean;
-  faceVerified: boolean;
-  otpVerified: boolean;
-  verificationMethod?: string | null;
-  status: string;
-  registeredEmail?: string | null;
-};
-
-export async function faceVerificationRequest(
-  image: string,
-  idImage: string,
-  registrationSessionId?: string | null,
-  registeredEmail?: string
-): Promise<FaceVerificationResponse> {
-  return apiRequest<FaceVerificationResponse>('/auth/face-verification/', {
-    method: 'POST',
-    body: registrationSessionId ? { image, idImage, registrationSessionId } : { image, idImage, registeredEmail },
-    auth: false,
-  });
-}
-
-/**
- * PRC nursing licence scan (Tesseract OCR, server-side).
- *
- * `valid: false` is a normal 200 response meaning the upload was not a PRC
- * nursing licence — every field comes back blank in that case.
- */
-export type VerifyPrcResponse = {
-  valid: boolean;
-  message: string;
-  lastName: string;
-  firstName: string;
-  middleName: string;
-  fullName: string;
-  registrationNumber: string;
-  licenseNumber: string;
-  validUntil: string;
-  profession: string;
-  registrationSessionId?: string;
-  /**
-   * Present only when a selfie was compared against the licence photo.
-   * Null/absent when not required (Email OTP session) or not attempted
-   * (no selfie sent).
-   */
-  faceMatch?: { matched: boolean; confidence: number; message: string | null } | null;
-};
-
-export async function verifyPrcLicenseRequest(
-  image: string,
-  registrationSessionId?: string | null,
-  selfie?: string | null
-): Promise<VerifyPrcResponse> {
-  return apiRequest<VerifyPrcResponse>('/auth/verify-prc/', {
-    method: 'POST',
-    body: {
-      image,
-      ...(registrationSessionId ? { registrationSessionId } : {}),
-      ...(selfie ? { selfie } : {}),
-    },
-    auth: false,
-  });
-}
-
-export async function faceVerificationStatusRequest(params: {
-  registrationSessionId?: string | null;
-  registeredEmail?: string;
-}): Promise<FaceVerificationStatusResponse> {
-  return apiRequest<FaceVerificationStatusResponse>('/auth/face-verification/status/', {
-    method: 'POST',
-    body: params.registrationSessionId
-      ? { registrationSessionId: params.registrationSessionId }
-      : { registeredEmail: params.registeredEmail },
-    auth: false,
-  });
-}
-
 export type OtpSendResponse = {
   success: boolean;
   status?: 'otp_sent' | 'email_not_registered';
@@ -216,31 +52,6 @@ export type OtpSendResponse = {
   retryAfter?: number;
 };
 
-// `email` is optional and, when present, is only cross-checked server-side
-// against the registration's stored address — it is never used as the send
-// destination. The session id alone identifies where the OTP goes.
-export async function sendRegistrationOtpRequest(
-  registrationSessionId: string,
-  email?: string
-): Promise<OtpSendResponse> {
-  return apiRequest<OtpSendResponse>('/auth/send-registration-otp/', {
-    method: 'POST',
-    body: email ? { email, registrationSessionId } : { registrationSessionId },
-    auth: false,
-  });
-}
-
-export async function resendRegistrationOtpRequest(
-  registrationSessionId: string,
-  email?: string
-): Promise<OtpSendResponse> {
-  return apiRequest<OtpSendResponse>('/auth/resend-registration-otp/', {
-    method: 'POST',
-    body: email ? { email, registrationSessionId } : { registrationSessionId },
-    auth: false,
-  });
-}
-
 export type OtpVerifyResponse = {
   verified: boolean;
   success: boolean;
@@ -249,13 +60,84 @@ export type OtpVerifyResponse = {
   message: string;
 };
 
-export async function verifyRegistrationOtpRequest(
+// --- signup-v2: the 4-step email + phone OTP signup (no ID scan or face
+// match). Same endpoints the mobile app's signup wizard uses.
+
+export type SignupV2StartResponse = {
+  registrationSessionId: string;
+  email: string;
+};
+
+export async function startSignupV2Request(email: string, phone: string): Promise<SignupV2StartResponse> {
+  return apiRequest<SignupV2StartResponse>('/auth/signup-v2/start/', {
+    method: 'POST',
+    body: { email, phone },
+    auth: false,
+  });
+}
+
+export async function sendSignupV2OtpRequest(registrationSessionId: string): Promise<OtpSendResponse> {
+  return apiRequest<OtpSendResponse>('/auth/signup-v2/send-otp/', {
+    method: 'POST',
+    body: { registrationSessionId },
+    auth: false,
+  });
+}
+
+export async function resendSignupV2OtpRequest(registrationSessionId: string): Promise<OtpSendResponse> {
+  return apiRequest<OtpSendResponse>('/auth/signup-v2/resend-otp/', {
+    method: 'POST',
+    body: { registrationSessionId },
+    auth: false,
+  });
+}
+
+export async function verifySignupV2OtpRequest(
   otp: string,
   registrationSessionId: string
 ): Promise<OtpVerifyResponse> {
-  return apiRequest<OtpVerifyResponse>('/auth/verify-registration-otp/', {
+  return apiRequest<OtpVerifyResponse>('/auth/signup-v2/verify-otp/', {
     method: 'POST',
     body: { otp, registrationSessionId },
+    auth: false,
+  });
+}
+
+export type SignupV2CheckNameResponse = {
+  available: boolean;
+  message?: string;
+};
+
+export async function checkSignupV2NameRequest(
+  lastName: string,
+  firstName: string,
+  middleName: string
+): Promise<SignupV2CheckNameResponse> {
+  return apiRequest<SignupV2CheckNameResponse>('/auth/signup-v2/check-name/', {
+    method: 'POST',
+    body: { lastName, firstName, middleName },
+    auth: false,
+  });
+}
+
+export type SignupV2RegisterPayload = {
+  lastName: string;
+  firstName: string;
+  middleName?: string;
+  role: UserRole;
+  personalEmail: string;
+  phone: string;
+  password: string;
+  confirmPassword: string;
+  registrationSessionId: string;
+};
+
+export async function registerSignupV2Request(
+  payload: SignupV2RegisterPayload
+): Promise<{ success: boolean; message: string }> {
+  return apiRequest<{ success: boolean; message: string }>('/auth/signup-v2/register/', {
+    method: 'POST',
+    body: payload,
     auth: false,
   });
 }

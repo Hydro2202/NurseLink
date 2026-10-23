@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 from django.core.cache import cache
 from django.test import TestCase
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 from api.prc_ocr import (
@@ -100,6 +101,7 @@ def _fake_image_b64() -> str:
     return 'data:image/png;base64,' + base64.b64encode(buf.tobytes()).decode()
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class DocumentTypeGateTests(TestCase):
     """Only a PRC nursing licence may pass. This is the security boundary."""
 
@@ -150,6 +152,7 @@ class DocumentTypeGateTests(TestCase):
         self.assertFalse(self._scan(text).is_valid)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class FieldExtractionTests(TestCase):
     """The regexes, against both clean and noisy reads."""
 
@@ -202,6 +205,7 @@ class FieldExtractionTests(TestCase):
         self.assertNotIn('Republic', result.middle_name)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class RegistrationNumberTests(TestCase):
     """Strictly 7 digits, and never a fragment of something else."""
 
@@ -224,6 +228,7 @@ class RegistrationNumberTests(TestCase):
         self.assertEqual(_extract_registration_number('LICENSE NUMBER: 7654321'), '7654321')
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class DateHandlingTests(TestCase):
     def test_normalizes_separators_and_pads(self):
         self.assertEqual(_normalize_date('6/3/2027'), '06/03/2027')
@@ -243,6 +248,7 @@ class DateHandlingTests(TestCase):
         self.assertEqual(_extract_valid_until(text), '06/30/2027')
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class VerifyPrcEndpointTests(TestCase):
     """POST /api/auth/verify-prc/"""
 
@@ -301,6 +307,7 @@ class VerifyPrcEndpointTests(TestCase):
         self.assertNotIn(res.status_code, (401, 403))
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class ImageDecodingTests(TestCase):
     def test_rejects_empty_image(self):
         with self.assertRaises(InvalidImageError):

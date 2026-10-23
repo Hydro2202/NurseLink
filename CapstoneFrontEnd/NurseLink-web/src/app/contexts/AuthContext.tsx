@@ -3,7 +3,6 @@ import {
   fetchMe,
   loginRequest,
   logoutRequest,
-  signupRequest,
   updateMe,
 } from '../api/nurselink';
 import { getToken, setToken } from '../api/client';
@@ -41,9 +40,6 @@ export interface User {
 interface AuthContextType {
   user: User | null;
   login: (email: string, password: string, role: UserRole) => Promise<User>;
-  signup: (
-    userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
-  ) => Promise<boolean>;
   logout: () => void;
   isAuthenticated: boolean;
   isLoading: boolean;
@@ -151,21 +147,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signup = async (
-    userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
-  ): Promise<boolean> => {
-    setIsLoading(true);
-    try {
-      const { user: created } = await signupRequest(userData);
-      setUser(created);
-      localStorage.setItem(USER_KEY, JSON.stringify(created));
-      setLastActivity(Date.now());
-      return true;
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const updateUser = (updates: Partial<User>) => {
     if (!user) return;
     const optimistic = { ...user, ...updates };
@@ -206,7 +187,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         user,
         login,
-        signup,
         logout,
         isAuthenticated: !!user,
         isLoading,

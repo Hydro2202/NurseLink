@@ -440,6 +440,14 @@ TESSERACT_CMD = os.environ.get('TESSERACT_CMD', '').strip()
 # outage cannot block registration. Set False to fail loudly instead.
 ID_OCR_LOCAL_FALLBACK = env_bool('ID_OCR_LOCAL_FALLBACK', True)
 
+# --- Signup ID / face verification (retired) ---------------------------
+# Signup no longer scans a PRC ID or matches a face; it runs entirely through
+# the signup-v2 email + phone OTP flow. False makes every endpoint of the old
+# flow (auth/signup, verify-id, verify-prc, face-verification, the old
+# registration-email/OTP routes) answer 410 Gone, so nothing calls the n8n
+# identity-verify workflow. See RetiredSignupFlowMixin in api/views.py.
+SIGNUP_ID_FACE_VERIFICATION = env_bool('SIGNUP_ID_FACE_VERIFICATION', False)
+
 # --- n8n workflow webhooks ---------------------------------------------
 # Three n8n workflows back AI/verification features. Each is called
 # server-side by api/n8n_client.py — never from the mobile client, so the
@@ -452,7 +460,7 @@ ID_OCR_LOCAL_FALLBACK = env_bool('ID_OCR_LOCAL_FALLBACK', True)
 #   'webhook'       the production URL. Answers continuously, but only once
 #                   the workflow is toggled Active in n8n.
 # Flip this to 'webhook' in .env after activating the workflows.
-N8N_BASE_URL = os.environ.get('N8N_BASE_URL', 'https://nurselinks.app.n8n.cloud').rstrip('/')
+N8N_BASE_URL = os.environ.get('N8N_BASE_URL', 'https://nurselinkkss.app.n8n.cloud').rstrip('/')
 N8N_WEBHOOK_PREFIX = os.environ.get('N8N_WEBHOOK_PREFIX', 'webhook-test').strip('/')
 
 N8N_WEBHOOKS = {
@@ -479,7 +487,9 @@ N8N_IDENTITY_VERIFY_WEBHOOK = os.environ.get('N8N_IDENTITY_VERIFY_WEBHOOK', '').
 # N8N_BASE_URL/N8N_WEBHOOK_PREFIX because the workflows live on different n8n
 # instances — composing one base URL for all of them silently sends charting
 # traffic to whichever instance identity verification happens to use.
-N8N_AUTO_CHARTING_WEBHOOK_URL = os.environ.get('N8N_AUTO_CHARTING_WEBHOOK_URL', '').strip()
+N8N_AUTO_CHARTING_WEBHOOK_URL = os.environ.get(
+    'N8N_AUTO_CHARTING_WEBHOOK_URL', 'https://nurselinkkss.app.n8n.cloud/webhook/structure-chart',
+).strip()
 
 # n8n workflows that call an LLM or a vision model are slow; a short timeout
 # would abort a run that was going to succeed.

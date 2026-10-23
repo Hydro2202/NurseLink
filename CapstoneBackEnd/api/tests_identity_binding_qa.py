@@ -25,6 +25,7 @@ SCANNED_CARD = 'data:image/jpeg;base64,SCANNED_CARD_OF_PERSON_A'
 
 
 @override_settings(N8N_FACE_VERIFY_ENABLED=False)
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class IdentityBindingTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -147,6 +148,7 @@ class IdentityBindingTests(TestCase):
 
 
 @override_settings(N8N_FACE_VERIFY_ENABLED=False)
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class IdReviewCorrectionPolicyTests(TestCase):
     """Step 2 may correct names only; licence number and card dates must match the scan."""
 

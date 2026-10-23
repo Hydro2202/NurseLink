@@ -1,3 +1,4 @@
+from django.test import override_settings
 """
 The account must belong to the identity that was verified.
 
@@ -38,6 +39,7 @@ def verified_session(**extra):
     return RegistrationSession.objects.create(**fields)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class SignupIdentityBindingTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -88,6 +90,7 @@ class SignupIdentityBindingTests(APITestCase):
         self.assertFalse(User.objects.filter(email='old@gmail.com').exists())
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class RegistrationStepTwoLockTests(APITestCase):
     URL = '/api/auth/registration-email/'
 

@@ -1,3 +1,4 @@
+from django.test import override_settings
 """
 Head nurse can never be self-selected. Signup creates a staff nurse; the
 applicant's wish is stored only as requested_role; only an admin, through
@@ -45,6 +46,7 @@ def make_nurse(email='nurse@hospital.com', role='staff_nurse'):
     return user
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class SignupRoleTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -78,6 +80,7 @@ class SignupRoleTests(APITestCase):
         self.assertIsNone(profile.role_granted_at)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class RoleGrantTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -129,6 +132,7 @@ class RoleGrantTests(APITestCase):
         self.assertEqual(NurseProfile.objects.get(user=self.nurse).role, 'staff_nurse')
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class UnreviewedHeadNurseListTests(APITestCase):
     def test_lists_head_nurses_without_a_grant_and_changes_nothing(self):
         make_nurse('ungranted@hospital.com', role='head_nurse')

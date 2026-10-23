@@ -1,3 +1,4 @@
+from django.test import override_settings
 """
 A new account starts with no department or shift — a supervisor assigns the
 real ones via PATCH /api/nurses/{id}/assign/ (see tests_nurse_assignment.py).
@@ -34,6 +35,7 @@ def make_session(**extra):
     return RegistrationSession.objects.create(**fields)
 
 
+@override_settings(SIGNUP_ID_FACE_VERIFICATION=True)
 class SignupDepartmentTests(APITestCase):
     def setUp(self):
         cache.clear()
