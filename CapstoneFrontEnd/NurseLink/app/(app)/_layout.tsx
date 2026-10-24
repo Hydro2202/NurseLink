@@ -758,7 +758,8 @@ export default function AppLayout() {
                   </Text>
                 </View>
               )}
-              {isSupervisor ? <GlobalPatientSearch /> : null}
+              {/* Analytics shows this search inside the page, above its filters. */}
+              {isSupervisor && !pathname.includes('analytics') ? <GlobalPatientSearch /> : null}
             </View>
             <View style={styles.headerActions}>
               <LiveStatusIndicator />

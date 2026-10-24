@@ -32,6 +32,7 @@ import {
   TaskTypeCard,
 } from '../../components/dashboard/AnalyticsSection';
 import { FilterBar } from '../../components/dashboard/FilterBar';
+import { GlobalPatientSearch } from '../../components/GlobalPatientSearch';
 import {
   DEFAULT_FILTERS,
   filterPatients,
@@ -382,6 +383,7 @@ export default function AnalyticsPage() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.body} onLayout={onBodyLayout}>
+          <GlobalPatientSearch style={styles.patientSearch} />
           <FilterBar
             filters={filters}
             onChange={setFilters}
@@ -464,6 +466,8 @@ const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: AN.pageBg },
   scrollContent: { paddingBottom: 32 },
   body: { padding: BODY_PAD, gap: 16 },
+  // Full width, aligned with the filter card below it.
+  patientSearch: { width: '100%' },
   section: { gap: 10 },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: AN.navy },
   kpiGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: GAP },

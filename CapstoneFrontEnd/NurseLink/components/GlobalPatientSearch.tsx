@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ActivityIndicator, type ViewStyle } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Search, X } from 'lucide-react-native';
 import { Input } from './Input';
@@ -17,7 +17,7 @@ const MAX_RESULTS = 8;
  * The patient list is re-fetched each time the box gains focus, so results
  * never lag behind an admission or discharge made elsewhere.
  */
-export function GlobalPatientSearch() {
+export function GlobalPatientSearch({ style }: { style?: ViewStyle }) {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -59,7 +59,7 @@ export function GlobalPatientSearch() {
   };
 
   return (
-    <View style={styles.wrap}>
+    <View style={[styles.wrap, style]}>
       <Input
         value={query}
         onChangeText={setQuery}
@@ -124,7 +124,7 @@ export function GlobalPatientSearch() {
 
 const styles = StyleSheet.create({
   wrap: { width: 340, maxWidth: '100%', flexShrink: 1, zIndex: 100 },
-  inputWrapper: { backgroundColor: '#F4F6FB', borderColor: '#E3E8F0', borderRadius: 10, minHeight: 42 },
+  inputWrapper: { backgroundColor: '#FFFFFF', borderColor: '#D9E6FA', borderRadius: 10, minHeight: 42 },
   panel: {
     position: 'absolute',
     top: 48,
