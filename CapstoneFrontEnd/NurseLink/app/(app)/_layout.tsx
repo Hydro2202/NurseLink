@@ -675,7 +675,6 @@ export default function AppLayout() {
             </View>
 
             <ScrollView style={styles.sidebarNav} contentContainerStyle={styles.sidebarNavContent}>
-              <Text style={styles.sidebarSection}>Workspace</Text>
               {activeNavigation.map((item) => {
                 const Icon = item.icon;
                 const active = pathMatches(pathname, item.href, item.exact);
@@ -1130,15 +1129,6 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     paddingHorizontal: SIDEBAR_GUTTER,
     paddingVertical: space(16),
     gap: space(4),
-  },
-  sidebarSection: {
-    fontSize: scale(11),
-    fontWeight: '700',
-    color: MUTED_TEXT,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    paddingHorizontal: space(12),
-    marginBottom: space(6),
   },
   navLink: {
     flexDirection: 'row',
