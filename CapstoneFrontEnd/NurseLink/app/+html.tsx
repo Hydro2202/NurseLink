@@ -24,6 +24,22 @@ export default function Root({ children }: PropsWithChildren) {
           content="width=device-width, initial-scale=1, shrink-to-fit=no"
         />
         <ScrollViewStyleReset />
+        {/* App-wide typeface (Plus Jakarta Sans). React Native has no
+            app-wide font setting, so on web it's applied here once: the #root
+            prefix outranks react-native-web's per-style font classes. Text
+            that must stay monospace opts out with a nativeID starting
+            "nl-mono". Native builds keep the system font. */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+        />
+        <style
+          dangerouslySetInnerHTML={{
+            __html: `#root :not([id^="nl-mono"]) { font-family: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }`,
+          }}
+        />
         <script
           dangerouslySetInnerHTML={{
             __html: `

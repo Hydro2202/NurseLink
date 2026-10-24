@@ -1078,6 +1078,7 @@ export default function ChartingScreen() {
                   <Text style={styles.editBoxTitle}>Nursing Progress Note - Edit Mode</Text>
                 </View>
                 <TextInput
+                  nativeID="nl-mono-edit"
                   style={styles.editTextarea}
                   value={aiGeneratedNote}
                   onChangeText={setAiGeneratedNote}
@@ -1254,7 +1255,7 @@ export default function ChartingScreen() {
                 </View>
 
                 <View style={styles.previewBox}>
-                  <Text style={styles.previewMono}>
+                  <Text nativeID="nl-mono-preview" style={styles.previewMono}>
                     {notePreviewText(note)}
                     ...
                   </Text>
@@ -1729,7 +1730,7 @@ export default function ChartingScreen() {
                           </Text>
                         </View>
                         <View style={styles.previewBox}>
-                          <Text style={styles.previewMono}>
+                          <Text nativeID="nl-mono-preview-history" style={styles.previewMono}>
                             {notePreviewText(note)}
                             ...
                           </Text>

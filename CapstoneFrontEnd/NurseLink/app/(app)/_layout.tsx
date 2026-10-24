@@ -35,6 +35,7 @@ import {
   type LucideIcon,
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
+import { GlobalPatientSearch } from '../../components/GlobalPatientSearch';
 import { useLive } from '../../contexts/LiveContext';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { NotificationPanel } from '../../components/NotificationPanel';
@@ -758,6 +759,7 @@ export default function AppLayout() {
                   </Text>
                 </View>
               )}
+              {isSupervisor ? <GlobalPatientSearch /> : null}
             </View>
             <View style={styles.headerActions}>
               <LiveStatusIndicator />
@@ -1231,11 +1233,14 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     backgroundColor: c.white,
     borderBottomWidth: DIVIDER_WIDTH,
     borderBottomColor: CHROME_BORDER,
+    // Above the page so the search results panel can overlap it.
+    zIndex: 20,
   },
   desktopHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space(16),
+    flexShrink: 1,
   },
   pageTitle: {
     fontSize: scale(22),

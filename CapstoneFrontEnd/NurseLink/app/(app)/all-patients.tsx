@@ -33,6 +33,7 @@ import {
   updatePatient,
   ApiError,
 } from '../../services/api';
+import { useLocalSearchParams } from 'expo-router';
 import type { Department, Patient } from '../../types/domain';
 import { vitalsMonitoringOrderLabel } from '../../components/tasks/taskLabels';
 import { Input } from '../../components/Input';
@@ -192,6 +193,7 @@ type SortKey = 'name' | 'room' | 'nurse' | 'status';
 // record is kept, never deleted, but stays out of the working list unless
 // a head nurse explicitly asks to see it via 'discharged' or 'all'.
 type StatusFilter = 'active' | 'admitted' | 'observation' | 'discharged' | 'all';
+const STATUS_FILTERS: StatusFilter[] = ['active', 'admitted', 'observation', 'discharged', 'all'];
 
 export default function AllPatientsPage() {
   const toast = useToast();
@@ -237,6 +239,16 @@ export default function AllPatientsPage() {
     setCurrentPageState(next);
     scrollRef.current?.scrollTo({ y: 0, animated: true });
   }, []);
+
+  const searchParams = useLocalSearchParams<{ q?: string; view?: string }>();
+  useEffect(() => {
+    (() => {
+      if (typeof searchParams.q === 'string') setSearchQuery(searchParams.q);
+      if (searchParams.view && STATUS_FILTERS.includes(searchParams.view as StatusFilter)) {
+        setStatusFilter(searchParams.view as StatusFilter);
+      }
+    })();
+  }, [searchParams.q, searchParams.view]);
 
   const loadPatients = useCallback(async () => {
     try {
@@ -408,6 +420,16 @@ export default function AllPatientsPage() {
   const isDischargedView = statusFilter === 'discharged';
   const activeCount = patients.length - dischargedCount;
   const activePatients = patients.filter((p) => p.status !== 'discharged');
+  const countStatus = (status: string) => patients.filter((p) => (p.status || 'admitted') === status).length;
+  // One tab per status view (these used to be split between two tabs and a
+  // dropdown). Counts are over every patient, not the current filters.
+  const statusTabs: { key: StatusFilter; label: string; count: number }[] = [
+    { key: 'active', label: 'Active', count: activeCount },
+    { key: 'admitted', label: 'Admitted', count: countStatus('admitted') },
+    { key: 'observation', label: 'Under observation', count: countStatus('observation') },
+    { key: 'discharged', label: 'Discharged', count: dischargedCount },
+    { key: 'all', label: 'All records', count: patients.length },
+  ];
   const riskCount = (level: string) => activePatients.filter((p) => p.riskLevel === level).length;
 
   const activeTiles: StatTile[] = [
@@ -488,32 +510,25 @@ export default function AllPatientsPage() {
           <View style={styles.toolbar}>
             <View style={styles.toolbarRow}>
               <View style={styles.segment} accessibilityRole="tablist">
-                <Pressable
-                  onPress={() => setStatusFilter('active')}
-                  style={[styles.segmentBtn, !isDischargedView && styles.segmentBtnActive]}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: !isDischargedView }}
-                >
-                  <Text style={[styles.segmentText, !isDischargedView && styles.segmentTextActive]}>Active</Text>
-                  <View style={[styles.segmentCount, !isDischargedView && styles.segmentCountActive]}>
-                    <Text style={[styles.segmentCountText, !isDischargedView && styles.segmentCountTextActive]}>
-                      {activeCount}
-                    </Text>
-                  </View>
-                </Pressable>
-                <Pressable
-                  onPress={() => setStatusFilter('discharged')}
-                  style={[styles.segmentBtn, isDischargedView && styles.segmentBtnActive]}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: isDischargedView }}
-                >
-                  <Text style={[styles.segmentText, isDischargedView && styles.segmentTextActive]}>Discharged</Text>
-                  <View style={[styles.segmentCount, isDischargedView && styles.segmentCountActive]}>
-                    <Text style={[styles.segmentCountText, isDischargedView && styles.segmentCountTextActive]}>
-                      {dischargedCount}
-                    </Text>
-                  </View>
-                </Pressable>
+                {statusTabs.map((tab) => {
+                  const selected = statusFilter === tab.key;
+                  return (
+                    <Pressable
+                      key={tab.key}
+                      onPress={() => setStatusFilter(tab.key)}
+                      style={[styles.segmentBtn, selected && styles.segmentBtnActive]}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected }}
+                    >
+                      <Text style={[styles.segmentText, selected && styles.segmentTextActive]}>{tab.label}</Text>
+                      <View style={[styles.segmentCount, selected && styles.segmentCountActive]}>
+                        <Text style={[styles.segmentCountText, selected && styles.segmentCountTextActive]}>
+                          {tab.count}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
               </View>
 
               <View style={styles.sortGroup}>
@@ -600,21 +615,6 @@ export default function AllPatientsPage() {
                 options={[
                   { label: 'All rooms', value: 'all' },
                   ...uniqueRooms.map((room) => ({ label: room, value: room })),
-                ]}
-              />
-              {/* Kept next to the tabs: it also offers Admitted, Under
-                  Observation and All Records, which the tabs don't. */}
-              <Select
-                value={statusFilter}
-                onValueChange={(v) => setStatusFilter(v as StatusFilter)}
-                placeholder="Active Patients"
-                style={styles.filterSelect}
-                options={[
-                  { label: 'Active Patients', value: 'active' },
-                  { label: 'Admitted', value: 'admitted' },
-                  { label: 'Under Observation', value: 'observation' },
-                  { label: 'Discharged', value: 'discharged' },
-                  { label: 'All Records', value: 'all' },
                 ]}
               />
               {!isDischargedView ? (
@@ -1140,7 +1140,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   toolbarRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  segment: { flexDirection: 'row', backgroundColor: T.pageBg, borderRadius: 10, padding: 4, gap: 4 },
+  segment: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: T.pageBg, borderRadius: 10, padding: 4, gap: 4, flexShrink: 1 },
   segmentBtn: {
     flexDirection: 'row',
     alignItems: 'center',
