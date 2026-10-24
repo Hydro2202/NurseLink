@@ -323,7 +323,7 @@ export function PatientKardexModal({
   };
 
   return (
-    <Modal visible={open} transparent animationType="slide" onRequestClose={() => onOpenChange(false)}>
+    <Modal visible={open} transparent animationType="fade" onRequestClose={() => onOpenChange(false)}>
       <View style={styles.overlay}>
         <View style={styles.sheet}>
           <View style={styles.header}>
@@ -711,16 +711,21 @@ export function PatientKardexModal({
 }
 
 const styles = StyleSheet.create({
+  // A centered pop-up dialog rather than a bottom sheet.
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.45)',
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
   },
   sheet: {
-    maxHeight: '92%',
+    width: '100%',
+    maxWidth: 760,
+    maxHeight: '90%',
     backgroundColor: Colors.card,
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
+    borderRadius: Radius.xl,
+    overflow: 'hidden',
     ...Shadows.lg,
   },
   header: {
