@@ -193,7 +193,7 @@ type SortKey = 'name' | 'room' | 'nurse' | 'status';
 // record is kept, never deleted, but stays out of the working list unless
 // a head nurse explicitly asks to see it via 'discharged' or 'all'.
 type StatusFilter = 'active' | 'admitted' | 'observation' | 'discharged' | 'all';
-const STATUS_FILTERS: StatusFilter[] = ['active', 'admitted', 'observation', 'discharged', 'all'];
+const STATUS_FILTERS: StatusFilter[] = ['active', 'admitted', 'discharged', 'all'];
 
 export default function AllPatientsPage() {
   const toast = useToast();
@@ -426,7 +426,6 @@ export default function AllPatientsPage() {
   const statusTabs: { key: StatusFilter; label: string; count: number }[] = [
     { key: 'active', label: 'Active', count: activeCount },
     { key: 'admitted', label: 'Admitted', count: countStatus('admitted') },
-    { key: 'observation', label: 'Under observation', count: countStatus('observation') },
     { key: 'discharged', label: 'Discharged', count: dischargedCount },
     { key: 'all', label: 'All records', count: patients.length },
   ];
