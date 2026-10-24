@@ -3,9 +3,7 @@ import { ApiError } from '../../services/api';
 /**
  * Pulls a human-readable message out of an ApiError's response body, the
  * same shape every signup-v2 endpoint returns (`message`, `detail`, or a
- * DRF field-error object) — mirrors the equivalent helper in the legacy
- * signup wizard (app/_legacy/SignUpLegacy.tsx) so error copy stays
- * consistent, without importing from that archived, unrouted file.
+ * DRF field-error object).
  */
 export function extractErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {

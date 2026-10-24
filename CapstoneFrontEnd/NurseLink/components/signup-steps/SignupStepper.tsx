@@ -22,10 +22,8 @@ interface SignupStepperProps {
 }
 
 /**
- * Visual step indicator for the new 4-step signup wizard — reuses the same
- * dot + connector + label visual language as the legacy wizard's own
- * StepStepper (app/_legacy/SignUpLegacy.tsx), rebuilt here as a standalone
- * component rather than imported from that archived, unrouted file.
+ * Visual step indicator for the 4-step signup wizard: numbered dots joined
+ * by connectors, with a label under each step.
  */
 export function SignupStepper({ current }: SignupStepperProps) {
   const { width } = useWindowDimensions();

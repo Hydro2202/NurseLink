@@ -13,10 +13,8 @@ import type { UserRole } from '../types/user';
 /**
  * New 4-step signup wizard (Personal Info -> Role -> Email+Phone OTP
  * Verification -> Credentials). Replaces the old PRC-ID-scan + face-match
- * wizard that used to live at this same route — that flow is preserved,
- * unrouted, at the project-root _legacy/SignUpLegacy.tsx (outside app/, so
- * Expo Router never scans it; not imported from here — kept only as an
- * archived reference).
+ * wizard that used to live at this same route (since retired, along with
+ * its backend endpoints).
  *
  * Unlike the old flow, nothing here needs a live camera, so this wizard
  * does not redirect desktop browsers to /login the way the legacy one did.

@@ -5,7 +5,6 @@ import {
   fetchMe,
   loginRequest,
   logoutRequest,
-  signupRequest,
   updateMe,
   getToken,
   setToken,
@@ -23,9 +22,6 @@ export type { User, UserRole };
 interface AuthContextType {
   user: User | null;
   login: (email: string, password: string, role: UserRole) => Promise<boolean>;
-  signup: (
-    userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
-  ) => Promise<boolean>;
   logout: () => Promise<void>;
   isAuthenticated: boolean;
   isLoading: boolean;
@@ -236,21 +232,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signup = async (
-    userData: Omit<User, 'id'> & { password: string; registrationSessionId: string }
-  ): Promise<boolean> => {
-    setIsLoading(true);
-    try {
-      const { user: created } = await signupRequest(userData);
-      setUser(created);
-      await authStorage.setItem(USER_KEY, JSON.stringify(created));
-      lastActivity.current = Date.now();
-      return true;
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   /**
    * Save profile changes for the signed-in nurse.
    *
@@ -303,7 +284,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         user,
         login,
-        signup,
         logout,
         isAuthenticated: !!user,
         isLoading,
