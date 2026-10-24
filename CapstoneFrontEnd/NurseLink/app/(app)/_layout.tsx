@@ -746,20 +746,18 @@ export default function AppLayout() {
                   )}
                 </Pressable>
               ) : null}
-              {/* All Patients has its own page header, so the bar does not
-                  repeat the title there. */}
-              {pathname.includes('all-patients') ? null : (
-                <View>
-                  <Text style={styles.pageTitle}>{currentPageName}</Text>
-                  <Text style={pathname.includes('analytics') ? styles.pageSubtitle : styles.welcome}>
-                    {pathname.includes('analytics')
-                      ? 'Operations overview, clinical activity, and nurse workload.'
-                      : `Welcome back, ${user.name}`}
-                  </Text>
-                </View>
-              )}
-              {/* Analytics shows this search inside the page, above its filters. */}
-              {isSupervisor && !pathname.includes('analytics') ? <GlobalPatientSearch /> : null}
+              <View>
+                <Text style={styles.pageTitle}>{currentPageName}</Text>
+                <Text style={pathname.includes('analytics') ? styles.pageSubtitle : styles.welcome}>
+                  {pathname.includes('analytics')
+                    ? 'Operations overview, clinical activity, and nurse workload.'
+                    : `Welcome back, ${user.name}`}
+                </Text>
+              </View>
+              {/* Analytics and All Patients show this search inside the page. */}
+              {isSupervisor && !pathname.includes('analytics') && !pathname.includes('all-patients') ? (
+                <GlobalPatientSearch />
+              ) : null}
             </View>
             <View style={styles.headerActions}>
               <LiveStatusIndicator />

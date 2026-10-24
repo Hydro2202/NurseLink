@@ -34,6 +34,7 @@ import {
   ApiError,
 } from '../../services/api';
 import { useLocalSearchParams } from 'expo-router';
+import { GlobalPatientSearch } from '../../components/GlobalPatientSearch';
 import type { Department, Patient } from '../../types/domain';
 import { vitalsMonitoringOrderLabel } from '../../components/tasks/taskLabels';
 import { Input } from '../../components/Input';
@@ -359,23 +360,6 @@ export default function AllPatientsPage() {
   // run-once-and-cache escape hatch for exactly this.
   const [nowMs] = useState(() => Date.now());
 
-  // The Discharged tab's own count — honours search + discharge date range
-  // (the filters relevant to browsing discharge history) but not
-  // department/nurse/room, so the subtitle can call out when one of those
-  // narrows the view further (see the "(showing X)" subtitle text below).
-  const dischargedMatchingDateAndSearch = useMemo(() => {
-    const q = searchQuery.toLowerCase();
-    return patients.filter((p) => {
-      if (p.status !== 'discharged') return false;
-      const matchesSearch =
-        !q || p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || p.room.toLowerCase().includes(q);
-      const dischargedDate = p.dischargedAt ? p.dischargedAt.slice(0, 10) : '';
-      const matchesFrom = !dischargeDateFrom || (dischargedDate && dischargedDate >= dischargeDateFrom);
-      const matchesTo = !dischargeDateTo || (dischargedDate && dischargedDate <= dischargeDateTo);
-      return matchesSearch && matchesFrom && matchesTo;
-    }).length;
-  }, [patients, searchQuery, dischargeDateFrom, dischargeDateTo]);
-
   // Ground-truth discharge counts for the Discharged tab's stat cards —
   // always computed over every patient regardless of the current filters,
   // so these three numbers never mix in a non-discharged patient and never
@@ -455,25 +439,9 @@ export default function AllPatientsPage() {
       >
         <View style={styles.page}>
           <View style={styles.header}>
-            <View style={styles.headerText}>
-              <Text style={styles.title} accessibilityRole="header">
-                All Patients
-              </Text>
-              {isDischargedView ? (
-                <Text style={styles.subtitle}>
-                  {dischargedMatchingDateAndSearch} discharged patient{dischargedMatchingDateAndSearch === 1 ? '' : 's'}
-                  {filteredPatients.length !== dischargedMatchingDateAndSearch ? ` (showing ${filteredPatients.length})` : ''}
-                  {' · records stay searchable and can be readmitted any time'}
-                  {loading ? ' (loading...)' : ''}
-                </Text>
-              ) : (
-                <Text style={styles.subtitle}>
-                  {user?.name ? `Welcome back, ${user.name.split(' ')[0]}. ` : ''}
-                  {filteredPatients.length} of {patients.length} patients shown
-                  {loading ? ' (loading...)' : ''}
-                </Text>
-              )}
-            </View>
+            {/* The page title lives in the top bar; the patient search sits
+                here, between it and the stat tiles. */}
+            <GlobalPatientSearch style={styles.patientSearch} />
             {isSupervisor ? (
               <Pressable
                 onPress={() => {
@@ -1068,9 +1036,7 @@ const styles = StyleSheet.create({
   page: { width: '100%', maxWidth: 1180, alignSelf: 'center', gap: 16 },
 
   header: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  headerText: { flexGrow: 1, flexShrink: 1, flexBasis: 260, gap: 4 },
-  title: { fontSize: 28, fontWeight: '800', color: T.text, letterSpacing: -0.3 },
-  subtitle: { fontSize: 14, color: T.muted },
+  patientSearch: { flexGrow: 1, flexBasis: 280, width: 'auto' },
 
   primaryBtn: {
     flexDirection: 'row',
