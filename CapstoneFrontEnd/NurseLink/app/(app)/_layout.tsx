@@ -36,7 +36,6 @@ import {
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLive } from '../../contexts/LiveContext';
-import { Button } from '../../components/Button';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { NotificationPanel } from '../../components/NotificationPanel';
 import { BottomNavigation } from '../../components/BottomNavigation';
@@ -675,6 +674,7 @@ export default function AppLayout() {
             </View>
 
             <ScrollView style={styles.sidebarNav} contentContainerStyle={styles.sidebarNavContent}>
+              <Text style={styles.sidebarSection}>Workspace</Text>
               {activeNavigation.map((item) => {
                 const Icon = item.icon;
                 const active = pathMatches(pathname, item.href, item.exact);
@@ -687,7 +687,7 @@ export default function AppLayout() {
                     }}
                     style={[styles.navLink, active && styles.navLinkActive]}
                   >
-                    <Icon size={20} color={active ? c.white : c.blue700} />
+                    <Icon size={18} color={active ? NAV_ACTIVE_TEXT : NAV_TEXT} />
                     <Text style={[styles.navLinkText, active && styles.navLinkTextActive]}>
                       {item.name}
                     </Text>
@@ -702,7 +702,7 @@ export default function AppLayout() {
                   <Image source={{ uri: user.avatar }} style={styles.sidebarAvatar} />
                 ) : (
                   <View style={styles.sidebarAvatarFallback}>
-                    <User size={22} color={c.white} />
+                    <Text style={styles.sidebarAvatarInitials}>{initialsOf(user.name)}</Text>
                   </View>
                 )}
                 <View style={styles.sidebarUserInfo}>
@@ -710,20 +710,19 @@ export default function AppLayout() {
                     {user.name}
                   </Text>
                   <Text style={styles.sidebarUserDept} numberOfLines={1}>
-                    {isAdmin ? user.email : user.department}
+                    {isAdmin ? user.email : roleLabel(user.role)}
                   </Text>
                 </View>
+                {/* Opens the same logout confirm dialog as before. */}
+                <Pressable
+                  onPress={() => setShowLogoutDialog(true)}
+                  style={({ pressed }) => [styles.sidebarLogout, pressed && styles.sidebarLogoutPressed]}
+                  accessibilityLabel="Logout"
+                  hitSlop={4}
+                >
+                  <LogOut size={18} color={LOGOUT_RED} />
+                </Pressable>
               </View>
-              <Button
-                onPress={() => setShowLogoutDialog(true)}
-                style={styles.sidebarLogout}
-                textStyle={styles.sidebarLogoutText}
-              >
-                <View style={styles.logoutInner}>
-                  <LogOut size={18} color={c.white} />
-                  <Text style={styles.sidebarLogoutText}>Logout</Text>
-                </View>
-              </Button>
             </View>
           </View>
         )}
@@ -747,14 +746,18 @@ export default function AppLayout() {
                   )}
                 </Pressable>
               ) : null}
-              <View>
-                <Text style={styles.pageTitle}>{currentPageName}</Text>
-                <Text style={pathname.includes('analytics') ? styles.pageSubtitle : styles.welcome}>
-                  {pathname.includes('analytics')
-                    ? 'Operations overview, clinical activity, and nurse workload.'
-                    : `Welcome back, ${user.name}`}
-                </Text>
-              </View>
+              {/* All Patients has its own page header, so the bar does not
+                  repeat the title there. */}
+              {pathname.includes('all-patients') ? null : (
+                <View>
+                  <Text style={styles.pageTitle}>{currentPageName}</Text>
+                  <Text style={pathname.includes('analytics') ? styles.pageSubtitle : styles.welcome}>
+                    {pathname.includes('analytics')
+                      ? 'Operations overview, clinical activity, and nurse workload.'
+                      : `Welcome back, ${user.name}`}
+                  </Text>
+                </View>
+              )}
             </View>
             <View style={styles.headerActions}>
               <LiveStatusIndicator />
@@ -767,9 +770,7 @@ export default function AppLayout() {
               {isDesktop ? (
                 <Pressable onPress={() => setProfileMenuOpen(true)} style={styles.headerIdentity}>
                   <Text style={styles.headerIdentityName} numberOfLines={1}>{user.name}</Text>
-                  <Text style={styles.headerIdentityRole}>
-                    {user.role === 'head_nurse' ? 'Head Nurse' : user.role === 'admin' ? 'Administrator' : 'Staff Nurse'}
-                  </Text>
+                  <Text style={styles.headerIdentityRole}>{roleLabel(user.role)}</Text>
                 </Pressable>
               ) : null}
             </View>
@@ -804,6 +805,25 @@ const DESKTOP_HEADER_HEIGHT = 88;
 const DIVIDER_WIDTH = 1;
 // Outer inset shared by the sidebar's logo, nav and footer blocks.
 const SIDEBAR_GUTTER = 16;
+// "Clean & light" chrome: white sidebar/top bar on a pale page, soft borders.
+const PAGE_BG = '#F4F6FB';
+const CHROME_BORDER = '#E3E8F0';
+const MUTED_TEXT = '#5B6B82';
+const NAV_TEXT = '#334155';
+const NAV_ACTIVE_BG = '#EAF0FF';
+const NAV_ACTIVE_TEXT = '#1D4ED8';
+const LOGOUT_RED = '#B91C1C';
+
+function roleLabel(role: string | undefined): string {
+  if (role === 'head_nurse') return 'Head Nurse';
+  if (role === 'admin') return 'Administrator';
+  return 'Staff Nurse';
+}
+
+function initialsOf(name: string | undefined): string {
+  const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase() || '?';
+}
 
 const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n: number) => number) =>
   StyleSheet.create({
@@ -1039,17 +1059,17 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
 
   desktopRoot: {
     flex: 1,
-    backgroundColor: c.blue50,
+    backgroundColor: PAGE_BG,
   },
   desktopRow: {
     flex: 1,
     flexDirection: 'row',
   },
   sidebar: {
-    width: 256,
+    width: 248,
     backgroundColor: c.white,
     borderRightWidth: DIVIDER_WIDTH,
-    borderRightColor: c.blue200,
+    borderRightColor: CHROME_BORDER,
     zIndex: 40,
   },
   sidebarOverlay: {
@@ -1071,29 +1091,30 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     // Same fixed height as desktopHeader: their bottom borders form one line.
     height: DESKTOP_HEADER_HEIGHT,
     borderBottomWidth: DIVIDER_WIDTH,
-    borderBottomColor: c.blue200,
+    borderBottomColor: CHROME_BORDER,
     backgroundColor: c.white,
   },
   sidebarLogoBox: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
+    width: 48,
+    height: 48,
+    borderRadius: 14,
     backgroundColor: c.white,
-    padding: space(8),
-    ...Shadows.md,
+    padding: space(6),
+    borderWidth: 1,
+    borderColor: CHROME_BORDER,
   },
   sidebarLogoImg: {
     width: '100%',
     height: '100%',
   },
   sidebarBrand: {
-    fontSize: scale(20),
-    fontWeight: '900',
+    fontSize: scale(19),
+    fontWeight: '800',
     color: c.blue800,
   },
   sidebarPortal: {
     fontSize: scale(12),
-    fontWeight: '700',
+    fontWeight: '600',
     color: c.blue600,
   },
   sidebarClose: {
@@ -1106,85 +1127,96 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
   sidebarNavContent: {
     paddingHorizontal: SIDEBAR_GUTTER,
     paddingVertical: space(16),
-    gap: space(8),
+    gap: space(4),
+  },
+  sidebarSection: {
+    fontSize: scale(11),
+    fontWeight: '700',
+    color: MUTED_TEXT,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    paddingHorizontal: space(12),
+    marginBottom: space(6),
   },
   navLink: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space(12),
     paddingHorizontal: space(12),
-    paddingVertical: space(12),
-    borderRadius: 12,
+    height: 44,
+    borderRadius: 10,
   },
-  // No scale-up: a grown pill pokes past the shared left/right edges.
   navLinkActive: {
-    backgroundColor: c.blue600,
-    ...Shadows.sm,
+    backgroundColor: NAV_ACTIVE_BG,
   },
   navLinkText: {
     fontSize: scale(14),
     fontWeight: '600',
-    color: c.blue700,
+    color: NAV_TEXT,
   },
   navLinkTextActive: {
-    color: c.white,
-    fontWeight: '900',
+    color: NAV_ACTIVE_TEXT,
+    fontWeight: '700',
   },
   sidebarFooter: {
     borderTopWidth: DIVIDER_WIDTH,
-    borderTopColor: c.blue200,
+    borderTopColor: CHROME_BORDER,
     padding: SIDEBAR_GUTTER,
-    gap: space(12),
     backgroundColor: c.white,
   },
   sidebarUser: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space(12),
-    padding: space(12),
-    backgroundColor: c.blue50,
+    gap: space(10),
+    padding: space(10),
+    borderWidth: 1,
+    borderColor: CHROME_BORDER,
     borderRadius: 12,
   },
   sidebarAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
   },
   sidebarAvatarFallback: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: c.blue700,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: NAV_ACTIVE_TEXT,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  sidebarAvatarInitials: {
+    color: c.white,
+    fontSize: scale(13),
+    fontWeight: '800',
   },
   sidebarUserInfo: {
     flex: 1,
     minWidth: 0,
   },
   sidebarUserName: {
-    fontSize: scale(14),
-    fontWeight: '900',
-    color: c.gray900,
+    fontSize: scale(13.5),
+    fontWeight: '700',
+    color: '#0F172A',
   },
   sidebarUserDept: {
     fontSize: scale(12),
-    fontWeight: '700',
-    color: c.blue600,
+    fontWeight: '500',
+    color: MUTED_TEXT,
   },
-
   sidebarLogout: {
-    backgroundColor: c.red600,
-    justifyContent: 'flex-start',
-  },
-  logoutInner: {
-    flexDirection: 'row',
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     alignItems: 'center',
-    gap: space(8),
+    justifyContent: 'center',
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
   },
-  sidebarLogoutText: {
-    color: c.white,
-    fontWeight: '900',
+  sidebarLogoutPressed: {
+    backgroundColor: '#FEE2E2',
   },
   desktopMain: {
     flex: 1,
@@ -1198,7 +1230,7 @@ const createStyles = (c: typeof Colors, scale: (n: number) => number, space: (n:
     height: DESKTOP_HEADER_HEIGHT,
     backgroundColor: c.white,
     borderBottomWidth: DIVIDER_WIDTH,
-    borderBottomColor: c.blue200,
+    borderBottomColor: CHROME_BORDER,
   },
   desktopHeaderLeft: {
     flexDirection: 'row',
