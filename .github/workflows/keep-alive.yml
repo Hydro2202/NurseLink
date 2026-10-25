@@ -1,0 +1,36 @@
+name: Keep backend awake
+
+# Render's free tier sleeps the backend after ~15 min idle, so the next
+# request (usually a login) pays a 30-50s cold start. This pings the backend
+# on a schedule to keep it warm and make logins fast.
+#
+# Note: GitHub's scheduled runs are best-effort and can be delayed or skipped
+# under load, so this reduces idle sleep but does not guarantee zero cold
+# starts. A paid Render plan or a dedicated uptime monitor is the hard fix.
+
+on:
+  schedule:
+    # Every 10 minutes. GitHub often runs schedules late, so the real gap is
+    # usually 10-20 min — still inside Render's idle window most of the time.
+    - cron: '*/10 * * * *'
+  # Lets you trigger it by hand from the Actions tab to warm up on demand,
+  # e.g. right before a demo.
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping the backend
+        run: |
+          echo "Pinging $BACKEND_URL"
+          # --max-time 90 covers a full cold start; retry a few times so one
+          # dropped connection doesn't fail the run. Never fails the job: a
+          # missed ping is not worth a red X in the Actions tab.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            --max-time 90 --retry 3 --retry-delay 10 --retry-all-errors \
+            "$BACKEND_URL" || echo "000")
+          echo "HTTP status: $code"
+        env:
+          BACKEND_URL: https://nurselink.onrender.com/
