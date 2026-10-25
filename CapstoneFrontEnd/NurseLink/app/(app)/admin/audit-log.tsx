@@ -21,7 +21,9 @@ import { formatDateTime12 } from '../../../utils/time';
 import { useAuth } from '../../../contexts/AuthContext';
 import { Colors, Radius, Shadows } from '../../../constants/colors';
 
-const PAGE_SIZE = 20;
+// 10 per page, matching every other list in the app (see Pagination.tsx),
+// so a long audit history stays tidy with page buttons at the bottom.
+const PAGE_SIZE = 10;
 
 const CATEGORY_TABS: TabItem[] = [
   { value: 'all', label: 'All' },
