@@ -71,6 +71,16 @@ function barSizing(slots: number, plotWidth: number, perSlot = 1) {
   return { barWidth, spacing };
 }
 
+// A y-axis maximum ~1.8x the tallest bar, rounded up to a clean multiple
+// of the section count. The extra headroom leaves space above the tallest
+// bar for the pop-up tooltip, so it can't be cut off at the top of the
+// chart (or, for the Shift chart, its clipped box).
+function chartTopValue(values: number[], sections = 4): number {
+  const max = values.length ? Math.max(...values, 0) : 0;
+  if (max <= 0) return sections;
+  return Math.ceil((max * 1.8) / sections) * sections;
+}
+
 function useMeasuredWidth() {
   const [width, setWidth] = useState(0);
   const onLayout = useCallback((e: LayoutChangeEvent) => {
@@ -215,9 +225,9 @@ export function PatientFlowCard({ data, loading, filterSummary, style }: ChartPr
           const gap = i === flow.length - 1 ? 0 : spacing;
           return [
             { value: d.admissions, label: d.label, spacing: 3, frontColor: AN.blue, labelWidth: barWidth * 2 + 3 + spacing,
-              labelTextStyle: axisText, tip: [`${d.label}`, `Admissions: ${d.admissions}`, `Discharges: ${d.discharges}`] },
+              labelTextStyle: axisText, tip: [`${d.label}`, `Adm ${d.admissions}  ·  Dis ${d.discharges}`] },
             { value: d.discharges, frontColor: AN.green, spacing: gap,
-              tip: [`${d.label}`, `Admissions: ${d.admissions}`, `Discharges: ${d.discharges}`] },
+              tip: [`${d.label}`, `Adm ${d.admissions}  ·  Dis ${d.discharges}`] },
           ];
         });
         return (
@@ -225,6 +235,7 @@ export function PatientFlowCard({ data, loading, filterSummary, style }: ChartPr
             data={bars}
             width={plot}
             height={130}
+            maxValue={chartTopValue(flow.flatMap((d) => [d.admissions, d.discharges]))}
             barWidth={barWidth}
             initialSpacing={spacing / 2}
             endSpacing={spacing / 2}
@@ -326,7 +337,7 @@ export function TaskPerformanceCard({ data, loading, filterSummary, style }: Cha
         const stackData = rows.map((r) => ({
           label: r.label,
           labelTextStyle: axisText,
-          tip: [r.label, `Completed: ${r.completed}`, `In Progress: ${r.inProgress}`, `Pending: ${r.pending}`, `Overdue: ${r.overdue}`],
+          tip: [r.label, `C ${r.completed}  IP ${r.inProgress}  P ${r.pending}  O ${r.overdue}`],
           stacks: [
             { value: r.completed, color: TASK_STATUS_COLORS.completed },
             { value: r.inProgress, color: TASK_STATUS_COLORS.inProgress },
@@ -339,6 +350,7 @@ export function TaskPerformanceCard({ data, loading, filterSummary, style }: Cha
             stackData={stackData}
             width={plot}
             height={110}
+            maxValue={chartTopValue(rows.map((r) => r.completed + r.inProgress + r.pending + r.overdue))}
             barWidth={barWidth}
             spacing={spacing}
             initialSpacing={spacing / 2}
@@ -377,9 +389,10 @@ export function TaskVolumeCard({ data, loading, filterSummary, style }: ChartPro
         const { barWidth, spacing } = barSizing(rows.length, plot);
         return (
           <BarChart
-            data={rows.map((r) => ({ value: r.value, label: r.label, labelTextStyle: axisText, tip: [r.label, `Tasks created: ${r.value}`] }))}
+            data={rows.map((r) => ({ value: r.value, label: r.label, labelTextStyle: axisText, tip: [r.label, `Created ${r.value}`] }))}
             width={plot}
             height={110}
+            maxValue={chartTopValue(rows.map((r) => r.value))}
             barWidth={barWidth}
             spacing={spacing}
             initialSpacing={spacing / 2}
@@ -444,9 +457,10 @@ export function ShiftDelayCard({ data, loading, filterSummary, style }: ChartPro
           <View style={sideBySide ? styles.shiftRow : styles.gap10}>
             <View style={{ width: boxWidth, overflow: 'hidden' }}>
             <BarChart
-              data={rows.map((r) => ({ value: r.value, label: r.label, labelTextStyle: axisText, tip: [`${r.label} shift`, `Overdue tasks: ${r.value}`] }))}
+              data={rows.map((r) => ({ value: r.value, label: r.label, labelTextStyle: axisText, tip: [`${r.label} shift`, `Overdue ${r.value}`] }))}
               width={chartWidth}
               height={92}
+              maxValue={chartTopValue(rows.map((r) => r.value))}
               barWidth={Math.min(barWidth, 30)}
               spacing={spacing}
               initialSpacing={spacing / 2}
@@ -569,10 +583,10 @@ const styles = StyleSheet.create({
   legendInlineText: { fontSize: 10.5, color: AN.text2, fontWeight: '500' },
   dot: { width: 8, height: 8, borderRadius: 4 },
   tooltip: {
-    backgroundColor: AN.navy, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 5,
-    marginBottom: 6, marginLeft: -20, minWidth: 96,
+    backgroundColor: AN.navy, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4,
+    marginBottom: 4, marginLeft: -8, maxWidth: 190,
   },
-  tooltipText: { color: '#FFFFFF', fontSize: 10.5, lineHeight: 14 },
+  tooltipText: { color: '#FFFFFF', fontSize: 10.5, lineHeight: 13 },
   flowFooter: {
     flexDirection: 'row', alignItems: 'center', marginTop: 10, paddingVertical: 8, paddingHorizontal: 10,
     backgroundColor: '#F7FAFF', borderRadius: 10, gap: 12,
