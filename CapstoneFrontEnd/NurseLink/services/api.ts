@@ -114,17 +114,18 @@ type RequestOptions = {
   quiet?: boolean;
 };
 
-// Submitting, accepting, rejecting, or cancelling an Endorsement is often
-// the first request to hit the backend in a while (Render's free tier puts
-// the dyno to sleep after idle, and a cold start has been measured taking
-// ~40s to wake). The default 15s timeout fires well before that finishes,
-// so the client shows "failed"/keeps spinning past what feels reasonable
-// even though the write actually lands moments later — which is exactly
-// why the other nurse sees the result appear almost immediately while the
-// acting nurse's own screen looks stuck or broken. A longer budget here
-// lets the real response come back instead of the client giving up on a
-// request the server was always going to finish.
-const ENDORSEMENT_ACTION_TIMEOUT_MS = 45000;
+// Submitting, accepting, rejecting, or cancelling an Endorsement — and the
+// same for starting/ending/closing a duty shift — is often the first request
+// to hit the backend in a while (Render's free tier puts the dyno to sleep
+// after idle, and a cold start has been measured taking ~40s to wake). The
+// default 15s timeout fires well before that finishes, so the client shows
+// "backend not running"/keeps spinning even though the write actually lands
+// moments later — which is exactly why cancelling then reopening shows the
+// action as already done. A longer budget here lets the real response come
+// back instead of the client giving up on a request the server was always
+// going to finish.
+const WRITE_ACTION_TIMEOUT_MS = 45000;
+const ENDORSEMENT_ACTION_TIMEOUT_MS = WRITE_ACTION_TIMEOUT_MS;
 
 function extractDetail(data: unknown, status: number): string {
   if (typeof data === 'object' && data) {
@@ -1128,32 +1129,49 @@ export type DutyAssignmentInput = {
 };
 
 export async function createDutyAssignment(data: DutyAssignmentInput): Promise<DutyAssignment> {
-  return apiRequest<DutyAssignment>('/duty-assignments/', { method: 'POST', body: data });
+  return apiRequest<DutyAssignment>('/duty-assignments/', {
+    method: 'POST',
+    body: data,
+    timeoutMs: WRITE_ACTION_TIMEOUT_MS,
+  });
 }
 
 export async function updateDutyAssignment(
   id: number,
   data: Partial<DutyAssignmentInput>
 ): Promise<DutyAssignment> {
-  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/`, { method: 'PATCH', body: data });
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/`, {
+    method: 'PATCH',
+    body: data,
+    timeoutMs: WRITE_ACTION_TIMEOUT_MS,
+  });
 }
 
 export async function deleteDutyAssignment(id: number): Promise<void> {
-  await apiRequest(`/duty-assignments/${id}/`, { method: 'DELETE' });
+  await apiRequest(`/duty-assignments/${id}/`, { method: 'DELETE', timeoutMs: WRITE_ACTION_TIMEOUT_MS });
 }
 
 /** Clock in — records the real start time server-side. No request body. */
 export async function startDutyAssignment(id: number): Promise<DutyAssignment> {
-  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/start/`, { method: 'POST' });
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/start/`, {
+    method: 'POST',
+    timeoutMs: WRITE_ACTION_TIMEOUT_MS,
+  });
 }
 
 /** Clock out — records the real end time and freezes actual hours server-side. */
 export async function endDutyAssignment(id: number): Promise<DutyAssignment> {
-  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/end/`, { method: 'POST' });
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/end/`, {
+    method: 'POST',
+    timeoutMs: WRITE_ACTION_TIMEOUT_MS,
+  });
 }
 
 export async function closeDutyAssignment(id: number): Promise<DutyAssignment> {
-  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/close/`, { method: 'POST' });
+  return apiRequest<DutyAssignment>(`/duty-assignments/${id}/close/`, {
+    method: 'POST',
+    timeoutMs: WRITE_ACTION_TIMEOUT_MS,
+  });
 }
 
 export async function fetchKardexRecords(): Promise<KardexHistory[]> {
