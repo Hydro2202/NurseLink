@@ -6,6 +6,7 @@ import {
   StyleSheet,
   useWindowDimensions,
   findNodeHandle,
+  Pressable,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -29,7 +30,7 @@ import {
 } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import type { Patient, Task, WorkloadData, DutyAssignment, PatientAssignmentRecord } from '../../types/domain';
+import type { Patient, Task, WorkloadData, DutyAssignment, PatientAssignmentRecord, Nurse } from '../../types/domain';
 import type { PatientAssignment } from '../../types';
 import {
   fetchPatients,
@@ -37,6 +38,7 @@ import {
   fetchWorkload,
   fetchDutyAssignments,
   fetchAssignments,
+  fetchNurses,
   createAssignment,
   notifyPatientNurse,
   sendEmergencyAlert,
@@ -51,6 +53,9 @@ import { Progress } from '../../components/Progress';
 import { Button } from '../../components/Button';
 import { AssignPatientModal, type AssignPatientPrefill } from '../../components/AssignPatientModal';
 import { SafetyAlertsSection, type SafetyAlert } from '../../components/dashboard/SafetyAlertsSection';
+import { NurseOverviewSection } from '../../components/dashboard/NurseOverviewSection';
+import { DutyRosterSummary, RecentActivitySection } from '../../components/dashboard/DutyAndActivitySections';
+import { PatientOverviewSection, TaskLoadChart } from '../../components/dashboard/PatientAndChartSections';
 import { OverdueBanner } from '../../components/dashboard/OverdueBanner';
 import { QuickActions } from '../../components/dashboard/QuickActions';
 import { Colors, Radius } from '../../constants/colors';
@@ -116,6 +121,8 @@ type StatCardProps = {
   trendLabel?: string;
   iconBg: string;
   iconColor: string;
+  /** When set, the whole card becomes a button (head-nurse dashboard). */
+  onPress?: () => void;
 };
 
 function StatCard({
@@ -127,8 +134,9 @@ function StatCard({
   trendLabel,
   iconBg,
   iconColor,
+  onPress,
 }: StatCardProps) {
-  return (
+  const inner = (
     <Card style={styles.statCard}>
       <CardContent style={styles.statContent}>
         <View style={styles.statTop}>
@@ -149,6 +157,17 @@ function StatCard({
         ) : null}
       </CardContent>
     </Card>
+  );
+  if (!onPress) return inner;
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => (pressed ? styles.statPressed : undefined)}
+      accessibilityRole="button"
+      accessibilityLabel={`${title}: ${value}`}
+    >
+      {inner}
+    </Pressable>
   );
 }
 
@@ -171,6 +190,11 @@ export default function DashboardPage() {
   // Analytics page (see analytics.tsx), linked from "View all analytics →"
   // below instead of rendered inline here.
   const [assignments, setAssignments] = useState<PatientAssignment[]>([]);
+  // Head-nurse-only: the full nurse roster (for the Nurse Overview and the
+  // total/off-duty stats) and today's duty rows (Duty Roster summary +
+  // Recent Activity clock-in/out). Staff nurses never load these.
+  const [allNurses, setAllNurses] = useState<Nurse[]>([]);
+  const [hnDuty, setHnDuty] = useState<DutyAssignment[]>([]);
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [assignPrefill, setAssignPrefill] = useState<AssignPatientPrefill | null>(null);
   const sectionRefs = useRef<Record<string, View | null>>({});
@@ -212,12 +236,16 @@ export default function DashboardPage() {
   const loadWorkloadSummary = useCallback(async () => {
     if (isStaffNurse) return;
     try {
-      const [workload, assignmentData] = await Promise.all([
+      const [workload, assignmentData, nurseList, duty] = await Promise.all([
         fetchWorkload(),
         fetchAssignments({ status: 'active' }),
+        fetchNurses(),
+        fetchDutyAssignments({ dateFrom: todayIso(), dateTo: todayIso() }),
       ]);
       setWorkloadData(workload);
       setAssignments(assignmentData.map(toLocalAssignment));
+      setAllNurses(nurseList);
+      setHnDuty(duty);
     } catch (error) {
       console.warn('Failed to load workload summary:', error);
     }
@@ -308,6 +336,20 @@ export default function DashboardPage() {
   const completionRate = Math.round((completedTasks / totalTasks) * 100);
   const inProgressCount = tasks.filter((t) => t.status === 'in_progress').length;
   const pendingCount = tasks.filter((t) => t.status === 'pending').length;
+
+  // Head-nurse stat values (real data only).
+  const onDutyCount = workloadData.length;
+  const totalNurses = allNurses.length;
+  const offDutyCount = Math.max(0, totalNurses - onDutyCount);
+  const unassignedPatients = patients.filter(
+    (p) => p.status !== 'discharged' && !p.assignedNurseName?.trim()
+  ).length;
+  // Same rule SafetyAlertsSection uses to build its list, so the stat and
+  // the section always agree: high/critical non-discharged patients plus
+  // overdue tasks.
+  const activeAlertsCount =
+    patients.filter((p) => (p.riskLevel === 'high' || p.riskLevel === 'critical') && p.status !== 'discharged').length +
+    tasks.filter((t) => t.status === 'overdue').length;
 
   const staffTaskTrendData = useMemo(() => {
     const buckets = [
@@ -813,6 +855,75 @@ export default function DashboardPage() {
         </View>
 
         <View style={styles.body}>
+          <View ref={(r) => { sectionRefs.current.overview = r; }} style={styles.statsGrid}>
+            <View style={styles.statsCol}>
+              <StatCard
+                title="Total Nurses"
+                value={String(totalNurses)}
+                subtitle="Tap to view roster"
+                icon={Users}
+                iconBg={Colors.blue100}
+                iconColor={Colors.blue600}
+                onPress={() => scrollToSection('nurses')}
+              />
+            </View>
+            <View style={styles.statsCol}>
+              <StatCard
+                title="Nurses on Duty"
+                value={String(onDutyCount)}
+                subtitle="Currently on shift"
+                icon={CheckCircle}
+                iconBg={Colors.green100}
+                iconColor={Colors.green600}
+                onPress={() => scrollToSection('nurses')}
+              />
+            </View>
+            <View style={styles.statsCol}>
+              <StatCard
+                title="Nurses Off Duty"
+                value={String(offDutyCount)}
+                subtitle="Not on shift now"
+                icon={Users}
+                iconBg={Colors.gray100}
+                iconColor={Colors.gray600}
+                onPress={() => scrollToSection('nurses')}
+              />
+            </View>
+            <View style={styles.statsCol}>
+              <StatCard
+                title="Total Patients"
+                value={String(patients.filter((p) => p.status !== 'discharged').length)}
+                subtitle="Active patients"
+                icon={Heart}
+                iconBg={Colors.purple100}
+                iconColor={Colors.purple600}
+                onPress={() => router.push('/(app)/all-patients' as any)}
+              />
+            </View>
+            <View style={styles.statsCol}>
+              <StatCard
+                title="Unassigned"
+                value={String(unassignedPatients)}
+                subtitle="Need a nurse"
+                icon={AlertCircle}
+                iconBg={Colors.orange100}
+                iconColor={Colors.orange600}
+                onPress={() => router.push('/(app)/all-patients' as any)}
+              />
+            </View>
+            <View style={styles.statsCol}>
+              <StatCard
+                title="Active Alerts"
+                value={String(activeAlertsCount)}
+                subtitle="Patient safety"
+                icon={AlertTriangle}
+                iconBg={Colors.red100}
+                iconColor={Colors.red600}
+                onPress={() => scrollToSection('alerts')}
+              />
+            </View>
+          </View>
+
           <View ref={(r) => { sectionRefs.current.alerts = r; }}>
             <SafetyAlertsSection
               patients={patients}
@@ -822,48 +933,25 @@ export default function DashboardPage() {
             />
           </View>
 
-          <View ref={(r) => { sectionRefs.current.overview = r; }} style={styles.statsGrid}>
-            <View style={styles.statsCol}>
-              <StatCard
-                title="Patients"
-                value={String(patients.length)}
-                subtitle="All registered patients"
-                icon={Heart}
-                iconBg={Colors.purple100}
-                iconColor={Colors.purple600}
-              />
-            </View>
-            <View style={styles.statsCol}>
-              <StatCard
-                title="High Risk"
-                value={String(highRiskPatients)}
-                subtitle="High/critical risk patients"
-                icon={AlertTriangle}
-                iconBg={Colors.red100}
-                iconColor={Colors.red600}
-              />
-            </View>
-            <View style={styles.statsCol}>
-              <StatCard
-                title="Pending / Overdue"
-                value={`${pendingCount + inProgressCount} / ${overdueTasks}`}
-                subtitle={`${completionRate}% completed`}
-                icon={CheckCircle}
-                iconBg={Colors.green100}
-                iconColor={Colors.green600}
-              />
-            </View>
-            <View style={styles.statsCol}>
-              <StatCard
-                title="Nurses on Duty"
-                value={String(workloadData.length)}
-                subtitle="Currently on shift"
-                icon={Users}
-                iconBg={Colors.blue100}
-                iconColor={Colors.blue600}
-              />
-            </View>
+          <View ref={(r) => { sectionRefs.current.nurses = r; }}>
+            <NurseOverviewSection
+              nurses={allNurses}
+              workload={workloadData}
+              patients={patients}
+              onOpenPatient={() => router.push('/(app)/all-patients' as any)}
+            />
           </View>
+
+          <PatientOverviewSection
+            patients={patients}
+            onOpenPatients={() => router.push('/(app)/all-patients' as any)}
+          />
+
+          <TaskLoadChart tasks={tasks} now={currentTime} width={width} />
+
+          <DutyRosterSummary duty={hnDuty} onOpenRoster={() => router.push('/(app)/duty-roster' as any)} />
+
+          <RecentActivitySection assignments={assignments} duty={hnDuty} now={currentTime} />
 
           <Card style={styles.patientsCta}>
             <LinearGradient
@@ -1004,6 +1092,7 @@ const styles = StyleSheet.create({
   statCard: {
     overflow: 'hidden',
   },
+  statPressed: { opacity: 0.7, transform: [{ scale: 0.99 }] },
   statContent: {
     padding: 12,
   },
