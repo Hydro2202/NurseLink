@@ -126,6 +126,14 @@ type RequestOptions = {
 // going to finish.
 const WRITE_ACTION_TIMEOUT_MS = 45000;
 const ENDORSEMENT_ACTION_TIMEOUT_MS = WRITE_ACTION_TIMEOUT_MS;
+// Login and signup are almost always the very first request after the
+// backend has gone idle, so they pay the full Render free-tier cold start —
+// which Render itself warns is "50 seconds or more". The default 15s timeout
+// fires long before the backend wakes, so a perfectly valid login shows
+// "Request timed out. Is the backend running?" when the server was simply
+// still booting. A 70s budget covers the cold start so the first login goes
+// through instead of failing.
+const COLD_START_TIMEOUT_MS = 70000;
 
 function extractDetail(data: unknown, status: number): string {
   if (typeof data === 'object' && data) {
@@ -271,6 +279,7 @@ export async function loginRequest(
     method: 'POST',
     body: { email, password, role },
     auth: false,
+    timeoutMs: COLD_START_TIMEOUT_MS,
   });
   await setToken(data.token);
   return data;
@@ -309,6 +318,7 @@ export async function startSignupV2Request(email: string, phone: string): Promis
     method: 'POST',
     body: { email, phone },
     auth: false,
+    timeoutMs: COLD_START_TIMEOUT_MS,
   });
 }
 
@@ -317,6 +327,7 @@ export async function sendSignupV2OtpRequest(registrationSessionId: string): Pro
     method: 'POST',
     body: { registrationSessionId },
     auth: false,
+    timeoutMs: COLD_START_TIMEOUT_MS,
   });
 }
 
@@ -325,6 +336,7 @@ export async function resendSignupV2OtpRequest(registrationSessionId: string): P
     method: 'POST',
     body: { registrationSessionId },
     auth: false,
+    timeoutMs: COLD_START_TIMEOUT_MS,
   });
 }
 
@@ -336,6 +348,7 @@ export async function verifySignupV2OtpRequest(
     method: 'POST',
     body: { otp, registrationSessionId },
     auth: false,
+    timeoutMs: COLD_START_TIMEOUT_MS,
   });
 }
 
@@ -353,6 +366,7 @@ export async function checkSignupV2NameRequest(
     method: 'POST',
     body: { lastName, firstName, middleName },
     auth: false,
+    timeoutMs: COLD_START_TIMEOUT_MS,
   });
 }
 
@@ -380,6 +394,7 @@ export async function registerSignupV2Request(
     method: 'POST',
     body: payload,
     auth: false,
+    timeoutMs: COLD_START_TIMEOUT_MS,
   });
 }
 
