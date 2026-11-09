@@ -1,5 +1,35 @@
 # Deployment notes
 
+## Render: migrations and start/build commands
+
+Migrations are **not** run from `asgi.py` (that caused the app to fail to
+boot whenever the database connection hiccupped at startup — e.g. Render
+Postgres closing the SSL connection, "SSL connection has been closed
+unexpectedly"). Run them through Render's deploy pipeline instead, so the
+app's ability to start is never tied to a successful DB connection at import
+time.
+
+Set these in the Render dashboard for the web service:
+
+- **Build Command:** `pip install -r requirements.txt`
+- **Pre-Deploy Command:** `python manage.py migrate --noinput`
+  (runs once, after build and before the new version goes live; a failed
+  migration fails the deploy and is shown in the logs, instead of a silently
+  broken running instance. Render runs it a single time per deploy, so there
+  is no multi-worker migration race.)
+- **Start Command:** `daphne -b 0.0.0.0 -p $PORT CapstoneBackEnd.asgi:application`
+  (binds `0.0.0.0` and Render's assigned `$PORT`; keeps ASGI/WebSockets.)
+
+Database connection reliability: `settings.py` reads the connection from the
+`DB_*` environment variables with `sslmode: 'prefer'` (never hardcoded, SSL
+never disabled). On Render, set `DB_HOST` to the database's **Internal**
+hostname (from the Postgres instance's "Internal Database URL"), not the
+external `*.<region>-postgres.render.com` host — connecting over the
+external host from inside Render adds latency and is the usual cause of the
+SSL connection being dropped. Connections are not pooled across requests
+(`CONN_MAX_AGE` is the default 0), so a stale connection the database has
+already closed is never reused.
+
 ## Redis is required in production
 
 Live notifications go over WebSocket, through Django Channels' channel
