@@ -9,14 +9,17 @@ unexpectedly"). Run them through Render's deploy pipeline instead, so the
 app's ability to start is never tied to a successful DB connection at import
 time.
 
-Set these in the Render dashboard for the web service:
+Set these in the Render dashboard for the web service (Root Directory is
+`CapstoneBackEnd/`):
 
-- **Build Command:** `pip install -r requirements.txt`
-- **Pre-Deploy Command:** `python manage.py migrate --noinput`
-  (runs once, after build and before the new version goes live; a failed
-  migration fails the deploy and is shown in the logs, instead of a silently
-  broken running instance. Render runs it a single time per deploy, so there
-  is no multi-worker migration race.)
+- **Build Command:** `pip install -r requirements.txt && python manage.py migrate --noinput`
+  Migrations run here, during the build, before the new version starts. A
+  failed migration fails the build/deploy and is shown in the logs, instead
+  of a silently broken running instance. Render builds a deploy once, so
+  there is no multi-worker migration race.
+  (Render's dedicated **Pre-Deploy Command** is the cleaner place for this,
+  but it is **paid-instances only** — on the free plan, append migrate to the
+  Build Command as above.)
 - **Start Command:** `daphne -b 0.0.0.0 -p $PORT CapstoneBackEnd.asgi:application`
   (binds `0.0.0.0` and Render's assigned `$PORT`; keeps ASGI/WebSockets.)
 

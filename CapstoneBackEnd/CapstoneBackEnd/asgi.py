@@ -26,11 +26,12 @@ django_asgi_app = get_asgi_application()
 # import, the ASGI application failed to load, and Daphne could not start at
 # all. The service then appeared "live" but answered nothing.
 #
-# Migrations now run once, before the new version starts, via Render's
-# Pre-Deploy Command (`python manage.py migrate --noinput`) — see
-# DEPLOYMENT.md. That keeps schema changes applied without tying the app's
-# ability to boot and serve requests to a successful database connection at
-# import time.
+# Migrations now run once, during the build, before the new version starts —
+# the Render Build Command is `pip install -r requirements.txt && python
+# manage.py migrate --noinput` (the dedicated Pre-Deploy Command is paid-only;
+# see DEPLOYMENT.md). That keeps schema changes applied without tying the
+# app's ability to boot and serve requests to a successful database
+# connection at import time.
 
 from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
 
