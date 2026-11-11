@@ -25,6 +25,11 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
+  LayoutGrid,
+  Table2,
+  List,
+  FileClock,
+  BedDouble,
 } from 'lucide-react-native';
 import {
   fetchPatients,
@@ -40,6 +45,8 @@ import { vitalsMonitoringOrderLabel } from '../../components/tasks/taskLabels';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
 import { DatePicker, todayIso } from '../../components/DatePicker';
+import { PatientActivityModal } from '../../components/PatientActivityModal';
+import { RoomTransferModal } from '../../components/RoomTransferModal';
 import { TaskAssignmentModal } from '../../components/TaskAssignmentModal';
 import { PatientKardexModal } from '../../components/PatientKardexModal';
 import { DischargePlanModal } from '../../components/DischargePlanModal';
@@ -196,6 +203,33 @@ type SortKey = 'name' | 'room' | 'nurse' | 'status';
 type StatusFilter = 'active' | 'admitted' | 'observation' | 'discharged' | 'all';
 const STATUS_FILTERS: StatusFilter[] = ['active', 'admitted', 'discharged', 'all'];
 
+type PatientViewMode = 'card' | 'table' | 'list';
+const PATIENT_VIEW_KEY = 'nurselink.patientsViewMode';
+function loadPatientView(): PatientViewMode {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const v = localStorage.getItem(PATIENT_VIEW_KEY);
+      if (v === 'card' || v === 'table' || v === 'list') return v;
+    }
+  } catch {
+    // ignore — fall back to the default
+  }
+  return 'card';
+}
+
+// Fixed column widths for the Table view (the table scrolls horizontally on
+// narrow screens). Index order matches the header row.
+const TABLE_COLS = [
+  { width: 210 }, // Patient
+  { width: 80 }, // Room
+  { width: 140 }, // Status
+  { width: 120 }, // Risk
+  { width: 190 }, // Diagnosis
+  { width: 170 }, // Assigned nurse
+  { width: 150 }, // Department
+  { width: 300 }, // Actions
+];
+
 export default function AllPatientsPage() {
   const toast = useToast();
   const { user } = useAuth();
@@ -233,6 +267,22 @@ export default function AllPatientsPage() {
   const [labsMedsPatient, setLabsMedsPatient] = useState<Patient | null>(null);
   const [assignmentHistoryOpen, setAssignmentHistoryOpen] = useState(false);
   const [assignmentHistoryPatient, setAssignmentHistoryPatient] = useState<Patient | null>(null);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [activityPatient, setActivityPatient] = useState<Patient | null>(null);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferPatient, setTransferPatient] = useState<Patient | null>(null);
+  // Card / Table / List layout, remembered per device so it survives
+  // navigation and reloads (see PATIENT_VIEW_KEY; wrapped in try/catch because
+  // localStorage can throw or be unavailable on native / private windows).
+  const [viewMode, setViewModeState] = useState<PatientViewMode>(loadPatientView);
+  const setViewMode = useCallback((mode: PatientViewMode) => {
+    setViewModeState(mode);
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(PATIENT_VIEW_KEY, mode);
+    } catch {
+      // ignore storage failures — the choice still applies this session
+    }
+  }, []);
   const [currentPage, setCurrentPageState] = useState(1);
   const scrollRef = useRef<ScrollView>(null);
   // Changing page jumps back to the top so the nurse never scrolls up by hand.
@@ -400,6 +450,53 @@ export default function AllPatientsPage() {
     }
   };
 
+  // Shared per-patient actions — reused across the Card, Table and List views
+  // so every layout opens the exact same, real modals/handlers.
+  const openHistory = (p: Patient) => { setHistoryPatient(p); setHistoryOpen(true); };
+  const openActivity = (p: Patient) => { setActivityPatient(p); setActivityOpen(true); };
+  const openEdit = (p: Patient) => { setEditTarget(p); setEditOpen(true); };
+  const openLabs = (p: Patient) => { setLabsMedsPatient(p); setLabsMedsOpen(true); };
+  const openTransfer = (p: Patient) => { setTransferPatient(p); setTransferOpen(true); };
+  const openAssignNurse = (p: Patient) => { setSelectedPatient(p); setTaskModalOpen(true); };
+  const openDischarge = (p: Patient) => { setToDischarge(p); setDischargeConfirmOpen(true); };
+  const openReadmit = (p: Patient) => { setReadmitTarget(p); setReadmitOpen(true); };
+  const patchPatient = (updated: Patient) => setPatients((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+
+  // Compact action icons for the Table and List rows — same handlers as the
+  // Card view. iconColor keeps it readable on either a white or tinted row.
+  const rowActions = (patient: Patient) => {
+    const isDischarged = patient.status === 'discharged';
+    const hasNurse = isDischarged ? !!patient.assignedNurseName : !!getAssignedNurseName(patient);
+    const btn = (key: string, Icon: typeof History, onPress: () => void, label: string, danger?: boolean) => (
+      <Pressable
+        key={key}
+        onPress={onPress}
+        style={({ pressed }) => [styles.rowActionBtn, pressed && styles.iconBtnPressed]}
+        accessibilityLabel={`${label} for ${patient.name}`}
+        hitSlop={4}
+      >
+        <Icon size={16} color={danger ? RISK.critical.fg : T.text} />
+      </Pressable>
+    );
+    return (
+      <View style={styles.rowActions}>
+        {btn('history', History, () => openHistory(patient), 'Visit history')}
+        {btn('activity', FileClock, () => openActivity(patient), 'Activity history')}
+        {btn('labs', FlaskConical, () => openLabs(patient), 'Labs and medications')}
+        {isSupervisor ? btn('edit', Edit2, () => openEdit(patient), 'Edit record') : null}
+        {isSupervisor && !isDischarged ? btn('transfer', BedDouble, () => openTransfer(patient), 'Room transfer') : null}
+        {isDischarged
+          ? (isSupervisor ? btn('readmit', RotateCcw, () => openReadmit(patient), 'Readmit patient') : null)
+          : (
+            <>
+              {btn('assign', UserPlus, () => openAssignNurse(patient), hasNurse ? 'Reassign nurse' : 'Assign nurse')}
+              {isSupervisor ? btn('discharge', LogOut, () => openDischarge(patient), 'Discharge', true) : null}
+            </>
+          )}
+      </View>
+    );
+  };
+
   const isNarrow = width < 640;
   const isDischargedView = statusFilter === 'discharged';
   const activeCount = patients.length - dischargedCount;
@@ -520,6 +617,29 @@ export default function AllPatientsPage() {
                   <ArrowUpDown size={15} color={T.text} />
                   <Text style={styles.sortDirText}>{sortDesc ? 'Z–A' : 'A–Z'}</Text>
                 </Pressable>
+
+                {/* Card / Table / List layout switch — remembered per device. */}
+                <View style={styles.viewSwitch} accessibilityRole="radiogroup">
+                  {([
+                    { key: 'card', icon: LayoutGrid, label: 'Card view' },
+                    { key: 'table', icon: Table2, label: 'Table view' },
+                    { key: 'list', icon: List, label: 'List view' },
+                  ] as const).map(({ key, icon: Icon, label }) => {
+                    const active = viewMode === key;
+                    return (
+                      <Pressable
+                        key={key}
+                        onPress={() => setViewMode(key)}
+                        style={[styles.viewSwitchBtn, active && styles.viewSwitchBtnActive]}
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected: active }}
+                        accessibilityLabel={label}
+                      >
+                        <Icon size={16} color={active ? T.primary : T.muted} />
+                      </Pressable>
+                    );
+                  })}
+                </View>
               </View>
             </View>
 
@@ -610,6 +730,94 @@ export default function AllPatientsPage() {
             <View style={[styles.card, styles.center]}>
               <Text style={styles.muted}>No patients found</Text>
             </View>
+          ) : viewMode === 'list' ? (
+            <View style={styles.listWrap}>
+              {pagedPatients.map((patient) => {
+                const sc = STATUS_CONFIG[patient.status || 'admitted'] || STATUS_CONFIG.admitted;
+                const isDischarged = patient.status === 'discharged';
+                const risk = RISK[patient.riskLevel as keyof typeof RISK];
+                return (
+                  <View key={patient.id} style={styles.listRow}>
+                    <View style={[styles.avatar, styles.listAvatar, isDischarged && styles.avatarDischarged]}>
+                      <Text style={[styles.avatarText, isDischarged && styles.avatarTextDischarged]}>
+                        {initialsOf(patient.name)}
+                      </Text>
+                    </View>
+                    <View style={styles.listMain}>
+                      <View style={styles.listNameRow}>
+                        <Text style={styles.listName} numberOfLines={1}>{patient.name}</Text>
+                        <View style={styles.idChip}><Text style={styles.idChipText}>{patient.id}</Text></View>
+                        {patient.alerts.length > 0 ? (
+                          <View style={styles.allergyFlag}>
+                            <AlertCircle size={11} color={Colors.orange700} />
+                            <Text style={styles.allergyFlagText} numberOfLines={1}>{patient.alerts[0]}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <Text style={styles.listMeta} numberOfLines={1}>
+                        Room {patient.room} · {patient.diagnosis || 'No diagnosis'} · {getAssignedNurseDisplay(patient)}
+                      </Text>
+                    </View>
+                    <View style={[styles.pill, { backgroundColor: STATUS_PILL[sc.variant].bg }]}>
+                      <Text style={[styles.pillText, { color: STATUS_PILL[sc.variant].fg }]}>{sc.label}</Text>
+                    </View>
+                    {!isDischarged && risk ? (
+                      <View style={[styles.pill, styles.riskPill, { backgroundColor: risk.bg }]}>
+                        <View style={[styles.riskDot, { backgroundColor: risk.fg }]} />
+                        <Text style={[styles.pillText, { color: risk.fg }]}>{risk.label}</Text>
+                      </View>
+                    ) : null}
+                    {rowActions(patient)}
+                  </View>
+                );
+              })}
+            </View>
+          ) : viewMode === 'table' ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.tableScroll}>
+              <View style={styles.tableWrap}>
+                <View style={styles.tHeader}>
+                  {['Patient', 'Room', 'Status', 'Risk', 'Diagnosis', 'Assigned nurse', 'Department', 'Actions'].map((h, i) => (
+                    <Text key={h} style={[styles.th, TABLE_COLS[i]]}>{h}</Text>
+                  ))}
+                </View>
+                {pagedPatients.map((patient) => {
+                  const sc = STATUS_CONFIG[patient.status || 'admitted'] || STATUS_CONFIG.admitted;
+                  const isDischarged = patient.status === 'discharged';
+                  const risk = RISK[patient.riskLevel as keyof typeof RISK];
+                  return (
+                    <View key={patient.id} style={styles.tRow}>
+                      <View style={[styles.tCell, TABLE_COLS[0], styles.tPatient]}>
+                        <View style={[styles.avatar, styles.listAvatar, isDischarged && styles.avatarDischarged]}>
+                          <Text style={[styles.avatarText, isDischarged && styles.avatarTextDischarged]}>{initialsOf(patient.name)}</Text>
+                        </View>
+                        <View style={styles.minW0}>
+                          <Text style={styles.tName} numberOfLines={1}>{patient.name}</Text>
+                          <Text style={styles.tSub} numberOfLines={1}>{patient.id}</Text>
+                        </View>
+                      </View>
+                      <Text style={[styles.td, TABLE_COLS[1]]} numberOfLines={1}>{patient.room}</Text>
+                      <View style={[styles.tCell, TABLE_COLS[2]]}>
+                        <View style={[styles.pill, { backgroundColor: STATUS_PILL[sc.variant].bg }]}>
+                          <Text style={[styles.pillText, { color: STATUS_PILL[sc.variant].fg }]}>{sc.label}</Text>
+                        </View>
+                      </View>
+                      <View style={[styles.tCell, TABLE_COLS[3]]}>
+                        {!isDischarged && risk ? (
+                          <View style={[styles.pill, styles.riskPill, { backgroundColor: risk.bg }]}>
+                            <View style={[styles.riskDot, { backgroundColor: risk.fg }]} />
+                            <Text style={[styles.pillText, { color: risk.fg }]}>{risk.label}</Text>
+                          </View>
+                        ) : <Text style={styles.td}>—</Text>}
+                      </View>
+                      <Text style={[styles.td, TABLE_COLS[4]]} numberOfLines={1}>{patient.diagnosis || '—'}</Text>
+                      <Text style={[styles.td, TABLE_COLS[5]]} numberOfLines={1}>{getAssignedNurseDisplay(patient)}</Text>
+                      <Text style={[styles.td, TABLE_COLS[6]]} numberOfLines={1}>{patient.departmentName || '—'}</Text>
+                      <View style={[styles.tCell, TABLE_COLS[7]]}>{rowActions(patient)}</View>
+                    </View>
+                  );
+                })}
+              </View>
+            </ScrollView>
           ) : (
             pagedPatients.map((patient) => {
               const statusConfig = STATUS_CONFIG[patient.status || 'admitted'] || STATUS_CONFIG.admitted;
@@ -701,6 +909,22 @@ export default function AllPatientsPage() {
                       >
                         <FlaskConical size={17} color={T.text} />
                       </Pressable>
+                      <Pressable
+                        onPress={() => openActivity(patient)}
+                        style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
+                        accessibilityLabel={`Activity history for ${patient.name}`}
+                      >
+                        <FileClock size={17} color={T.text} />
+                      </Pressable>
+                      {isSupervisor && !isDischarged ? (
+                        <Pressable
+                          onPress={() => openTransfer(patient)}
+                          style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}
+                          accessibilityLabel={`Room transfer for ${patient.name}`}
+                        >
+                          <BedDouble size={17} color={T.text} />
+                        </Pressable>
+                      ) : null}
                     </View>
                   </View>
 
@@ -951,6 +1175,22 @@ export default function AllPatientsPage() {
         onOpenChange={setAssignmentHistoryOpen}
         patient={assignmentHistoryPatient}
       />
+      <PatientActivityModal
+        open={activityOpen}
+        onOpenChange={setActivityOpen}
+        patient={activityPatient}
+      />
+      <RoomTransferModal
+        open={transferOpen}
+        onOpenChange={setTransferOpen}
+        patient={transferPatient}
+        onTransferred={(updated) => {
+          patchPatient(updated);
+          setTransferPatient(updated);
+          // Keep the Activity modal fresh if it's showing this patient.
+          setActivityPatient((prev) => (prev && prev.id === updated.id ? updated : prev));
+        }}
+      />
       <ReadmitPatientModal
         open={readmitOpen}
         onOpenChange={setReadmitOpen}
@@ -1143,6 +1383,37 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.white,
   },
   sortDirText: { fontSize: 13, fontWeight: '700', color: T.text },
+  viewSwitch: { flexDirection: 'row', borderWidth: 1, borderColor: T.inputBorder, borderRadius: 10, overflow: 'hidden', backgroundColor: Colors.white },
+  viewSwitchBtn: { width: 38, minHeight: 42, alignItems: 'center', justifyContent: 'center' },
+  viewSwitchBtnActive: { backgroundColor: '#EAF0FF' },
+
+  // List view
+  listWrap: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, overflow: 'hidden' },
+  listRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10, paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#EEF1F6' },
+  listAvatar: { width: 38, height: 38, borderRadius: 19 },
+  listMain: { flexGrow: 1, flexShrink: 1, flexBasis: 220, minWidth: 0 },
+  listNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  listName: { fontSize: 15, fontWeight: '800', color: T.text },
+  listMeta: { fontSize: 12.5, color: T.muted, marginTop: 2 },
+  allergyFlag: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.orange50, borderWidth: 1, borderColor: Colors.orange100, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, maxWidth: 160 },
+  allergyFlagText: { fontSize: 11, fontWeight: '700', color: Colors.orange700, flexShrink: 1 },
+
+  // Table view
+  tableScroll: { paddingBottom: 6 },
+  tableWrap: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, overflow: 'hidden', minWidth: '100%' },
+  tHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F7FAFF', borderBottomWidth: 1, borderBottomColor: T.border, paddingHorizontal: 12, paddingVertical: 10 },
+  th: { fontSize: 11.5, fontWeight: '800', color: T.muted, textTransform: 'uppercase', letterSpacing: 0.4, paddingHorizontal: 6 },
+  tRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#EEF1F6' },
+  tCell: { paddingHorizontal: 6, justifyContent: 'center' },
+  td: { fontSize: 13, color: T.text, paddingHorizontal: 6 },
+  tPatient: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  tName: { fontSize: 13.5, fontWeight: '700', color: T.text },
+  tSub: { fontSize: 11.5, color: T.muted },
+  minW0: { minWidth: 0, flexShrink: 1 },
+
+  // Shared compact row actions (list + table)
+  rowActions: { flexDirection: 'row', alignItems: 'center', gap: 2, flexWrap: 'wrap' },
+  rowActionBtn: { width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', gap: 10 },
   searchBox: { flexGrow: 2, flexBasis: 240, minWidth: 200 },
   filterSelect: { flexGrow: 1, flexBasis: 150, minWidth: 140, maxWidth: 260 },

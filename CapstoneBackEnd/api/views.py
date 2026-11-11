@@ -2748,6 +2748,25 @@ class WsTicketView(APIView):
         return Response({'ticket': ticket, 'expiresInSeconds': settings.WS_TICKET_TTL_SECONDS})
 
 
+def log_patient_activity(patient, user, changes):
+    """
+    Append a {editedBy, editedAt, changes:[{field,label,from,to}]} entry to a
+    patient's edit_history — the same shape PatientSerializer.update writes, so
+    the activity history reads them uniformly. Used for status changes
+    (discharge/readmit) that don't flow through the serializer's update path.
+    """
+    history = list(patient.edit_history or [])
+    history.append(
+        {
+            'editedBy': nurse_display_name(user) if user and user.is_authenticated else '',
+            'editedAt': timezone.now().isoformat(),
+            'changes': changes,
+        }
+    )
+    patient.edit_history = history
+    patient.save(update_fields=['edit_history', 'updated_at'])
+
+
 @extend_schema_view(
     create=extend_schema(
         summary='Admit a patient',
@@ -2765,6 +2784,8 @@ class WsTicketView(APIView):
         examples=PATIENT_UPDATE_EXAMPLES,
     ),
 )
+
+
 class PatientViewSet(viewsets.ModelViewSet):
     serializer_class = PatientSerializer
     permission_classes = [permissions.IsAuthenticated, IsApprovedNurseOrAdminReadOnly]
@@ -2949,6 +2970,7 @@ class PatientViewSet(viewsets.ModelViewSet):
             nurse_name = nurse_display_name(patient.assigned_nurse)
             nurse = patient.assigned_nurse
             team_snapshot = medical_team_snapshot(patient)
+            prev_status_label = patient.get_status_display()
 
             patient.status = 'discharged'
             patient.discharged_at = timezone.now()
@@ -2981,6 +3003,10 @@ class PatientViewSet(viewsets.ModelViewSet):
                 setattr(visit, attr, plan.get(camel) or '')
             visit.discharge_plan_ai_generated = bool(plan.get('aiGenerated'))
             visit.save()
+            log_patient_activity(
+                patient, request.user,
+                [{'field': 'status', 'label': 'Condition', 'from': prev_status_label, 'to': 'Discharged'}],
+            )
 
         return Response(PatientSerializer(patient, context=self.get_serializer_context()).data)
 
@@ -3040,6 +3066,10 @@ class PatientViewSet(viewsets.ModelViewSet):
                 patient.risk_level = request.data['riskLevel']
             patient.save()
             open_patient_visit(patient)
+            log_patient_activity(
+                patient, request.user,
+                [{'field': 'status', 'label': 'Condition', 'from': 'Discharged', 'to': 'Admitted (readmitted)'}],
+            )
 
         return Response(PatientSerializer(patient, context=self.get_serializer_context()).data)
 

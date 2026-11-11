@@ -315,8 +315,14 @@ export interface Patient {
    * patient has no department set. */
   onDutyNurseId?: string | null;
   onDutyNurseName?: string | null;
-  /** {editedBy, editedAt, changes} entries — see PatientSerializer.update(). */
-  editHistory?: { editedBy: string; editedAt: string; changes: string[] }[];
+  /** {editedBy, editedAt, changes} entries — see PatientSerializer.update().
+   * Newer rows store each change as {field, label, from, to}; older rows
+   * stored just the label string. Readers handle both. */
+  editHistory?: {
+    editedBy: string;
+    editedAt: string;
+    changes: (string | { field: string; label: string; from: string; to: string })[];
+  }[];
   lastEditedAt?: string | null;
   lastEditedByName?: string | null;
   /** Physician's order for how often vitals must be taken — the single

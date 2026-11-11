@@ -48,7 +48,11 @@ class ActivePatientEditTests(PatientEditTestCase):
         self.assertEqual(len(response.data['editHistory']), 1)
         entry = response.data['editHistory'][0]
         self.assertEqual(entry['editedBy'], 'Ana Cruz')
-        self.assertIn('Diagnosis', entry['changes'])
+        labels = [c['label'] for c in entry['changes']]
+        self.assertIn('Diagnosis', labels)
+        diag = next(c for c in entry['changes'] if c['label'] == 'Diagnosis')
+        self.assertEqual(diag['from'], 'Observation')
+        self.assertEqual(diag['to'], 'Pneumonia')
         self.assertIsNotNone(response.data['lastEditedAt'])
         self.assertEqual(response.data['lastEditedByName'], 'Ana Cruz')
 
@@ -67,10 +71,10 @@ class ActivePatientEditTests(PatientEditTestCase):
         )
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(len(response.data['editHistory']), 1)
-        changes = response.data['editHistory'][0]['changes']
-        self.assertIn('Diagnosis', changes)
-        self.assertIn('Room', changes)
-        self.assertIn('Risk Level', changes)
+        labels = [c['label'] for c in response.data['editHistory'][0]['changes']]
+        self.assertIn('Diagnosis', labels)
+        self.assertIn('Room', labels)
+        self.assertIn('Risk Level', labels)
 
     def test_editing_vitals_is_logged(self):
         response = self.client.patch(
@@ -78,9 +82,9 @@ class ActivePatientEditTests(PatientEditTestCase):
             {'vitalSigns': {'heartRate': 95, 'bloodPressure': '130/85'}}, format='json',
         )
         self.assertEqual(response.status_code, 200, response.content)
-        changes = response.data['editHistory'][0]['changes']
-        self.assertIn('Heart Rate', changes)
-        self.assertIn('Blood Pressure', changes)
+        labels = [c['label'] for c in response.data['editHistory'][0]['changes']]
+        self.assertIn('Heart Rate', labels)
+        self.assertIn('Blood Pressure', labels)
         self.assertEqual(response.data['vitalSigns']['heartRate'], 95)
 
     def test_edit_history_accumulates_across_multiple_edits(self):
@@ -137,8 +141,14 @@ class DischargedPatientEditTests(PatientEditTestCase):
         response = self.client.patch(
             f'/api/patients/{self.patient.patient_code}/', {'diagnosis': 'Corrected diagnosis'}, format='json',
         )
-        self.assertEqual(len(response.data['editHistory']), 1)
-        self.assertEqual(response.data['editHistory'][0]['editedBy'], 'Ana Cruz')
+        # The discharge itself now logs a Condition change, so the edit is the
+        # most recent entry on top of it.
+        history = response.data['editHistory']
+        self.assertGreaterEqual(len(history), 1)
+        latest = history[-1]
+        self.assertEqual(latest['editedBy'], 'Ana Cruz')
+        labels = [c['label'] for c in latest['changes']]
+        self.assertIn('Diagnosis', labels)
 
     def test_editing_a_discharged_patients_diagnosis_syncs_into_the_closed_visit(self):
         self.client.patch(

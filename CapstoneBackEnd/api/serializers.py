@@ -1116,6 +1116,8 @@ PATIENT_EDIT_LOG_LABELS = {
     'room': 'Room',
     'diagnosis': 'Diagnosis',
     'risk_level': 'Risk Level',
+    'status': 'Condition',
+    'allergies': 'Allergies',
     'attending_physician': 'Attending Physician',
     'medical_record_number': 'Medical Record Number',
     'first_name': 'First Name',
@@ -1137,6 +1139,25 @@ PATIENT_EDIT_LOG_LABELS = {
     'height_cm': 'Height',
     'weight_kg': 'Weight',
 }
+
+# Human-readable value for a tracked field, for the before -> after shown in
+# the patient activity history (e.g. "Low" not "low", a joined allergy list).
+_PATIENT_FIELD_DISPLAY = {
+    'risk_level': dict(Patient.RISK_CHOICES),
+    'status': dict(Patient.STATUS_CHOICES),
+    'gender': {},
+}
+
+
+def patient_field_display(attr, value):
+    if value in (None, ''):
+        return ''
+    if isinstance(value, (list, tuple)):
+        return ', '.join(str(v) for v in value) if value else 'None'
+    mapping = _PATIENT_FIELD_DISPLAY.get(attr)
+    if mapping and value in mapping:
+        return mapping[value]
+    return str(value)
 
 
 class PatientSerializer(serializers.ModelSerializer):
@@ -1489,14 +1510,25 @@ class PatientSerializer(serializers.ModelSerializer):
         monitoring_basis = validated_data.pop('vitals_monitoring_basis', None)
         self._apply_vitals(validated_data)
 
-        changed_labels = []
+        # Each change is logged with its before -> after value (field, label,
+        # from, to) for the patient activity history. Older rows stored only a
+        # list of label strings; the frontend reads both shapes.
+        changes = []
         for attr, value in validated_data.items():
             label = PATIENT_EDIT_LOG_LABELS.get(attr)
-            if label and getattr(instance, attr) != value:
-                changed_labels.append(label)
+            old = getattr(instance, attr)
+            if label and old != value:
+                changes.append(
+                    {
+                        'field': attr,
+                        'label': label,
+                        'from': patient_field_display(attr, old),
+                        'to': patient_field_display(attr, value),
+                    }
+                )
             setattr(instance, attr, value)
 
-        if changed_labels:
+        if changes:
             request = self.context.get('request')
             editor = (
                 nurse_display_name(request.user)
@@ -1508,7 +1540,7 @@ class PatientSerializer(serializers.ModelSerializer):
                 {
                     'editedBy': editor,
                     'editedAt': timezone.now().isoformat(),
-                    'changes': changed_labels,
+                    'changes': changes,
                 }
             )
             instance.edit_history = history
@@ -1528,7 +1560,7 @@ class PatientSerializer(serializers.ModelSerializer):
         # even though the card itself now looks right. Status is never
         # touched here — editing a discharged patient's record never
         # readmits them; that's PatientViewSet.readmit's job alone.
-        if instance.status == 'discharged' and changed_labels:
+        if instance.status == 'discharged' and changes:
             visit = instance.visits.filter(discharge_date__isnull=False).order_by('-discharge_date').first()
             if visit is not None:
                 visit.diagnosis = instance.diagnosis
