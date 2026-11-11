@@ -10,6 +10,8 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from .models import (
+    Department,
+    Doctor,
     KardexMedication,
     Notification,
     NurseProfile,
@@ -84,6 +86,21 @@ class PatientUpdateTests(TestCase):
         self.client.force_authenticate(self.staff)
         self.client.post('/api/notifications/mark_all_read/')
         self.assertTrue(Notification.objects.get(recipient=self.staff, requires_ack=True).is_read is False)
+
+    def test_adding_a_doctor_writes_to_patient_history(self):
+        dept = Department.objects.create(name='Cardiology')
+        doc = Doctor.objects.create(full_name='Dr. House', department=dept, status='active')
+        res = self.client.post(
+            f'/api/patients/{self.patient.patient_code}/assigned-doctors/',
+            {'doctorIds': [doc.id]}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        row = PatientUpdate.objects.filter(
+            patient=self.patient, field_name='Attending Doctors', source='system',
+        ).first()
+        self.assertIsNotNone(row)
+        self.assertIn('Dr. House', row.new_value)
+        self.assertEqual(row.old_value, '—')
 
     def test_kardex_medication_add_writes_to_patient_history(self):
         res = self.client.post(

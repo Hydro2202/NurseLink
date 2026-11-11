@@ -30,6 +30,8 @@ import {
   CheckCircle2,
   History,
   FolderOpen,
+  LayoutGrid,
+  Table2,
 } from 'lucide-react-native';
 import {
   fetchTasks,
@@ -125,6 +127,33 @@ export function taskDueChip(task: Task): { label: string; color: string } | null
   return null;
 }
 
+// Card / Table layout for the task list, remembered per device (same pattern
+// as the Patients screen; wrapped in try/catch because localStorage can throw
+// or be unavailable on native / private windows).
+type TaskViewMode = 'card' | 'table';
+const TASK_VIEW_KEY = 'nurselink.tasksViewMode';
+function loadTaskView(): TaskViewMode {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const v = localStorage.getItem(TASK_VIEW_KEY);
+      if (v === 'card' || v === 'table') return v;
+    }
+  } catch {
+    // ignore — fall back to the default
+  }
+  return 'card';
+}
+// Fixed column widths for the Table view (scrolls horizontally on narrow
+// screens). Index order matches the header row.
+const TASK_TABLE_COLS = [
+  { width: 240 }, // Task
+  { width: 180 }, // Patient
+  { width: 110 }, // Priority
+  { width: 150 }, // Due
+  { width: 130 }, // Status
+  { width: 160 }, // Nurse
+];
+
 export default function TasksPage() {
   const params = useLocalSearchParams<{
     taskId?: string;
@@ -196,6 +225,16 @@ export default function TasksPage() {
   // branch of filteredTasks' sort below.
   const [sortBy, setSortBy] = useState<SortBy>('priority');
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
+  // Card / Table layout switch, remembered per device (see TASK_VIEW_KEY).
+  const [taskViewMode, setTaskViewModeState] = useState<TaskViewMode>(loadTaskView);
+  const setTaskViewMode = useCallback((mode: TaskViewMode) => {
+    setTaskViewModeState(mode);
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(TASK_VIEW_KEY, mode);
+    } catch {
+      // ignore storage failures — the choice still applies this session
+    }
+  }, []);
 
   const loadFolders = useCallback(async () => {
     try {
@@ -732,6 +771,27 @@ export default function TasksPage() {
             placeholder="Sort by"
             style={styles.sortSelect}
           />
+          {/* Card / Table layout switch — remembered per device. */}
+          <View style={styles.viewSwitch} accessibilityRole="radiogroup">
+            {([
+              { key: 'card', icon: LayoutGrid, label: 'Card view' },
+              { key: 'table', icon: Table2, label: 'Table view' },
+            ] as const).map(({ key, icon: Icon, label }) => {
+              const active = taskViewMode === key;
+              return (
+                <Pressable
+                  key={key}
+                  onPress={() => setTaskViewMode(key)}
+                  style={[styles.viewSwitchBtn, active && styles.viewSwitchBtnActive]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={label}
+                >
+                  <Icon size={16} color={active ? Colors.blue600 : Colors.gray500} />
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
 
         {view === 'all' ? (
@@ -792,6 +852,58 @@ export default function TasksPage() {
                 </Text>
               </CardContent>
             </Card>
+          ) : taskViewMode === 'table' ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tableScroll}>
+              <View>
+                <View style={styles.tableHeaderRow}>
+                  {['Task', 'Patient', 'Priority', 'Due', 'Status', 'Nurse'].map((h, i) => (
+                    <Text key={h} style={[styles.tableHeadCell, { width: TASK_TABLE_COLS[i].width }]} numberOfLines={1}>
+                      {h}
+                    </Text>
+                  ))}
+                </View>
+                {paged.pageItems.map((task) => (
+                  <Pressable
+                    key={task.id}
+                    onPress={() => handleEditTask(task)}
+                    style={({ hovered }: { hovered?: boolean }) => [styles.tableRow, hovered && styles.tableRowHover]}
+                    accessibilityLabel={`Open task ${task.title}`}
+                  >
+                    <View style={[styles.tableCell, { width: TASK_TABLE_COLS[0].width }]}>
+                      <Text style={styles.tableCellStrong} numberOfLines={2}>
+                        {getCategoryIcon(task.category)} {task.title}
+                      </Text>
+                    </View>
+                    <Text style={[styles.tableCellText, { width: TASK_TABLE_COLS[1].width }]} numberOfLines={2}>
+                      {task.patientName} ({task.patientId})
+                    </Text>
+                    <View style={[styles.tableCell, { width: TASK_TABLE_COLS[2].width }]}>
+                      <Text style={[styles.tableBadgeText, { color: RISK_COLORS[task.priority] || Colors.gray600 }]}>
+                        {RISK_LABELS[task.priority] || task.priority}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.tableCellText,
+                        { width: TASK_TABLE_COLS[3].width },
+                        isTaskOverdue(task) && styles.metaTextOverdue,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {formatDueDate(task.dueDate) || '—'}
+                      {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
+                      {formatTime12(task.dueTime)}
+                    </Text>
+                    <View style={[styles.tableCell, { width: TASK_TABLE_COLS[4].width }]}>
+                      <TaskStatusBadge status={task.status} />
+                    </View>
+                    <Text style={[styles.tableCellText, { width: TASK_TABLE_COLS[5].width }]} numberOfLines={1}>
+                      {task.assignedTo || 'Unassigned'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </ScrollView>
           ) : (
             paged.pageItems.map((task) => (
               <View
@@ -1353,6 +1465,18 @@ const styles = StyleSheet.create({
   list: {
     gap: 12,
   },
+  viewSwitch: { flexDirection: 'row', borderWidth: 1, borderColor: Colors.gray200, borderRadius: 10, overflow: 'hidden', backgroundColor: Colors.white },
+  viewSwitchBtn: { width: 38, minHeight: 42, alignItems: 'center', justifyContent: 'center' },
+  viewSwitchBtnActive: { backgroundColor: '#EAF0FF' },
+  tableScroll: { borderWidth: 1, borderColor: Colors.gray200, borderRadius: Radius.lg, backgroundColor: Colors.white },
+  tableHeaderRow: { flexDirection: 'row', backgroundColor: Colors.gray50, borderBottomWidth: 1, borderBottomColor: Colors.gray200, paddingVertical: 10, paddingHorizontal: 8 },
+  tableHeadCell: { fontSize: 11, fontWeight: '800', color: Colors.gray600, textTransform: 'uppercase', letterSpacing: 0.4, paddingHorizontal: 6 },
+  tableRow: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: Colors.gray100, paddingVertical: 10, paddingHorizontal: 8 },
+  tableRowHover: { backgroundColor: Colors.gray50 },
+  tableCell: { paddingHorizontal: 6 },
+  tableCellStrong: { fontSize: 13, fontWeight: '700', color: Colors.gray900, paddingHorizontal: 6 },
+  tableCellText: { fontSize: 12.5, color: Colors.gray700, paddingHorizontal: 6 },
+  tableBadgeText: { fontSize: 12, fontWeight: '800' },
   empty: {
     paddingVertical: 48,
     alignItems: 'center',

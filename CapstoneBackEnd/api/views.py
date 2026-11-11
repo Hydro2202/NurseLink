@@ -3187,10 +3187,14 @@ class PatientViewSet(viewsets.ModelViewSet):
                 {'doctorIds': f'Doctor(s) not found: {", ".join(str(m) for m in missing)}.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        currently_active_ids = set(
+        # Snapshot the care team before the change, so a real change can be
+        # recorded in the patient's activity history (before -> after).
+        previous_doctors = [
+            pd.doctor for pd in
             PatientDoctor.objects.filter(patient=patient, status='active')
-            .values_list('doctor_id', flat=True)
-        )
+            .select_related('doctor')
+        ]
+        currently_active_ids = {d.pk for d in previous_doctors}
         newly_added_ids = found_ids - currently_active_ids
         inactive = [d.full_name for d in doctors if d.pk in newly_added_ids and d.status != 'active']
         if inactive:
@@ -3214,6 +3218,22 @@ class PatientViewSet(viewsets.ModelViewSet):
             PatientDoctor.objects.filter(patient=patient, status='active')
             .select_related('doctor', 'doctor__department')
         ]
+        # Record a care-team change (addition or removal of a doctor) in the
+        # patient's activity history, so the "reflect changes on the patient"
+        # trail covers attending physicians too — not just room/meds/allergies.
+        before_names = sorted(d.full_name for d in previous_doctors)
+        after_names = sorted(d.full_name for d in active_doctors)
+        if before_names != after_names:
+            record_patient_update(
+                patient, request.user,
+                [{
+                    'field': 'attending_doctors',
+                    'label': 'Attending Doctors',
+                    'from': ', '.join(before_names) or '—',
+                    'to': ', '.join(after_names) or '—',
+                }],
+                source='system',
+            )
         return Response(DoctorSerializer(active_doctors, many=True).data)
 
     @extend_schema(

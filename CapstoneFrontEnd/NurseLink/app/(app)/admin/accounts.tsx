@@ -16,6 +16,8 @@ import {
   Pencil,
   Phone,
   Unlock,
+  LayoutGrid,
+  Table2,
 } from 'lucide-react-native';
 import {
   fetchAdminAccounts,
@@ -81,6 +83,31 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// Card / Table layout for the accounts list, remembered per device (same
+// pattern as the Patients and Tasks screens).
+type AccountViewMode = 'card' | 'table';
+const ACCOUNT_VIEW_KEY = 'nurselink.accountsViewMode';
+function loadAccountView(): AccountViewMode {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const v = localStorage.getItem(ACCOUNT_VIEW_KEY);
+      if (v === 'card' || v === 'table') return v;
+    }
+  } catch {
+    // ignore — fall back to the default
+  }
+  return 'card';
+}
+// Fixed column widths for the Table view (scrolls horizontally on narrow
+// screens). Index order matches the header row.
+const ACCOUNT_TABLE_COLS = [
+  { width: 200 }, // Name
+  { width: 230 }, // Email
+  { width: 120 }, // Role
+  { width: 120 }, // Status
+  { width: 160 }, // Department
+];
+
 export default function AdminAccountsPage() {
   const params = useLocalSearchParams<{ status?: string }>();
   const toast = useToast();
@@ -91,6 +118,15 @@ export default function AdminAccountsPage() {
   const [statusFilter, setStatusFilter] = useState((params.status as string) || 'all');
   const [roleFilter, setRoleFilter] = useState('all');
   const [selected, setSelected] = useState<AdminAccount | null>(null);
+  const [accountViewMode, setAccountViewModeState] = useState<AccountViewMode>(loadAccountView);
+  const setAccountViewMode = useCallback((mode: AccountViewMode) => {
+    setAccountViewModeState(mode);
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(ACCOUNT_VIEW_KEY, mode);
+    } catch {
+      // ignore storage failures — the choice still applies this session
+    }
+  }, []);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [passwordOpen, setPasswordOpen] = useState(false);
@@ -416,7 +452,30 @@ export default function AdminAccountsPage() {
             <Text style={styles.title}>Accounts</Text>
             <Text style={styles.subtitle}>Every nurse and head nurse account, regardless of status.</Text>
           </View>
-          <PrintButton label="Print list" onPrint={printList} disabled={loading} />
+          <View style={styles.titleActions}>
+            {/* Card / Table layout switch — remembered per device. */}
+            <View style={styles.viewSwitch} accessibilityRole="radiogroup">
+              {([
+                { key: 'card', icon: LayoutGrid, label: 'Card view' },
+                { key: 'table', icon: Table2, label: 'Table view' },
+              ] as const).map(({ key, icon: Icon, label }) => {
+                const active = accountViewMode === key;
+                return (
+                  <Pressable
+                    key={key}
+                    onPress={() => setAccountViewMode(key)}
+                    style={[styles.viewSwitchBtn, active && styles.viewSwitchBtnActive]}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={label}
+                  >
+                    <Icon size={16} color={active ? Colors.blue600 : Colors.gray500} />
+                  </Pressable>
+                );
+              })}
+            </View>
+            <PrintButton label="Print list" onPrint={printList} disabled={loading} />
+          </View>
         </View>
 
         <Input
@@ -437,6 +496,43 @@ export default function AdminAccountsPage() {
           <ActivityIndicator style={{ marginTop: 24 }} color={Colors.blue600} />
         ) : filtered.length === 0 ? (
           <Text style={styles.empty}>No accounts match.</Text>
+        ) : accountViewMode === 'table' ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tableScroll}>
+            <View>
+              <View style={styles.tableHeaderRow}>
+                {['Name', 'Email', 'Role', 'Status', 'Department'].map((h, i) => (
+                  <Text key={h} style={[styles.tableHeadCell, { width: ACCOUNT_TABLE_COLS[i].width }]} numberOfLines={1}>
+                    {h}
+                  </Text>
+                ))}
+              </View>
+              {paged.pageItems.map((account) => (
+                <Pressable
+                  key={account.id}
+                  onPress={() => void openAccount(account)}
+                  style={({ hovered }: { hovered?: boolean }) => [styles.tableRow, hovered && styles.tableRowHover]}
+                  accessibilityLabel={`Open account ${account.name}`}
+                >
+                  <View style={[styles.tableCell, { width: ACCOUNT_TABLE_COLS[0].width }]}>
+                    <Text style={styles.tableCellStrong} numberOfLines={1}>{account.name}</Text>
+                    {!account.isActiveStaff ? <Text style={styles.tableCellMuted}>deactivated</Text> : null}
+                  </View>
+                  <Text style={[styles.tableCellText, { width: ACCOUNT_TABLE_COLS[1].width }]} numberOfLines={1}>
+                    {account.email}
+                  </Text>
+                  <View style={[styles.tableCell, { width: ACCOUNT_TABLE_COLS[2].width }]}>
+                    <Badge variant={ROLE_BADGE[account.role].variant}>{ROLE_BADGE[account.role].label}</Badge>
+                  </View>
+                  <View style={[styles.tableCell, { width: ACCOUNT_TABLE_COLS[3].width }]}>
+                    <Badge variant={STATUS_VARIANT[account.approvalStatus]}>{account.approvalStatus}</Badge>
+                  </View>
+                  <Text style={[styles.tableCellText, { width: ACCOUNT_TABLE_COLS[4].width }]} numberOfLines={1}>
+                    {account.department || '—'}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </ScrollView>
         ) : (
           <View style={styles.list}>
             {paged.pageItems.map((account) => (
@@ -789,6 +885,19 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   content: { padding: 16, paddingBottom: 100, gap: 12 },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' },
+  titleActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  viewSwitch: { flexDirection: 'row', borderWidth: 1, borderColor: Colors.gray200, borderRadius: 10, overflow: 'hidden', backgroundColor: Colors.white },
+  viewSwitchBtn: { width: 38, minHeight: 42, alignItems: 'center', justifyContent: 'center' },
+  viewSwitchBtnActive: { backgroundColor: '#EAF0FF' },
+  tableScroll: { borderWidth: 1, borderColor: Colors.gray200, borderRadius: Radius.lg, backgroundColor: Colors.white },
+  tableHeaderRow: { flexDirection: 'row', backgroundColor: Colors.gray50, borderBottomWidth: 1, borderBottomColor: Colors.gray200, paddingVertical: 10, paddingHorizontal: 8 },
+  tableHeadCell: { fontSize: 11, fontWeight: '800', color: Colors.gray600, textTransform: 'uppercase', letterSpacing: 0.4, paddingHorizontal: 6 },
+  tableRow: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: Colors.gray100, paddingVertical: 10, paddingHorizontal: 8 },
+  tableRowHover: { backgroundColor: Colors.gray50 },
+  tableCell: { paddingHorizontal: 6, justifyContent: 'center' },
+  tableCellStrong: { fontSize: 13, fontWeight: '700', color: Colors.gray900, paddingHorizontal: 6 },
+  tableCellText: { fontSize: 12.5, color: Colors.gray700, paddingHorizontal: 6 },
+  tableCellMuted: { fontSize: 11, color: Colors.gray500, paddingHorizontal: 6, marginTop: 1 },
   title: { fontSize: 20, fontWeight: '900', color: Colors.gray900 },
   subtitle: { fontSize: 12.5, color: Colors.mutedForeground, marginTop: 2 },
   empty: { textAlign: 'center', color: Colors.mutedForeground, marginTop: 32, fontSize: 13 },
