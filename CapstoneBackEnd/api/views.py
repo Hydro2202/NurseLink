@@ -35,7 +35,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .email_validation import EmailValidationError
-from .duty_status import current_duties, duty_fields, today_overtime_hours
+from .duty_status import current_duties, duty_fields, today_overtime_hours, nurse_ids_on_duty_now, duty_is_on_duty_now
 from .presence import clear_last_seen, presence_fields, touch_last_seen
 from . import admin_audit, task_events
 from .names import full_name, name_match_q, name_variants
@@ -7055,6 +7055,10 @@ class WorkloadView(APIView):
         # last assigned to them. A shift is shown only while they have a duty.
         duty_by_nurse = current_duties(nurse_ids)
         overtime_by_nurse = today_overtime_hours(nurse_ids)
+        # The one authoritative "on shift right now" set — the same backend
+        # helper the Duty Roster reads (see duty_status.nurse_ids_on_duty_now),
+        # so the Nurse Overview's On Duty / Off Duty can never drift from it.
+        on_duty_now_ids = nurse_ids_on_duty_now()
 
         data = []
         for nurse in nurses:
@@ -7087,6 +7091,10 @@ class WorkloadView(APIView):
                     'overtimeHours': overtime_hours,
                     'presence': presence,
                     'lastSeenAt': last_seen_at,
+                    # Authoritative: clocked in and within their shift right now,
+                    # not merely assigned/approved. Drives the dashboard's
+                    # On Duty / Off Duty.
+                    'onDutyNow': nurse.pk in on_duty_now_ids,
                 }
             )
         return Response([filter_nurse_fields(row, request.user) for row in data])

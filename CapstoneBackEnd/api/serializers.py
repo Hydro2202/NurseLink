@@ -3638,6 +3638,10 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
     scheduledEndAt = serializers.SerializerMethodField()
     scheduleStatus = serializers.SerializerMethodField()
     scheduleWindowLabel = serializers.SerializerMethodField()
+    # Authoritative "on shift right now" for this duty — the same backend
+    # predicate the dashboard's Nurse Overview reads, so the Duty Roster's
+    # "On duty now" can never disagree with it.
+    isOnDutyNow = serializers.SerializerMethodField()
     # Absence metadata — populated only when a head nurse marks this shift
     # Absent (DutyAssignmentViewSet.mark_absent). Read-only; the shift row
     # itself is never deleted.
@@ -3656,8 +3660,13 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
             'actualEndRecordedBy',
             'markedAbsentBy', 'markedAbsentAt', 'absenceReason',
             'scheduledStartAt', 'scheduledEndAt', 'scheduleStatus', 'scheduleWindowLabel',
+            'isOnDutyNow',
             'createdBy', 'createdAt', 'updatedAt',
         ]
+
+    def get_isOnDutyNow(self, obj):
+        from .duty_status import duty_is_on_duty_now
+        return duty_is_on_duty_now(obj)
 
     def get_markedAbsentBy(self, obj):
         if not obj.marked_absent_by_id:

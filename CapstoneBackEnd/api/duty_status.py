@@ -88,6 +88,45 @@ def today_overtime_hours(nurse_ids):
     return totals
 
 
+# A nurse still clocked in this long past their scheduled end reads as a
+# forgotten clock-out, not someone still on duty — mirrors the Duty Roster
+# screen's own MISSED_CLOCKOUT_MINUTES so the two never disagree.
+DUTY_MISSED_CLOCKOUT_MINUTES = 120
+
+
+def duty_is_on_duty_now(duty, now=None):
+    """
+    True when THIS duty means the nurse is actually on shift right now:
+    they clocked in (actual_start_time set), have not clocked out
+    (actual_end_time null), the shift has started, and they are not more than
+    DUTY_MISSED_CLOCKOUT_MINUTES past its scheduled end. Cancelled duties never
+    count. This is the single predicate both the Head Nurse dashboard's Nurse
+    Overview and the Duty Roster's "On duty now" read, so the two screens can
+    never disagree — being assigned, or approved/active, is not "on duty".
+    """
+    if duty is None or duty.status == 'cancelled':
+        return False
+    if duty.actual_start_time is None or duty.actual_end_time is not None:
+        return False
+    now = now or timezone.now()
+    start = duty.scheduled_start_datetime()
+    end = duty.scheduled_end_datetime()
+    return start <= now <= end + timedelta(minutes=DUTY_MISSED_CLOCKOUT_MINUTES)
+
+
+def nurse_ids_on_duty_now():
+    """Set of user ids that are on shift right now, per duty_is_on_duty_now.
+    Looks at today's and yesterday's duties (a night shift crosses midnight)."""
+    now = timezone.now()
+    today = local_today()
+    duties = (
+        DutyAssignment.objects.filter(duty_date__in=(today, today - timedelta(days=1)))
+        .exclude(status='cancelled')
+        .filter(actual_start_time__isnull=False, actual_end_time__isnull=True)
+    )
+    return {d.nurse_id for d in duties if duty_is_on_duty_now(d, now)}
+
+
 def nurses_on_duty_now(department_id=None):
     """
     User ids of everyone on shift right now: clocked in and not out, or inside

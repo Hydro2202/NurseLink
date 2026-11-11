@@ -125,9 +125,6 @@ function combine(dateIso: string, hhmm: string): Date {
   const [h, m] = hhmm.split(':').map(Number);
   return new Date(y, mo - 1, da, h, m, 0, 0);
 }
-function scheduledStart(a: DutyAssignment): Date {
-  return combine(a.dutyDate, a.startTime.slice(0, 5));
-}
 function scheduledEnd(a: DutyAssignment): Date {
   const start = combine(a.dutyDate, a.startTime.slice(0, 5));
   let end = combine(a.dutyDate, a.endTime.slice(0, 5));
@@ -391,18 +388,11 @@ export default function DutyRosterPage() {
     const q = search.trim().toLowerCase();
     return assignments
       .filter((a) => {
-        const attendance = attendanceStatus(a, now);
-        // Must have actually clocked in (attendanceStatus is null until the
-        // nurse taps Start Shift), so a scheduled-but-not-started shift never
-        // counts as on duty.
-        if (attendance !== 'live' && attendance !== 'overtimeLive') return false;
-        // A clock-in is allowed a few minutes before the scheduled start
-        // (DUTY_START_BUFFER_MINUTES); don't call that "on duty now" until the
-        // shift has actually begun.
-        if (now.getTime() < scheduledStart(a).getTime()) return false;
-        // A shift someone forgot to clock out of (hours past its end) isn't
-        // someone who is on duty right now — the roster flags it separately.
-        if (isMissedClockout(a, now)) return false;
+        // Authoritative "on shift right now" comes from the backend
+        // (isOnDutyNow — clocked in, within the shift, not a forgotten
+        // clock-out), the SAME helper the dashboard's Nurse Overview reads, so
+        // the two screens can never disagree.
+        if (!a.isOnDutyNow) return false;
         if (shiftFilter && a.shift !== shiftFilter) return false;
         if (deptFilter && String(a.departmentId) !== deptFilter) return false;
         if (
@@ -417,7 +407,7 @@ export default function DutyRosterPage() {
         return true;
       })
       .sort((a, b) => a.departmentName.localeCompare(b.departmentName) || a.nurseName.localeCompare(b.nurseName));
-  }, [assignments, now, shiftFilter, deptFilter, search]);
+  }, [assignments, shiftFilter, deptFilter, search]);
 
   const todaysActive = useMemo(
     () => assignments.filter((a) => a.dutyDate === today && a.status !== 'cancelled'),

@@ -1,11 +1,16 @@
 import React, { useMemo, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, Modal, ScrollView } from 'react-native';
-import { Users, X, Stethoscope, ClipboardList, CheckCircle2, AlertCircle, ChevronRight } from 'lucide-react-native';
+import { Users, X, Stethoscope, ClipboardList, CheckCircle2, AlertCircle, ChevronRight, ArrowRight } from 'lucide-react-native';
 import { Card, CardContent } from '../Card';
 import { Colors, Radius } from '../../constants/colors';
 import type { Nurse, Patient, WorkloadData } from '../../types/domain';
 
 type Filter = 'all' | 'onDuty' | 'offDuty';
+
+// Dashboard list cards show a few rows and scroll inside the card for the
+// rest, so the page itself never grows with the data.
+const VISIBLE_ROWS = 5;
+const ROW_HEIGHT = 58;
 
 const SHIFT_LABEL: Record<string, string> = {
   morning: 'Morning', afternoon: 'Afternoon', night: 'Night', '': '',
@@ -27,18 +32,23 @@ export function NurseOverviewSection({
   workload,
   patients,
   onOpenPatient,
+  onOpenDuty,
 }: {
   nurses: Nurse[];
   workload: WorkloadData[];
   patients: Patient[];
   onOpenPatient: (patientId: string) => void;
+  onOpenDuty: () => void;
 }) {
   const [filter, setFilter] = useState<Filter>('all');
   const [selected, setSelected] = useState<Nurse | null>(null);
 
   const onDuty = useMemo(() => {
     const byId = new Map(workload.map((w) => [w.nurseId, w]));
-    return { ids: new Set(workload.map((w) => w.nurseId)), byId };
+    // On Duty = the backend's authoritative clocked-in-and-on-shift flag, NOT
+    // merely appearing in the workload list (every active nurse does). This is
+    // what the "everyone shows On Duty" bug came from.
+    return { ids: new Set(workload.filter((w) => w.onDutyNow).map((w) => w.nurseId)), byId };
   }, [workload]);
 
   const rows = useMemo(() => {
@@ -48,10 +58,12 @@ export function NurseOverviewSection({
       .sort((a, b) => Number(b.live) - Number(a.live) || a.nurse.name.localeCompare(b.nurse.name));
   }, [nurses, onDuty, filter]);
 
-  const counts = useMemo(
-    () => ({ all: nurses.length, onDuty: onDuty.ids.size, offDuty: nurses.length - onDuty.ids.size }),
-    [nurses, onDuty]
-  );
+  const counts = useMemo(() => {
+    // Derive both counts from the displayed nurse list so the tab numbers
+    // always match the rows, and On + Off always equals All.
+    const onDutyCount = nurses.filter((n) => onDuty.ids.has(n.id)).length;
+    return { all: nurses.length, onDuty: onDutyCount, offDuty: nurses.length - onDutyCount };
+  }, [nurses, onDuty]);
 
   const selectedPatients = useMemo(
     () =>
@@ -88,6 +100,10 @@ export function NurseOverviewSection({
         <View style={styles.header}>
           <Users size={18} color={Colors.blue600} />
           <Text style={styles.title}>Nurse Overview</Text>
+          <Pressable onPress={onOpenDuty} style={styles.link} hitSlop={6} accessibilityRole="button">
+            <Text style={styles.linkText}>Nurse Duty</Text>
+            <ArrowRight size={13} color={Colors.blue600} />
+          </Pressable>
         </View>
         <View style={styles.tabs}>
           {tab('all', 'All')}
@@ -98,7 +114,12 @@ export function NurseOverviewSection({
         {rows.length === 0 ? (
           <Text style={styles.empty}>No nurses match this filter.</Text>
         ) : (
-          <View style={styles.list}>
+          <ScrollView
+            style={rows.length > VISIBLE_ROWS ? { maxHeight: VISIBLE_ROWS * ROW_HEIGHT } : undefined}
+            contentContainerStyle={styles.list}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={rows.length > VISIBLE_ROWS}
+          >
             {rows.map(({ nurse, live }) => (
               <Pressable
                 key={nurse.id}
@@ -125,7 +146,7 @@ export function NurseOverviewSection({
                 <ChevronRight size={16} color={Colors.gray300} />
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
         )}
       </CardContent>
 
@@ -208,7 +229,9 @@ function Metric({ icon: Icon, label, value, color }: { icon: React.ComponentType
 const styles = StyleSheet.create({
   body: { padding: 16, gap: 12 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  title: { fontSize: 15, fontWeight: '800', color: Colors.foreground },
+  title: { fontSize: 15, fontWeight: '800', color: Colors.foreground, flex: 1 },
+  link: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  linkText: { fontSize: 12.5, fontWeight: '700', color: Colors.blue600 },
   tabs: { flexDirection: 'row', backgroundColor: Colors.gray100, borderRadius: 10, padding: 4, gap: 4 },
   tab: { flex: 1, alignItems: 'center', paddingVertical: 7, borderRadius: 8 },
   tabActive: { backgroundColor: Colors.white, ...( { shadowColor: '#0F172A', shadowOpacity: 0.08, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 1 }) },

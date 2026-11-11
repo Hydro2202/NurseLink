@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import { CalendarClock, ArrowRight, Activity, UserPlus, LogIn, LogOut, Sun, Moon, Sunset } from 'lucide-react-native';
 import { Card, CardContent } from '../Card';
 import { Colors, Radius } from '../../constants/colors';
@@ -20,6 +20,11 @@ const SHIFT_ICON: Record<string, React.ComponentType<{ size?: number; color?: st
   morning: Sun, afternoon: Sunset, night: Moon,
 };
 
+// Dashboard list cards show a few rows and scroll inside the card for the
+// rest, so the page itself never grows with the data.
+const VISIBLE_ROWS = 5;
+const ROW_HEIGHT = 60;
+
 /**
  * Today's duty schedule at a glance — real DutyAssignment rows for today,
  * each showing the nurse, shift and department, with a link to the full
@@ -36,8 +41,7 @@ export function DutyRosterSummary({
     () =>
       duty
         .filter((d) => d.status !== 'cancelled')
-        .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.nurseName.localeCompare(b.nurseName))
-        .slice(0, 6),
+        .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.nurseName.localeCompare(b.nurseName)),
     [duty]
   );
 
@@ -55,7 +59,12 @@ export function DutyRosterSummary({
         {rows.length === 0 ? (
           <Text style={styles.empty}>No duty scheduled for today.</Text>
         ) : (
-          <View style={styles.list}>
+          <ScrollView
+            style={rows.length > VISIBLE_ROWS ? { maxHeight: VISIBLE_ROWS * ROW_HEIGHT } : undefined}
+            contentContainerStyle={styles.list}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={rows.length > VISIBLE_ROWS}
+          >
             {rows.map((d) => {
               const Icon = SHIFT_ICON[d.shift] || CalendarClock;
               const live = !!d.actualStartTime && !d.actualEndTime;
@@ -86,7 +95,7 @@ export function DutyRosterSummary({
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
         )}
       </CardContent>
     </Card>
@@ -132,7 +141,7 @@ export function RecentActivitySection({
     return list
       .filter((i) => !isNaN(i.at.getTime()))
       .sort((a, b) => b.at.getTime() - a.at.getTime())
-      .slice(0, 8);
+      .slice(0, 20);
   }, [assignments, duty]);
 
   return (
@@ -145,7 +154,12 @@ export function RecentActivitySection({
         {items.length === 0 ? (
           <Text style={styles.empty}>No recent activity yet.</Text>
         ) : (
-          <View style={styles.list}>
+          <ScrollView
+            style={items.length > VISIBLE_ROWS ? { maxHeight: VISIBLE_ROWS * ROW_HEIGHT } : undefined}
+            contentContainerStyle={styles.list}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={items.length > VISIBLE_ROWS}
+          >
             {items.map((i) => {
               const Icon = i.icon;
               return (
@@ -158,7 +172,7 @@ export function RecentActivitySection({
                 </View>
               );
             })}
-          </View>
+          </ScrollView>
         )}
       </CardContent>
     </Card>

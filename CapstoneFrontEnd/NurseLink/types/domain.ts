@@ -613,6 +613,9 @@ export interface WorkloadData {
   overtimeHours: number;
   presence?: NursePresence;
   lastSeenAt?: string | null;
+  /** Authoritative: clocked in and within their shift right now (from the
+   * backend's shared on-duty helper), NOT merely assigned/approved. */
+  onDutyNow?: boolean;
 }
 
 /** Logged-in-and-using-the-app right now — distinct from `shift`/`hasDuty`,
@@ -754,6 +757,9 @@ export interface DutyAssignment {
   scheduledEndAt?: string;
   scheduleStatus?: 'upcoming' | 'current' | 'past';
   scheduleWindowLabel?: string;
+  /** Authoritative "on shift right now" from the backend (clocked in, within
+   * the shift). Both this screen and the dashboard read it, so they agree. */
+  isOnDutyNow?: boolean;
   shift: DutyShift;
   shiftLabel: string;
   startTime: string;

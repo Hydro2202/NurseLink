@@ -337,8 +337,11 @@ export default function DashboardPage() {
   const inProgressCount = tasks.filter((t) => t.status === 'in_progress').length;
   const pendingCount = tasks.filter((t) => t.status === 'pending').length;
 
-  // Head-nurse stat values (real data only).
-  const onDutyCount = workloadData.length;
+  // Head-nurse stat values (real data only). "On duty" is the backend's
+  // authoritative clocked-in-and-on-shift flag — not merely being in the
+  // workload list (every active nurse is), which is what used to make
+  // everyone show as On Duty.
+  const onDutyCount = workloadData.filter((w) => w.onDutyNow).length;
   const totalNurses = allNurses.length;
   const offDutyCount = Math.max(0, totalNurses - onDutyCount);
   const unassignedPatients = patients.filter(
@@ -939,6 +942,7 @@ export default function DashboardPage() {
               workload={workloadData}
               patients={patients}
               onOpenPatient={() => router.push('/(app)/all-patients' as any)}
+              onOpenDuty={() => router.push('/(app)/duty-roster' as any)}
             />
           </View>
 
