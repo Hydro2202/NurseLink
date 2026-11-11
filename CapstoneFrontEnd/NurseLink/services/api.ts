@@ -15,6 +15,8 @@ import type {
   DepartmentVisit,
   Doctor,
   DutyAssignment,
+  AbsenceDetail,
+  ReassignmentResult,
   EligibleReceiverGroup,
   EligibleReferralRecipients,
   EndorsablePatient,
@@ -1060,6 +1062,10 @@ export async function markNotificationRead(id: string): Promise<AppNotification>
   return apiRequest<AppNotification>(`/notifications/${id}/mark_read/`, { method: 'POST' });
 }
 
+export async function acknowledgeNotification(id: string): Promise<AppNotification> {
+  return apiRequest<AppNotification>(`/notifications/${id}/acknowledge/`, { method: 'POST' });
+}
+
 export async function markAllNotificationsRead(): Promise<void> {
   await apiRequest('/notifications/mark_all_read/', { method: 'POST' });
 }
@@ -1185,6 +1191,44 @@ export async function endDutyAssignment(id: number): Promise<DutyAssignment> {
 export async function closeDutyAssignment(id: number): Promise<DutyAssignment> {
   return apiRequest<DutyAssignment>(`/duty-assignments/${id}/close/`, {
     method: 'POST',
+    timeoutMs: WRITE_ACTION_TIMEOUT_MS,
+  });
+}
+
+/** The absent nurse's patients + eligible replacement nurses, without changing
+ * anything — used to populate the reassignment screen. */
+export async function fetchReassignmentCandidates(
+  id: number,
+  options?: { shift?: string; departmentId?: string | number; search?: string }
+): Promise<AbsenceDetail> {
+  const params = new URLSearchParams();
+  if (options?.shift) params.set('shift', options.shift);
+  if (options?.departmentId) params.set('departmentId', String(options.departmentId));
+  if (options?.search) params.set('search', options.search);
+  const query = params.toString() ? `?${params}` : '';
+  return apiRequest<AbsenceDetail>(`/duty-assignments/${id}/reassignment-candidates/${query}`);
+}
+
+/** Mark a nurse absent for this shift. The shift row is preserved; returns the
+ * absent nurse's patients and eligible replacement nurses to reassign them. */
+export async function markDutyAbsent(id: number, reason?: string): Promise<AbsenceDetail> {
+  return apiRequest<AbsenceDetail>(`/duty-assignments/${id}/mark-absent/`, {
+    method: 'POST',
+    body: { reason: reason ?? '' },
+    timeoutMs: WRITE_ACTION_TIMEOUT_MS,
+  });
+}
+
+/** Reassign an absent nurse's patients to replacement nurses, transferring each
+ * patient's unfinished tasks. Atomic — the whole batch rolls back if invalid. */
+export async function reassignAbsentPatients(
+  id: number,
+  assignments: { patientId: string; nurseId: string }[],
+  reason?: string
+): Promise<{ results: ReassignmentResult[]; detail: AbsenceDetail }> {
+  return apiRequest(`/duty-assignments/${id}/reassign-patients/`, {
+    method: 'POST',
+    body: { assignments, reason: reason ?? '' },
     timeoutMs: WRITE_ACTION_TIMEOUT_MS,
   });
 }

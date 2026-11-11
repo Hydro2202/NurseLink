@@ -41,6 +41,7 @@ from .models import (
     VitalSigns,
 )
 from .avatar import AvatarError, normalize_avatar
+from .patient_updates import record_patient_update
 from .id_field_validation import validate_prc_id_fields
 from .handover_tasks import create_handover_tasks
 from .referral_shifts import SHIFT_LABELS
@@ -1232,6 +1233,15 @@ class PatientSerializer(serializers.ModelSerializer):
     # {editedBy, editedAt, changes} entries — see update() below. Read-only:
     # this is only ever appended to server-side, never written directly.
     editHistory = serializers.ListField(source='edit_history', read_only=True)
+    # Editable list of allergy / adverse-reaction entries. Trimmed, blanks and
+    # duplicates dropped; a change is logged and alerted like any other
+    # tracked field (see PATIENT_EDIT_LOG_LABELS / notify_patient_change).
+    allergies = serializers.ListField(
+        child=serializers.CharField(max_length=200, allow_blank=True), required=False,
+    )
+    # The structured activity history (PatientUpdate), newest first — the
+    # table that replaced edit_history. Read-only.
+    activity = serializers.SerializerMethodField(read_only=True)
     lastEditedAt = serializers.SerializerMethodField(read_only=True)
     lastEditedByName = serializers.SerializerMethodField(read_only=True)
     # Reads as Patient.vitals_monitoring_order (the active VitalSignsSchedule
@@ -1292,6 +1302,7 @@ class PatientSerializer(serializers.ModelSerializer):
             'onDutyNurseId',
             'onDutyNurseName',
             'editHistory',
+            'activity',
             'lastEditedAt',
             'lastEditedByName',
             'confirmDuplicate',
@@ -1299,11 +1310,46 @@ class PatientSerializer(serializers.ModelSerializer):
             'vitalsMonitoringBasis',
         ]
 
+    def validate_allergies(self, value):
+        # Trim, drop blanks, de-duplicate while preserving order.
+        seen, cleaned = set(), []
+        for item in value or []:
+            text = (item or '').strip()
+            if text and text.lower() not in seen:
+                seen.add(text.lower())
+                cleaned.append(text)
+        return cleaned
+
+    def _updates(self, obj):
+        # prefetched_updates is set by PatientViewSet.get_queryset; fall back to
+        # a bounded query for any caller that didn't prefetch.
+        rows = getattr(obj, 'prefetched_updates', None)
+        return rows if rows is not None else list(obj.updates.all()[:200])
+
+    def get_activity(self, obj):
+        return [
+            {
+                'field': r.field_name,
+                'from': r.old_value,
+                'to': r.new_value,
+                'by': r.changed_by_name or (full_name(r.changed_by) if r.changed_by_id else ''),
+                'at': r.changed_at.isoformat() if r.changed_at else None,
+                'source': r.source,
+            }
+            for r in self._updates(obj)
+        ]
+
     def get_lastEditedAt(self, obj):
+        rows = self._updates(obj)
+        if rows:
+            return rows[0].changed_at.isoformat() if rows[0].changed_at else None
         history = obj.edit_history or []
         return history[-1]['editedAt'] if history else None
 
     def get_lastEditedByName(self, obj):
+        rows = self._updates(obj)
+        if rows:
+            return rows[0].changed_by_name or (full_name(rows[0].changed_by) if rows[0].changed_by_id else None)
         history = obj.edit_history or []
         return history[-1]['editedBy'] if history else None
 
@@ -1528,24 +1574,20 @@ class PatientSerializer(serializers.ModelSerializer):
                 )
             setattr(instance, attr, value)
 
+        instance.save()
+
+        # Record the change to the structured PatientUpdate table (and notify
+        # the assigned nurse + head nurses) after the save, so the FK exists
+        # and the row reflects what was actually persisted. edit_history is no
+        # longer written — it stays read-only for pre-migration records.
         if changes:
             request = self.context.get('request')
-            editor = (
-                nurse_display_name(request.user)
-                if request and request.user.is_authenticated
-                else ''
+            record_patient_update(
+                instance,
+                request.user if request else None,
+                changes,
+                source='patient_form',
             )
-            history = list(instance.edit_history or [])
-            history.append(
-                {
-                    'editedBy': editor,
-                    'editedAt': timezone.now().isoformat(),
-                    'changes': changes,
-                }
-            )
-            instance.edit_history = history
-
-        instance.save()
 
         if monitoring_order is not None or monitoring_basis is not None:
             request = self.context.get('request')
@@ -3311,6 +3353,9 @@ class NotificationSerializer(serializers.ModelSerializer):
     patient = serializers.CharField(source='patient_label', required=False, allow_blank=True)
     time = serializers.SerializerMethodField()
     isRead = serializers.BooleanField(source='is_read')
+    priority = serializers.CharField(read_only=True)
+    requiresAck = serializers.BooleanField(source='requires_ack', read_only=True)
+    acknowledgedAt = serializers.DateTimeField(source='acknowledged_at', read_only=True)
     action = serializers.SerializerMethodField()
     # What happened, as opposed to how severe it looks. The app raises a popup
     # for a patient handover and only a bell entry for everything else.
@@ -3337,6 +3382,9 @@ class NotificationSerializer(serializers.ModelSerializer):
             'time',
             'createdAt',
             'isRead',
+            'priority',
+            'requiresAck',
+            'acknowledgedAt',
             'action',
         ]
         read_only_fields = fields
@@ -3590,6 +3638,12 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
     scheduledEndAt = serializers.SerializerMethodField()
     scheduleStatus = serializers.SerializerMethodField()
     scheduleWindowLabel = serializers.SerializerMethodField()
+    # Absence metadata — populated only when a head nurse marks this shift
+    # Absent (DutyAssignmentViewSet.mark_absent). Read-only; the shift row
+    # itself is never deleted.
+    markedAbsentBy = serializers.SerializerMethodField()
+    markedAbsentAt = serializers.DateTimeField(source='marked_absent_at', read_only=True)
+    absenceReason = serializers.CharField(source='absence_reason', read_only=True)
 
     class Meta:
         model = DutyAssignment
@@ -3600,9 +3654,15 @@ class DutyAssignmentSerializer(serializers.ModelSerializer):
             'totalHours', 'status', 'statusLabel', 'notes',
             'actualStartTime', 'actualEndTime', 'actualWorkedHours', 'actualOvertimeHours',
             'actualEndRecordedBy',
+            'markedAbsentBy', 'markedAbsentAt', 'absenceReason',
             'scheduledStartAt', 'scheduledEndAt', 'scheduleStatus', 'scheduleWindowLabel',
             'createdBy', 'createdAt', 'updatedAt',
         ]
+
+    def get_markedAbsentBy(self, obj):
+        if not obj.marked_absent_by_id:
+            return None
+        return full_name(obj.marked_absent_by)
 
     def get_scheduledStartAt(self, obj):
         return obj.scheduled_start_datetime().isoformat()

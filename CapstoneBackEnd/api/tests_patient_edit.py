@@ -45,14 +45,11 @@ class ActivePatientEditTests(PatientEditTestCase):
             f'/api/patients/{self.patient.patient_code}/', {'diagnosis': 'Pneumonia'}, format='json',
         )
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(len(response.data['editHistory']), 1)
-        entry = response.data['editHistory'][0]
-        self.assertEqual(entry['editedBy'], 'Ana Cruz')
-        labels = [c['label'] for c in entry['changes']]
-        self.assertIn('Diagnosis', labels)
-        diag = next(c for c in entry['changes'] if c['label'] == 'Diagnosis')
+        activity = response.data['activity']
+        diag = next(c for c in activity if c['field'] == 'Diagnosis')
         self.assertEqual(diag['from'], 'Observation')
         self.assertEqual(diag['to'], 'Pneumonia')
+        self.assertEqual(diag['by'], 'Ana Cruz')
         self.assertIsNotNone(response.data['lastEditedAt'])
         self.assertEqual(response.data['lastEditedByName'], 'Ana Cruz')
 
@@ -61,7 +58,7 @@ class ActivePatientEditTests(PatientEditTestCase):
             f'/api/patients/{self.patient.patient_code}/', {'diagnosis': 'Observation'}, format='json',
         )
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.data['editHistory'], [])
+        self.assertEqual(response.data['activity'], [])
         self.assertIsNone(response.data['lastEditedAt'])
 
     def test_editing_multiple_fields_logs_them_together_in_one_entry(self):
@@ -70,8 +67,7 @@ class ActivePatientEditTests(PatientEditTestCase):
             {'diagnosis': 'Pneumonia', 'room': 'ICU-02', 'riskLevel': 'high'}, format='json',
         )
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(len(response.data['editHistory']), 1)
-        labels = [c['label'] for c in response.data['editHistory'][0]['changes']]
+        labels = [c['field'] for c in response.data['activity']]
         self.assertIn('Diagnosis', labels)
         self.assertIn('Room', labels)
         self.assertIn('Risk Level', labels)
@@ -82,7 +78,7 @@ class ActivePatientEditTests(PatientEditTestCase):
             {'vitalSigns': {'heartRate': 95, 'bloodPressure': '130/85'}}, format='json',
         )
         self.assertEqual(response.status_code, 200, response.content)
-        labels = [c['label'] for c in response.data['editHistory'][0]['changes']]
+        labels = [c['field'] for c in response.data['activity']]
         self.assertIn('Heart Rate', labels)
         self.assertIn('Blood Pressure', labels)
         self.assertEqual(response.data['vitalSigns']['heartRate'], 95)
@@ -92,7 +88,8 @@ class ActivePatientEditTests(PatientEditTestCase):
         response = self.client.patch(
             f'/api/patients/{self.patient.patient_code}/', {'diagnosis': 'B'}, format='json',
         )
-        self.assertEqual(len(response.data['editHistory']), 2)
+        # One activity row per change — two diagnosis edits -> two rows.
+        self.assertEqual(len([c for c in response.data['activity'] if c['field'] == 'Diagnosis']), 2)
 
     def test_editing_does_not_require_touching_status(self):
         response = self.client.patch(
@@ -141,14 +138,11 @@ class DischargedPatientEditTests(PatientEditTestCase):
         response = self.client.patch(
             f'/api/patients/{self.patient.patient_code}/', {'diagnosis': 'Corrected diagnosis'}, format='json',
         )
-        # The discharge itself now logs a Condition change, so the edit is the
-        # most recent entry on top of it.
-        history = response.data['editHistory']
-        self.assertGreaterEqual(len(history), 1)
-        latest = history[-1]
-        self.assertEqual(latest['editedBy'], 'Ana Cruz')
-        labels = [c['label'] for c in latest['changes']]
-        self.assertIn('Diagnosis', labels)
+        # The discharge itself logs a Condition change; the edit is newest.
+        activity = response.data['activity']
+        self.assertGreaterEqual(len(activity), 1)
+        self.assertEqual(activity[0]['field'], 'Diagnosis')
+        self.assertEqual(activity[0]['by'], 'Ana Cruz')
 
     def test_editing_a_discharged_patients_diagnosis_syncs_into_the_closed_visit(self):
         self.client.patch(

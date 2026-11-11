@@ -61,6 +61,12 @@ export function NurseOverviewSection({
     [selected, patients]
   );
   const selectedWork = selected ? onDuty.byId.get(selected.id) : undefined;
+  const selectedShift = selectedWork?.shift || selected?.shift || '';
+  const totalTasks = selectedWork?.taskCount ?? 0;
+  const doneTasks = selectedWork?.completedTasks ?? 0;
+  const overdueTasks = selectedWork?.overdueTasks ?? 0;
+  const pendingTasks = Math.max(0, totalTasks - doneTasks - overdueTasks);
+  const completionPct = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
 
   const tab = (key: Filter, label: string) => (
     <Pressable
@@ -135,7 +141,8 @@ export function NurseOverviewSection({
                   <View style={styles.flex1}>
                     <Text style={styles.dialogName}>{selected.name}</Text>
                     <Text style={styles.dialogMeta}>
-                      {selected.department || 'No department'} · {onDuty.ids.has(selected.id) ? 'On Duty' : 'Off Duty'}
+                      {selected.department || 'No department'}
+                      {selectedShift ? ` · ${SHIFT_LABEL[selectedShift] || selectedShift} shift` : ''} · {onDuty.ids.has(selected.id) ? 'On Duty' : 'Off Duty'}
                     </Text>
                   </View>
                   <Pressable onPress={() => setSelected(null)} hitSlop={8} accessibilityLabel="Close">
@@ -145,9 +152,16 @@ export function NurseOverviewSection({
 
                 <View style={styles.metricRow}>
                   <Metric icon={Stethoscope} label="Patients" value={selectedWork?.patientCount ?? selectedPatients.length} color={Colors.blue600} />
-                  <Metric icon={ClipboardList} label="Tasks" value={selectedWork?.taskCount ?? 0} color={Colors.purple600} />
-                  <Metric icon={CheckCircle2} label="Done" value={selectedWork?.completedTasks ?? 0} color={Colors.green600} />
-                  <Metric icon={AlertCircle} label="Overdue" value={selectedWork?.overdueTasks ?? 0} color={Colors.red600} />
+                  <Metric icon={ClipboardList} label="Pending" value={pendingTasks} color={Colors.orange600} />
+                  <Metric icon={CheckCircle2} label="Done" value={doneTasks} color={Colors.green600} />
+                  <Metric icon={AlertCircle} label="Overdue" value={overdueTasks} color={Colors.red600} />
+                </View>
+                <View style={styles.completionRow}>
+                  <Text style={styles.completionLabel}>Task completion</Text>
+                  <View style={styles.completionBar}>
+                    <View style={[styles.completionFill, { width: `${completionPct}%` }]} />
+                  </View>
+                  <Text style={styles.completionPct}>{completionPct}%</Text>
                 </View>
 
                 <Text style={styles.sectionLabel}>Current patient assignments</Text>
@@ -228,6 +242,11 @@ const styles = StyleSheet.create({
   metric: { flex: 1, alignItems: 'center', gap: 2, paddingVertical: 10, backgroundColor: Colors.gray50, borderRadius: Radius.md },
   metricValue: { fontSize: 17, fontWeight: '800', color: Colors.foreground },
   metricLabel: { fontSize: 10.5, color: Colors.mutedForeground },
+  completionRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  completionLabel: { fontSize: 11.5, fontWeight: '700', color: Colors.mutedForeground },
+  completionBar: { flex: 1, height: 7, borderRadius: 4, backgroundColor: Colors.gray100, overflow: 'hidden' },
+  completionFill: { height: '100%', borderRadius: 4, backgroundColor: Colors.green600 },
+  completionPct: { fontSize: 12, fontWeight: '800', color: Colors.green700, minWidth: 34, textAlign: 'right' },
   sectionLabel: { fontSize: 11.5, fontWeight: '800', color: Colors.mutedForeground, textTransform: 'uppercase', letterSpacing: 0.5 },
   dialogList: { maxHeight: 240 },
   assignRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, paddingHorizontal: 8, borderRadius: Radius.md },

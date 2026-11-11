@@ -5,24 +5,29 @@ import { Colors, Radius, Shadows } from '../constants/colors';
 import { formatDateTime12 } from '../utils/time';
 import type { Patient } from '../types/domain';
 
-type Change = { field: string; label: string; from: string; to: string };
+type ActivityRow = { field: string; from: string; to: string; by: string; at: string | null; source: string };
 
-/** Normalises a history entry's `changes` — newer rows are {field,label,from,to}
- *  objects, older rows are plain label strings. */
-function normalizeChanges(changes: (string | Change)[]): Change[] {
-  return (changes || []).map((c) =>
-    typeof c === 'string'
-      ? { field: c, label: c, from: '', to: '' }
-      : c
-  );
+/** Flatten the legacy edit_history into the same per-change shape as the new
+ *  `activity` list, so older patients without migrated rows still show. */
+function fromEditHistory(patient: Patient | null): ActivityRow[] {
+  const out: ActivityRow[] = [];
+  for (const entry of patient?.editHistory || []) {
+    for (const c of entry.changes || []) {
+      if (typeof c === 'string') out.push({ field: c, from: '', to: '', by: entry.editedBy, at: entry.editedAt, source: 'legacy' });
+      else out.push({ field: c.label, from: c.from, to: c.to, by: entry.editedBy, at: entry.editedAt, source: 'legacy' });
+    }
+  }
+  return out.reverse();
 }
+
+const SOURCE_LABEL: Record<string, string> = { kardex: 'Kardex', patient_form: 'Patient form', system: 'System', legacy: '' };
 
 /**
  * Patient Activity History — the audit trail of changes to a patient's record
- * (room transfers, condition, diagnosis, attending physician, risk, vitals),
- * each with who made it, when, and the before -> after value. Reads the
- * patient's own edit_history (already loaded with the patient), so it opens
- * instantly with no extra request.
+ * (room transfers, condition, diagnosis, attending physician, medications,
+ * allergies, admission/discharge), each with who, when, and the before → after
+ * value. Reads the patient's `activity` list (the PatientUpdate table),
+ * already loaded with the patient, so it opens with no extra request.
  */
 export function PatientActivityModal({
   open,
@@ -33,8 +38,8 @@ export function PatientActivityModal({
   onOpenChange: (open: boolean) => void;
   patient: Patient | null;
 }) {
-  const entries = useMemo(
-    () => [...(patient?.editHistory || [])].reverse(), // newest first
+  const rows = useMemo<ActivityRow[]>(
+    () => (patient?.activity && patient.activity.length ? patient.activity : fromEditHistory(patient)),
     [patient]
   );
 
@@ -60,41 +65,34 @@ export function PatientActivityModal({
           </View>
 
           <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
-            {entries.length === 0 ? (
+            {rows.length === 0 ? (
               <Text style={styles.empty}>No changes have been recorded for this patient yet.</Text>
             ) : (
-              entries.map((entry, i) => {
-                const changes = normalizeChanges(entry.changes);
+              rows.map((r, i) => {
+                const src = SOURCE_LABEL[r.source] || '';
                 return (
                   <View key={i} style={styles.entry}>
                     <View style={styles.timeline}>
                       <View style={styles.dot} />
-                      {i < entries.length - 1 ? <View style={styles.line} /> : null}
+                      {i < rows.length - 1 ? <View style={styles.line} /> : null}
                     </View>
                     <View style={styles.entryBody}>
                       <Text style={styles.entryMeta}>
-                        {formatDateTime12(entry.editedAt)}
-                        {entry.editedBy ? ` · ${entry.editedBy}` : ''}
+                        {r.at ? formatDateTime12(r.at) : ''}
+                        {r.by ? ` · ${r.by}` : ''}
+                        {src ? ` · ${src}` : ''}
                       </Text>
-                      <View style={styles.changeList}>
-                        {changes.map((c, j) => (
-                          <View key={j} style={styles.change}>
-                            <Text style={styles.changeLabel}>{c.label}</Text>
-                            {c.from || c.to ? (
-                              <View style={styles.fromTo}>
-                                <Text style={styles.fromVal} numberOfLines={1}>
-                                  {c.from || '—'}
-                                </Text>
-                                <ArrowRight size={12} color={Colors.gray400} />
-                                <Text style={styles.toVal} numberOfLines={1}>
-                                  {c.to || '—'}
-                                </Text>
-                              </View>
-                            ) : (
-                              <Text style={styles.changedTag}>changed</Text>
-                            )}
+                      <View style={styles.change}>
+                        <Text style={styles.changeLabel}>{r.field}</Text>
+                        {r.from || r.to ? (
+                          <View style={styles.fromTo}>
+                            <Text style={styles.fromVal} numberOfLines={2}>{r.from || '—'}</Text>
+                            <ArrowRight size={12} color={Colors.gray400} />
+                            <Text style={styles.toVal} numberOfLines={2}>{r.to || '—'}</Text>
                           </View>
-                        ))}
+                        ) : (
+                          <Text style={styles.changedTag}>changed</Text>
+                        )}
                       </View>
                     </View>
                   </View>
@@ -125,8 +123,7 @@ const styles = StyleSheet.create({
   line: { flex: 1, width: 2, backgroundColor: Colors.gray200, marginTop: 2 },
   entryBody: { flex: 1, paddingBottom: 18 },
   entryMeta: { fontSize: 12, color: Colors.mutedForeground, fontWeight: '600' },
-  changeList: { marginTop: 6, gap: 6 },
-  change: { backgroundColor: Colors.gray50, borderRadius: Radius.md, paddingHorizontal: 10, paddingVertical: 8, gap: 3 },
+  change: { marginTop: 6, backgroundColor: Colors.gray50, borderRadius: Radius.md, paddingHorizontal: 10, paddingVertical: 8, gap: 3 },
   changeLabel: { fontSize: 12, fontWeight: '700', color: Colors.foreground },
   fromTo: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   fromVal: { fontSize: 12.5, color: Colors.red700, flexShrink: 1 },

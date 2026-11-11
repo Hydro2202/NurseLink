@@ -1273,6 +1273,15 @@ class Notification(models.Model):
         related_name='notifications_sent',
     )
     is_read = models.BooleanField(default=False, db_index=True)
+    # High-priority alerts (e.g. an allergy change) pin to the top and must be
+    # acknowledged before they can be dismissed — see the acknowledge action on
+    # NotificationViewSet. requires_ack rows ignore the normal is_read dismissal
+    # until acknowledged_at is set.
+    priority = models.CharField(
+        max_length=10, choices=[('normal', 'Normal'), ('high', 'High')], default='normal', db_index=True,
+    )
+    requires_ack = models.BooleanField(default=False)
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
     action_label = models.CharField(max_length=100, blank=True, default='')
     action_path = models.CharField(max_length=200, blank=True, default='')
     action_highlight_id = models.CharField(max_length=50, blank=True, default='')
@@ -1393,6 +1402,9 @@ class DutyAssignment(models.Model):
         ('in_progress', 'In Progress'),
         ('completed', 'Completed'),
         ('cancelled', 'Cancelled'),
+        # The nurse did not show up for this shift. The shift row is kept (not
+        # deleted); absence metadata below records who marked it and why.
+        ('absent', 'Absent'),
     ]
     # Defaults offered when a shift is picked in the UI — the supervisor can
     # still adjust start/end afterward, these are just a sane starting point.
@@ -1451,6 +1463,15 @@ class DutyAssignment(models.Model):
         blank=True,
         related_name='duty_assignments_created',
     )
+    # Absence metadata — set when a head nurse marks this shift Absent. The
+    # shift itself is never deleted, so the roster keeps the original schedule.
+    marked_absent_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='absences_recorded',
+    )
+    marked_absent_at = models.DateTimeField(null=True, blank=True)
+    absence_reason = models.CharField(max_length=300, blank=True, default='')
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2493,3 +2514,48 @@ class AdminAuditLog(models.Model):
 
     def __str__(self):
         return f'{self.actor_name} {self.action} {self.record_type} {self.record_id}'
+
+
+class PatientUpdate(models.Model):
+    """
+    One row per tracked change to a patient's record — the structured audit
+    trail behind the patient Activity History (room transfers, condition,
+    attending physician, medications via Kardex, allergies, discharge/readmit).
+
+    Replaces the free-form ``Patient.edit_history`` JSON: that field is kept
+    read-only for already-logged rows (backfilled into this table by migration
+    0081), and every new change is written here via
+    ``api.patient_updates.record_patient_update``. Append-only — the API never
+    edits or deletes a row.
+    """
+
+    SOURCE_CHOICES = [
+        ('patient_form', 'Patient form'),
+        ('kardex', 'Kardex'),
+        ('system', 'System'),
+        ('legacy', 'Legacy (edit history)'),
+    ]
+
+    patient = models.ForeignKey(
+        'Patient', on_delete=models.CASCADE, related_name='updates',
+    )
+    #: Human-readable field label, e.g. "Room", "Condition", "Medication".
+    field_name = models.CharField(max_length=60)
+    old_value = models.TextField(blank=True, default='')
+    new_value = models.TextField(blank=True, default='')
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='patient_updates',
+    )
+    #: Snapshot of who made the change, for rows whose user is later removed or
+    #: that were backfilled from edit_history (which only stored a name).
+    changed_by_name = models.CharField(max_length=200, blank=True, default='')
+    changed_at = models.DateTimeField(db_index=True)
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='patient_form')
+
+    class Meta:
+        ordering = ['-changed_at', '-id']
+        indexes = [models.Index(fields=['patient', '-changed_at'])]
+
+    def __str__(self):
+        return f'{self.patient_id} {self.field_name}: {self.old_value} -> {self.new_value}'

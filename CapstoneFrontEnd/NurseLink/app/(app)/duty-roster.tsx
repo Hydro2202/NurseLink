@@ -28,6 +28,8 @@ import {
   StopCircle,
   ShieldAlert,
   UserCheck,
+  UserX,
+  Users,
 } from 'lucide-react-native';
 import {
   fetchDutyAssignments,
@@ -47,6 +49,7 @@ import { Alert, AlertDescription } from '../../components/Alert';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Pagination, usePagination } from '../../components/Pagination';
 import { DutyAssignmentModal } from '../../components/DutyAssignmentModal';
+import { NurseAbsenceModal } from '../../components/NurseAbsenceModal';
 import { PresenceDot } from '../../components/PresenceDot';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -77,6 +80,7 @@ const STATUS_COLORS: Record<string, { color: string; bg: string }> = {
   in_progress: { color: Colors.warningHover, bg: Colors.warningLight },
   completed: { color: Colors.green700, bg: Colors.green50 },
   cancelled: { color: Colors.red700, bg: Colors.red50 },
+  absent: { color: Colors.red700, bg: Colors.red50 },
 };
 
 function pad(n: number) {
@@ -243,6 +247,10 @@ export default function DutyRosterPage() {
   const [closeOpen, setCloseOpen] = useState(false);
   const [toClose, setToClose] = useState<DutyAssignment | null>(null);
   const [closing, setClosing] = useState(false);
+  // Marking a nurse absent and reassigning their patients — a two-step flow
+  // handled entirely inside NurseAbsenceModal.
+  const [absenceOpen, setAbsenceOpen] = useState(false);
+  const [absenceAssignment, setAbsenceAssignment] = useState<DutyAssignment | null>(null);
   // Briefly highlighted so a head nurse can visually confirm their edit/add
   // actually landed, rather than the list just silently reflowing.
   const [justSavedId, setJustSavedId] = useState<number | null>(null);
@@ -512,6 +520,10 @@ export default function DutyRosterPage() {
     void loadData();
     setTimeout(() => setJustSavedId(null), 2200);
   };
+  const openAbsence = (a: DutyAssignment) => {
+    setAbsenceAssignment(a);
+    setAbsenceOpen(true);
+  };
 
   const dateFilterOptions = [
     { label: 'Today', value: 'today' },
@@ -537,6 +549,7 @@ export default function DutyRosterPage() {
     { label: 'In Progress', value: 'in_progress' },
     { label: 'Completed', value: 'completed' },
     { label: 'Cancelled', value: 'cancelled' },
+    { label: 'Absent', value: 'absent' },
   ];
 
   const filtersActive =
@@ -651,6 +664,15 @@ export default function DutyRosterPage() {
                 <Text style={styles.closedByText}>Closed by {a.actualEndRecordedBy} (head nurse correction)</Text>
               </View>
             ) : null}
+            {a.status === 'absent' ? (
+              <View style={styles.absentTag}>
+                <UserX size={11} color={Colors.red700} />
+                <Text style={styles.absentTagText}>
+                  Marked absent{a.markedAbsentBy ? ` by ${a.markedAbsentBy}` : ''}
+                  {a.absenceReason ? ` · ${a.absenceReason}` : ''}
+                </Text>
+              </View>
+            ) : null}
 
             <View style={styles.footerRow}>
               <View style={styles.hoursRow}>
@@ -666,6 +688,17 @@ export default function DutyRosterPage() {
                     <Pressable onPress={() => askClose(a)} style={styles.iconTextBtn} hitSlop={6}>
                       <StopCircle size={13} color={Colors.orange700} />
                       <Text style={[styles.iconTextBtnLabel, { color: Colors.orange700 }]}>Close Shift</Text>
+                    </Pressable>
+                  ) : null}
+                  {a.status === 'absent' ? (
+                    <Pressable onPress={() => openAbsence(a)} style={styles.iconTextBtn} hitSlop={6}>
+                      <Users size={13} color={Colors.blue700} />
+                      <Text style={[styles.iconTextBtnLabel, { color: Colors.blue700 }]}>Reassign</Text>
+                    </Pressable>
+                  ) : a.status !== 'completed' && a.status !== 'cancelled' ? (
+                    <Pressable onPress={() => openAbsence(a)} style={styles.iconTextBtn} hitSlop={6}>
+                      <UserX size={13} color={Colors.red700} />
+                      <Text style={[styles.iconTextBtnLabel, { color: Colors.red700 }]}>Mark Absent</Text>
                     </Pressable>
                   ) : null}
                   <Pressable onPress={() => openEdit(a)} style={styles.iconTextBtn} hitSlop={6}>
@@ -1036,6 +1069,12 @@ export default function DutyRosterPage() {
         loading={closing}
         destructive
       />
+      <NurseAbsenceModal
+        open={absenceOpen}
+        onOpenChange={setAbsenceOpen}
+        assignment={absenceAssignment}
+        onDone={loadData}
+      />
     </View>
   );
 }
@@ -1140,6 +1179,8 @@ const styles = StyleSheet.create({
   actualTimeText: { fontSize: 11.5, color: Colors.gray600, fontWeight: '600' },
   closedByTag: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.orange50, borderWidth: 1, borderColor: Colors.orange300, borderRadius: Radius.sm, paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start' },
   closedByText: { fontSize: 11, fontWeight: '700', color: Colors.orange700 },
+  absentTag: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.red50, borderWidth: 1, borderColor: Colors.red200, borderRadius: Radius.sm, paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start' },
+  absentTagText: { fontSize: 11, fontWeight: '700', color: Colors.red700 },
 
   assignMetaWrap: { flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap' },
   assignMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },

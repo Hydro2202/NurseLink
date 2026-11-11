@@ -6,7 +6,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { fetchNotifications, markNotificationRead, markAllNotificationsRead } from '../services/api';
+import { fetchNotifications, markNotificationRead, markAllNotificationsRead, acknowledgeNotification } from '../services/api';
 import type { AppNotification } from '../types/domain';
 import { useAuth } from './AuthContext';
 import { useLive, useLiveRefresh } from './LiveContext';
@@ -40,6 +40,7 @@ interface NotificationsContextType {
   refresh: () => Promise<void>;
   markRead: (id: string) => Promise<void>;
   markAllRead: () => Promise<void>;
+  acknowledge: (id: string) => Promise<void>;
   /** Notifications new since this session started, for NotificationToastHost
    * — newest first, capped at TOAST_STACK_LIMIT. Never the unread backlog a
    * nurse already had waiting at login; only ones that arrived just now. */
@@ -256,6 +257,20 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [refresh, dismissToast]);
 
+  const acknowledge = useCallback(async (id: string) => {
+    // A required acknowledgement both acknowledges and dismisses the alert.
+    setNotifications((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, isRead: true, acknowledgedAt: new Date().toISOString() } : item))
+    );
+    setUnreadCount((prev) => Math.max(0, prev - 1));
+    dismissToast(id);
+    try {
+      await acknowledgeNotification(id);
+    } catch {
+      void refresh();
+    }
+  }, [refresh, dismissToast]);
+
   const markAllRead = useCallback(async () => {
     setNotifications((prev) => prev.map((item) => ({ ...item, isRead: true })));
     setUnreadCount(0);
@@ -272,7 +287,7 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
   return (
     <NotificationsContext.Provider
       value={{
-        notifications, unreadCount, loading, refresh, markRead, markAllRead, toasts, dismissToast,
+        notifications, unreadCount, loading, refresh, markRead, markAllRead, acknowledge, toasts, dismissToast,
       }}
     >
       {children}

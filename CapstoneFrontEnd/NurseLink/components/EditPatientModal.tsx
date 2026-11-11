@@ -38,6 +38,7 @@ type FormState = {
   vitalsMonitoringOrder: VitalsMonitoringOrder;
   vitalsMonitoringBasis: string;
   attendingPhysician: string;
+  allergies: string;
   departmentId: string;
   admissionDate: string;
   heartRate: string;
@@ -59,6 +60,7 @@ function formFromPatient(patient: Patient): FormState {
     vitalsMonitoringOrder: patient.vitalsMonitoringOrder || 'not_specified',
     vitalsMonitoringBasis: patient.vitalsMonitoringBasis || '',
     attendingPhysician: patient.attendingPhysician || '',
+    allergies: (patient.allergies || []).join(', '),
     departmentId: patient.departmentId != null ? String(patient.departmentId) : '',
     admissionDate: patient.admissionDate || '',
     heartRate: patient.vitalSigns?.heartRate != null ? String(patient.vitalSigns.heartRate) : '',
@@ -124,6 +126,7 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
         vitalsMonitoringOrder: form.vitalsMonitoringOrder,
         vitalsMonitoringBasis: form.vitalsMonitoringBasis.trim(),
         attendingPhysician: form.attendingPhysician.trim(),
+        allergies: form.allergies.split(',').map((a) => a.trim()).filter(Boolean),
         departmentId: form.departmentId ? Number(form.departmentId) : null,
         admissionDate: form.admissionDate,
         heightCm: form.heightCm ? Number(form.heightCm) : null,
@@ -254,6 +257,12 @@ export function EditPatientModal({ open, onOpenChange, patient, onSaved }: EditP
                   value={form.attendingPhysician}
                   onChangeText={(v) => setField('attendingPhysician', v)}
                   placeholder="Optional"
+                />
+                <Input
+                  label="Allergies"
+                  value={form.allergies}
+                  onChangeText={(v) => setField('allergies', v)}
+                  placeholder="Separate with commas, e.g. Penicillin, Latex"
                 />
                 <Select
                   label="Department"

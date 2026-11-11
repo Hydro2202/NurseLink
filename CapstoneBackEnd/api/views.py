@@ -93,6 +93,7 @@ from .models import (
     Notification,
     NurseProfile,
     Patient,
+    PatientUpdate,
     PatientAssignment,
     PatientDoctor,
     RegistrationSession,
@@ -109,6 +110,8 @@ from .referral_shifts import SHIFT_LABELS, get_eligible_recipients
 from . import login_throttle
 from .chart_fallback import structure_from_assessment
 from .vitals_extraction import extract_vitals_from_text
+from .patient_updates import record_patient_update
+from .absence import eligible_replacement_nurses, reassign_patient_with_tasks
 from .notifications import (
     notify,
     notify_handover_accepted,
@@ -2748,25 +2751,6 @@ class WsTicketView(APIView):
         return Response({'ticket': ticket, 'expiresInSeconds': settings.WS_TICKET_TTL_SECONDS})
 
 
-def log_patient_activity(patient, user, changes):
-    """
-    Append a {editedBy, editedAt, changes:[{field,label,from,to}]} entry to a
-    patient's edit_history — the same shape PatientSerializer.update writes, so
-    the activity history reads them uniformly. Used for status changes
-    (discharge/readmit) that don't flow through the serializer's update path.
-    """
-    history = list(patient.edit_history or [])
-    history.append(
-        {
-            'editedBy': nurse_display_name(user) if user and user.is_authenticated else '',
-            'editedAt': timezone.now().isoformat(),
-            'changes': changes,
-        }
-    )
-    patient.edit_history = history
-    patient.save(update_fields=['edit_history', 'updated_at'])
-
-
 @extend_schema_view(
     create=extend_schema(
         summary='Admit a patient',
@@ -2832,6 +2816,13 @@ class PatientViewSet(viewsets.ModelViewSet):
                     'department', 'created_by', 'updated_by'
                 ).ordered_for_display(),
                 to_attr='prefetched_department_visits',
+            ),
+            # Activity history (newest first) for the Activity modal and the
+            # "last edited" footer — prefetched so the serializer never N+1s.
+            Prefetch(
+                'updates',
+                queryset=PatientUpdate.objects.select_related('changed_by').order_by('-changed_at', '-id'),
+                to_attr='prefetched_updates',
             ),
         ).all()
         mine = self.request.query_params.get('mine')
@@ -3003,9 +2994,10 @@ class PatientViewSet(viewsets.ModelViewSet):
                 setattr(visit, attr, plan.get(camel) or '')
             visit.discharge_plan_ai_generated = bool(plan.get('aiGenerated'))
             visit.save()
-            log_patient_activity(
+            record_patient_update(
                 patient, request.user,
                 [{'field': 'status', 'label': 'Condition', 'from': prev_status_label, 'to': 'Discharged'}],
+                source='system',
             )
 
         return Response(PatientSerializer(patient, context=self.get_serializer_context()).data)
@@ -3066,9 +3058,10 @@ class PatientViewSet(viewsets.ModelViewSet):
                 patient.risk_level = request.data['riskLevel']
             patient.save()
             open_patient_visit(patient)
-            log_patient_activity(
+            record_patient_update(
                 patient, request.user,
                 [{'field': 'status', 'label': 'Condition', 'from': 'Discharged', 'to': 'Admitted (readmitted)'}],
+                source='system',
             )
 
         return Response(PatientSerializer(patient, context=self.get_serializer_context()).data)
@@ -5305,8 +5298,31 @@ class NotificationViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         notification = self.get_object()
         if 'isRead' in request.data:
-            notification.is_read = bool(request.data.get('isRead'))
+            want_read = bool(request.data.get('isRead'))
+            # A high-priority alert that requires acknowledgement can't be
+            # dismissed (marked read) until it's acknowledged — use /acknowledge.
+            if want_read and notification.requires_ack and notification.acknowledged_at is None:
+                return Response(
+                    {'detail': 'This alert must be acknowledged before it can be dismissed.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            notification.is_read = want_read
             notification.save(update_fields=['is_read'])
+        return Response(self.get_serializer(notification).data)
+
+    @extend_schema(
+        request=None,
+        responses={200: NotificationSerializer},
+        summary='Acknowledge a high-priority alert',
+        description='Marks a requires-acknowledgement alert as acknowledged and read.',
+    )
+    @action(detail=True, methods=['post'])
+    def acknowledge(self, request, pk=None):
+        notification = self.get_object()
+        if notification.acknowledged_at is None:
+            notification.acknowledged_at = timezone.now()
+        notification.is_read = True
+        notification.save(update_fields=['acknowledged_at', 'is_read'])
         return Response(self.get_serializer(notification).data)
 
     @extend_schema(
@@ -5317,7 +5333,11 @@ class NotificationViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=['post'])
     def mark_all_read(self, request):
-        updated = self.get_queryset().filter(is_read=False).update(is_read=True)
+        # Leaves unacknowledged high-priority alerts unread — they must be
+        # acknowledged individually, not swept away with "mark all read".
+        updated = self.get_queryset().filter(is_read=False).exclude(
+            requires_ack=True, acknowledged_at__isnull=True
+        ).update(is_read=True)
         return Response({'detail': f'Marked {updated} notifications as read.'})
 
     @extend_schema(
@@ -5329,6 +5349,11 @@ class NotificationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def mark_read(self, request, pk=None):
         notification = self.get_object()
+        if notification.requires_ack and notification.acknowledged_at is None:
+            return Response(
+                {'detail': 'This alert must be acknowledged before it can be dismissed.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         notification.is_read = True
         notification.save(update_fields=['is_read'])
         return Response(self.get_serializer(notification).data)
@@ -5434,7 +5459,10 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
         return qs
 
     def get_permissions(self):
-        if self.action in ('create', 'update', 'partial_update', 'destroy', 'close'):
+        if self.action in (
+            'create', 'update', 'partial_update', 'destroy', 'close',
+            'mark_absent', 'reassign_patients', 'reassignment_candidates',
+        ):
             return [permissions.IsAuthenticated(), IsSupervisor()]
         return super().get_permissions()
 
@@ -5716,6 +5744,201 @@ class DutyAssignmentViewSet(viewsets.ModelViewSet):
 
         return Response(DutyAssignmentSerializer(assignment, context={'request': request}).data)
 
+    def _absence_detail(self, assignment, request):
+        """The mark-absent / reassignment payload: the (updated) duty row, the
+        absent nurse's current patients, and the eligible replacement nurses
+        with their shift/department and current workload."""
+        nurse = assignment.nurse
+        patients = Patient.objects.filter(assigned_nurse=nurse).select_related('department').order_by('name')
+        params = request.query_params
+        return {
+            'assignment': DutyAssignmentSerializer(assignment, context={'request': request}).data,
+            'patients': PatientSerializer(patients, many=True, context=self.get_serializer_context()).data,
+            'eligibleNurses': eligible_replacement_nurses(
+                nurse,
+                department_id=params.get('departmentId'),
+                shift=params.get('shift'),
+                search=params.get('search') or '',
+            ),
+        }
+
+    @extend_schema(
+        request=None,
+        responses={200: None},
+        summary='Candidates for reassigning an absent nurse\'s patients',
+        description=(
+            'Head-nurse-only. Returns the absent nurse\'s current patients and the '
+            'eligible replacement nurses (with shift, department, and current patient '
+            'workload). Optional ?shift=, ?departmentId=, ?search= narrow the nurse list. '
+            'Does not change anything — use mark-absent / reassign-patients to act.'
+        ),
+    )
+    @action(detail=True, methods=['get'], url_path='reassignment-candidates')
+    def reassignment_candidates(self, request, pk=None):
+        # Resolve by pk directly, not through get_object()/get_queryset(): this
+        # action takes ?shift=/?departmentId= to filter the *eligible nurse*
+        # list, and get_queryset() would otherwise apply those same params to
+        # the duty lookup and 404 an absent nurse whose own shift/department
+        # differs from the filter.
+        assignment = get_object_or_404(DutyAssignment, pk=pk)
+        return Response(self._absence_detail(assignment, request))
+
+    @extend_schema(
+        request=None,
+        responses={200: None},
+        summary='Mark a nurse absent for this shift',
+        description=(
+            'Head-nurse-only. Sets the shift status to Absent and records who marked it, '
+            'when, and the optional reason — the shift row itself is never deleted. Returns '
+            'the updated duty row plus the absent nurse\'s patients and eligible replacement '
+            'nurses so the head nurse can reassign them. A completed or cancelled shift '
+            'cannot be marked absent.'
+        ),
+    )
+    @action(detail=True, methods=['post'], url_path='mark-absent')
+    def mark_absent(self, request, pk=None):
+        assignment = self.get_object()
+        if assignment.status in ('completed', 'cancelled'):
+            return Response(
+                {'detail': 'A completed or cancelled shift cannot be marked absent.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        reason = (request.data.get('reason') or '').strip()
+
+        with transaction.atomic():
+            assignment.status = 'absent'
+            assignment.marked_absent_by = request.user
+            assignment.marked_absent_at = timezone.now()
+            assignment.absence_reason = reason
+            assignment.save(update_fields=[
+                'status', 'marked_absent_by', 'marked_absent_at', 'absence_reason', 'updated_at',
+            ])
+
+        reason_tail = f' Reason: {reason}.' if reason else ''
+        notify(
+            assignment.nurse,
+            notification_type='warning',
+            event='marked_absent',
+            title='You were marked absent',
+            message=(
+                f'{full_name(request.user)} marked you absent for your '
+                f'{assignment.get_shift_display()} shift at {assignment.department.name} on '
+                f'{assignment.duty_date:%b %d, %Y}.{reason_tail} Your patients are being reassigned.'
+            ),
+        )
+        return Response(self._absence_detail(assignment, request))
+
+    @extend_schema(
+        request=None,
+        responses={200: None},
+        summary='Reassign an absent nurse\'s patients to replacement nurses',
+        description=(
+            'Head-nurse-only. Body: {"reason": str, "assignments": [{"patientId": str, '
+            '"nurseId": str}, ...]}. Atomically transfers each patient to the chosen nurse '
+            'and moves that patient\'s unfinished (pending/in-progress/overdue) tasks to the '
+            'new nurse — completed tasks stay with the original nurse. The receiving nurse is '
+            'notified with the patient, reason, and pending-task count; the head nurse gets a '
+            'success summary. The absent nurse\'s shift and history are preserved. The whole '
+            'batch rolls back if any single reassignment is invalid.'
+        ),
+    )
+    @action(detail=True, methods=['post'], url_path='reassign-patients')
+    def reassign_patients(self, request, pk=None):
+        assignment = self.get_object()
+        absent_nurse = assignment.nurse
+        reason = (request.data.get('reason') or assignment.absence_reason or '').strip()
+        rows = request.data.get('assignments') or []
+        if not isinstance(rows, list) or not rows:
+            return Response(
+                {'detail': 'Provide at least one patient→nurse assignment.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve and validate everything up front so an invalid request is
+        # rejected before any write happens.
+        seen_patients = set()
+        planned = []
+        for row in rows:
+            patient_id = str((row or {}).get('patientId') or '').strip()
+            nurse_id = str((row or {}).get('nurseId') or '').strip()
+            if not patient_id or not nurse_id:
+                return Response(
+                    {'detail': 'Each assignment needs a patientId and a nurseId.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if patient_id in seen_patients:
+                return Response(
+                    {'detail': f'Patient {patient_id} is listed more than once.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            seen_patients.add(patient_id)
+
+            patient = Patient.objects.filter(patient_code=patient_id).first()
+            if patient is None:
+                return Response(
+                    {'detail': f'Patient {patient_id} was not found.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if patient.assigned_nurse_id != absent_nurse.pk:
+                return Response(
+                    {'detail': f'{patient.name} is no longer assigned to the absent nurse.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            new_nurse = User.objects.filter(pk=nurse_id).select_related('nurse_profile').first()
+            if new_nurse is None or getattr(new_nurse, 'nurse_profile', None) is None:
+                return Response(
+                    {'detail': f'Replacement nurse {nurse_id} was not found.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            profile = new_nurse.nurse_profile
+            if profile.approval_status != 'approved' or not profile.is_active_staff:
+                return Response(
+                    {'detail': f'{full_name(new_nurse)} is not an active, approved nurse.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if new_nurse.pk == absent_nurse.pk:
+                return Response(
+                    {'detail': 'Cannot reassign a patient back to the absent nurse.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # Guard against assigning to a nurse who is themselves absent now.
+            new_duty = current_duties([new_nurse.pk]).get(new_nurse.pk)
+            if new_duty is not None and new_duty.status == 'absent':
+                return Response(
+                    {'detail': f'{full_name(new_nurse)} is also marked absent and cannot take patients.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            planned.append((patient, new_nurse))
+
+        results = []
+        with transaction.atomic():
+            for patient, new_nurse in planned:
+                _, transferred = reassign_patient_with_tasks(
+                    patient, new_nurse, request.user, reason=reason, absent_nurse=absent_nurse,
+                )
+                results.append({
+                    'patientId': patient.patient_code,
+                    'patientName': patient.name,
+                    'nurseId': str(new_nurse.pk),
+                    'nurseName': full_name(new_nurse),
+                    'tasksTransferred': transferred,
+                })
+
+        # Tell the head nurse the batch succeeded.
+        total_tasks = sum(r['tasksTransferred'] for r in results)
+        notify(
+            request.user,
+            notification_type='info',
+            event='reassignment_complete',
+            title='Patients reassigned',
+            message=(
+                f'Reassigned {len(results)} patient{"s" if len(results) != 1 else ""} from '
+                f'{full_name(absent_nurse)} and moved {total_tasks} pending '
+                f'task{"s" if total_tasks != 1 else ""} to the receiving nurses.'
+            ),
+        )
+        return Response({'results': results, 'detail': self._absence_detail(assignment, request)})
+
 
 @extend_schema_view(
     create=extend_schema(
@@ -5861,6 +6084,15 @@ class KardexLaboratoryViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 
+def _medication_desc(med):
+    """One-line description of a medication order for the patient activity log."""
+    parts = [med.medication_name, med.dose, med.route, med.frequency]
+    desc = ' '.join(p for p in parts if p).strip()
+    if not getattr(med, 'is_active', True):
+        desc = f'{desc} (discontinued)'.strip()
+    return desc
+
+
 class KardexMedicationViewSet(viewsets.ModelViewSet):
     """
     Medication orders for a patient's Kardex Medication Intake section.
@@ -5891,16 +6123,35 @@ class KardexMedicationViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         patient = serializer.validated_data.get('patient')
         _check_patient_care_scope(self.request, patient, 'add medications')
-        serializer.save()
+        med = serializer.save()
+        record_patient_update(
+            med.patient, self.request.user,
+            [{'field': 'medication', 'label': 'Medication', 'from': '', 'to': _medication_desc(med)}],
+            source='kardex',
+        )
 
     def perform_update(self, serializer):
         _check_patient_care_scope(self.request, serializer.instance.patient, 'update medications')
-        serializer.save()
+        before = _medication_desc(serializer.instance)
+        med = serializer.save()
+        after = _medication_desc(med)
+        if before != after:
+            record_patient_update(
+                med.patient, self.request.user,
+                [{'field': 'medication', 'label': 'Medication', 'from': before, 'to': after}],
+                source='kardex',
+            )
 
     def perform_destroy(self, instance):
         if get_user_role(self.request.user) != 'head_nurse':
             raise PermissionDenied('Only a head nurse can delete a medication order. Discontinue it instead.')
+        patient, desc = instance.patient, _medication_desc(instance)
         instance.delete()
+        record_patient_update(
+            patient, self.request.user,
+            [{'field': 'medication', 'label': 'Medication', 'from': desc, 'to': 'Removed'}],
+            source='kardex',
+        )
 
 
 class KardexDepartmentVisitViewSet(viewsets.ModelViewSet):

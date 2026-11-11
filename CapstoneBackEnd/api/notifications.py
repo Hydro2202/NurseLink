@@ -224,6 +224,8 @@ def notify(
     action_label='',
     action_path='',
     action_highlight_id='',
+    priority='normal',
+    requires_ack=False,
 ):
     """
     Add one row to a nurse's inbox.
@@ -249,6 +251,8 @@ def notify(
             action_label=action_label or '',
             action_path=action_path or '',
             action_highlight_id=action_highlight_id or '',
+            priority=priority or 'normal',
+            requires_ack=bool(requires_ack),
         )
     except Exception:
         logger.exception('Could not create notification for user %s', recipient.pk)
@@ -555,6 +559,68 @@ def notify_referral_head_nurse_fyi(handover, verb, detail=''):
                 patient=handover.patient,
                 handover=handover,
                 sender=None,
+            )
+        )
+    return results
+
+
+PATIENT_UPDATED = 'patient_updated'
+
+
+def notify_patient_change(patient, actor, changes):
+    """
+    Tell the patient's assigned nurse and every head nurse that a tracked
+    field changed (room, attending physician, condition, medication,
+    allergies). The nurse who made the change is never told about their own
+    edit. An allergy change goes out as a HIGH-priority, acknowledge-required
+    alert (critical styling, pinned) — the rest are ordinary warnings.
+
+    changes: list of {'label': ..., 'from': ..., 'to': ...}. Best-effort: a
+    failure here never blocks the edit that triggered it.
+    """
+    labels = [c.get('label') or c.get('field') or '' for c in (changes or [])]
+    if not labels:
+        return []
+    allergy_changed = 'Allergies' in labels
+
+    actor_id = actor.pk if (actor and getattr(actor, 'is_authenticated', False)) else None
+
+    recipients = {}
+    if patient.assigned_nurse_id:
+        recipients[patient.assigned_nurse_id] = patient.assigned_nurse
+    for profile in NurseProfile.objects.filter(role='head_nurse').select_related('user'):
+        if profile.user is not None:
+            recipients[profile.user.pk] = profile.user
+
+    summary = ', '.join(dict.fromkeys(labels))  # de-duped, order-preserving
+    allergy_detail = ''
+    if allergy_changed:
+        allergy_detail = next(
+            (f" Now: {c.get('to') or 'None'}." for c in changes if (c.get('label') == 'Allergies')),
+            '',
+        )
+
+    results = []
+    for user_id, user in recipients.items():
+        if user_id == actor_id:
+            continue
+        results.append(
+            notify(
+                user,
+                notification_type='critical' if allergy_changed else 'warning',
+                event=PATIENT_UPDATED,
+                title=(
+                    f'Allergy update — {patient.name}' if allergy_changed
+                    else f'Patient record updated — {patient.name}'
+                ),
+                message=(
+                    f'{patient.name} (Room {patient.room}): {summary} updated.{allergy_detail}'
+                ),
+                patient_label=patient.name,
+                patient=patient,
+                sender=actor if actor_id else None,
+                priority='high' if allergy_changed else 'normal',
+                requires_ack=allergy_changed,
             )
         )
     return results

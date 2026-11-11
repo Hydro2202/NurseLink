@@ -323,6 +323,9 @@ export interface Patient {
     editedAt: string;
     changes: (string | { field: string; label: string; from: string; to: string })[];
   }[];
+  /** Structured activity history (newest first) — from the PatientUpdate
+   * table that replaced edit_history. */
+  activity?: { field: string; from: string; to: string; by: string; at: string | null; source: string }[];
   lastEditedAt?: string | null;
   lastEditedByName?: string | null;
   /** Physician's order for how often vitals must be taken — the single
@@ -693,6 +696,12 @@ export interface AppNotification {
   /** Nurse who caused it. */
   senderName?: string | null;
   isRead: boolean;
+  /** 'high' for alerts that pin to the top and must be acknowledged. */
+  priority?: 'normal' | 'high';
+  /** When true, the alert must be acknowledged before it can be dismissed. */
+  requiresAck?: boolean;
+  /** ISO time it was acknowledged, or null/undefined if not yet. */
+  acknowledgedAt?: string | null;
   action?: {
     label: string;
     path: string;
@@ -725,7 +734,7 @@ export interface PatientAssignmentRecord {
 }
 
 export type DutyShift = 'morning' | 'afternoon' | 'night';
-export type DutyStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+export type DutyStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled' | 'absent';
 
 export interface DutyAssignment {
   id: number;
@@ -764,9 +773,39 @@ export interface DutyAssignment {
   actualOvertimeHours: number;
   /** Set only when a head nurse closes out a shift the nurse never ended themselves. */
   actualEndRecordedBy: string | null;
+  /** Set only when a head nurse marks this shift Absent. The shift row is kept. */
+  markedAbsentBy?: string | null;
+  markedAbsentAt?: string | null;
+  absenceReason?: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** A replacement-nurse candidate when reassigning an absent nurse's patients. */
+export interface EligibleReplacementNurse {
+  id: string;
+  fullName: string;
+  shift: string;
+  shiftLabel: string;
+  department: { id: number | null; name: string };
+  patientCount: number;
+  onDuty: boolean;
+}
+
+/** The server's mark-absent / reassignment-candidates payload. */
+export interface AbsenceDetail {
+  assignment: DutyAssignment;
+  patients: Patient[];
+  eligibleNurses: EligibleReplacementNurse[];
+}
+
+export interface ReassignmentResult {
+  patientId: string;
+  patientName: string;
+  nurseId: string;
+  nurseName: string;
+  tasksTransferred: number;
 }
 
 export interface KardexHistory {

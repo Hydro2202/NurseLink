@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -76,7 +76,14 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
   const [slideAnim] = useState(() => new Animated.Value(PANEL_WIDTH));
   const [visible, setVisible] = useState(false);
 
-  const { notifications, unreadCount, refresh, markRead, markAllRead } = useNotifications();
+  const { notifications, unreadCount, refresh, markRead, markAllRead, acknowledge } = useNotifications();
+
+  // High-priority alerts that still need acknowledgement are pinned to the top.
+  const needsAck = (n: AppNotification) => !!n.requiresAck && !n.acknowledgedAt;
+  const sortedNotifications = useMemo(
+    () => [...notifications].sort((a, b) => Number(needsAck(b)) - Number(needsAck(a))),
+    [notifications]
+  );
 
   useEffect(() => {
     (() => {
@@ -245,10 +252,10 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
                 <Text style={styles.emptyDesc}>You&apos;re all caught up!</Text>
               </View>
             ) : (
-              notifications.map((notification) => (
+              sortedNotifications.map((notification) => (
                 <View
                   key={notification.id}
-                  style={[styles.item, getBackgroundStyle(notification.type)]}
+                  style={[styles.item, getBackgroundStyle(notification.type), needsAck(notification) && styles.itemUrgent]}
                 >
                   <View style={styles.itemRow}>
                     <View style={styles.iconWrap}>{getIcon(notification.type)}</View>
@@ -273,7 +280,16 @@ export function NotificationPanel({ isOpen, onClose }: NotificationPanelProps) {
                           <Clock size={12} color={Colors.mutedForeground} />
                           <Text style={styles.time}>{notification.time}</Text>
                         </View>
-                        {notification.action ? (
+                        {needsAck(notification) ? (
+                          <Button
+                            size="sm"
+                            onPress={() => void acknowledge(notification.id)}
+                            style={styles.ackBtn}
+                            textStyle={styles.ackBtnText}
+                          >
+                            <Text style={styles.ackBtnText}>Acknowledge</Text>
+                          </Button>
+                        ) : notification.action ? (
                           <Button
                             size="sm"
                             variant="outline"
@@ -391,6 +407,23 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: Radius.lg,
     borderLeftWidth: 4,
+  },
+  itemUrgent: {
+    borderWidth: 1.5,
+    borderColor: Colors.red600,
+    borderLeftWidth: 4,
+    borderLeftColor: Colors.red600,
+    backgroundColor: Colors.red50,
+  },
+  ackBtn: {
+    backgroundColor: Colors.red600,
+    paddingHorizontal: 12,
+    minHeight: 32,
+  },
+  ackBtnText: {
+    color: Colors.white,
+    fontWeight: '800',
+    fontSize: 12,
   },
   itemRow: {
     flexDirection: 'row',
