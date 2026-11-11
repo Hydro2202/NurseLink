@@ -217,18 +217,21 @@ function loadPatientView(): PatientViewMode {
   return 'card';
 }
 
-// Fixed column widths for the Table view (the table scrolls horizontally on
-// narrow screens). Index order matches the header row.
+// Table columns size by FLEX so the table fills the whole content width on
+// wide screens, with a minWidth floor per column; the row's total minWidth is
+// what makes it scroll horizontally (header + rows together) only once the
+// window is too narrow to fit. Index order matches the header row.
 const TABLE_COLS = [
-  { width: 210 }, // Patient
-  { width: 80 }, // Room
-  { width: 140 }, // Status
-  { width: 120 }, // Risk
-  { width: 190 }, // Diagnosis
-  { width: 170 }, // Assigned nurse
-  { width: 150 }, // Department
-  { width: 300 }, // Actions
+  { flex: 2, minWidth: 180 },   // Patient
+  { flex: 0.7, minWidth: 70 },  // Room
+  { flex: 1, minWidth: 110 },   // Status
+  { flex: 1, minWidth: 100 },   // Risk
+  { flex: 1.6, minWidth: 150 }, // Diagnosis
+  { flex: 1.4, minWidth: 140 }, // Assigned nurse
+  { flex: 1.2, minWidth: 120 }, // Department
+  { flex: 1.8, minWidth: 260 }, // Actions
 ];
+const TABLE_MIN_WIDTH = TABLE_COLS.reduce((s, c) => s + c.minWidth, 0);
 
 export default function AllPatientsPage() {
   const toast = useToast();
@@ -774,7 +777,7 @@ export default function AllPatientsPage() {
             </View>
           ) : viewMode === 'table' ? (
             <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.tableScroll}>
-              <View style={styles.tableWrap}>
+              <View style={[styles.tableWrap, { minWidth: TABLE_MIN_WIDTH }]}>
                 <View style={styles.tHeader}>
                   {['Patient', 'Room', 'Status', 'Risk', 'Diagnosis', 'Assigned nurse', 'Department', 'Actions'].map((h, i) => (
                     <Text key={h} style={[styles.th, TABLE_COLS[i]]}>{h}</Text>
@@ -791,7 +794,7 @@ export default function AllPatientsPage() {
                           <Text style={[styles.avatarText, isDischarged && styles.avatarTextDischarged]}>{initialsOf(patient.name)}</Text>
                         </View>
                         <View style={styles.minW0}>
-                          <Text style={styles.tName} numberOfLines={1}>{patient.name}</Text>
+                          <Text style={styles.tName} numberOfLines={2}>{patient.name}</Text>
                           <Text style={styles.tSub} numberOfLines={1}>{patient.id}</Text>
                         </View>
                       </View>
@@ -809,9 +812,9 @@ export default function AllPatientsPage() {
                           </View>
                         ) : <Text style={styles.td}>—</Text>}
                       </View>
-                      <Text style={[styles.td, TABLE_COLS[4]]} numberOfLines={1}>{patient.diagnosis || '—'}</Text>
-                      <Text style={[styles.td, TABLE_COLS[5]]} numberOfLines={1}>{getAssignedNurseDisplay(patient)}</Text>
-                      <Text style={[styles.td, TABLE_COLS[6]]} numberOfLines={1}>{patient.departmentName || '—'}</Text>
+                      <Text style={[styles.td, TABLE_COLS[4]]} numberOfLines={2}>{patient.diagnosis || '—'}</Text>
+                      <Text style={[styles.td, TABLE_COLS[5]]} numberOfLines={2}>{getAssignedNurseDisplay(patient)}</Text>
+                      <Text style={[styles.td, TABLE_COLS[6]]} numberOfLines={2}>{patient.departmentName || '—'}</Text>
                       <View style={[styles.tCell, TABLE_COLS[7]]}>{rowActions(patient)}</View>
                     </View>
                   );
@@ -1399,8 +1402,10 @@ const styles = StyleSheet.create({
   allergyFlagText: { fontSize: 11, fontWeight: '700', color: Colors.orange700, flexShrink: 1 },
 
   // Table view
-  tableScroll: { paddingBottom: 6 },
-  tableWrap: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, overflow: 'hidden', minWidth: '100%' },
+  // flexGrow lets the table fill the viewport when it fits; the wrap's own
+  // minWidth (set inline to the columns' total) forces a scroll when it doesn't.
+  tableScroll: { paddingBottom: 6, flexGrow: 1 },
+  tableWrap: { flex: 1, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, overflow: 'hidden' },
   tHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F7FAFF', borderBottomWidth: 1, borderBottomColor: T.border, paddingHorizontal: 12, paddingVertical: 10 },
   th: { fontSize: 11.5, fontWeight: '800', color: T.muted, textTransform: 'uppercase', letterSpacing: 0.4, paddingHorizontal: 6 },
   tRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#EEF1F6' },

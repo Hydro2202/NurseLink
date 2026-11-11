@@ -98,15 +98,18 @@ function loadAccountView(): AccountViewMode {
   }
   return 'card';
 }
-// Fixed column widths for the Table view (scrolls horizontally on narrow
-// screens). Index order matches the header row.
+// Table columns size by FLEX so the table fills the whole content width on
+// wide screens, with a minWidth floor per column; the row's total minWidth is
+// what makes it scroll horizontally (header + rows together) only once the
+// window is too narrow to fit. Index order matches the header row.
 const ACCOUNT_TABLE_COLS = [
-  { width: 200 }, // Name
-  { width: 230 }, // Email
-  { width: 120 }, // Role
-  { width: 120 }, // Status
-  { width: 160 }, // Department
+  { flex: 1.8, minWidth: 150 }, // Name
+  { flex: 2.2, minWidth: 190 }, // Email
+  { flex: 1, minWidth: 100 },   // Role
+  { flex: 1, minWidth: 100 },   // Status
+  { flex: 1.4, minWidth: 130 }, // Department
 ];
+const ACCOUNT_TABLE_MIN_WIDTH = ACCOUNT_TABLE_COLS.reduce((s, c) => s + c.minWidth, 0);
 
 export default function AdminAccountsPage() {
   const params = useLocalSearchParams<{ status?: string }>();
@@ -497,11 +500,16 @@ export default function AdminAccountsPage() {
         ) : filtered.length === 0 ? (
           <Text style={styles.empty}>No accounts match.</Text>
         ) : accountViewMode === 'table' ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tableScroll}>
-            <View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator
+            style={styles.tableScroll}
+            contentContainerStyle={styles.tableScrollContent}
+          >
+            <View style={[styles.tableInner, { minWidth: ACCOUNT_TABLE_MIN_WIDTH }]}>
               <View style={styles.tableHeaderRow}>
                 {['Name', 'Email', 'Role', 'Status', 'Department'].map((h, i) => (
-                  <Text key={h} style={[styles.tableHeadCell, { width: ACCOUNT_TABLE_COLS[i].width }]} numberOfLines={1}>
+                  <Text key={h} style={[styles.tableHeadCell, ACCOUNT_TABLE_COLS[i]]} numberOfLines={1}>
                     {h}
                   </Text>
                 ))}
@@ -513,20 +521,20 @@ export default function AdminAccountsPage() {
                   style={({ hovered }: { hovered?: boolean }) => [styles.tableRow, hovered && styles.tableRowHover]}
                   accessibilityLabel={`Open account ${account.name}`}
                 >
-                  <View style={[styles.tableCell, { width: ACCOUNT_TABLE_COLS[0].width }]}>
-                    <Text style={styles.tableCellStrong} numberOfLines={1}>{account.name}</Text>
+                  <View style={[styles.tableCell, ACCOUNT_TABLE_COLS[0]]}>
+                    <Text style={styles.tableCellStrong} numberOfLines={2}>{account.name}</Text>
                     {!account.isActiveStaff ? <Text style={styles.tableCellMuted}>deactivated</Text> : null}
                   </View>
-                  <Text style={[styles.tableCellText, { width: ACCOUNT_TABLE_COLS[1].width }]} numberOfLines={1}>
+                  <Text style={[styles.tableCellText, ACCOUNT_TABLE_COLS[1]]} numberOfLines={2}>
                     {account.email}
                   </Text>
-                  <View style={[styles.tableCell, { width: ACCOUNT_TABLE_COLS[2].width }]}>
+                  <View style={[styles.tableCell, ACCOUNT_TABLE_COLS[2]]}>
                     <Badge variant={ROLE_BADGE[account.role].variant}>{ROLE_BADGE[account.role].label}</Badge>
                   </View>
-                  <View style={[styles.tableCell, { width: ACCOUNT_TABLE_COLS[3].width }]}>
+                  <View style={[styles.tableCell, ACCOUNT_TABLE_COLS[3]]}>
                     <Badge variant={STATUS_VARIANT[account.approvalStatus]}>{account.approvalStatus}</Badge>
                   </View>
-                  <Text style={[styles.tableCellText, { width: ACCOUNT_TABLE_COLS[4].width }]} numberOfLines={1}>
+                  <Text style={[styles.tableCellText, ACCOUNT_TABLE_COLS[4]]} numberOfLines={2}>
                     {account.department || '—'}
                   </Text>
                 </Pressable>
@@ -890,7 +898,11 @@ const styles = StyleSheet.create({
   viewSwitchBtn: { width: 38, minHeight: 42, alignItems: 'center', justifyContent: 'center' },
   viewSwitchBtnActive: { backgroundColor: '#EAF0FF' },
   tableScroll: { borderWidth: 1, borderColor: Colors.gray200, borderRadius: Radius.lg, backgroundColor: Colors.white },
-  tableHeaderRow: { flexDirection: 'row', backgroundColor: Colors.gray50, borderBottomWidth: 1, borderBottomColor: Colors.gray200, paddingVertical: 10, paddingHorizontal: 8 },
+  // flexGrow lets the table fill the viewport when it fits; the inner view's
+  // own minWidth is what forces a scroll when it doesn't.
+  tableScrollContent: { flexGrow: 1 },
+  tableInner: { flex: 1 },
+  tableHeaderRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.gray50, borderBottomWidth: 1, borderBottomColor: Colors.gray200, paddingVertical: 10, paddingHorizontal: 8 },
   tableHeadCell: { fontSize: 11, fontWeight: '800', color: Colors.gray600, textTransform: 'uppercase', letterSpacing: 0.4, paddingHorizontal: 6 },
   tableRow: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: Colors.gray100, paddingVertical: 10, paddingHorizontal: 8 },
   tableRowHover: { backgroundColor: Colors.gray50 },

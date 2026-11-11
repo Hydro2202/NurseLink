@@ -143,16 +143,20 @@ function loadTaskView(): TaskViewMode {
   }
   return 'card';
 }
-// Fixed column widths for the Table view (scrolls horizontally on narrow
-// screens). Index order matches the header row.
+// Table columns size by FLEX so the table fills the whole content width on
+// wide screens, with a minWidth floor per column so nothing is crushed; the
+// row's total minWidth is what makes it scroll horizontally (header + rows
+// together) only once the window is too narrow to fit. Index order matches
+// the header row.
 const TASK_TABLE_COLS = [
-  { width: 240 }, // Task
-  { width: 180 }, // Patient
-  { width: 110 }, // Priority
-  { width: 150 }, // Due
-  { width: 130 }, // Status
-  { width: 160 }, // Nurse
+  { flex: 2.4, minWidth: 180 }, // Task
+  { flex: 1.6, minWidth: 150 }, // Patient
+  { flex: 1, minWidth: 90 },    // Priority
+  { flex: 1.3, minWidth: 120 }, // Due
+  { flex: 1, minWidth: 100 },   // Status
+  { flex: 1.4, minWidth: 130 }, // Nurse
 ];
+const TASK_TABLE_MIN_WIDTH = TASK_TABLE_COLS.reduce((s, c) => s + c.minWidth, 0);
 
 export default function TasksPage() {
   const params = useLocalSearchParams<{
@@ -853,11 +857,16 @@ export default function TasksPage() {
               </CardContent>
             </Card>
           ) : taskViewMode === 'table' ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tableScroll}>
-              <View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator
+              style={styles.tableScroll}
+              contentContainerStyle={styles.tableScrollContent}
+            >
+              <View style={[styles.tableInner, { minWidth: TASK_TABLE_MIN_WIDTH }]}>
                 <View style={styles.tableHeaderRow}>
                   {['Task', 'Patient', 'Priority', 'Due', 'Status', 'Nurse'].map((h, i) => (
-                    <Text key={h} style={[styles.tableHeadCell, { width: TASK_TABLE_COLS[i].width }]} numberOfLines={1}>
+                    <Text key={h} style={[styles.tableHeadCell, TASK_TABLE_COLS[i]]} numberOfLines={1}>
                       {h}
                     </Text>
                   ))}
@@ -869,35 +878,31 @@ export default function TasksPage() {
                     style={({ hovered }: { hovered?: boolean }) => [styles.tableRow, hovered && styles.tableRowHover]}
                     accessibilityLabel={`Open task ${task.title}`}
                   >
-                    <View style={[styles.tableCell, { width: TASK_TABLE_COLS[0].width }]}>
+                    <View style={[styles.tableCell, TASK_TABLE_COLS[0]]}>
                       <Text style={styles.tableCellStrong} numberOfLines={2}>
                         {getCategoryIcon(task.category)} {task.title}
                       </Text>
                     </View>
-                    <Text style={[styles.tableCellText, { width: TASK_TABLE_COLS[1].width }]} numberOfLines={2}>
+                    <Text style={[styles.tableCellText, TASK_TABLE_COLS[1]]} numberOfLines={2}>
                       {task.patientName} ({task.patientId})
                     </Text>
-                    <View style={[styles.tableCell, { width: TASK_TABLE_COLS[2].width }]}>
-                      <Text style={[styles.tableBadgeText, { color: RISK_COLORS[task.priority] || Colors.gray600 }]}>
+                    <View style={[styles.tableCell, TASK_TABLE_COLS[2]]}>
+                      <Text style={[styles.tableBadgeText, { color: RISK_COLORS[task.priority] || Colors.gray600 }]} numberOfLines={1}>
                         {RISK_LABELS[task.priority] || task.priority}
                       </Text>
                     </View>
                     <Text
-                      style={[
-                        styles.tableCellText,
-                        { width: TASK_TABLE_COLS[3].width },
-                        isTaskOverdue(task) && styles.metaTextOverdue,
-                      ]}
-                      numberOfLines={1}
+                      style={[styles.tableCellText, TASK_TABLE_COLS[3], isTaskOverdue(task) && styles.metaTextOverdue]}
+                      numberOfLines={2}
                     >
                       {formatDueDate(task.dueDate) || '—'}
                       {formatDueDate(task.dueDate) && task.dueTime ? ' · ' : ''}
                       {formatTime12(task.dueTime)}
                     </Text>
-                    <View style={[styles.tableCell, { width: TASK_TABLE_COLS[4].width }]}>
+                    <View style={[styles.tableCell, TASK_TABLE_COLS[4]]}>
                       <TaskStatusBadge status={task.status} />
                     </View>
-                    <Text style={[styles.tableCellText, { width: TASK_TABLE_COLS[5].width }]} numberOfLines={1}>
+                    <Text style={[styles.tableCellText, TASK_TABLE_COLS[5]]} numberOfLines={2}>
                       {task.assignedTo || 'Unassigned'}
                     </Text>
                   </Pressable>
@@ -1469,11 +1474,15 @@ const styles = StyleSheet.create({
   viewSwitchBtn: { width: 38, minHeight: 42, alignItems: 'center', justifyContent: 'center' },
   viewSwitchBtnActive: { backgroundColor: '#EAF0FF' },
   tableScroll: { borderWidth: 1, borderColor: Colors.gray200, borderRadius: Radius.lg, backgroundColor: Colors.white },
-  tableHeaderRow: { flexDirection: 'row', backgroundColor: Colors.gray50, borderBottomWidth: 1, borderBottomColor: Colors.gray200, paddingVertical: 10, paddingHorizontal: 8 },
+  // flexGrow lets the table fill the viewport when it fits; the inner view's
+  // own minWidth is what forces a scroll when it doesn't.
+  tableScrollContent: { flexGrow: 1 },
+  tableInner: { flex: 1 },
+  tableHeaderRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.gray50, borderBottomWidth: 1, borderBottomColor: Colors.gray200, paddingVertical: 10, paddingHorizontal: 8 },
   tableHeadCell: { fontSize: 11, fontWeight: '800', color: Colors.gray600, textTransform: 'uppercase', letterSpacing: 0.4, paddingHorizontal: 6 },
   tableRow: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: Colors.gray100, paddingVertical: 10, paddingHorizontal: 8 },
   tableRowHover: { backgroundColor: Colors.gray50 },
-  tableCell: { paddingHorizontal: 6 },
+  tableCell: { paddingHorizontal: 6, justifyContent: 'center' },
   tableCellStrong: { fontSize: 13, fontWeight: '700', color: Colors.gray900, paddingHorizontal: 6 },
   tableCellText: { fontSize: 12.5, color: Colors.gray700, paddingHorizontal: 6 },
   tableBadgeText: { fontSize: 12, fontWeight: '800' },
